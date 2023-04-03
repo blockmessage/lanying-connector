@@ -1,0 +1,182 @@
+{
+    "openai_api_key": "",
+    "max_block_size": 500,
+    "embedding_requests_per_minute": 50,
+    "docs": [
+        {
+            "name": "floo-web",
+            "files": [
+                {
+                    "path": "../im.gitbook/_book/reference/floo-web",
+                    "summary": {}
+                }
+            ],
+            "block_split_rule": "^#{1,3} ",
+            "markdown_replace_rules": [
+                {
+                    "name": "remove summary",
+                    "patten": "[^\n]*lanying-logo.*本文档由 Gitbook 发布]\\(https://www.gitbook.com\\)",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove footer",
+                    "patten": "© .* 美信拓扑.*$",
+                    "replacement": ""
+                }
+            ]
+        },
+        {
+            "name": "server-api",
+            "files": [
+                {
+                    "path": "../im.gitbook/_book/reference/server-api",
+                    "summary": {}
+                }
+            ],
+            "block_split_rule": "\\d+\\.\\d+ ",
+            "markdown_replace_rules": [
+                {
+                    "name": "remove summary",
+                    "patten": "[^\n]*lanying-logo.*本文档由 Gitbook 发布]\\(https://www.gitbook.com\\)",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove footer",
+                    "patten": "© .* 美信拓扑.*$",
+                    "replacement": ""
+                }
+            ]
+        },
+        {
+            "name": "floo",
+            "files": [
+                {
+                    "path": "../im.gitbook/_book/reference/floo",
+                    "summary": {}
+                }
+            ],
+            "block_split_rule": "^#{1,3} ",
+            "markdown_replace_rules": [
+                {
+                    "name": "remove summary",
+                    "patten": "[^\n]*lanying-logo.*本文档由 Gitbook 发布]\\(https://www.gitbook.com\\)",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove footer",
+                    "patten": "© .* 美信拓扑.*$",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove update on",
+                    "patten": "Updated on \\d{4}-\\d{2}-\\d{2} at \\d{2}:\\d{2}:\\d{2} \\+\\d{4}"
+                }
+            ]
+        },
+        {
+            "name": "floo-ios",
+            "files": [
+                {
+                    "path": "../im.gitbook/_book/reference/floo-ios",
+                    "summary": {}
+                }
+            ],
+            "block_split_rule": "^#{1,3} ",
+            "markdown_replace_rules": [
+                {
+                    "name": "remove summary",
+                    "patten": "[^\n]*lanying-logo.*本文档由 Gitbook 发布]\\(https://www.gitbook.com\\)",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove footer",
+                    "patten": "© .* 美信拓扑.*$",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove update on",
+                    "patten": "Updated on \\d{4}-\\d{2}-\\d{2} at \\d{2}:\\d{2}:\\d{2} \\+\\d{4}"
+                }
+            ]
+        },
+        {
+            "name": "floo-android",
+            "files": [
+                {
+                    "path": "../im.gitbook/_book/reference/floo-android",
+                    "summary": {}
+                }
+            ],
+            "block_split_rule": "^#{1,3} ",
+            "markdown_replace_rules": [
+                {
+                    "name": "remove summary",
+                    "patten": "[^\n]*lanying-logo.*本文档由 Gitbook 发布]\\(https://www.gitbook.com\\)",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove footer",
+                    "patten": "© .* 美信拓扑.*$",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove update on",
+                    "patten": "Updated on \\d{4}-\\d{2}-\\d{2} at \\d{2}:\\d{2}:\\d{2} \\+\\d{4}"
+                }
+            ]
+        },
+        {
+            "name": "quick-start",
+            "files": [
+                {
+                    "path": "../im.gitbook/_book/quick-start/server-api-quick-start.html",
+                    "summary": {
+                        "preset_name": "server-api",
+                        "preset_desc": "服务端"
+                    }
+                },
+                {
+                    "path": "../im.gitbook/_book/quick-start/floo-web-quick-start.html",
+                    "summary": {
+                        "preset_name": "floo-web",
+                        "preset_desc": "Web端"
+                    }
+                },
+                {
+                    "path": "../im.gitbook/_book/quick-start/floo-android-quick-start.html",
+                    "summary": {
+                        "preset_name": "floo-android",
+                        "preset_desc": "安卓端"
+                    }
+                },
+                {
+                    "path": "../im.gitbook/_book/quick-start/floo-ios-quick-start.html",
+                    "summary": {
+                        "preset_name": "floo-ios",
+                        "preset_desc": "IOS端"
+                    }
+                },
+                {
+                    "path": "../im.gitbook/_book/quick-start/floo-quick-start.html",
+                    "summary": {
+                        "preset_name": "floo",
+                        "preset_desc": "C++端"
+                    }
+                }
+            ],
+            "block_split_rule": "^#{1,3} ",
+            "markdown_replace_rules": [
+                {
+                    "name": "remove summary",
+                    "patten": "[^\n]*lanying-logo.*本文档由 Gitbook 发布]\\(https://www.gitbook.com\\)",
+                    "replacement": ""
+                },
+                {
+                    "name": "remove footer",
+                    "patten": "© .* 美信拓扑.*$",
+                    "replacement": ""
+                }
+            ]
+        }
+    ]
+}

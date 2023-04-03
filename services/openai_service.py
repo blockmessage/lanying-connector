@@ -8,11 +8,12 @@ import lanying_config
 import lanying_redis
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-import math
 import requests
 import os
-
+import openai_doc_gen
+import copy
 expireSeconds = 86400 * 3
+presetNameExpireSeconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
@@ -81,7 +82,7 @@ def check_authorization(request):
         pass
     return {'result':'error', 'msg':'bad_authorization'}
 
-def handle_chat_message(msg, config):
+def handle_chat_message(msg, config, retry_times = 3):
     reply_message_read_ack(config)
     checkres = check_message_deduct_failed(msg['appId'], config)
     if checkres['result'] == 'error':
@@ -91,23 +92,41 @@ def handle_chat_message(msg, config):
         return checkres['msg']
     preset = config['preset']
     lcExt = {}
+    presetExt = {}
+    fromUserId = config['from_user_id']
+    toUserId = config['to_user_id']
+    redis = lanying_connector.getRedisConnection()
     try:
         ext = json.loads(config['ext'])
         lcExt = ext['lanying_connector']
         if lcExt['preset_name']:
             preset = preset['presets'][lcExt['preset_name']]
+            init_preset_defaults(preset, config['preset'])
     except Exception as e:
         lcExt = {}
+    lastChoosePresetName = get_preset_name(redis, fromUserId, toUserId)
+    logging.debug(f"lastChoosePresetName:{lastChoosePresetName}")
+    if lastChoosePresetName:
+        try:
+            preset = preset['presets'][lastChoosePresetName]
+            logging.debug(f"using preset_name:{lastChoosePresetName}")
+            init_preset_defaults(preset, config['preset'])
+        except Exception as e:
+            logging.exception(e)
+            pass
     if 'presets' in preset:
         del preset['presets']
+    if 'ext' in preset:
+        presetExt = copy.deepcopy(preset['ext'])
+        del preset['ext']
     logging.debug(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
     isChatGPT = is_chatgpt_model(preset['model'])
     if isChatGPT:
-        return handle_chat_message_chatgpt(msg, config, preset, lcExt)
+        return handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_times)
     else:
         return ''
 
-def handle_chat_message_chatgpt(msg, config, preset, lcExt):
+def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_times):
     app_id = msg['appId']
     check_res = check_message_limit(app_id, config)
     if check_res['result'] == 'error':
@@ -126,17 +145,39 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt):
     redis = lanying_redis.get_redis_connection()
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
+        del_preset_name(redis, fromUserId, toUserId)
     if 'prompt_ext' in lcExt and lcExt['prompt_ext']:
         customHistoryList = []
         for customHistory in lcExt['prompt_ext']:
             if customHistory['role'] and customHistory['content']:
                 customHistoryList.append({'role':customHistory['role'], 'content': customHistory['content']})
         addHistory(redis, historyListKey, {'list':customHistoryList, 'time':now})
-    if 'need_reply' in lcExt and lcExt['need_reply'] == False:
+    if 'ai_generate' in lcExt and lcExt['ai_generate'] == False:
         return ''
-    if content == '#reset_prompt':
+    if content == '/reset_prompt':
         removeAllHistory(redis, historyListKey)
+        del_preset_name(redis, fromUserId, toUserId)
         return 'prompt is reset'
+    if 'embedding_name' in presetExt:
+        embedding_name = presetExt['embedding_name']
+        embedding_content = presetExt.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
+        embedding_max_tokens = presetExt.get('embedding_max_tokens', 1024)
+        embedding_max_blocks = presetExt.get('embedding_max_blocks', 2)
+        logging.debug(f"use embeddings: {embedding_name}, embedding_max_tokens:{embedding_max_tokens},embedding_max_blocks:{embedding_max_blocks}")
+        context = ""
+        context_with_distance = ""
+        for blocks in openai_doc_gen.search_prompt(f"embeddings/{embedding_name}.csv", content, config['openai_api_key'], embedding_max_tokens, embedding_max_blocks):
+            embedding_content_type = presetExt.get('embedding_content_type', 'text')
+            if embedding_content_type == 'summary':
+                context = context + blocks['summary'] + "\n\n"
+                context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['summary'] + "\n\n"
+            else:
+                context = context + blocks['text'] + "\n\n"
+                context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['text'] + "\n\n"
+        context = f"{embedding_content}\n\n{context}"
+        if 'debug' in presetExt and presetExt['debug'] == True:
+            lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n{context_with_distance}")
+        messages.append({'role':'user', 'content':context})
     userHistoryList = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
     for userHistory in userHistoryList:
         logging.debug(f'userHistory:{userHistory}')
@@ -148,10 +189,43 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt):
     logging.debug(f"openai response:{response}")
     add_message_statistic(app_id, config, preset, response, openai_key_type)
     reply = response.choices[0].message.content.strip()
-    history['user'] = content
-    history['assistant'] = reply
-    history['uid'] = fromUserId
-    addHistory(redis, historyListKey, history)
+    command = None
+    try:
+        command = json.loads(reply)['lanying-connector']
+        pass
+    except Exception as e:
+        pass
+    if command:
+        if 'debug' in presetExt and presetExt['debug'] == True:
+            lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}")
+        if 'preset_welcome' in command:
+            reply = command['preset_welcome']
+    if command and 'ai_generate' in command and command['ai_generate'] == True:
+        pass
+    else:
+        history['user'] = content
+        history['assistant'] = reply
+        history['uid'] = fromUserId
+        addHistory(redis, historyListKey, history)
+    if command:
+        if 'reset_prompt' in command:
+            removeAllHistory(redis, historyListKey)
+            del_preset_name(redis, fromUserId, toUserId)
+        if 'preset_name' in command:
+            set_preset_name(redis, fromUserId, toUserId, command['preset_name'])
+        if 'prompt_ext' in command and command['prompt_ext']:
+            customHistoryList = []
+            for customHistory in command['prompt_ext']:
+                if customHistory['role'] and customHistory['content']:
+                    customHistoryList.append({'role':customHistory['role'], 'content': customHistory['content']})
+            addHistory(redis, historyListKey, {'list':customHistoryList, 'time':now})
+    if command and 'ai_generate' in command and command['ai_generate'] == True:
+        if retry_times > 0:
+            if 'preset_welcome' in command:
+                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, command['preset_welcome'])
+            return handle_chat_message(content, config, retry_times - 1)
+        else:
+            return ''
     return reply
 
 def loadHistory(redis, historyListKey, content, prompt, now, preset):
@@ -251,6 +325,27 @@ def removeAllHistory(redis, historyListKey):
     if redis:
         redis.delete(historyListKey)
 
+def preset_name_key(fromUserId, toUserId):
+    return "lanying:connector:preset_name:gpt3" + fromUserId + ":" + toUserId
+
+def set_preset_name(redis, fromUserId, toUserId, preset_name):
+    if redis:
+        key = preset_name_key(fromUserId,toUserId)
+        redis.set(key, preset_name)
+        redis.expire(key, presetNameExpireSeconds)
+
+def get_preset_name(redis, fromUserId, toUserId):
+    if redis:
+        key = preset_name_key(fromUserId,toUserId)
+        value = redis.get(key)
+        if value:
+            return str(value, 'utf-8')
+
+def del_preset_name(redis, fromUserId, toUserId):
+    if redis:
+        key = preset_name_key(fromUserId,toUserId)
+        redis.delete(key)
+
 def calcMessagesTokens(messages, model):
     try:
         encoding = tiktoken.encoding_for_model(model)
@@ -290,7 +385,6 @@ def get_openai_key(config, openai_key_type):
         DefaultApiKey = lanying_config.get_lanying_connector_default_openai_api_key()
         if DefaultApiKey:
             openai_api_key = DefaultApiKey
-    else:
         openai_api_key = config['openai_api_key']
     return openai_api_key
 
@@ -513,3 +607,18 @@ def check_message_rate(app_id, path):
         logging.info(f"app:{app_id} is exceed rate limit, limit is {limit}, count is {count}")
         return {'result':'error', 'code':429, 'msg': 'request too fast'}
     return {'result':'ok'}
+
+def calcMessageTokens(message, model):
+    encoding = tiktoken.encoding_for_model(model)
+    num_tokens = 0
+    num_tokens += 4
+    for key, value in message.items():
+        num_tokens += len(encoding.encode(value))
+        if key == "name":
+            num_tokens += -1
+    return num_tokens
+
+def init_preset_defaults(preset, preset_default):
+    for k,v in preset_default.items():
+        if k not in ['presets', 'ext'] and k not in preset:
+            preset[k] = v
