@@ -14,6 +14,7 @@ import openai_doc_gen
 import copy
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
+using_embedding_expire_seconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
@@ -84,6 +85,7 @@ def check_authorization(request):
 
 def handle_chat_message(msg, config, retry_times = 3):
     reply_message_read_ack(config)
+    preset = copy.deepcopy(config['preset'])
     checkres = check_message_deduct_failed(msg['appId'], config)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -146,6 +148,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
+        del_embedding_info(redis, fromUserId, toUserId)
     if 'prompt_ext' in lcExt and lcExt['prompt_ext']:
         customHistoryList = []
         for customHistory in lcExt['prompt_ext']:
@@ -157,26 +160,55 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
     if content == '/reset_prompt':
         removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
+        del_embedding_info(redis, fromUserId, toUserId)
         return 'prompt is reset'
     if 'embedding_name' in presetExt:
         embedding_name = presetExt['embedding_name']
         embedding_content = presetExt.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
         embedding_max_tokens = presetExt.get('embedding_max_tokens', 1024)
         embedding_max_blocks = presetExt.get('embedding_max_blocks', 2)
+        embedding_info = get_embedding_info(redis, fromUserId, toUserId)
+        embedding_max_distance = presetExt.get('embedding_max_distance', 0.2)
         logging.debug(f"use embeddings: {embedding_name}, embedding_max_tokens:{embedding_max_tokens},embedding_max_blocks:{embedding_max_blocks}")
         context = ""
         context_with_distance = ""
-        for blocks in openai_doc_gen.search_prompt(f"embeddings/{embedding_name}.csv", content, config['openai_api_key'], embedding_max_tokens, embedding_max_blocks):
-            embedding_content_type = presetExt.get('embedding_content_type', 'text')
-            if embedding_content_type == 'summary':
-                context = context + blocks['summary'] + "\n\n"
-                context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['summary'] + "\n\n"
-            else:
-                context = context + blocks['text'] + "\n\n"
-                context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['text'] + "\n\n"
+        is_use_old_embeddings = False
+        using_embedding = embedding_info.get('using_embedding', 'auto')
+        last_embedding_name = embedding_info.get('last_embedding_name', '')
+        last_embedding_text = embedding_info.get('last_embedding_text', '')
+        if using_embedding == 'once' and last_embedding_text != '' and last_embedding_name == embedding_name:
+            context = last_embedding_text
+            is_use_old_embeddings = True
+        if context == '': 
+            embedding_min_distance = 1.0
+            for blocks in openai_doc_gen.search_prompt(f"embeddings/{embedding_name}.csv", content, config['openai_api_key'], embedding_max_tokens, embedding_max_blocks):
+                embedding_content_type = presetExt.get('embedding_content_type', 'text')
+                if embedding_min_distance < blocks['distance']:
+                    embedding_min_distance = blocks['distance']
+                if embedding_content_type == 'summary':
+                    context = context + blocks['summary'] + "\n\n"
+                    context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['summary'] + "\n\n"
+                else:
+                    context = context + blocks['text'] + "\n\n"
+                    context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['text'] + "\n\n"
+            if using_embedding == 'auto':
+                if last_embedding_name != embedding_name or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
+                    embedding_info['last_embedding_name'] = embedding_name
+                    embedding_info['last_embedding_text'] = context
+                    set_embedding_info(redis, fromUserId, toUserId, embedding_info)
+                else:
+                    context = last_embedding_text
+                    is_use_old_embeddings = True
+            elif using_embedding == 'once':
+                embedding_info['last_embedding_name'] = embedding_name
+                embedding_info['last_embedding_text'] = context
+                set_embedding_info(redis, fromUserId, toUserId, embedding_info)
         context = f"{embedding_content}\n\n{context}"
         if 'debug' in presetExt and presetExt['debug'] == True:
-            lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n{context_with_distance}")
+            if is_use_old_embeddings:
+                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n{context}")
+            else:
+                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n{context_with_distance}")
         messages.append({'role':'user', 'content':context})
     userHistoryList = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
     for userHistory in userHistoryList:
@@ -211,8 +243,16 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         if 'reset_prompt' in command:
             removeAllHistory(redis, historyListKey)
             del_preset_name(redis, fromUserId, toUserId)
+            del_embedding_info(redis, fromUserId, toUserId)
         if 'preset_name' in command:
             set_preset_name(redis, fromUserId, toUserId, command['preset_name'])
+        if 'using_embedding' in command:
+            if command['using_embedding'] == 'once':
+                set_embedding_info(redis, fromUserId, toUserId, {'using_embedding':command['using_embedding']})
+            elif command['using_embedding'] == 'auto':
+                embedding_info = get_embedding_info(redis, fromUserId, toUserId)
+                embedding_info['using_embedding'] = command['using_embedding']
+                set_embedding_info(redis, fromUserId, toUserId, embedding_info)
         if 'prompt_ext' in command and command['prompt_ext']:
             customHistoryList = []
             for customHistory in command['prompt_ext']:
@@ -622,3 +662,29 @@ def init_preset_defaults(preset, preset_default):
     for k,v in preset_default.items():
         if k not in ['presets', 'ext'] and k not in preset:
             preset[k] = v
+
+def embedding_info_key(fromUserId, toUserId):
+    return "lanying:connector:embedding_info:" + fromUserId + ":" + toUserId
+
+def set_embedding_info(redis, fromUserId, toUserId, embedding_info):
+    if redis:
+        key = embedding_info_key(fromUserId,toUserId)
+        redis.set(key, json.dumps(embedding_info))
+        redis.expire(key, using_embedding_expire_seconds)
+
+def get_embedding_info(redis, fromUserId, toUserId):
+    if redis:
+        key = embedding_info_key(fromUserId,toUserId)
+        value = redis.get(key)
+        if value:
+            try:
+                return json.loads(value)
+            except Exception as e:
+                return {}
+    return {}
+
+def del_embedding_info(redis, fromUserId, toUserId):
+    if redis:
+        key = embedding_info_key(fromUserId,toUserId)
+        redis.delete(key)
+

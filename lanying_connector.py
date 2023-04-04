@@ -194,6 +194,7 @@ def sendMessage(appId, fromUserId, toUserId, content):
         sendResponse = requests.post(apiEndpoint + '/message/send',
                                     headers={'app_id': appId, 'access-token': adminToken},
                                     json={'type':1, 'from_user_id':fromUserId,'targets':[toUserId],'content_type':0, 'content': content, 'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False)})
+        logging.debug(f"Send message, from={fromUserId} to={toUserId} content={content}")
         logging.debug(sendResponse)
 
 def sendReadAck(appId, fromUserId, toUserId, relatedMid):

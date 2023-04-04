@@ -69,6 +69,11 @@ def fill_embeddings(names):
     if not found:
         print(f"{names} not found in config")
 
+def show_prompt(textList, open_api_key, N):
+    resList = search_prompt("embeddings/floo-web.csv", "\n".join(textList), open_api_key, 10240000, N)
+    for res in resList:
+        print(f"============{res['distance']}==========\n{res['text']}\n")
+
 def search_prompt(filename, text, openai_api_key, max_tokens = 2048, max_blocks = 1000, use_cache = False):
     if use_cache:
         global file_data_frames
