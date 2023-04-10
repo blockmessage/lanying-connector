@@ -8,8 +8,8 @@ import importlib
 import sys
 import lanying_config
 import copy
-from redis import StrictRedis, ConnectionPool
 import time
+import lanying_redis
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 executor = ThreadPoolExecutor(8)
@@ -18,11 +18,6 @@ lanying_config.init()
 app = Flask(__name__)
 if os.environ.get("FLASK_DEBUG"):
     app.debug = True
-
-redisServer = os.getenv('LANYING_CONNECTOR_REDIS_SERVER')
-redisPool = None
-if redisServer:
-    redisPool = ConnectionPool.from_url(redisServer)
 
 accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
 
@@ -95,6 +90,40 @@ def getConfig():
     resp = app.make_response('')
     return resp
 
+@app.route("/service/<string:service>/buy_message_quota", methods=["POST"])
+def buy_message_quota(service):
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        type = data['type']
+        value = data['value']
+        service_module = importlib.import_module(f"{service}_service")
+        result = service_module.buy_message_quota(app_id, type, value)
+        if result > 0:
+            resp = app.make_response({'code':200, 'data':result})
+            return resp
+        else:
+            resp = app.make_response({'code':400, 'message':'bad request'})
+            return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+@app.route("/service/<string:service>/get_message_limit_state", methods=["POST"])
+def get_message_limit_state(service):
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        service_module = importlib.import_module(f"{service}_service")
+        result = service_module.get_message_limit_state(app_id)
+        resp = app.make_response({'code':200, 'data':result})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
 def queryAndSendMessage(data):
     appId = data['appId']
     fromUserId = data['from']['uid']
@@ -112,7 +141,7 @@ def queryAndSendMessage(data):
                 newConfig['ext'] = data['ext']
                 newConfig['app_id'] = data['appId']
                 newConfig['msg_id'] = data['msgId']
-                responseText = service_module.handle_chat_message(content, newConfig)
+                responseText = service_module.handle_chat_message(data, newConfig)
                 logging.debug(f"responseText:{responseText}")
                 if len(responseText) > 0:
                     sendMessage(appId, toUserId, fromUserId, responseText)
@@ -143,26 +172,18 @@ def sendReadAck(appId, fromUserId, toUserId, relatedMid):
                                     json={'type':1, 'from_user_id':fromUserId,'targets':[toUserId],'content_type':9, 'content': '', 'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False),'related_mid':relatedMid})
         logging.debug(sendResponse)
 
-def getRedisConnection():
-    conn = None
-    if redisPool:
-        conn = StrictRedis(connection_pool=redisPool)
-    if not conn:
-        logging.warning(f"getRedisConnection: fail to get connection")
-    return conn
-
 def addMsgSentCnt(num):
-    redis = getRedisConnection()
+    redis = lanying_redis.get_redis_connection()
     if redis:
         redis.incrby(msgSentCntKey(), num)
 
 def addMsgReceivedCnt(num):
-    redis = getRedisConnection()
+    redis = lanying_redis.get_redis_connection()
     if redis:
         redis.incrby(msgReceivedCntKey(), num)
 
 def getMsgSentCnt():
-    redis = getRedisConnection()
+    redis = lanying_redis.get_redis_connection()
     if redis:
         str = redis.get(msgSentCntKey())
         if str:
@@ -170,7 +191,7 @@ def getMsgSentCnt():
     return 0
 
 def getMsgReceivedCnt():
-    redis = getRedisConnection()
+    redis = lanying_redis.get_redis_connection()
     if redis:
         str = redis.get(msgReceivedCntKey())
         if str:

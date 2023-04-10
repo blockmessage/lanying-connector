@@ -65,6 +65,16 @@ def get_message_404(appId):
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_404', "抱歉，因为某些无法说明的原因，我暂时无法回答你的问题。")
     return os.getenv('LANYING_CONNECTOR_MESSAGE_404')
 
+def get_message_no_quota(appId):
+    if mode == 'etcd':
+        return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_no_quota', "抱歉，当前应用的本月消息配额已经用完，请联系管理员或者下月重试。")
+    return os.getenv('LANYING_CONNECTOR_MESSAGE_NO_QUOTA')
+
+def get_message_reach_user_message_limit(appId):
+    if mode == 'etcd':
+        return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_reach_user_message_limit', "抱歉，您本月消息配额已经用完，请联系管理员或者下月重试。")
+    return os.getenv('LANYING_CONNECTOR_MESSAGE_REACH_USER_MESSAGE_LIMIT')
+
 def get_message_antispam(appId):
     if mode == 'etcd':
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_antispam', "对不起，因为系统设定的原因，这个问题我无法回答，请您谅解。")

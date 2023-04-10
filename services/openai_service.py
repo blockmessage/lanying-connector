@@ -5,12 +5,22 @@ import lanying_connector
 import json
 import tiktoken
 import lanying_config
+import lanying_redis
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+import math
+import requests
+import os
+
 expireSeconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
-def handle_chat_message(content, config):
+def handle_chat_message(msg, config):
     reply_message_read_ack(config)
+    checkres = check_message_per_month_per_user(msg, config)
+    if checkres['result'] == 'error':
+        return checkres['msg']
     preset = config['preset']
     lcExt = {}
     try:
@@ -23,51 +33,29 @@ def handle_chat_message(content, config):
     if 'presets' in preset:
         del preset['presets']
     logging.debug(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
-    isChatGPT = preset['model'].startswith("gpt-3.5") or preset['model'].startswith("gpt-4")
+    isChatGPT = is_chatgpt_model(preset['model'])
     if isChatGPT:
-        return handle_chat_message_chatgpt(content, config, preset, lcExt)
+        return handle_chat_message_chatgpt(msg, config, preset, lcExt)
     else:
-        return handle_chat_message_gpt3(content, config, preset, lcExt)
+        return ''
 
-def handle_chat_message_gpt3(content, config, preset, lcExt):
-    init_openai_key(config)
-    prompt = preset['prompt']
-    now = int(time.time())
-    history = {'time':now}
-    fromUserId = config['from_user_id']
-    toUserId = config['to_user_id']
-    historyListKey = historyListGPT3Key(fromUserId, toUserId)
-    redis = lanying_connector.getRedisConnection()
-    historyText = loadHistory(redis, historyListKey, content, preset['prompt'], now, preset)
-    logging.debug(f'historyText:{historyText}')
-    if prompt.find('{{LANYING_MESSAGE_CONTENT}}') > 0:
-        preset['prompt'] = prompt.replace('{{LANYING_MESSAGE_CONTENT}}', content)
-    else:
-        if len(preset['stop']) == 2:
-            stop0 = preset['stop'][0].replace(' ', '')
-            stop1 = preset['stop'][1].replace(' ', '')
-            history['text'] = stop0 + content + "\n" + stop1
-            preset['prompt'] = prompt + "\n" + historyText + stop0 + content + "\n" + stop1
-        else:
-            history['text'] = "Human:" + content + "\n" + "AI:"
-            preset['prompt'] = prompt + "\n"  + historyText + "Human:" + content + "\n" + "AI:"
-    response = openai.Completion.create(**preset)
-    reply = response.choices[0].text.strip()
-    if 'text' in history:
-        history['text'] = history['text'] + reply + "\n\n"
-        history['uid'] = fromUserId
-        addHistory(redis, historyListKey, history)
-    return reply
-
-def handle_chat_message_chatgpt(content, config, preset, lcExt):
-    init_openai_key(config)
+def handle_chat_message_chatgpt(msg, config, preset, lcExt):
+    app_id = msg['appId']
+    check_res = check_message_limit(msg, config)
+    if check_res['result'] == 'error':
+        logging.info(f"check_message_limit deny: app_id={app_id}, msg={check_res['msg']}")
+        return check_res['msg']
+    openai_key_type = check_res['openai_key_type']
+    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    content = msg['content']
+    init_openai_key(config, openai_key_type)
     messages = preset.get('messages',[])
     now = int(time.time())
     history = {'time':now}
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
     historyListKey = historyListChatGPTKey(fromUserId, toUserId)
-    redis = lanying_connector.getRedisConnection()
+    redis = lanying_redis.get_redis_connection()
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
     if 'prompt_ext' in lcExt and lcExt['prompt_ext']:
@@ -81,7 +69,7 @@ def handle_chat_message_chatgpt(content, config, preset, lcExt):
     if content == '#reset_prompt':
         removeAllHistory(redis, historyListKey)
         return 'prompt is reset'
-    userHistoryList = loadHistoryChatGPT(redis, historyListKey, content, messages, now, preset)
+    userHistoryList = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
     for userHistory in userHistoryList:
         logging.debug(f'userHistory:{userHistory}')
         messages.append(userHistory)
@@ -90,6 +78,7 @@ def handle_chat_message_chatgpt(content, config, preset, lcExt):
     calcMessagesTokens(messages, preset['model'])
     response = openai.ChatCompletion.create(**preset)
     logging.debug(f"openai response:{response}")
+    add_message_statistic(msg, config, preset, response, openai_key_type)
     reply = response.choices[0].message.content.strip()
     history['user'] = content
     history['assistant'] = reply
@@ -117,7 +106,10 @@ def loadHistory(redis, historyListKey, content, prompt, now, preset):
             break
     return res
 
-def loadHistoryChatGPT(redis, historyListKey, content, messages, now, preset):
+def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset):
+    history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
+    history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
+    history_msg_size_max = config.get('history_msg_size_max', 4096)
     completionTokens = preset.get('max_tokens', 1024)
     uidHistoryList = []
     model = preset['model']
@@ -131,6 +123,8 @@ def loadHistoryChatGPT(redis, historyListKey, content, messages, now, preset):
                 removeHistory(redis, historyListKey, historyStr)
             uidHistoryList.append(history)
     res = []
+    history_bytes = 0
+    history_count = 0
     for history in reversed(uidHistoryList):
         if 'list' in history:
             nowHistoryList = history['list']
@@ -138,15 +132,28 @@ def loadHistoryChatGPT(redis, historyListKey, content, messages, now, preset):
             userMessage = {'role':'user', 'content': history['user']}
             assistantMessage = {'role':'assistant', 'content': history['assistant']}
             nowHistoryList = [userMessage, assistantMessage]
+        history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
             historySize += calcMessageTokens(nowHistory, model)
+            now_history_content = nowHistory.get('content','')
+            now_history_bytes = len(now_history_content)
+            history_bytes += now_history_bytes
+            logging.debug(f"history_bytes: app_id={app_id}, content={now_history_content}, bytes={now_history_bytes}")
+        if history_count > history_msg_count_min:
+            if history_count > history_msg_count_max:
+                logging.debug(f"stop history for history_msg_count_max: app_id={app_id}, history_msg_count_max={history_msg_count_max}, history_count={history_count}")
+                break
+            if history_bytes > history_msg_size_max:
+                logging.debug(f"stop history for history_msg_size_max: app_id={app_id}, history_msg_size_max={history_msg_size_max}, history_count={history_count}")
+                break
         if nowSize + historySize + completionTokens < MaxTotalTokens:
             for nowHistory in reversed(nowHistoryList):
                 res.append(nowHistory)
             nowSize += historySize
-            logging.debug(f'now prompt size:{nowSize}')
+            logging.debug(f'history state: app_id={app_id}, now_prompt_size={nowSize}, history_count={history_count}, history_bytes={history_bytes}')
         else:
+            logging.debug(f'stop history for max tokens: app_id={app_id}, now prompt size:{nowSize}')
             break
     return reversed(res)
 
@@ -206,12 +213,14 @@ def calcMessageTokens(message, model):
         logging.exception(e)
         return MaxTotalTokens
 
-def init_openai_key(config):
-    openai_api_key = config['openai_api_key']
-    if 'product_id' in config:
+def init_openai_key(config, openai_key_type):
+    openai_api_key = ''
+    if openai_key_type == 'share':
         DefaultApiKey = lanying_config.get_lanying_connector_default_openai_api_key()
         if DefaultApiKey:
             openai_api_key = DefaultApiKey
+    else:
+        openai_api_key = config['openai_api_key']
     openai.api_key = openai_api_key
 
 def reply_message_read_ack(config):
@@ -220,3 +229,170 @@ def reply_message_read_ack(config):
     msgId = config['msg_id']
     appId = config['app_id']
     lanying_connector.sendReadAck(appId, toUserId, fromUserId, msgId)
+
+def is_chatgpt_model(model):
+    return is_chatgpt_model_3_5(model) or is_chatgpt_model_4(model)
+
+def is_chatgpt_model_3_5(model):
+    return model.startswith("gpt-3.5")
+
+def is_chatgpt_model_4(model):
+    return model.startswith("gpt-4")
+
+def add_message_statistic(msg, config, preset, response, openai_key_type):
+    app_id = msg['appId']
+    if 'usage' in response:
+        usage = response['usage']
+        completion_tokens = usage['completion_tokens']
+        prompt_tokens = usage['prompt_tokens']
+        total_tokens = usage['total_tokens']
+        text_size = calc_used_text_size(preset, response)
+        model = preset['model']
+        message_count_quota = calc_message_quota(model, text_size)
+        redis = lanying_redis.get_redis_connection()
+        product_id = config.get('product_id', 0)
+        if product_id == 0:
+            logging.info(f"skip message statistic for no product_id: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            return
+        if redis:
+            logging.info(f"add message statistic: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            for key in get_message_statistic_keys(config, app_id):
+                redis.hincrby(key, 'total_tokens', total_tokens)
+                redis.hincrby(key, 'text_size', text_size)
+                redis.hincrby(key, 'message_count', 1)
+                if openai_key_type == 'share':
+                    redis.hincrby(key, 'message_count_quota_share', message_count_quota)
+                else:
+                    redis.hincrby(key, 'message_count_quota_self', message_count_quota)
+                new_message_count_quota = redis.hincrby(key, 'message_count_quota', message_count_quota)
+                if math.floor(new_message_count_quota / 100) != math.floor(message_count_quota / 100):
+                    notify_butler(app_id, 'message_count_quota_reached', {'message_count_quota':new_message_count_quota})
+        else:
+            logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+
+def check_message_limit(msg, config):
+    app_id = msg['appId']
+    message_per_month = config.get('message_per_month', 0)
+    enable_extra_price = False
+    if config.get('enable_extra_price', 0) == 1:
+        enable_extra_price = True
+    product_id = config.get('product_id', 0)
+    if product_id == 0:
+        return {'result':'ok', 'openai_key_type':'self'}
+    redis = lanying_redis.get_redis_connection()
+    if redis:
+        key = get_message_statistic_keys(config, app_id)[0]
+        message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
+        if message_count_quota < message_per_month:
+            return {'result':'ok', 'openai_key_type':'share'}
+        else:
+            if enable_extra_price:
+                openai_api_key = config.get('openai_api_key', '')
+                if len(openai_api_key) > 0:
+                    return {'result':'ok', 'openai_key_type':'self'}
+                else:
+                    return {'result':'ok', 'openai_key_type':'share'}
+            else:
+                return {'result':'error', 'msg': lanying_config.get_message_no_quota(app_id)}
+    else:
+        return {'result':'error', 'msg':lanying_config.get_message_404(app_id)}
+
+def check_message_per_month_per_user(msg, config):
+    app_id = msg['appId']
+    from_user_id = msg['from']['uid']
+    limit = config.get('message_per_month_per_user', -1)
+    if limit > 0:
+        redis = lanying_redis.get_redis_connection()
+        if redis:
+            now = datetime.now()
+            key = f"lanying:connector:message_per_month_per_user:{app_id}:{from_user_id}:{now.year}:{now.month}"
+            value = redis.incrby(key, 1)
+            if value > limit:
+                return {'result':'error', 'msg': lanying_config.get_message_reach_user_message_limit(app_id)}
+    return {'result':'ok'}
+
+def get_message_limit_state(app_id):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        redis = lanying_redis.get_redis_connection()
+        if redis:
+            key = get_message_statistic_keys(config, app_id)[0]
+            kvs = redis.hgetall(key)
+            if kvs is None:
+                return {}
+            ret = {}
+            for k,v in kvs.items():
+                ret[k.decode('utf-8')] = int(v.decode('utf-8'))
+            return ret
+    return {}
+
+def buy_message_quota(app_id, type, value):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        redis = lanying_redis.get_redis_connection()
+        if redis:
+            key = get_message_statistic_keys(config, app_id)[0]
+            if type == "share":
+                return redis.hincrby(key, 'message_count_quota_buy_share', value)
+            else:
+                return redis.hincrby(key, 'message_count_quota_buy_self', value)
+    return -1
+
+def calc_message_quota(model, text_size):
+    multi = 1
+    if is_chatgpt_model_4(model):
+        multi = 20
+    count = round(text_size / 1024)
+    if  count < 1:
+        count = 1
+    return count * multi
+
+def calc_used_text_size(preset, response):
+    text_size = 0
+    model = preset['model']
+    if is_chatgpt_model(model):
+        for message in preset['messages']:
+            text_size += len(message.get('role', ''))
+            text_size += len(message.get('content', ''))
+        text_size += len(response.choices[0].message.content.strip())
+    else:
+        text_size += len(preset['prompt'])
+    return text_size
+
+def get_message_statistic_keys(config, app_id):
+    now = datetime.now()
+    month_start_date = datetime(now.year, now.month, 1)
+    if 'start_date' in config:
+        pay_start_date = datetime.strptime(config['start_date'], '%Y-%m-%d')
+    else:
+        pay_start_date = month_start_date
+    while now >= pay_start_date:
+        end_date = pay_start_date + relativedelta(months=1)
+        if now >= pay_start_date and now < end_date:
+            break
+        else:
+            pay_start_date = end_date
+    pay_start_key = f"lanying:connector:statistics:message:pay_start_date:{app_id}:{pay_start_date.strftime('%Y-%m-%d')}"
+    month_start_key = f"lanying:connector:statistics:message:month_start_date:{app_id}:{month_start_date.strftime('%Y-%m-%d')}"
+    product_id = config.get('product_id', 0)
+    tenant_id = config.get('tenant_id', 0)
+    if product_id == 7001 and tenant_id > 0:
+        share_key = f"lanying:connector:statistics:message:pay_start_date:{tenant_id}:{pay_start_date.strftime('%Y-%m-%d')}"
+        return [share_key, pay_start_key, month_start_key]
+    else:
+        return [pay_start_key, month_start_key]
+
+def notify_butler(app_id, event, data):
+    endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
+    try:
+        sendResponse = requests.post(f"{endpoint}/app/lanying_connector_event",
+                                        headers={'app_id': app_id},
+                                        json={'event':event, data:data})
+        logging.debug(sendResponse)
+    except Exception as e:
+        logging.debug(e)
+
+def ensure_even(num):
+    if num % 2 == 1:
+        num += 1
+    return num
