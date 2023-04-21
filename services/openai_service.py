@@ -374,13 +374,14 @@ def get_message_statistic_keys(config, app_id):
             pay_start_date = end_date
     pay_start_key = f"lanying:connector:statistics:message:pay_start_date:{app_id}:{pay_start_date.strftime('%Y-%m-%d')}"
     month_start_key = f"lanying:connector:statistics:message:month_start_date:{app_id}:{month_start_date.strftime('%Y-%m-%d')}"
+    everyday_key = f"lanying:connector:statistics:message:everyday:{app_id}:{now.strftime('%Y-%m-%d')}"
     product_id = config.get('product_id', 0)
     tenant_id = config.get('tenant_id', 0)
     if product_id == 7001 and tenant_id > 0:
         share_key = f"lanying:connector:statistics:message:pay_start_date:{tenant_id}:{pay_start_date.strftime('%Y-%m-%d')}"
-        return [share_key, pay_start_key, month_start_key]
+        return [share_key, pay_start_key, month_start_key, everyday_key]
     else:
-        return [pay_start_key, month_start_key]
+        return [pay_start_key, month_start_key, everyday_key]
 
 def notify_butler(app_id, event, data):
     endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
