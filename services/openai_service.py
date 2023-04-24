@@ -256,7 +256,9 @@ def add_message_statistic(msg, config, preset, response, openai_key_type):
             return
         if redis:
             logging.info(f"add message statistic: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            key_count = 0
             for key in get_message_statistic_keys(config, app_id):
+                key_count += 1
                 redis.hincrby(key, 'total_tokens', total_tokens)
                 redis.hincrby(key, 'text_size', text_size)
                 redis.hincrby(key, 'message_count', 1)
@@ -265,8 +267,8 @@ def add_message_statistic(msg, config, preset, response, openai_key_type):
                 else:
                     redis.hincrby(key, 'message_count_quota_self', message_count_quota)
                 new_message_count_quota = redis.hincrby(key, 'message_count_quota', message_count_quota)
-                if math.floor(new_message_count_quota / 100) != math.floor(message_count_quota / 100):
-                    notify_butler(app_id, 'message_count_quota_reached', {'message_count_quota':new_message_count_quota})
+                if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
+                    notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
         else:
             logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
 
@@ -384,11 +386,12 @@ def get_message_statistic_keys(config, app_id):
         return [pay_start_key, month_start_key, everyday_key]
 
 def notify_butler(app_id, event, data):
+    logging.debug(f"notify butler: app_id={app_id}, event={event}, data={json.dumps(data)}")
     endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
     try:
         sendResponse = requests.post(f"{endpoint}/app/lanying_connector_event",
                                         headers={'app_id': app_id},
-                                        json={'event':event, data:data})
+                                        json={'app_id':app_id, 'event':event, 'data':data})
         logging.debug(sendResponse)
     except Exception as e:
         logging.debug(e)
