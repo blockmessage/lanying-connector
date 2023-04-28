@@ -18,6 +18,9 @@ MaxTotalTokens = 4000
 
 def handle_chat_message(msg, config):
     reply_message_read_ack(config)
+    checkres = check_message_deduct_failed(msg, config)
+    if checkres['result'] == 'error':
+        return checkres['msg']
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -311,6 +314,12 @@ def check_message_per_month_per_user(msg, config):
             value = redis.incrby(key, 1)
             if value > limit:
                 return {'result':'error', 'msg': lanying_config.get_message_reach_user_message_limit(app_id)}
+    return {'result':'ok'}
+
+def check_message_deduct_failed(msg, config):
+    app_id = msg['appId']
+    if lanying_config.get_lanying_connector_deduct_failed(app_id):
+        return {'result':'error', 'msg':lanying_config.get_message_deduct_failed(app_id)}
     return {'result':'ok'}
 
 def get_message_limit_state(app_id):

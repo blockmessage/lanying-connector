@@ -75,6 +75,12 @@ def get_message_reach_user_message_limit(appId):
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_reach_user_message_limit', "抱歉，您本月消息配额已经用完，请联系管理员或者下月重试。")
     return os.getenv('LANYING_CONNECTOR_MESSAGE_REACH_USER_MESSAGE_LIMIT')
 
+def get_message_deduct_failed(appId):
+    if mode == 'etcd':
+        return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_deduct_failed', "抱歉，当前应用的本月消息配额已经用完，请联系管理员或者下月重试。")
+    return os.getenv('LANYING_CONNECTOR_MESSAGE_DEDUCT_FAILED')
+
+
 def get_message_antispam(appId):
     if mode == 'etcd':
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_antispam', "对不起，因为系统设定的原因，这个问题我无法回答，请您谅解。")
@@ -94,6 +100,11 @@ def get_lanying_connector_expire_time(appId):
     if mode == 'etcd':
         return get_config(appId, 'lanying_connector.expire_time', None)
     return -1
+
+def get_lanying_connector_deduct_failed(appId):
+    if mode == 'etcd':
+        return get_config(appId, 'lanying_connector.deduct_failed', False)
+    return False
 
 def get_lanying_connector(appId):
     if mode == 'etcd':
