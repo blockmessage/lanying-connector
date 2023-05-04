@@ -17,36 +17,50 @@ maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
 def handle_request(request):
+    text = request.get_data(as_text=True)
+    logging.debug(f"receive api request: {text}")
     auth_result = check_authorization(request)
     if auth_result['result'] == 'error':
+        logging.info(f"check_authorization deny, msg={auth_result['msg']}")
         return auth_result
     app_id = auth_result['app_id']
     config = auth_result['config']
+    rate_res = check_message_rate(app_id, request.path)
+    if rate_res['result'] == 'error':
+        logging.info(f"check_message_rate deny: app_id={app_id}, msg={rate_res['msg']}")
+        return rate_res
     deduct_res = check_message_deduct_failed(app_id, config)
     if deduct_res['result'] == 'error':
+        logging.info(f"check_message_deduct_failed deny: app_id={app_id}, msg={deduct_res['msg']}")
         return deduct_res
+    preset = json.loads(text)
+    model_res = check_model_allow(preset['model'])
+    if model_res['result'] == 'error':
+        logging.info(f"check_model_allow deny: app_id={app_id}, msg={model_res['msg']}")
+        return model_res
     limit_res = check_message_limit(app_id, config)
     if limit_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
     openai_key_type = limit_res['openai_key_type']
-    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    logging.debug(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
     openai_key = get_openai_key(config, openai_key_type)
-    response = forward_request(request, openai_key)
-    text = request.get_data(as_text=True)
-    preset = json.loads(text)
-    response_content = json.loads(response.content)
-    add_message_statistic(app_id, config, preset, response_content, openai_key_type)
+    response = forward_request(app_id, request, openai_key)
+    if response.status_code == 200:
+        response_content = json.loads(response.content)
+        add_message_statistic(app_id, config, preset, response_content, openai_key_type)
+    else:
+        logging.info("forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
     return {'result':'ok', 'response':response}
-    
-def forward_request(request, openai_key):
+
+def forward_request(app_id, request, openai_key):
     url = "https://api.openai.com" + request.path
     data = request.get_data()
-    headers = dict(request.headers)
-    headers['Authorization'] = "Bearer " + openai_key
-    response = requests.post(url, json=data, headers=headers)
+    headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
+    logging.debug(f"forward request start: app_id:{app_id}, url:{url}, data:{data}")
+    response = requests.post(url, data=data, headers=headers)
+    logging.debug(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}, response_content:{response.content}")
     return response
-    #   Response(response.content, status=response.status_code, headers=response.headers.items())
 
 def check_authorization(request):
     try:
@@ -296,12 +310,15 @@ def is_chatgpt_model_3_5(model):
 def is_chatgpt_model_4(model):
     return model.startswith("gpt-4")
 
+def is_embedding_model(model):
+    return model.startswith("text-embedding-ada-002")
+
 def add_message_statistic(app_id, config, preset, response, openai_key_type):
     if 'usage' in response:
         usage = response['usage']
-        completion_tokens = usage['completion_tokens']
-        prompt_tokens = usage['prompt_tokens']
-        total_tokens = usage['total_tokens']
+        completion_tokens = usage.get('completion_tokens',0)
+        prompt_tokens = usage.get('prompt_tokens', 0)
+        total_tokens = usage.get('total_tokens', 0)
         text_size = calc_used_text_size(preset, response)
         model = preset['model']
         message_count_quota = calc_message_quota(model, text_size)
@@ -319,14 +336,27 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type):
                 redis.hincrby(key, 'text_size', text_size)
                 redis.hincrby(key, 'message_count', 1)
                 if openai_key_type == 'share':
-                    redis.hincrby(key, 'message_count_quota_share', message_count_quota)
+                    add_quota(redis, key, 'message_count_quota_share', message_count_quota)
                 else:
-                    redis.hincrby(key, 'message_count_quota_self', message_count_quota)
-                new_message_count_quota = redis.hincrby(key, 'message_count_quota', message_count_quota)
+                    add_quota(redis, key, 'message_count_quota_self', message_count_quota)
+                new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
                 if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
         else:
             logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+
+def add_quota(redis, key, field, quota):
+    if isinstance(quota, int):
+        return redis.hincrby(key, field, quota)
+    else:
+        field_float = field + "_float"
+        new_quota = redis.hincrby(key, field_float, round(quota * 100))
+        if new_quota >= 100:
+            increment = new_quota // 100
+            redis.hincrby(key, field_float, - increment * 100)
+            return redis.hincrby(key, field, increment)
+        else:
+            return redis.hincrby(key, field, 0)
 
 def check_message_limit(app_id, config):
     message_per_month = config.get('message_per_month', 0)
@@ -400,10 +430,19 @@ def buy_message_quota(app_id, type, value):
                 return redis.hincrby(key, 'message_count_quota_buy_self', value)
     return -1
 
+def check_model_allow(model):
+    if is_chatgpt_model(model):
+        return {'result':'ok'}
+    if is_embedding_model(model):
+        return {'result':'ok'}
+    return {'result':'error', 'msg':f'model {model} is not supported'}
+
 def calc_message_quota(model, text_size):
     multi = 1
     if is_chatgpt_model_4(model):
         multi = 20
+    if is_embedding_model(model):
+        multi = 0.2
     count = round(text_size / 1024)
     if  count < 1:
         count = 1
@@ -416,7 +455,9 @@ def calc_used_text_size(preset, response):
         for message in preset['messages']:
             text_size += len(message.get('role', ''))
             text_size += len(message.get('content', ''))
-        text_size += len(response.choices[0].message.content.strip())
+        text_size += len(response['choices'][0]['message']['content'].strip())
+    elif is_embedding_model(model):
+        text_size += len(preset['input'])
     else:
         text_size += len(preset['prompt'])
     return text_size
@@ -460,3 +501,15 @@ def ensure_even(num):
     if num % 2 == 1:
         num += 1
     return num
+
+def check_message_rate(app_id, path):
+    redis = lanying_redis.get_redis_connection()
+    now = int(time.time())
+    key = f"lanying_connector:rate_limit:{app_id}:{path}:{now}"
+    limit = lanying_config.get_lanying_connector_rate_limit(app_id)
+    count = redis.incrby(key, 1)
+    redis.expire(key, 10)
+    if count > limit:
+        logging.info(f"app:{app_id} is exceed rate limit, limit is {limit}, count is {count}")
+        return {'result':'error', 'code':429, 'msg': 'request too fast'}
+    return {'result':'ok'}

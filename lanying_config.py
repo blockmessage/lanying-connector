@@ -101,6 +101,14 @@ def get_lanying_connector_expire_time(appId):
         return get_config(appId, 'lanying_connector.expire_time', None)
     return -1
 
+def get_lanying_connector_rate_limit(appId):
+    if mode == 'etcd':
+        rate_limit = get_config(appId, 'lanying_connector.rate_limit', None)
+        if rate_limit and rate_limit >= 0:
+            return rate_limit
+        return get_config("global", 'lanying_connector.rate_limit', 30)
+    return int(os.getenv('LANYING_RATE_LIMIT', "30"))
+
 def get_lanying_connector_deduct_failed(appId):
     if mode == 'etcd':
         return get_config(appId, 'lanying_connector.deduct_failed', False)

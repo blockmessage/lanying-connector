@@ -1,5 +1,5 @@
 import os
-from flask import Flask, request, render_template
+from flask import Flask, Response, request, render_template
 import requests
 import logging
 import json
@@ -144,8 +144,18 @@ def openai_request():
         service = "openai"
         service_module = importlib.import_module(f"{service}_service")
         res = service_module.handle_request(request)
+        if res['result'] == 'error':
+            code = res.get('code', 401)
+            resp = app.make_response({"error":{"type": "invalid_request_error","code":code, "message":res['msg']}})
+            return resp
+        else:
+            response = res['response']
+            response.headers['Content-Encoding'] = 'identity'
+            resp = Response(response.content, status=response.status_code, headers=response.headers.items())
+            return resp
     except Exception as e:
-        resp = app.make_response({'code':401, 'message':'bad authorization'})
+        logging.exception(e)
+        resp = app.make_response({"error":{"type": "internal_server_error","code":500, "message":"Internal Server Error"}})
         return resp
 
 def queryAndSendMessage(data):
