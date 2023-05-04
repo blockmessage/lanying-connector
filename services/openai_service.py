@@ -16,9 +16,60 @@ expireSeconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
+def handle_request(request):
+    auth_result = check_authorization(request)
+    if auth_result['result'] == 'error':
+        return auth_result
+    app_id = auth_result['app_id']
+    config = auth_result['config']
+    deduct_res = check_message_deduct_failed(app_id, config)
+    if deduct_res['result'] == 'error':
+        return deduct_res
+    limit_res = check_message_limit(app_id, config)
+    if limit_res['result'] == 'error':
+        logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
+        return limit_res
+    openai_key_type = limit_res['openai_key_type']
+    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    openai_key = get_openai_key(config, openai_key_type)
+    response = forward_request(request, openai_key)
+    text = request.get_data(as_text=True)
+    preset = json.loads(text)
+    response_content = json.loads(response.content)
+    add_message_statistic(app_id, config, preset, response_content, openai_key_type)
+    return {'result':'ok', 'response':response}
+    
+def forward_request(request, openai_key):
+    url = "https://api.openai.com" + request.path
+    data = request.get_data()
+    headers = dict(request.headers)
+    headers['Authorization'] = "Bearer " + openai_key
+    response = requests.post(url, json=data, headers=headers)
+    return response
+    #   Response(response.content, status=response.status_code, headers=response.headers.items())
+
+def check_authorization(request):
+    try:
+        authorization = request.headers.get('Authorization')
+        if authorization:
+            bearer_token = str(authorization)
+            prefix = "Bearer "
+            if bearer_token.startswith(prefix):
+                token = bearer_token[len(prefix):]
+                tokens = token.split("-")
+                if len(tokens) == 3:
+                    app_id = tokens[0]
+                    config = lanying_config.get_lanying_connector(app_id)
+                    if config:
+                        if token == config.get('access_token', ''):
+                            return {'result':'ok', 'app_id':app_id, 'config':config}
+    except Exception as e:
+        pass
+    return {'result':'error', 'msg':'bad_authorization'}
+
 def handle_chat_message(msg, config):
     reply_message_read_ack(config)
-    checkres = check_message_deduct_failed(msg, config)
+    checkres = check_message_deduct_failed(msg['appId'], config)
     if checkres['result'] == 'error':
         return checkres['msg']
     checkres = check_message_per_month_per_user(msg, config)
@@ -44,7 +95,7 @@ def handle_chat_message(msg, config):
 
 def handle_chat_message_chatgpt(msg, config, preset, lcExt):
     app_id = msg['appId']
-    check_res = check_message_limit(msg, config)
+    check_res = check_message_limit(app_id, config)
     if check_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={check_res['msg']}")
         return check_res['msg']
@@ -81,7 +132,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt):
     calcMessagesTokens(messages, preset['model'])
     response = openai.ChatCompletion.create(**preset)
     logging.debug(f"openai response:{response}")
-    add_message_statistic(msg, config, preset, response, openai_key_type)
+    add_message_statistic(app_id, config, preset, response, openai_key_type)
     reply = response.choices[0].message.content.strip()
     history['user'] = content
     history['assistant'] = reply
@@ -217,6 +268,9 @@ def calcMessageTokens(message, model):
         return MaxTotalTokens
 
 def init_openai_key(config, openai_key_type):
+    openai.api_key = get_openai_key(config, openai_key_type)
+
+def get_openai_key(config, openai_key_type):
     openai_api_key = ''
     if openai_key_type == 'share':
         DefaultApiKey = lanying_config.get_lanying_connector_default_openai_api_key()
@@ -224,7 +278,7 @@ def init_openai_key(config, openai_key_type):
             openai_api_key = DefaultApiKey
     else:
         openai_api_key = config['openai_api_key']
-    openai.api_key = openai_api_key
+    return openai_api_key
 
 def reply_message_read_ack(config):
     fromUserId = config['from_user_id']
@@ -242,8 +296,7 @@ def is_chatgpt_model_3_5(model):
 def is_chatgpt_model_4(model):
     return model.startswith("gpt-4")
 
-def add_message_statistic(msg, config, preset, response, openai_key_type):
-    app_id = msg['appId']
+def add_message_statistic(app_id, config, preset, response, openai_key_type):
     if 'usage' in response:
         usage = response['usage']
         completion_tokens = usage['completion_tokens']
@@ -275,8 +328,7 @@ def add_message_statistic(msg, config, preset, response, openai_key_type):
         else:
             logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
 
-def check_message_limit(msg, config):
-    app_id = msg['appId']
+def check_message_limit(app_id, config):
     message_per_month = config.get('message_per_month', 0)
     enable_extra_price = False
     if config.get('enable_extra_price', 0) == 1:
@@ -316,8 +368,7 @@ def check_message_per_month_per_user(msg, config):
                 return {'result':'error', 'msg': lanying_config.get_message_reach_user_message_limit(app_id)}
     return {'result':'ok'}
 
-def check_message_deduct_failed(msg, config):
-    app_id = msg['appId']
+def check_message_deduct_failed(app_id, config):
     if lanying_config.get_lanying_connector_deduct_failed(app_id):
         return {'result':'error', 'msg':lanying_config.get_message_deduct_failed(app_id)}
     return {'result':'ok'}

@@ -137,6 +137,16 @@ def get_message_limit_state(service):
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
+@app.route("/v1/chat/completions", methods=["POST"])
+@app.route("/v1/embeddings", methods=["POST"])
+def openai_request():
+    try:
+        service = "openai"
+        service_module = importlib.import_module(f"{service}_service")
+        res = service_module.handle_request(request)
+    except Exception as e:
+        resp = app.make_response({'code':401, 'message':'bad authorization'})
+        return resp
 
 def queryAndSendMessage(data):
     appId = data['appId']
