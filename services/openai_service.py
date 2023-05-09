@@ -92,12 +92,11 @@ def handle_chat_message(msg, config, retry_times = 3):
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
         return checkres['msg']
-    preset = config['preset']
     lcExt = {}
     presetExt = {}
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
-    redis = lanying_connector.getRedisConnection()
+    redis = lanying_redis.get_redis_connection()
     try:
         ext = json.loads(config['ext'])
         lcExt = ext['lanying_connector']
@@ -137,7 +136,8 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
     openai_key_type = check_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
     content = msg['content']
-    init_openai_key(config, openai_key_type)
+    openai_api_key = get_openai_key(config, openai_key_type)
+    openai.api_key = openai_api_key
     messages = preset.get('messages',[])
     now = int(time.time())
     history = {'time':now}
@@ -176,14 +176,15 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         using_embedding = embedding_info.get('using_embedding', 'auto')
         last_embedding_name = embedding_info.get('last_embedding_name', '')
         last_embedding_text = embedding_info.get('last_embedding_text', '')
+        logging.debug(f"using_embedding state: using_embedding={using_embedding}, last_embedding_name={last_embedding_name}, len(last_embedding_text)={len(last_embedding_text)}")
+        embedding_min_distance = 1.0
         if using_embedding == 'once' and last_embedding_text != '' and last_embedding_name == embedding_name:
             context = last_embedding_text
             is_use_old_embeddings = True
         if context == '': 
-            embedding_min_distance = 1.0
-            for blocks in openai_doc_gen.search_prompt(f"embeddings/{embedding_name}.csv", content, config['openai_api_key'], embedding_max_tokens, embedding_max_blocks):
+            for blocks in openai_doc_gen.search_prompt(f"embeddings/{embedding_name}.csv", content, openai_api_key, embedding_max_tokens, embedding_max_blocks):
                 embedding_content_type = presetExt.get('embedding_content_type', 'text')
-                if embedding_min_distance < blocks['distance']:
+                if embedding_min_distance > blocks['distance']:
                     embedding_min_distance = blocks['distance']
                 if embedding_content_type == 'summary':
                     context = context + blocks['summary'] + "\n\n"
@@ -206,9 +207,9 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         context = f"{embedding_content}\n\n{context}"
         if 'debug' in presetExt and presetExt['debug'] == True:
             if is_use_old_embeddings:
-                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n{context}")
+                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
             else:
-                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n{context_with_distance}")
+                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}")
         messages.append({'role':'user', 'content':context})
     userHistoryList = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
     for userHistory in userHistoryList:
@@ -263,7 +264,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         if retry_times > 0:
             if 'preset_welcome' in command:
                 lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, command['preset_welcome'])
-            return handle_chat_message(content, config, retry_times - 1)
+            return handle_chat_message(msg, config, retry_times - 1)
         else:
             return ''
     return reply
@@ -416,15 +417,13 @@ def calcMessageTokens(message, model):
         logging.exception(e)
         return MaxTotalTokens
 
-def init_openai_key(config, openai_key_type):
-    openai.api_key = get_openai_key(config, openai_key_type)
-
 def get_openai_key(config, openai_key_type):
     openai_api_key = ''
     if openai_key_type == 'share':
         DefaultApiKey = lanying_config.get_lanying_connector_default_openai_api_key()
         if DefaultApiKey:
             openai_api_key = DefaultApiKey
+    else:
         openai_api_key = config['openai_api_key']
     return openai_api_key
 
