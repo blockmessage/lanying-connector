@@ -11,6 +11,7 @@ import copy
 import time
 import lanying_redis
 import socket
+import uuid
 def init_logging():
     logdir = f"log/{socket.gethostname()}"
     os.makedirs(logdir, exist_ok=True)
@@ -30,6 +31,11 @@ executor = ThreadPoolExecutor(8)
 sys.path.append("services")
 lanying_config.init()
 app = Flask(__name__)
+app_upload_dir = '/data/upload/'
+os.makedirs(app_upload_dir, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = app_upload_dir
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
+app.config["timeout"] = 120
 if os.environ.get("FLASK_DEBUG"):
     app.debug = True
 
@@ -157,6 +163,30 @@ def openai_request():
         logging.exception(e)
         resp = app.make_response({"error":{"type": "internal_server_error","code":500, "message":"Internal Server Error"}})
         return resp
+
+@app.route("/service/<string:service>/upload", methods=["GET", "POST"])
+def upload(service):
+    if request.method == 'POST':
+        try:
+            key = request.form['key']
+            app_id = request.form['app_id']
+            if accessToken and key and accessToken == key:
+                f = request.files['file']
+                embedding_uuid = str(uuid.uuid4())
+                filename = os.path.join(app.config['UPLOAD_FOLDER'], embedding_uuid)
+                logging.debug(f"get upload file: app_id:{app_id}, request.files:{request.files}, f.filename:{f.filename}, uuid:{embedding_uuid}")
+                f.save(filename)
+                embedding_name,_ = os.path.splitext(f.filename)
+                service_module = importlib.import_module(f"{service}_service")
+                service_module.upload(app_id, embedding_name, filename, embedding_uuid)
+                return f'上传成功, 文档ID:{embedding_uuid},别名：{embedding_name}'
+        except Exception as e:
+            logging.exception(e)
+            return '上传失败'
+        else:
+            return '鉴权密钥错误'
+    else:
+        return render_template("upload.html")
 
 def queryAndSendMessage(data):
     appId = data['appId']

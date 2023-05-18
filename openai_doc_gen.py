@@ -7,7 +7,11 @@ import openai
 import time
 import numpy as np
 from markdownify import MarkdownConverter
-from openai.embeddings_utils import distances_from_embeddings, cosine_similarity
+from openai.embeddings_utils import distances_from_embeddings
+from redis.commands.search.query import Query
+import lanying_redis
+import uuid
+import logging
 
 tokenizer = tiktoken.get_encoding("cl100k_base")
 fetch_sleep_time = 1.0
@@ -74,18 +78,52 @@ def show_prompt(textList, open_api_key, N):
     for res in resList:
         print(f"============{res['distance']}==========\n{res['text']}\n")
 
-def search_prompt(filename, text, openai_api_key, max_tokens = 2048, max_blocks = 1000, use_cache = False):
-    if use_cache:
-        global file_data_frames
-        if filename in file_data_frames:
-            df = file_data_frames[filename]
-        else:
-            df=pd.read_csv(filename, index_col=0)
-            df['embeddings'] = df['embeddings'].apply(eval).apply(np.array)
-            file_data_frames[filename] = df
-    else:
-        df=pd.read_csv(filename, index_col=0)
-        df['embeddings'] = df['embeddings'].apply(eval).apply(np.array)
+def search_embeddings(embedding_name_or_uuid, embedding, max_tokens = 2048, max_blocks = 10):
+    redis = lanying_redis.get_redis_stack_connection()
+    if redis:
+        embedding_index = get_embedding_index(redis, embedding_name_or_uuid)
+        if embedding_index:
+            base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
+            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary").paging(0,max_blocks).dialect(2)
+            results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
+            print(f"topk result:{results}")
+            ret = []
+            now_tokens = 0
+            blocks_num = 0
+            for doc in results.docs:
+                now_tokens += int(doc.num_of_tokens)
+                blocks_num += 1
+                logging.debug(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
+                if now_tokens > max_tokens:
+                    break
+                if blocks_num > max_blocks:
+                    break
+                ret.append(doc)
+            return ret
+    return []
+
+def get_embedding_index(redis, embedding_name_or_uuid):
+    uuid_key = get_embedding_config_uuid_key(embedding_name_or_uuid)
+    config = get_embedding_config(redis, uuid_key)
+    if "index" in config:
+        return config["index"]
+    alias_key = get_embedding_config_alias_key(embedding_name_or_uuid)
+    config = get_embedding_config(redis, alias_key)
+    if "index" in config:
+        return config["index"]
+    return None
+
+def get_embedding_config(redis, key):
+    ret = {}
+    kvs = redis.hgetall(key)
+    if kvs:
+        for k,v in kvs.items():
+            ret[k.decode('utf-8')] = v.decode('utf-8')
+    return ret
+
+def search_prompt(filename, text, openai_api_key, max_tokens = 2048, max_blocks = 1000):
+    df=pd.read_csv(filename, index_col=0)
+    df['embeddings'] = df['embeddings'].apply(eval).apply(np.array)
     openai.api_key = openai_api_key
     q_embeddings = openai.Embedding.create(input=text, engine='text-embedding-ada-002')['data'][0]['embedding']
     df['distances'] = distances_from_embeddings(q_embeddings, df['embeddings'].values, distance_metric='cosine')
@@ -230,6 +268,59 @@ def pre_remove(config, markdown):
 def num_of_tokens(str):
     return len(tokenizer.encode(str))
 
+def create_named_embeddings_from_csv(app_id, embedding_name, filename, embedding_uuid):
+    logging.info(f"create_named_embeddings_from_csv: app_id={app_id}, embedding_name={embedding_name}, filename={filename}, embedding_uuid={embedding_uuid}")
+    if app_id is None:
+        app_id = ""
+    redis = lanying_redis.get_redis_stack_connection()
+    if redis:
+        prefix = get_embedding_data_prefix_key(embedding_uuid)
+        index = get_embedding_index_key(embedding_uuid)
+        df = pd.read_csv(filename, index_col=0)
+        logging.debug(f"start init embeddings: embedding_name={embedding_name}, filename={filename}")
+        df = pd.read_csv(filename, index_col=0)
+        size = len(df)
+        logging.debug(f"embeddings: size={size}")
+        redis.hmset(get_embedding_config_uuid_key(embedding_uuid), {"app_id": app_id,
+                                                      "index": index,
+                                                      "prefix": prefix,
+                                                      "size": size,
+                                                      "status": "wait"})
+        redis.hmset(get_embedding_config_alias_key(embedding_name), {"app_id": app_id,
+                                                      "index": index,
+                                                      "prefix": prefix,
+                                                      "size": size,
+                                                      "status": "wait"})
+        result = redis.execute_command("FT.CREATE", index, "prefix", "1", prefix, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", "1536", "DISTANCE_METRIC","COSINE")
+        logging.debug(f"create index {embedding_uuid} result={result}")
+        for i, row in df.iterrows():
+            key = f"{prefix}{i}"
+            redis.hmset(key, {"text":row['text'],
+                                "embedding":np.array(eval(row['embeddings'])).tobytes(),
+                                "parent_id": row['parent_id'],
+                                "num_of_tokens": row['num_of_tokens'],
+                                "filename": row['filename'],
+                                "summary": row.get('summary', "{}")})
+        redis.hset(get_embedding_config_uuid_key(embedding_uuid), "status", "ready")
+        redis.hset(get_embedding_config_alias_key(embedding_name),  "status", "ready")
+        return {'result':'ok', 'count':size}
+    return {'result':'fail', 'message':'internal service error'}
+
+def get_embedding_index_key(embedding_uuid):
+    return f"embedding_index:{embedding_uuid}"
+
+def get_embedding_data_prefix_key(embedding_uuid):
+    return f"embedding_data:{embedding_uuid}:"
+
+def get_embedding_config_uuid_key(embedding_uuid):
+    return f"embedding_config:uuid:{embedding_uuid}"
+
+def get_embedding_config_alias_key(embedding_name):
+    return f"embedding_config:alias:{embedding_name}"
+
+def test():
+    pass
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='MyTool')
@@ -240,10 +331,14 @@ if __name__ == "__main__":
     fill_parser = subparsers.add_parser('fill-embeddings')
     fill_parser.add_argument('--names', nargs='+')
     fill_parser.set_defaults(subcommand='fill-embeddings')
+    test_parser = subparsers.add_parser('test')
+    test_parser.set_defaults(subcommand='test')
     args = parser.parse_args()
     if args.subcommand == 'generate':
         generate(args.names)
     elif args.subcommand == 'fill-embeddings':
         fill_embeddings(args.names)
+    elif args.subcommand == 'test':
+        test()
     else:
         print(f"Command not found")

@@ -1,0 +1,18 @@
+<html>
+<head>
+  <title>上传知识库文件</title>
+</head>
+<body>
+    <div>
+        <form  action="/service/openai/upload" method="POST" enctype="multipart/form-data">
+            <label">AppID:</label>
+            <input type="text" name="app_id"  /> <br/><br/>
+            <label">鉴权密钥：</label>
+            <input type="text" name="key"  /> <br/><br/>
+            <label">知识库文件:</label>
+            <input type="file" name="file"  /> <br/><br/>
+            <input type="submit" value="提交" />
+        </form>
+    </div>
+</body>
+</html>

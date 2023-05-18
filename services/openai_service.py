@@ -182,16 +182,18 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
             context = last_embedding_text
             is_use_old_embeddings = True
         if context == '': 
-            for blocks in openai_doc_gen.search_prompt(f"embeddings/{embedding_name}.csv", content, openai_api_key, embedding_max_tokens, embedding_max_blocks):
+            q_embedding = fetch_embeddings(content)
+            for doc in openai_doc_gen.search_embeddings(embedding_name, q_embedding, embedding_max_tokens, embedding_max_blocks):
                 embedding_content_type = presetExt.get('embedding_content_type', 'text')
-                if embedding_min_distance > blocks['distance']:
-                    embedding_min_distance = blocks['distance']
+                now_distance = float(doc.vector_score)
+                if embedding_min_distance > now_distance:
+                    embedding_min_distance = now_distance
                 if embedding_content_type == 'summary':
-                    context = context + blocks['summary'] + "\n\n"
-                    context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['summary'] + "\n\n"
+                    context = context + doc.summary + "\n\n"
+                    context_with_distance = context_with_distance + f"[{now_distance}]" + doc.summary + "\n\n"
                 else:
-                    context = context + blocks['text'] + "\n\n"
-                    context_with_distance = context_with_distance + f"[{blocks['distance']}]" + blocks['text'] + "\n\n"
+                    context = context + doc.text + "\n\n"
+                    context_with_distance = context_with_distance + f"[{now_distance}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
                 if last_embedding_name != embedding_name or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
                     embedding_info['last_embedding_name'] = embedding_name
@@ -687,3 +689,8 @@ def del_embedding_info(redis, fromUserId, toUserId):
         key = embedding_info_key(fromUserId,toUserId)
         redis.delete(key)
 
+def upload(app_id, embedding_name, filename, file_uuid):
+    openai_doc_gen.create_named_embeddings_from_csv(app_id, embedding_name, filename, file_uuid)
+
+def fetch_embeddings(text):
+    return openai.Embedding.create(input=text, engine='text-embedding-ada-002')['data'][0]['embedding']
