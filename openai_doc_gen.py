@@ -268,6 +268,14 @@ def pre_remove(config, markdown):
 def num_of_tokens(str):
     return len(tokenizer.encode(str))
 
+def create_embedding(app_id, embedding_name, filename, embedding_uuid):
+    _,ext = os.path.splitext(filename)
+    if ext == '.csv':
+        return create_named_embeddings_from_csv(app_id, embedding_name, filename, embedding_uuid)
+    elif ext == '.zip':
+        pass
+    return {'result':'fail', 'message':'file format not supported'}
+
 def create_named_embeddings_from_csv(app_id, embedding_name, filename, embedding_uuid):
     logging.info(f"create_named_embeddings_from_csv: app_id={app_id}, embedding_name={embedding_name}, filename={filename}, embedding_uuid={embedding_uuid}")
     if app_id is None:

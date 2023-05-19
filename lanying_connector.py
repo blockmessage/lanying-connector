@@ -55,7 +55,6 @@ def messages():
     fromUserId = data['from']['uid']
     toUserId = data['to']['uid']
     type = data['type']
-    ctype = data['ctype']
     appId = data['appId']
     now = time.time()
     config = lanying_config.get_lanying_connector(appId)
@@ -76,7 +75,7 @@ def messages():
             return resp
     myUserId = lanying_config.get_lanying_user_id(appId)
     logging.debug(f'lanying_user_id:{myUserId}')
-    if myUserId != None and toUserId == myUserId and fromUserId != myUserId and type == 'CHAT' and ctype == 'TEXT':
+    if myUserId != None and toUserId == myUserId and fromUserId != myUserId and type == 'CHAT':
         executor.submit(queryAndSendMessage, data)
     resp = app.make_response('')
     return resp
@@ -172,14 +171,18 @@ def upload(service):
             app_id = request.form['app_id']
             if accessToken and key and accessToken == key:
                 f = request.files['file']
-                embedding_uuid = str(uuid.uuid4())
-                filename = os.path.join(app.config['UPLOAD_FOLDER'], embedding_uuid)
-                logging.debug(f"get upload file: app_id:{app_id}, request.files:{request.files}, f.filename:{f.filename}, uuid:{embedding_uuid}")
-                f.save(filename)
-                embedding_name,_ = os.path.splitext(f.filename)
-                service_module = importlib.import_module(f"{service}_service")
-                service_module.upload(app_id, embedding_name, filename, embedding_uuid)
-                return f'上传成功, 文档ID:{embedding_uuid},别名：{embedding_name}'
+                embedding_name,ext = os.path.splitext(f.filename)
+                support_exts = [".zip", ".html", ".htm",".csv"]
+                if ext in support_exts:
+                    embedding_uuid = str(uuid.uuid4())
+                    filename = os.path.join(app.config['UPLOAD_FOLDER'], embedding_uuid + ext)
+                    logging.debug(f"get upload file: app_id:{app_id}, request.files:{request.files}, f.filename:{f.filename}, uuid:{embedding_uuid}")
+                    f.save(filename)
+                    service_module = importlib.import_module(f"{service}_service")
+                    service_module.upload(app_id, embedding_name, filename, embedding_uuid)
+                    return f'上传成功, 文档ID:{embedding_uuid},别名：{embedding_name}'
+                else:
+                    return '文件格式不支持'
         except Exception as e:
             logging.exception(e)
             return '上传失败'

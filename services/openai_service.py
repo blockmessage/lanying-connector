@@ -1,3 +1,4 @@
+import uuid
 import openai
 import time
 import logging
@@ -89,6 +90,13 @@ def handle_chat_message(msg, config, retry_times = 3):
     checkres = check_message_deduct_failed(msg['appId'], config)
     if checkres['result'] == 'error':
         return checkres['msg']
+    ctype = msg['ctype']
+    if ctype == 'TEXT':
+        pass
+    elif ctype == 'FILE':
+        return handle_chat_file(msg, config)
+    else:
+        return ''
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -690,7 +698,58 @@ def del_embedding_info(redis, fromUserId, toUserId):
         redis.delete(key)
 
 def upload(app_id, embedding_name, filename, file_uuid):
-    openai_doc_gen.create_named_embeddings_from_csv(app_id, embedding_name, filename, file_uuid)
+    openai_doc_gen.create_embedding(app_id, embedding_name, filename, file_uuid)
 
 def fetch_embeddings(text):
     return openai.Embedding.create(input=text, engine='text-embedding-ada-002')['data'][0]['embedding']
+
+def handle_chat_file(msg, config):
+    app_id = msg['appId']
+    attachment = json.loads(msg['attachment'])
+    url = attachment['url']
+    dname = attachment['dName']
+    embedding_name,ext = os.path.splitext(dname)
+    check_result = check_upload_embedding(msg, config, embedding_name, ext, app_id)
+    if check_result['result'] == 'error':
+        return check_result['message']
+    headers = {'app_id': app_id, 'access-token': config['lanying_admin_token'], 'user_id': config['lanying_user_id']}
+    response = requests.get(url, headers=headers)
+    dir = os.getenv("LANYING_CONNECTOR_CHAT_FILE_DIR", '/data/upload')
+    os.makedirs(dir, exist_ok=True)
+    embedding_uuid = str(uuid.uuid4())
+    filename = os.path.join(dir, embedding_uuid + ext)
+    logging.debug(f"recevie embedding file from chat: app_id:{app_id}, url:{url}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, filename:{filename}")
+    if response.status_code == 200:
+        with open(filename, 'wb') as f:
+            f.write(response.content)
+            return f'上传知识库成功，请等待后续处理. \n知识库名称:{embedding_name}, 知识库ID:{embedding_uuid}'
+    return '上传知识库失败'
+
+def check_upload_embedding(msg, config, embedding_name, ext, app_id):
+    is_user_in_allow_upload = False
+    allow_upload_embedding_names = []
+    try:
+        preset = copy.deepcopy(config['preset'])
+        embeddings = preset.get('ext',{}).get('embeddings',[])
+        from_user_id = int(msg['from']['uid'])
+        for embedding in embeddings:
+            allow_upload_user_ids = embedding.get('allow_upload_user_ids',[])
+            if from_user_id in allow_upload_user_ids:
+                is_user_in_allow_upload = True
+                allow_upload_embedding_names.append(embedding['embedding_name'])
+        for embedding in embeddings:
+            allow_upload_user_ids = embedding.get('allow_upload_user_ids',[])
+            if embedding['embedding_name'] == embedding_name:
+                logging.debug(f"check_upload_embedding | app_id:{app_id}, embedding_name:{embedding_name}, from_user_id:{from_user_id}, allow_upload_user_ids:{allow_upload_user_ids}")
+                if from_user_id in allow_upload_user_ids:
+                    allow_exts  = [".html", ".htm", ".zip"]
+                    if ext in allow_exts:
+                        return {'result':'ok'}
+                    else:
+                        return {'result':'error', 'message': f'对不起，暂时只支持{allow_exts}格式的知识库'}
+    except Exception as e:
+        logging.exception(e)
+        pass
+    if is_user_in_allow_upload:
+        return {'result':'error', 'message':f'对不起，您没有权限上传此知识库, 您可以上传的知识库有{allow_upload_embedding_names}'}
+    return {'result':'error', 'message':'对不起，我无法处理文件消息'}
