@@ -137,7 +137,10 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt):
     if content == '#reset_prompt':
         removeAllHistory(redis, historyListKey)
         return 'prompt is reset'
-    userHistoryList = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
+    history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
+    if history_result['result'] == 'error':
+        return history_result['message']
+    userHistoryList = history_result['data']
     for userHistory in userHistoryList:
         logging.debug(f'userHistory:{userHistory}')
         messages.append(userHistory)
@@ -181,9 +184,13 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
     completionTokens = preset.get('max_tokens', 1024)
     uidHistoryList = []
     model = preset['model']
+    token_limit = model_token_limit(model)
     messagesSize = calcMessagesTokens(messages, model)
     askMessage = {"role": "user", "content": content}
     nowSize = calcMessageTokens(askMessage, model) + messagesSize
+    if nowSize + completionTokens >= token_limit:
+        logging.debug(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
+        return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
     if redis:
         for historyStr in getHistoryList(redis, historyListKey):
             history = json.loads(historyStr)
@@ -215,15 +222,22 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
             if history_bytes > history_msg_size_max:
                 logging.debug(f"stop history for history_msg_size_max: app_id={app_id}, history_msg_size_max={history_msg_size_max}, history_count={history_count}")
                 break
-        if nowSize + historySize + completionTokens < MaxTotalTokens:
+        if nowSize + historySize + completionTokens < token_limit:
             for nowHistory in reversed(nowHistoryList):
                 res.append(nowHistory)
             nowSize += historySize
             logging.debug(f'history state: app_id={app_id}, now_prompt_size={nowSize}, history_count={history_count}, history_bytes={history_bytes}')
         else:
-            logging.debug(f'stop history for max tokens: app_id={app_id}, now prompt size:{nowSize}')
+            logging.debug(f'stop history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
             break
-    return reversed(res)
+    return {'result':'ok', 'data': reversed(res)}
+
+def model_token_limit(model):
+    if is_chatgpt_model_4_32k(model):
+        return 32000
+    if is_chatgpt_model_4(model):
+        return 8000
+    return 4000
 
 def historyListChatGPTKey(fromUserId, toUserId):
     return "lanying:connector:history:list:chatGPT:" + fromUserId + ":" + toUserId
@@ -309,6 +323,9 @@ def is_chatgpt_model_3_5(model):
 
 def is_chatgpt_model_4(model):
     return model.startswith("gpt-4")
+
+def is_chatgpt_model_4_32k(model):
+    return model.startswith("gpt-4-32k")
 
 def is_embedding_model(model):
     return model.startswith("text-embedding-ada-002")
