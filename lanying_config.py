@@ -80,6 +80,11 @@ def get_message_deduct_failed(appId):
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_deduct_failed', "抱歉，当前应用的本月消息配额已经用完，请联系管理员或者下月重试。")
     return os.getenv('LANYING_CONNECTOR_MESSAGE_DEDUCT_FAILED')
 
+def get_message_too_long(appId):
+    default = "抱歉，当前消息长度超过限制，建议分段处理。"
+    if mode == 'etcd':
+        return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_too_long', default)
+    return os.getenv('LANYING_CONNECTOR_MESSAGE_TOO_LONG', default)
 
 def get_message_antispam(appId):
     if mode == 'etcd':
