@@ -29,6 +29,7 @@ class IgnoringScriptConverter(MarkdownConverter):
     def convert_style(self, el, text, convert_as_inline):
         return ''
 
+
 # Create shorthand method for conversion
 def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)

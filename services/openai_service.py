@@ -13,6 +13,9 @@ import requests
 import os
 import openai_doc_gen
 import copy
+from lanying_tasks import add_embedding_file
+import lanying_embedding
+import re
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
@@ -21,6 +24,7 @@ MaxTotalTokens = 4000
 
 def handle_request(request):
     text = request.get_data(as_text=True)
+    path = request.path
     logging.debug(f"receive api request: {text}")
     auth_result = check_authorization(request)
     if auth_result['result'] == 'error':
@@ -37,6 +41,7 @@ def handle_request(request):
         logging.info(f"check_message_deduct_failed deny: app_id={app_id}, msg={deduct_res['msg']}")
         return deduct_res
     preset = json.loads(text)
+    maybe_init_preset_model_for_embedding(preset, path)
     model_res = check_model_allow(preset['model'])
     if model_res['result'] == 'error':
         logging.info(f"check_model_allow deny: app_id={app_id}, msg={model_res['msg']}")
@@ -55,6 +60,10 @@ def handle_request(request):
     else:
         logging.info("forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
     return {'result':'ok', 'response':response}
+
+def maybe_init_preset_model_for_embedding(preset, path):
+    if path == '/v1/engines/text-embedding-ada-002/embeddings':
+        preset['model'] = 'text-embedding-ada-002'
 
 def forward_request(app_id, request, openai_key):
     url = "https://api.openai.com" + request.path
@@ -92,6 +101,9 @@ def handle_chat_message(msg, config, retry_times = 3):
         return checkres['msg']
     ctype = msg['ctype']
     if ctype == 'TEXT':
+        content = msg['content']
+        if content.startswith("/embedding"):
+            return handle_embedding_command(msg, config)
         pass
     elif ctype == 'FILE':
         return handle_chat_file(msg, config)
@@ -714,59 +726,102 @@ def del_embedding_info(redis, fromUserId, toUserId):
         key = embedding_info_key(fromUserId,toUserId)
         redis.delete(key)
 
-def upload(app_id, embedding_name, filename, file_uuid):
-    openai_doc_gen.create_embedding(app_id, embedding_name, filename, file_uuid)
+# def upload(app_id, embedding_name, filename, file_uuid):
+#     openai_doc_gen.create_embedding(app_id, embedding_name, filename, file_uuid)
 
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids):
+    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids)
+     
 def fetch_embeddings(text):
     return openai.Embedding.create(input=text, engine='text-embedding-ada-002')['data'][0]['embedding']
 
 def handle_chat_file(msg, config):
+    from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
-    attachment = json.loads(msg['attachment'])
-    url = attachment['url']
+    attachment_str = msg['attachment']
+    attachment = json.loads(attachment_str)
     dname = attachment['dName']
-    embedding_name,ext = os.path.splitext(dname)
-    check_result = check_upload_embedding(msg, config, embedding_name, ext, app_id)
+    _,ext = os.path.splitext(dname)
+    check_result = check_upload_embedding(msg, config, ext, app_id)
     if check_result['result'] == 'error':
         return check_result['message']
-    headers = {'app_id': app_id, 'access-token': config['lanying_admin_token'], 'user_id': config['lanying_user_id']}
-    response = requests.get(url, headers=headers)
-    dir = os.getenv("LANYING_CONNECTOR_CHAT_FILE_DIR", '/data/upload')
-    os.makedirs(dir, exist_ok=True)
-    embedding_uuid = str(uuid.uuid4())
-    filename = os.path.join(dir, embedding_uuid + ext)
-    logging.debug(f"recevie embedding file from chat: app_id:{app_id}, url:{url}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, filename:{filename}")
-    if response.status_code == 200:
-        with open(filename, 'wb') as f:
-            f.write(response.content)
-            return f'上传知识库成功，请等待后续处理. \n知识库名称:{embedding_name}, 知识库ID:{embedding_uuid}'
-    return '上传知识库失败'
+    logging.debug(f"recevie embedding file from chat: app_id:{app_id}, attachment_str:{attachment_str}")
+    file_id = save_attachment(from_user_id, attachment_str)
+    return f'上传文件成功， 文件ID:{file_id}'
 
-def check_upload_embedding(msg, config, embedding_name, ext, app_id):
-    is_user_in_allow_upload = False
-    allow_upload_embedding_names = []
-    try:
-        preset = copy.deepcopy(config['preset'])
-        embeddings = preset.get('ext',{}).get('embeddings',[])
-        from_user_id = int(msg['from']['uid'])
-        for embedding in embeddings:
-            allow_upload_user_ids = embedding.get('allow_upload_user_ids',[])
-            if from_user_id in allow_upload_user_ids:
-                is_user_in_allow_upload = True
-                allow_upload_embedding_names.append(embedding['embedding_name'])
-        for embedding in embeddings:
-            allow_upload_user_ids = embedding.get('allow_upload_user_ids',[])
-            if embedding['embedding_name'] == embedding_name:
-                logging.debug(f"check_upload_embedding | app_id:{app_id}, embedding_name:{embedding_name}, from_user_id:{from_user_id}, allow_upload_user_ids:{allow_upload_user_ids}")
-                if from_user_id in allow_upload_user_ids:
-                    allow_exts  = [".html", ".htm", ".zip"]
-                    if ext in allow_exts:
-                        return {'result':'ok'}
-                    else:
-                        return {'result':'error', 'message': f'对不起，暂时只支持{allow_exts}格式的知识库'}
-    except Exception as e:
-        logging.exception(e)
-        pass
-    if is_user_in_allow_upload:
-        return {'result':'error', 'message':f'对不起，您没有权限上传此知识库, 您可以上传的知识库有{allow_upload_embedding_names}'}
-    return {'result':'error', 'message':'对不起，我无法处理文件消息'}
+def handle_embedding_command(msg, config):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    content = msg['content']
+    fields = re.split("[ \t\n]{1,}", content)
+    if (len(fields) > 1 and fields[0] == "/embedding"):
+        if len(fields) >= 4 and fields[1] == "add":
+            embedding_name = fields[2]
+            file_uuid = fields[3]
+            result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+            if result['result'] == 'error':
+                return result['message']
+            logging.debug(f"receive embedding add command: app_id:{app_id}, from_user_id:{from_user_id}, file_uuid:{file_uuid}")
+            attachment_str = get_attachment(from_user_id, file_uuid)
+            if attachment_str:
+                attachment = json.loads(attachment_str)
+                url = attachment['url']
+                dname = attachment['dName']
+                headers = {'app_id': app_id,
+                        'access-token': config['lanying_admin_token'],
+                        'user_id': config['lanying_user_id']}
+                trace_id = lanying_embedding.create_trace_id()
+                add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token']])
+                return f'添加成功，请等待系统处理。'
+            else:
+                return f'文件ID({file_uuid})不存在'
+        elif len(fields) >= 3 and fields[1] == "status":
+            embedding_name = fields[2]
+            result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+            if result['result'] == 'error':
+                return result['message']
+            result = []
+            for doc in lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, 20):
+                result.append(f"文档ID:{doc['doc_id']}, 文件名:{doc['filename']}, 状态:{doc['status']}, 进度：{doc.get('progress_finish', '-')}/{doc.get('progress_total', '-')}")
+            return "知识库最近文档列表为:\n" + "\n".join(result)
+        elif len(fields) >= 2  and fields[1] == "help":
+            return embedding_command_help()
+    return '命令格式不正确，可以用命令如下: \n' + embedding_command_help()
+
+def embedding_command_help():
+    return '可以用命令如下: \n' + \
+            '1. 将文件添加到知识库:\n/embedding add <EMBEDDING_NAME> <FILE_ID> \n' + \
+            '2. 查询知识库状态:\n/embedding status <EMBEDDING_NAME>\n'
+
+def save_attachment(from_user_id, attachment):
+    redis = lanying_redis.get_redis_connection()
+    file_id = redis.incrby(f"lanying-connector:attachment_id:{from_user_id}", 1)
+    redis.setex(f"lanying-connnector:last_attachment:{from_user_id}:{file_id}", 86400, attachment)
+    return file_id
+
+def get_attachment(from_user_id, file_id):
+    redis = lanying_redis.get_redis_connection()
+    return redis.get(f"lanying-connnector:last_attachment:{from_user_id}:{file_id}")
+
+def add_embedding_to_file():
+    pass
+
+def check_upload_embedding(msg, config, ext, app_id):
+    from_user_id = int(msg['from']['uid'])
+    if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
+        allow_exts  = [".html", ".htm", ".zip"]
+        if ext in allow_exts:
+            return {'result':'ok'}
+        else:
+            return {'result':'error', 'message': f'对不起，暂时只支持{allow_exts}格式的知识库'}
+    else:
+        return {'result':'error', 'message':'对不起，我无法处理文件消息'}
+
+def check_can_manage_embedding(app_id, embedding_name, from_user_id):
+    embedding_name_info = lanying_embedding.get_embedding_info(app_id, embedding_name)
+    admin_user_ids_str = embedding_name_info.get("admin_user_ids", "")
+    admin_user_ids = admin_user_ids_str.split(',')
+    for admin_user_id in admin_user_ids:
+        if int(admin_user_id) == from_user_id:
+            return {'result':'ok'}
+    return {'result':'error', 'message':'知识库不存在，或者你没有这个知识库的权限'}

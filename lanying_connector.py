@@ -30,17 +30,18 @@ init_logging()
 executor = ThreadPoolExecutor(8)
 sys.path.append("services")
 lanying_config.init()
-app = Flask(__name__)
-app_upload_dir = '/data/upload/'
-os.makedirs(app_upload_dir, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = app_upload_dir
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
-app.config["timeout"] = 120
-if os.environ.get("FLASK_DEBUG"):
-    app.debug = True
-
 accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
-
+def create_app():
+    app = Flask(__name__)
+    app_upload_dir = '/data/upload/'
+    os.makedirs(app_upload_dir, exist_ok=True)
+    app.config['UPLOAD_FOLDER'] = app_upload_dir
+    app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
+    app.config["timeout"] = 120
+    if os.environ.get("FLASK_DEBUG"):
+        app.debug = True
+    return app
+app = create_app()
 @app.route("/", methods=["GET"])
 def index():
     service = lanying_config.get_lanying_connector_service('')
@@ -144,6 +145,7 @@ def get_message_limit_state(service):
     return resp
 @app.route("/v1/chat/completions", methods=["POST"])
 @app.route("/v1/embeddings", methods=["POST"])
+@app.route("/v1/engines/text-embedding-ada-002/embeddings", methods=["POST"])
 def openai_request():
     try:
         service = "openai"
@@ -162,34 +164,54 @@ def openai_request():
         logging.exception(e)
         resp = app.make_response({"error":{"type": "internal_server_error","code":500, "message":"Internal Server Error"}})
         return resp
-
-@app.route("/service/<string:service>/upload", methods=["GET", "POST"])
-def upload(service):
-    if request.method == 'POST':
-        try:
-            key = request.form['key']
-            app_id = request.form['app_id']
-            if accessToken and key and accessToken == key:
-                f = request.files['file']
-                embedding_name,ext = os.path.splitext(f.filename)
-                support_exts = [".zip", ".html", ".htm",".csv"]
-                if ext in support_exts:
-                    embedding_uuid = str(uuid.uuid4())
-                    filename = os.path.join(app.config['UPLOAD_FOLDER'], embedding_uuid + ext)
-                    logging.debug(f"get upload file: app_id:{app_id}, request.files:{request.files}, f.filename:{f.filename}, uuid:{embedding_uuid}")
-                    f.save(filename)
-                    service_module = importlib.import_module(f"{service}_service")
-                    service_module.upload(app_id, embedding_name, filename, embedding_uuid)
-                    return f'上传成功, 文档ID:{embedding_uuid},别名：{embedding_name}'
-                else:
-                    return '文件格式不支持'
-        except Exception as e:
-            logging.exception(e)
-            return '上传失败'
+@app.route("/service/<string:service>/create_embedding", methods=["POST"])
+def create_embedding(service):
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        max_block_size = data.get('max_block_size', 500)
+        algo = data.get('algo', "COSINE")
+        admin_user_ids = data.get('admin_user_ids',[])
+        service_module = importlib.import_module(f"{service}_service")
+        max_block_size = data.get('max_block_size', 500)
+        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids)
+        if result['result'] == 'error':
+            resp = app.make_response({'code':400, 'message':result['message']})
         else:
-            return '鉴权密钥错误'
-    else:
-        return render_template("upload.html")
+            resp = app.make_response({'code':200, 'data':result["embedding_uuid"]})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+# @app.route("/service/<string:service>/upload", methods=["GET", "POST"])
+# def upload(service):
+#     if request.method == 'POST':
+#         try:
+#             key = request.form['key']
+#             app_id = request.form['app_id']
+#             if accessToken and key and accessToken == key:
+#                 f = request.files['file']
+#                 embedding_name,ext = os.path.splitext(f.filename)
+#                 support_exts = [".zip", ".html", ".htm",".csv"]
+#                 if ext in support_exts:
+#                     embedding_uuid = str(uuid.uuid4())
+#                     filename = os.path.join(app.config['UPLOAD_FOLDER'], embedding_uuid + ext)
+#                     logging.debug(f"get upload file: app_id:{app_id}, request.files:{request.files}, f.filename:{f.filename}, uuid:{embedding_uuid}")
+#                     f.save(filename)
+#                     service_module = importlib.import_module(f"{service}_service")
+#                     service_module.upload(app_id, embedding_name, filename, embedding_uuid)
+#                     return f'上传成功, 文档ID:{embedding_uuid},别名：{embedding_name}'
+#                 else:
+#                     return '文件格式不支持'
+#         except Exception as e:
+#             logging.exception(e)
+#             return '上传失败'
+#         else:
+#             return '鉴权密钥错误'
+#     else:
+#         return render_template("upload.html")
 
 def queryAndSendMessage(data):
     appId = data['appId']

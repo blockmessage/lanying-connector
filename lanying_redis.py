@@ -27,3 +27,6 @@ def get_redis_stack_connection():
     if not conn:
         logging.warning(f"get_redis_stack_connection: fail to get connection")
     return conn
+
+def get_task_redis_server():
+    return os.getenv('LANYING_CONNECTOR_TASK_REDIS_SERVER', "redis://localhost:6379")
