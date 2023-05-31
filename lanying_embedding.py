@@ -9,6 +9,7 @@ import openai
 import os
 import random
 import numpy as np
+from redis.commands.search.query import Query
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -70,6 +71,39 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
 
 def delete_embedding(app_id, embedding_name):
     pass
+
+def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_blocks = 10):
+    redis = lanying_redis.get_redis_stack_connection()
+    if redis:
+        embedding_index = get_embedding_index(app_id, embedding_name)
+        if embedding_index:
+            base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
+            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary").paging(0,max_blocks).dialect(2)
+            results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
+            print(f"topk result:{results}")
+            ret = []
+            now_tokens = 0
+            blocks_num = 0
+            for doc in results.docs:
+                now_tokens += int(doc.num_of_tokens)
+                blocks_num += 1
+                logging.debug(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
+                if now_tokens > max_tokens:
+                    break
+                if blocks_num > max_blocks:
+                    break
+                ret.append(doc)
+            return ret
+    return []
+
+def get_embedding_index(app_id, embedding_name):
+    embedding_name_info = get_embedding_info(app_id, embedding_name)
+    if "embedding_uuid" in embedding_name_info:
+        embedding_uuid = embedding_name_info["embedding_uuid"]
+        embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+        if "index" in embedding_uuid_info:
+            return embedding_uuid_info["index"]
+    return None
 
 def add_embedding_file(app_id, embedding_uuid, filename):
     pass
@@ -174,7 +208,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
         increase_embedding_doc_field(redis, embedding_uuid, doc_id, "text_size", text_size)
         update_progress(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), 1)
 
-def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 30, sleep = 0.2, sleep_multi=1.2):
+def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
     if is_dry_run:
         return [random.uniform(0, 1) for i in range(1536)]
     openai.api_key = openai_secret_key
