@@ -187,7 +187,7 @@ def process_markdown(config, app_id, embedding_uuid, origin_filename, doc_id, ma
 
 def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     logging.debug(f"start process_csv: embedding_uuid={embedding_uuid}, filename={filename}")
-    df = pd.read_csv(filename, index_col=0)
+    df = pd.read_csv(filename)
     size = len(df)
     logging.debug(f"embeddings: size={size}")
     total_blocks = 0
@@ -218,7 +218,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                           "filename": origin_filename,
                           "summary": "{}"})
         embedding_size = len(embedding_bytes)
-        text_size = len(text)
+        text_size = text_byte_size(text)
         increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", 1)
         increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", embedding_size)
         increase_embedding_uuid_field(redis, embedding_uuid, "text_size", text_size)
@@ -422,3 +422,6 @@ def redis_hgetall(redis, key):
         for k,v in kvs.items():
             ret[k.decode('utf-8')] = v.decode('utf-8')
     return ret
+
+def text_byte_size(text):
+    return len(text.encode('utf-8'))

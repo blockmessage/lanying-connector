@@ -196,7 +196,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         using_embedding = embedding_info.get('using_embedding', 'auto')
         last_embedding_name = embedding_info.get('last_embedding_name', '')
         last_embedding_text = embedding_info.get('last_embedding_text', '')
-        logging.debug(f"using_embedding state: using_embedding={using_embedding}, last_embedding_name={last_embedding_name}, len(last_embedding_text)={len(last_embedding_text)}")
+        logging.debug(f"using_embedding state: using_embedding={using_embedding}, last_embedding_name={last_embedding_name}, text_byte_size(last_embedding_text)={text_byte_size(last_embedding_text)}")
         embedding_min_distance = 1.0
         if using_embedding == 'once' and last_embedding_text != '' and last_embedding_name == embedding_name:
             context = last_embedding_text
@@ -297,26 +297,6 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
             return ''
     return reply
 
-def loadHistory(redis, historyListKey, content, prompt, now, preset):
-    maxPromptSize = 3024 - preset.get('max_tokens', 1024)
-    uidHistoryList = []
-    nowSize = len(content) + len(prompt)
-    if redis:
-        for historyStr in getHistoryList(redis, historyListKey):
-            history = json.loads(historyStr)
-            if history['time'] < now - expireSeconds:
-                removeHistory(redis, historyListKey, historyStr)
-            uidHistoryList.append(history)
-    res = ""
-    for history in reversed(uidHistoryList):
-        if nowSize + len(history['text']) < maxPromptSize:
-            res = history['text'] + res
-            nowSize += len(history['text'])
-            logging.debug(f'resLen:{len(res)}, nowSize:{nowSize}')
-        else:
-            break
-    return res
-
 def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset):
     history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
     history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
@@ -352,7 +332,7 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
         for nowHistory in nowHistoryList:
             historySize += calcMessageTokens(nowHistory, model)
             now_history_content = nowHistory.get('content','')
-            now_history_bytes = len(now_history_content)
+            now_history_bytes = text_byte_size(now_history_content)
             history_bytes += now_history_bytes
             logging.debug(f"history_bytes: app_id={app_id}, content={now_history_content}, bytes={now_history_bytes}")
         if history_count > history_msg_count_min:
@@ -628,13 +608,12 @@ def calc_used_text_size(preset, response):
     model = preset['model']
     if is_chatgpt_model(model):
         for message in preset['messages']:
-            text_size += len(message.get('role', ''))
-            text_size += len(message.get('content', ''))
-        text_size += len(response['choices'][0]['message']['content'].strip())
+            text_size += text_byte_size(message.get('content', ''))
+        text_size += text_byte_size(response['choices'][0]['message']['content'].strip())
     elif is_embedding_model(model):
-        text_size += len(preset['input'])
+        text_size += text_byte_size(preset['input'])
     else:
-        text_size += len(preset['prompt'])
+        text_size += text_byte_size(preset['prompt'])
     return text_size
 
 def get_message_statistic_keys(config, app_id):
@@ -828,3 +807,6 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
         if int(admin_user_id) == from_user_id:
             return {'result':'ok'}
     return {'result':'error', 'message':'知识库不存在，或者你没有这个知识库的权限'}
+
+def text_byte_size(text):
+    return len(text.encode('utf-8'))
