@@ -10,6 +10,7 @@ import os
 import random
 import numpy as np
 from redis.commands.search.query import Query
+import pandas as pd
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -116,7 +117,9 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
     # logging.debug(f"process_embedding_file | config:{embedding_uuid_info}")
     try:
         if ext in [".html", ".htm"]:
-            process_embedding_file_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            process_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+        elif ext in [".csv"]:
+            process_csv(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
     except Exception as e:
         increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
         update_doc_field(embedding_uuid, doc_id, "status", "error")
@@ -164,7 +167,7 @@ def remove_space_line(text):
     new_lines = [line for line in lines if not re.match(r'^\s*$', line)]
     return '\n'.join(new_lines)
 
-def process_embedding_file_html(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+def process_html(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     with open(filename, "r") as f:
         html = f.read()
         process_markdown(config, app_id, embedding_uuid, origin_filename, doc_id, md(html))
@@ -180,9 +183,25 @@ def process_markdown(config, app_id, embedding_uuid, origin_filename, doc_id, ma
         blocks.extend(block_blocks)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
-    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, total_tokens, redis)
+    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
 
-def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, total_tokens, redis):
+def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+    logging.debug(f"start process_csv: embedding_uuid={embedding_uuid}, filename={filename}")
+    df = pd.read_csv(filename, index_col=0)
+    size = len(df)
+    logging.debug(f"embeddings: size={size}")
+    total_blocks = 0
+    total_tokens = 0
+    redis = lanying_redis.get_redis_stack_connection()
+    for i, row in df.iterrows():
+        if 'text' in row:
+            block_tokens, block_blocks = process_block(config, embedding_uuid, row['text'])
+            total_tokens += block_tokens
+            total_blocks += len(block_blocks)
+            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+            insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+
+def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     openai_secret_key = config["openai_secret_key"]
     is_dry_run = config.get("dry_run", "false") == "true"
     logging.debug(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
@@ -231,7 +250,7 @@ def process_block(config, embedding_uuid, block):
         line_token_count = num_of_tokens(line + "\n")
         if token_cnt + line_token_count > max_block_size:
             if token_cnt > 0:
-                now_block = "".join(lines)
+                now_block = "\n".join(lines) + "\n"
                 blocks.append((token_cnt, now_block))
                 total_tokens += token_cnt
                 lines = []
@@ -242,13 +261,10 @@ def process_block(config, embedding_uuid, block):
         lines.append(line)
         token_cnt += line_token_count
     if token_cnt > 0:
-        now_block = "".join(lines)
+        now_block = "\n".join(lines) + "\n"
         blocks.append((token_cnt, now_block))
         total_tokens += token_cnt
     return (total_tokens, blocks)
-
-def save_block():
-    pass
 
 def generate_block_id(embedding_uuid):
     key = get_embedding_uuid_key(embedding_uuid)
