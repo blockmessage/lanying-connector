@@ -39,7 +39,7 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
         return {'result':"error", 'message': 'embedding_name exist'}
     now = int(time.time())
     redis = lanying_redis.get_redis_stack_connection()
-    embedding_uuid = generate_embedding_uuid()
+    embedding_uuid = generate_embedding_id()
     index_key = get_embedding_index_key(embedding_uuid)
     data_prefix_key = get_embedding_data_prefix_key(embedding_uuid)
     redis.hmset(get_embedding_name_key(app_id, embedding_name), {
@@ -151,13 +151,9 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
     increase_embedding_doc_field(redis, embedding_uuid, doc_id, "succ_count", 1)
     update_doc_field(embedding_uuid, doc_id, "status", "finish")
 
-def generate_embedding_uuid():
+def generate_embedding_id():
     redis = lanying_redis.get_redis_stack_connection()
-    for i in range(100):
-        embedding_uuid = str(uuid.uuid4())
-        key = get_embedding_uuid_key(embedding_uuid)
-        if redis.hsetnx(key, "status", "reserved") > 0:
-            return embedding_uuid
+    return redis.incrby("embedding_id_generator", 1)
 
 def is_embedding_uuid_exist(embedding_uuid):
     redis = lanying_redis.get_redis_stack_connection()
@@ -451,7 +447,8 @@ def increase_embedding_doc_field(redis, embedding_uuid, doc_id, field, value):
 def generate_doc_id(embedding_uuid):
     key = get_embedding_uuid_key(embedding_uuid)
     redis = lanying_redis.get_redis_stack_connection()
-    return redis.hincrby(key, "doc_id_seq", 1)
+    doc_id_seq = redis.hincrby(key, "doc_id_seq", 1)
+    return f"{embedding_uuid}-{doc_id_seq}"
 
 def get_embedding_doc_info_list(app_id, embedding_name, start, end):
     embedding_name_info = get_embedding_info(app_id, embedding_name)
