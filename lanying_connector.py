@@ -274,35 +274,6 @@ def delete_doc_from_embedding(service):
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
 
-
-# @app.route("/service/<string:service>/upload", methods=["GET", "POST"])
-# def upload(service):
-#     if request.method == 'POST':
-#         try:
-#             key = request.form['key']
-#             app_id = request.form['app_id']
-#             if accessToken and key and accessToken == key:
-#                 f = request.files['file']
-#                 embedding_name,ext = os.path.splitext(f.filename)
-#                 support_exts = [".zip", ".html", ".htm",".csv"]
-#                 if ext in support_exts:
-#                     embedding_uuid = str(uuid.uuid4())
-#                     filename = os.path.join(app.config['UPLOAD_FOLDER'], embedding_uuid + ext)
-#                     logging.debug(f"get upload file: app_id:{app_id}, request.files:{request.files}, f.filename:{f.filename}, uuid:{embedding_uuid}")
-#                     f.save(filename)
-#                     service_module = importlib.import_module(f"{service}_service")
-#                     service_module.upload(app_id, embedding_name, filename, embedding_uuid)
-#                     return f'上传成功, 文档ID:{embedding_uuid},别名：{embedding_name}'
-#                 else:
-#                     return '文件格式不支持'
-#         except Exception as e:
-#             logging.exception(e)
-#             return '上传失败'
-#         else:
-#             return '鉴权密钥错误'
-#     else:
-#         return render_template("upload.html")
-
 def queryAndSendMessage(data):
     appId = data['appId']
     fromUserId = data['from']['uid']

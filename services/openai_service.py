@@ -708,9 +708,6 @@ def del_embedding_info(redis, fromUserId, toUserId):
         key = embedding_info_key(fromUserId,toUserId)
         redis.delete(key)
 
-# def upload(app_id, embedding_name, filename, file_uuid):
-#     openai_doc_gen.create_embedding(app_id, embedding_name, filename, file_uuid)
-
 def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids):
     return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids)
 
