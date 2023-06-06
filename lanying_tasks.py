@@ -46,7 +46,9 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             logging.debug(f"add_embedding_file | got zip filenames: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, sub_filenames:{sub_filenames}")
             for sub_filename in sub_filenames:
                 _,sub_ext = os.path.splitext(sub_filename)
-                if sub_ext in [".html", ".htm", ".csv"]:
+                if "__MACOSX" in sub_filename:
+                    pass
+                elif sub_ext in [".html", ".htm", ".csv"]:
                     logging.debug("add_embedding_file | start process sub file: sub_filenames:{sub_filenames}")
                     sub_file_info = zip_ref.getinfo(sub_filename)
                     sub_file_size = sub_file_info.file_size
@@ -93,6 +95,10 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin
     if download_result["result"] == "error":
         task_error(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_uuid}, object_name={object_name}, message:{download_result['message']}")
     lanying_embedding.process_embedding_file(trace_id, app_id, embedding_uuid, temp_filename, origin_filename, doc_id)
+
+@app.task
+def delete_doc_data(app_id, embedding_name, doc_id, embedding_index, last_total):
+    lanying_embedding.search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total)
 
 def task_error(message):
     logging.error(message)

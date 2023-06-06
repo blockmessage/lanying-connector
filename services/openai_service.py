@@ -13,7 +13,7 @@ import requests
 import os
 import openai_doc_gen
 import copy
-from lanying_tasks import add_embedding_file
+from lanying_tasks import add_embedding_file, delete_doc_data
 import lanying_embedding
 import re
 expireSeconds = 86400 * 3
@@ -713,6 +713,15 @@ def del_embedding_info(redis, fromUserId, toUserId):
 
 def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids):
     return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids)
+
+def configure_embedding(app_id, embedding_name, admin_user_ids):
+    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids)
+
+def list_embeddings(app_id):
+    return lanying_embedding.list_embeddings(app_id)
+
+def get_embedding_doc_info_list(app_id, embedding_name, start, end):
+    return lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, start, end)
      
 def fetch_embeddings(text):
     return openai.Embedding.create(input=text, engine='text-embedding-ada-002')['data'][0]['embedding']
@@ -757,15 +766,32 @@ def handle_embedding_command(msg, config):
                 return f'添加成功，请等待系统处理。'
             else:
                 return f'文件ID({file_uuid})不存在'
+        elif len(fields) >= 4 and fields[1] == "delete":
+            embedding_name = fields[2]
+            doc_id = fields[3]
+            result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+            if result['result'] == 'error':
+                return result['message']
+            logging.debug(f"receive embedding delete doc command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}")
+            embedding_name_info = lanying_embedding.get_embedding_info(app_id, embedding_name)
+            if "status" not in embedding_name_info:
+                return f'知识库({embedding_name})不存在'
+            else:
+                doc_info = lanying_embedding.get_doc(embedding_name_info["embedding_uuid"], doc_id)
+                if "filename" not in doc_info:
+                    return f"文档ID(doc_id)不存在"
+                delete_doc_from_embedding(app_id, embedding_name, doc_id)
+                return f'删除成功，请等待系统处理。'
         elif len(fields) >= 3 and fields[1] == "status":
             embedding_name = fields[2]
             result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
             if result['result'] == 'error':
                 return result['message']
             result = []
-            for doc in lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, 20):
+            total, doc_list = lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, -20, -1)
+            for doc in doc_list:
                 result.append(f"文档ID:{doc['doc_id']}, 文件名:{doc['filename']}, 状态:{doc['status']}, 进度：{doc.get('progress_finish', '-')}/{doc.get('progress_total', '-')}")
-            return "知识库最近文档列表为:\n" + "\n".join(result)
+            return f"文档总数:{total}\n最近文档列表为:\n" + "\n".join(result)
         elif len(fields) >= 2  and fields[1] == "help":
             return embedding_command_help()
     return '命令格式不正确，可以用命令如下: \n' + embedding_command_help()
@@ -773,7 +799,19 @@ def handle_embedding_command(msg, config):
 def embedding_command_help():
     return '可以用命令如下: \n' + \
             '1. 将文件添加到知识库:\n/embedding add <EMBEDDING_NAME> <FILE_ID> \n' + \
-            '2. 查询知识库状态:\n/embedding status <EMBEDDING_NAME>\n'
+            '2. 查询知识库状态:\n/embedding status <EMBEDDING_NAME>\n' + \
+            '3. 知识库删除文档:\n/embedding delete <EMBEDDING_NAME> <DOC_ID> \n'
+
+def add_doc_to_embedding(app_id, embedding_name, dname, url):
+    config = lanying_config.get_lanying_connector(app_id)
+    headers = {'app_id': app_id,
+            'access-token': config['lanying_admin_token'],
+            'user_id': config['lanying_user_id']}
+    trace_id = lanying_embedding.create_trace_id()
+    add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token']])
+
+def delete_doc_from_embedding(app_id, embedding_name, doc_id):
+    return lanying_embedding.delete_doc_from_embedding(app_id, embedding_name, doc_id, delete_doc_data)
 
 def save_attachment(from_user_id, attachment):
     redis = lanying_redis.get_redis_connection()

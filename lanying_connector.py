@@ -172,11 +172,10 @@ def create_embedding(service):
         data = json.loads(text)
         app_id = data['app_id']
         embedding_name = data['embedding_name']
-        max_block_size = data.get('max_block_size', 500)
         algo = data.get('algo', "COSINE")
         admin_user_ids = data.get('admin_user_ids',[])
-        service_module = importlib.import_module(f"{service}_service")
         max_block_size = data.get('max_block_size', 500)
+        service_module = importlib.import_module(f"{service}_service")
         result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
@@ -185,6 +184,97 @@ def create_embedding(service):
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
+
+@app.route("/service/<string:service>/configure_embedding", methods=["POST"])
+def configure_embedding(service):
+    logging.debug(f"configure_embedding | start")
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        admin_user_ids = data.get('admin_user_ids',[])
+        logging.debug(f"configure_embedding | {data}")
+        service_module = importlib.import_module(f"{service}_service")
+        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids)
+        if result['result'] == 'error':
+            resp = app.make_response({'code':400, 'message':result['message']})
+        else:
+            resp = app.make_response({'code':200, 'data':True})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+@app.route("/service/<string:service>/list_embeddings", methods=["POST"])
+def list_embeddings(service):
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        service_module = importlib.import_module(f"{service}_service")
+        result = service_module.list_embeddings(app_id)
+        resp = app.make_response({'code':200, 'data':{'total':len(result), 'list':result}})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+@app.route("/service/<string:service>/list_embedding_docs", methods=["POST"])
+def list_embedding_docs(service):
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        start = data.get('start', 0)
+        end = data.get('end', 20)
+        service_module = importlib.import_module(f"{service}_service")
+        total, doc_list = service_module.get_embedding_doc_info_list(app_id, embedding_name, start, end)
+        resp = app.make_response({'code':200, 'data':{'total':total, 'list':doc_list}})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+@app.route("/service/<string:service>/add_doc_to_embedding", methods=["POST"])
+def add_doc_to_embedding(service):
+    logging.debug(f"add_doc_to_embedding | start")
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        file_name = data['file_name']
+        file_url = data['file_url']
+        logging.debug(f"add_doc_to_embedding | {data}")
+        service_module = importlib.import_module(f"{service}_service")
+        service_module.add_doc_to_embedding(app_id, embedding_name, file_name, file_url)
+        resp = app.make_response({'code':200, 'data':True})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+@app.route("/service/<string:service>/delete_doc_from_embedding", methods=["POST"])
+def delete_doc_from_embedding(service):
+    logging.debug(f"delete_doc_from_embedding | start")
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        doc_id = data['doc_id']
+        logging.debug(f"delete_doc_from_embedding | {data}")
+        service_module = importlib.import_module(f"{service}_service")
+        service_module.delete_doc_from_embedding(app_id, embedding_name, doc_id)
+        resp = app.make_response({'code':200, 'data':True})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+
 # @app.route("/service/<string:service>/upload", methods=["GET", "POST"])
 # def upload(service):
 #     if request.method == 'POST':
