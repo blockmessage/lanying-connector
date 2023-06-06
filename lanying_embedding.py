@@ -61,7 +61,6 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
                 "size": 0,
                 "doc_id_seq": 0,
                 "block_id_seq":0,
-                "doc_count": 0,
                 "embedding_count":0,
                 "embedding_size": 0,
                 "text_size": 0,
@@ -91,7 +90,7 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
             result.append(embedding_info)
@@ -414,12 +413,15 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
             redis.lrem(list_key, 10, doc_id)
             info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
             redis.delete(info_key)
+            increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", -int(doc_info.get("embedding_count", "0")))
+            increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", -int(doc_info.get("embedding_size", "0")))
+            increase_embedding_uuid_field(redis, embedding_uuid, "text_size", -int(doc_info.get("text_size", "0")))
             return True
     return False
 
 def search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total):
     redis = lanying_redis.get_redis_stack_connection()
-    base_query = "@doc_id:{"+doc_id+"}"
+    base_query = query_by_doc_id(doc_id)
     query = Query(base_query).no_content().paging(0, 200).dialect(2)
     results = redis.ft(embedding_index).search(query)
     logging.info(f"search for delete  | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}, result:{results}")
@@ -435,6 +437,13 @@ def search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, 
         search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, results.total)
     else:
         logging.info(f"search for delete stop for last page | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}")
+
+def query_by_doc_id(doc_id):
+    if len(doc_id) < 30:
+        new_doc_id = doc_id.replace('-','\\-')
+        return "@doc_id:{"+new_doc_id+"}"
+    else: # for deprecated doc_id format
+        return "@doc_id:{"+doc_id+"}"
 
 def get_doc(embedding_uuid, doc_id):
     redis = lanying_redis.get_redis_stack_connection()
