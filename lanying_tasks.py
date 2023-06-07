@@ -25,8 +25,8 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
     lanying_embedding.update_trace_field(trace_id, "status", "start")
     lanying_embedding.clear_trace_doc_id(trace_id)
     _,ext = os.path.splitext(origin_filename)
-    embedding_info = lanying_embedding.get_embedding_info(app_id, embedding_name)
-    if "embedding_uuid" not in embedding_info:
+    embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_info is None:
         logging.info(f"embedding_name not exist: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}")
         lanying_embedding.update_trace_field(trace_id, "status", "error")
         lanying_embedding.update_trace_field(trace_id, "message", "embedding_name not exist")
@@ -83,10 +83,10 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
 @app.task
 def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id):
     embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
-    if "status" not in embedding_uuid_info:
+    if embedding_uuid_info is None:
         return
     doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
-    if "status" not in doc_info:
+    if doc_info is None:
         return
     lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "processing")
     _,ext = os.path.splitext(origin_filename)

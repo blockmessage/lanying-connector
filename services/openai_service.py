@@ -770,12 +770,12 @@ def handle_embedding_command(msg, config):
             if result['result'] == 'error':
                 return result['message']
             logging.debug(f"receive embedding delete doc command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}")
-            embedding_name_info = lanying_embedding.get_embedding_info(app_id, embedding_name)
-            if "status" not in embedding_name_info:
+            embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+            if embedding_name_info is None:
                 return f'知识库({embedding_name})不存在'
             else:
                 doc_info = lanying_embedding.get_doc(embedding_name_info["embedding_uuid"], doc_id)
-                if "filename" not in doc_info:
+                if doc_info is None:
                     return f"文档ID(doc_id)不存在"
                 delete_doc_from_embedding(app_id, embedding_name, doc_id)
                 return f'删除成功，请等待系统处理。'
@@ -835,12 +835,13 @@ def check_upload_embedding(msg, config, ext, app_id):
         return {'result':'error', 'message':'对不起，我无法处理文件消息'}
 
 def check_can_manage_embedding(app_id, embedding_name, from_user_id):
-    embedding_name_info = lanying_embedding.get_embedding_info(app_id, embedding_name)
-    admin_user_ids_str = embedding_name_info.get("admin_user_ids", "")
-    admin_user_ids = admin_user_ids_str.split(',')
-    for admin_user_id in admin_user_ids:
-        if int(admin_user_id) == from_user_id:
-            return {'result':'ok'}
+    embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info:
+        admin_user_ids_str = embedding_name_info.get("admin_user_ids", "")
+        admin_user_ids = admin_user_ids_str.split(',')
+        for admin_user_id in admin_user_ids:
+            if int(admin_user_id) == from_user_id:
+                return {'result':'ok'}
     return {'result':'error', 'message':'知识库不存在，或者你没有这个知识库的权限'}
 
 def text_byte_size(text):

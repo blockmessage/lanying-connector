@@ -85,8 +85,8 @@ def list_embeddings(app_id):
     embedding_names = redis_lrange(redis, list_key, 0, -1)
     result = []
     for embedding_name in embedding_names:
-        embedding_info = get_embedding_info(app_id, embedding_name)
-        if "embedding_uuid" in embedding_info:
+        embedding_info = get_embedding_name_info(app_id, embedding_name)
+        if embedding_info:
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
@@ -97,6 +97,8 @@ def list_embeddings(app_id):
     return result
 
 def delete_embedding(app_id, embedding_name):
+    get_embedding_name_info(app_id, embedding_name)
+
     pass
 
 def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_blocks = 10):
@@ -124,11 +126,11 @@ def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_
     return []
 
 def get_embedding_index(app_id, embedding_name):
-    embedding_name_info = get_embedding_info(app_id, embedding_name)
-    if "embedding_uuid" in embedding_name_info:
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info:
         embedding_uuid = embedding_name_info["embedding_uuid"]
         embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-        if "index" in embedding_uuid_info:
+        if embedding_uuid_info:
             return embedding_uuid_info["index"]
     return None
 
@@ -138,35 +140,40 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
     _,ext = os.path.splitext(origin_filename)
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
     # logging.debug(f"process_embedding_file | config:{embedding_uuid_info}")
-    try:
-        if ext in [".html", ".htm"]:
-            process_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
-        elif ext in [".csv"]:
-            process_csv(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
-    except Exception as e:
-        increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
-        update_doc_field(embedding_uuid, doc_id, "status", "error")
-        raise e
-    increase_embedding_doc_field(redis, embedding_uuid, doc_id, "succ_count", 1)
-    update_doc_field(embedding_uuid, doc_id, "status", "finish")
+    if embedding_uuid_info:
+        try:
+            if ext in [".html", ".htm"]:
+                process_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            elif ext in [".csv"]:
+                process_csv(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+        except Exception as e:
+            increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
+            update_doc_field(embedding_uuid, doc_id, "status", "error")
+            raise e
+        increase_embedding_doc_field(redis, embedding_uuid, doc_id, "succ_count", 1)
+        update_doc_field(embedding_uuid, doc_id, "status", "finish")
+    else:
+        logging.info(f"process_embedding_file embedding_uuid not exist | embedding_uuid:{embedding_uuid}")
 
 def generate_embedding_id():
     redis = lanying_redis.get_redis_stack_connection()
     return redis.incrby("embedding_id_generator", 1)
 
-def is_embedding_uuid_exist(embedding_uuid):
-    redis = lanying_redis.get_redis_stack_connection()
-    return redis.exists(get_embedding_uuid_key(embedding_uuid)) > 0
-
-def get_embedding_info(app_id, embedding_name):
+def get_embedding_name_info(app_id, embedding_name):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_embedding_name_key(app_id, embedding_name)
-    return redis_hgetall(redis, key)
+    info = redis_hgetall(redis, key)
+    if "embedding_uuid" in info:
+        return info
+    return None
 
 def get_embedding_uuid_info(embedding_uuid):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_embedding_uuid_key(embedding_uuid)
-    return redis_hgetall(redis, key)
+    info = redis_hgetall(redis, key)
+    if "index" in info:
+        return info
+    return None
 
 def update_embedding_uuid_info(embedding_uuid, field, value):
     redis = lanying_redis.get_redis_stack_connection()
@@ -223,7 +230,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
     logging.debug(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
     for token_cnt,text in blocks:
         doc_info = get_doc(embedding_uuid, doc_id)
-        if "filename" in doc_info:
+        if doc_info:
             block_id = generate_block_id(embedding_uuid)
             maybe_rate_limit(5)
             embedding = fetch_embedding(openai_secret_key, text, is_dry_run)
@@ -404,13 +411,13 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
     redis = lanying_redis.get_redis_stack_connection()
     embedding_index = get_embedding_index(app_id, embedding_name)
     if embedding_index:
-        embedding_name_info = get_embedding_info(app_id, embedding_name)
+        embedding_name_info = get_embedding_name_info(app_id, embedding_name)
         embedding_uuid = embedding_name_info["embedding_uuid"]
         doc_info = get_doc(embedding_uuid, doc_id)
-        if "filename" in doc_info:
+        if doc_info:
             task.apply_async(args = [app_id, embedding_name, doc_id, embedding_index, 0])
             list_key = get_embedding_doc_list_key(embedding_uuid)
-            redis.lrem(list_key, 10, doc_id)
+            redis.lrem(list_key, 2, doc_id)
             info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
             redis.delete(info_key)
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", -int(doc_info.get("embedding_count", "0")))
@@ -448,7 +455,10 @@ def query_by_doc_id(doc_id):
 def get_doc(embedding_uuid, doc_id):
     redis = lanying_redis.get_redis_stack_connection()
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
-    return redis_hgetall(redis, info_key)
+    info = redis_hgetall(redis, info_key)
+    if "filename" in info:
+        return info
+    return None
 
 def increase_embedding_doc_field(redis, embedding_uuid, doc_id, field, value):
     redis.hincrby(get_embedding_doc_info_key(embedding_uuid, doc_id), field, value)
@@ -460,10 +470,10 @@ def generate_doc_id(embedding_uuid):
     return f"{embedding_uuid}-{doc_id_seq}"
 
 def get_embedding_doc_info_list(app_id, embedding_name, start, end):
-    embedding_name_info = get_embedding_info(app_id, embedding_name)
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     total = 0
     result = []
-    if "embedding_uuid" in embedding_name_info:
+    if embedding_name_info:
         embedding_uuid = embedding_name_info["embedding_uuid"]
         list_key = get_embedding_doc_list_key(embedding_uuid)
         redis = lanying_redis.get_redis_stack_connection()
@@ -471,9 +481,10 @@ def get_embedding_doc_info_list(app_id, embedding_name, start, end):
         doc_id_list = redis_lrange(redis, list_key, start, end)
         for doc_id in doc_id_list:
             doc = get_doc(embedding_uuid,doc_id)
-            doc['doc_id'] = doc_id
-            logging.debug(f"doc_info: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, info:{doc}")
-            result.append(doc)
+            if doc:
+                doc['doc_id'] = doc_id
+                logging.debug(f"doc_info: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, info:{doc}")
+                result.append(doc)
     return (total, result)
 
 def get_embedding_doc_list_key(embedding_uuid):
