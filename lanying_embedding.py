@@ -35,7 +35,8 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
     logging.debug("start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids}")
     if app_id is None:
         app_id = ""
-    if is_embedding_name_exist(app_id, embedding_name):
+    old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if old_embedding_name_info:
         return {'result':"error", 'message': 'embedding_name exist'}
     now = int(time.time())
     redis = lanying_redis.get_redis_stack_connection()
@@ -71,9 +72,24 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
     logging.debug(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
 
+def delete_embedding(app_id, embedding_name):
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info:
+        embedding_uuid = embedding_name_info["embedding_uuid"]
+        embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+        if embedding_uuid_info:
+            doc_id_list = get_embedding_doc_id_list(embedding_uuid, 0, -1)
+            if len(doc_id_list) == 0:
+                redis = lanying_redis.get_redis_stack_connection()
+                redis.lrem(get_embedding_names_key(app_id), 1, embedding_name)
+                redis.delete(get_embedding_uuid_key(embedding_uuid))
+                redis.delete(get_embedding_name_key(app_id, embedding_name))
+                return True
+    return False
 
 def configure_embedding(app_id, embedding_name, admin_user_ids):
-    if not is_embedding_name_exist(app_id, embedding_name):
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
     redis = lanying_redis.get_redis_stack_connection()
     redis.hset(get_embedding_name_key(app_id, embedding_name), "admin_user_ids", ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]))
@@ -90,16 +106,11 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
             result.append(embedding_info)
     return result
-
-def delete_embedding(app_id, embedding_name):
-    get_embedding_name_info(app_id, embedding_name)
-
-    pass
 
 def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_blocks = 10):
     redis = lanying_redis.get_redis_stack_connection()
@@ -180,11 +191,6 @@ def update_embedding_uuid_info(embedding_uuid, field, value):
     key = get_embedding_uuid_key(embedding_uuid)
     redis.hset(key, field, value)
 
-def is_embedding_name_exist(app_id, embedding_name):
-    redis = lanying_redis.get_redis_stack_connection()
-    key = get_embedding_name_key(app_id, embedding_name)
-    return redis.exists(key) > 0
-
 def remove_space_line(text):
     lines = text.split('\n')
     new_lines = [line for line in lines if not re.match(r'^\s*$', line)]
@@ -247,9 +253,11 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", 1)
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", embedding_size)
             increase_embedding_uuid_field(redis, embedding_uuid, "text_size", text_size)
+            increase_embedding_uuid_field(redis, embedding_uuid, "token_cnt", token_cnt)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "embedding_count", 1)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "embedding_size", embedding_size)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "text_size", text_size)
+            increase_embedding_doc_field(redis, embedding_uuid, doc_id, "token_cnt", token_cnt)
             update_progress(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), 1)
 
 def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
@@ -423,6 +431,7 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", -int(doc_info.get("embedding_count", "0")))
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", -int(doc_info.get("embedding_size", "0")))
             increase_embedding_uuid_field(redis, embedding_uuid, "text_size", -int(doc_info.get("text_size", "0")))
+            increase_embedding_uuid_field(redis, embedding_uuid, "token_cnt", -int(doc_info.get("token_cnt", "0")))
             return True
     return False
 
@@ -486,6 +495,12 @@ def get_embedding_doc_info_list(app_id, embedding_name, start, end):
                 logging.debug(f"doc_info: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, info:{doc}")
                 result.append(doc)
     return (total, result)
+
+def get_embedding_doc_id_list(embedding_uuid, start, end):
+    list_key = get_embedding_doc_list_key(embedding_uuid)
+    redis = lanying_redis.get_redis_stack_connection()
+    doc_id_list = redis_lrange(redis, list_key, start, end)
+    return doc_id_list
 
 def get_embedding_doc_list_key(embedding_uuid):
     return f"embedding_doc_list:{embedding_uuid}"
