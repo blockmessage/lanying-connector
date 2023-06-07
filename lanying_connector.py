@@ -175,8 +175,9 @@ def create_embedding(service):
         algo = data.get('algo', "COSINE")
         admin_user_ids = data.get('admin_user_ids',[])
         max_block_size = data.get('max_block_size', 500)
+        preset_name = data.get('preset_name', '')
         service_module = importlib.import_module(f"{service}_service")
-        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids)
+        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
@@ -195,9 +196,13 @@ def configure_embedding(service):
         app_id = data['app_id']
         embedding_name = data['embedding_name']
         admin_user_ids = data.get('admin_user_ids',[])
+        preset_name = data.get('preset_name','')
+        embedding_max_tokens = data.get('embedding_max_tokens','2048')
+        embedding_max_blocks = data.get('embedding_max_blocks','5')
+        embedding_max_distance = data.get('embedding_max_distance','0.2')
         logging.debug(f"configure_embedding | {data}")
         service_module = importlib.import_module(f"{service}_service")
-        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids)
+        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:

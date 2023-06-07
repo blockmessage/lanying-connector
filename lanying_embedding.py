@@ -31,8 +31,8 @@ class IgnoringScriptConverter(MarkdownConverter):
 def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
-def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE", admin_user_ids = []):
-    logging.debug("start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids}")
+def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE", admin_user_ids = [], preset_name = ''):
+    logging.debug("start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}")
     if app_id is None:
         app_id = ""
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
@@ -49,7 +49,11 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
         "embedding_uuid": embedding_uuid,
         "time": now,
         "status": "ok",
-        "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids])
+        "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
+        "preset_name":preset_name,
+        "embedding_max_tokens":2048,
+        "embedding_max_blocks":5,
+        "embedding_max_distance":0.2,
     })
     redis.rpush(get_embedding_names_key(app_id), embedding_name)
     redis.hmset(get_embedding_uuid_key(embedding_uuid),
@@ -69,6 +73,7 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
                 "status": "ok"})
     result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", "1536", "DISTANCE_METRIC",algo)
     update_app_embedding_admin_users(app_id, admin_user_ids)
+    bind_preset_name(app_id, preset_name, embedding_name)
     logging.debug(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
 
@@ -87,12 +92,20 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
     redis = lanying_redis.get_redis_stack_connection()
-    redis.hset(get_embedding_name_key(app_id, embedding_name), "admin_user_ids", ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]))
+    redis.hmset(get_embedding_name_key(app_id, embedding_name), {
+        "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
+        "preset_name":preset_name,
+        "embedding_max_tokens":embedding_max_tokens,
+        "embedding_max_blocks":embedding_max_blocks,
+        "embedding_max_distance":embedding_max_distance
+    })
+    update_app_embedding_admin_users(app_id, admin_user_ids)
+    bind_preset_name(app_id, preset_name, embedding_name)
     return {"result":"ok"}
 
 def list_embeddings(app_id):
@@ -106,7 +119,7 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_max_distance"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
             result.append(embedding_info)
@@ -370,6 +383,11 @@ def update_app_embedding_admin_users(app_id, admin_user_ids):
     for user_id in admin_user_ids:
         redis.hincrby(key, user_id, 1)
 
+def bind_preset_name(app_id, preset_name, embedding_name):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_preset_name_key(app_id)
+    redis.hset(key, embedding_name, preset_name)
+
 def is_app_embedding_admin_user(app_id, user_id):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_app_embedding_admin_user_key(app_id)
@@ -377,6 +395,9 @@ def is_app_embedding_admin_user(app_id, user_id):
 
 def get_embedding_names_key(app_id):
     return f"embedding_names:{app_id}"
+
+def get_preset_name_key(app_id):
+    return f"preset_names:{app_id}"
 
 def get_embedding_name_key(app_id, embedding_name):
     return f"embedding_name:{app_id}:{embedding_name}"

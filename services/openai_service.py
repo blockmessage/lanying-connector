@@ -708,11 +708,11 @@ def del_embedding_info(redis, fromUserId, toUserId):
         key = embedding_info_key(fromUserId,toUserId)
         redis.delete(key)
 
-def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids):
-    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids)
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name):
+    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name)
 
-def configure_embedding(app_id, embedding_name, admin_user_ids):
-    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids)
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance):
+    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance)
 
 def list_embeddings(app_id):
     return lanying_embedding.list_embeddings(app_id)
