@@ -11,7 +11,6 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import requests
 import os
-import openai_doc_gen
 import copy
 from lanying_tasks import add_embedding_file, delete_doc_data
 import lanying_embedding
@@ -204,8 +203,6 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         if context == '': 
             q_embedding = fetch_embeddings(content)
             search_result = lanying_embedding.search_embeddings(app_id, embedding_name, q_embedding, embedding_max_tokens, embedding_max_blocks)
-            if len(search_result) == 0:
-                search_result = openai_doc_gen.search_embeddings(embedding_name, q_embedding, embedding_max_tokens, embedding_max_blocks)
             for doc in search_result:
                 embedding_content_type = presetExt.get('embedding_content_type', 'text')
                 now_distance = float(doc.vector_score)

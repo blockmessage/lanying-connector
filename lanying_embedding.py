@@ -156,7 +156,20 @@ def get_embedding_index(app_id, embedding_name):
         embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
         if embedding_uuid_info:
             return embedding_uuid_info["index"]
+    global_embedding_name_info = get_global_embedding_name_info(embedding_name)
+    if global_embedding_name_info:
+        return global_embedding_name_info["index"]
     return None
+
+def get_global_embedding_name_info(embedding_name):
+    redis = lanying_redis.get_redis_stack_connection()
+    global_alias_key = get_global_embedding_name_key(embedding_name)
+    info = redis_hgetall(redis, global_alias_key)
+    if "index" in info:
+        return info
+
+def get_global_embedding_name_key(embedding_name):
+    return f"embedding_config:alias:{embedding_name}"
 
 def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_filename, doc_id):
     redis = lanying_redis.get_redis_stack_connection()
