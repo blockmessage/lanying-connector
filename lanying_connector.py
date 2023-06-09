@@ -199,10 +199,9 @@ def configure_embedding(service):
         preset_name = data.get('preset_name','')
         embedding_max_tokens = data.get('embedding_max_tokens','2048')
         embedding_max_blocks = data.get('embedding_max_blocks','5')
-        embedding_max_distance = data.get('embedding_max_distance','0.2')
         logging.debug(f"configure_embedding | {data}")
         service_module = importlib.import_module(f"{service}_service")
-        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance)
+        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:

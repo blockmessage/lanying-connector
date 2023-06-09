@@ -116,12 +116,14 @@ def handle_chat_message(msg, config, retry_times = 3):
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
     redis = lanying_redis.get_redis_connection()
+    preset_name = "default"
     try:
         ext = json.loads(config['ext'])
         lcExt = ext['lanying_connector']
         if lcExt['preset_name']:
             preset = preset['presets'][lcExt['preset_name']]
             init_preset_defaults(preset, config['preset'])
+            preset_name = lcExt['preset_name']
     except Exception as e:
         lcExt = {}
     lastChoosePresetName = get_preset_name(redis, fromUserId, toUserId)
@@ -131,6 +133,7 @@ def handle_chat_message(msg, config, retry_times = 3):
             preset = preset['presets'][lastChoosePresetName]
             logging.debug(f"using preset_name:{lastChoosePresetName}")
             init_preset_defaults(preset, config['preset'])
+            preset_name = lastChoosePresetName
         except Exception as e:
             logging.exception(e)
             pass
@@ -142,11 +145,11 @@ def handle_chat_message(msg, config, retry_times = 3):
     logging.debug(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
     isChatGPT = is_chatgpt_model(preset['model'])
     if isChatGPT:
-        return handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_times)
+        return handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, retry_times)
     else:
         return ''
 
-def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_times):
+def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, retry_times):
     app_id = msg['appId']
     check_res = check_message_limit(app_id, config)
     if check_res['result'] == 'error':
@@ -181,30 +184,40 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         del_preset_name(redis, fromUserId, toUserId)
         del_embedding_info(redis, fromUserId, toUserId)
         return 'prompt is reset'
+    preset_embedding_infos = []
     if 'embedding_name' in presetExt:
-        embedding_name = presetExt['embedding_name']
-        embedding_content = presetExt.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
-        embedding_max_tokens = presetExt.get('embedding_max_tokens', 1024)
-        embedding_max_blocks = presetExt.get('embedding_max_blocks', 2)
-        embedding_info = get_embedding_info(redis, fromUserId, toUserId)
-        embedding_max_distance = presetExt.get('embedding_max_distance', 0.2)
-        logging.debug(f"use embeddings: {embedding_name}, embedding_max_tokens:{embedding_max_tokens},embedding_max_blocks:{embedding_max_blocks}")
+        preset_embedding_infos.append(presetExt)
+    other_preset_embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    if len(other_preset_embedding_infos) > 0:
+        if 'embedding_name' in presetExt:
+            preset_embedding_infos.extend([item for item in other_preset_embedding_infos if item.get("embedding_name") != presetExt["embedding_name"]])
+        else:
+            preset_embedding_infos.extend(other_preset_embedding_infos)
+    if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
         is_use_old_embeddings = False
+        embedding_names = []
+        for preset_embedding_info in preset_embedding_infos:
+            embedding_names.append(preset_embedding_info["embedding_name"])
+        embedding_names_str = ",".join(embedding_names)
+        embedding_info = get_embedding_info(redis, fromUserId, toUserId)
         using_embedding = embedding_info.get('using_embedding', 'auto')
         last_embedding_name = embedding_info.get('last_embedding_name', '')
         last_embedding_text = embedding_info.get('last_embedding_text', '')
-        logging.debug(f"using_embedding state: using_embedding={using_embedding}, last_embedding_name={last_embedding_name}, text_byte_size(last_embedding_text)={text_byte_size(last_embedding_text)}")
-        embedding_min_distance = 1.0
-        if using_embedding == 'once' and last_embedding_text != '' and last_embedding_name == embedding_name:
+        logging.debug(f"using_embedding state: using_embedding={using_embedding}, last_embedding_name={last_embedding_name}, text_byte_size(last_embedding_text)={text_byte_size(last_embedding_text)}, embedding_names_str={embedding_names_str}")
+        if using_embedding == 'once' and last_embedding_text != '' and last_embedding_name == embedding_names_str:
             context = last_embedding_text
             is_use_old_embeddings = True
         if context == '': 
             q_embedding = fetch_embeddings(content)
-            search_result = lanying_embedding.search_embeddings(app_id, embedding_name, q_embedding, embedding_max_tokens, embedding_max_blocks)
+            search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos)
+            embedding_min_distance = 1.0
+            first_preset_embedding_info = preset_embedding_infos[0]
+            embedding_max_distance = presetExt.get('embedding_max_distance', 1.0)
+            embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
+            embedding_content_type = presetExt.get('embedding_content_type', 'text')
             for doc in search_result:
-                embedding_content_type = presetExt.get('embedding_content_type', 'text')
                 now_distance = float(doc.vector_score)
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
@@ -215,24 +228,24 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
                     context = context + doc.text + "\n\n"
                     context_with_distance = context_with_distance + f"[{now_distance}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
-                if last_embedding_name != embedding_name or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
-                    embedding_info['last_embedding_name'] = embedding_name
+                if last_embedding_name != embedding_names_str or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
+                    embedding_info['last_embedding_name'] = embedding_names_str
                     embedding_info['last_embedding_text'] = context
                     set_embedding_info(redis, fromUserId, toUserId, embedding_info)
                 else:
                     context = last_embedding_text
                     is_use_old_embeddings = True
             elif using_embedding == 'once':
-                embedding_info['last_embedding_name'] = embedding_name
+                embedding_info['last_embedding_name'] = embedding_names_str
                 embedding_info['last_embedding_text'] = context
                 set_embedding_info(redis, fromUserId, toUserId, embedding_info)
-        context = f"{embedding_content}\n\n{context}"
-        if 'debug' in presetExt and presetExt['debug'] == True:
-            if is_use_old_embeddings:
-                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
-            else:
-                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}")
-        messages.append({'role':'user', 'content':context})
+            context = f"{embedding_content}\n\n{context}"
+            if 'debug' in presetExt and presetExt['debug'] == True:
+                if is_use_old_embeddings:
+                    lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
+                else:
+                    lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}")
+            messages.append({'role':'user', 'content':context})
     history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
     if history_result['result'] == 'error':
         return history_result['message']
@@ -293,6 +306,38 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, retry_tim
         else:
             return ''
     return reply
+
+def multi_embedding_search(app_id, q_embedding, preset_embedding_infos):
+    list = []
+    max_tokens = 0
+    max_blocks = 0
+    for preset_embedding_info in preset_embedding_infos:
+        embedding_name = preset_embedding_info['embedding_name']
+        embedding_max_tokens = preset_embedding_info.get('embedding_max_tokens', 1024)
+        embedding_max_blocks = preset_embedding_info.get('embedding_max_blocks', 2)
+        if max_tokens < embedding_max_tokens:
+            max_tokens = embedding_max_tokens
+        if max_blocks < embedding_max_blocks:
+            max_blocks = embedding_max_blocks
+        docs = lanying_embedding.search_embeddings(app_id, embedding_name, q_embedding, embedding_max_tokens, embedding_max_blocks)
+        idx = 0
+        for doc in docs:
+            idx = idx+1
+            list.append(((idx,float(doc.vector_score)),doc))
+    sorted_list = sorted(list)
+    ret = []
+    now_tokens = 0
+    blocks_num = 0
+    for _,doc in sorted_list:
+        now_tokens += int(doc.num_of_tokens)
+        blocks_num += 1
+        logging.debug(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
+        if now_tokens > max_tokens:
+            break
+        if blocks_num > max_blocks:
+            break
+        ret.append(doc)
+    return ret
 
 def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset):
     history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
@@ -708,8 +753,8 @@ def del_embedding_info(redis, fromUserId, toUserId):
 def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name):
     return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name)
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance):
-    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance)
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks):
+    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks)
 
 def list_embeddings(app_id):
     return lanying_embedding.list_embeddings(app_id)

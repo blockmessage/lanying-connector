@@ -52,8 +52,7 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
         "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
         "preset_name":preset_name,
         "embedding_max_tokens":2048,
-        "embedding_max_blocks":5,
-        "embedding_max_distance":0.2,
+        "embedding_max_blocks":5
     })
     redis.rpush(get_embedding_names_key(app_id), embedding_name)
     redis.hmset(get_embedding_uuid_key(embedding_uuid),
@@ -92,7 +91,7 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_max_distance):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
@@ -101,8 +100,7 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
         "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
         "preset_name":preset_name,
         "embedding_max_tokens":embedding_max_tokens,
-        "embedding_max_blocks":embedding_max_blocks,
-        "embedding_max_distance":embedding_max_distance
+        "embedding_max_blocks":embedding_max_blocks
     })
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
@@ -119,13 +117,15 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_max_distance"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
             result.append(embedding_info)
     return result
 
 def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_blocks = 10):
+    if max_blocks > 10:
+        max_blocks = 10
     redis = lanying_redis.get_redis_stack_connection()
     if redis:
         embedding_index = get_embedding_index(app_id, embedding_name)
@@ -148,6 +148,21 @@ def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_
                 ret.append(doc)
             return ret
     return []
+
+def get_preset_embedding_infos(app_id, preset_name):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_preset_name_key(app_id)
+    bind_infos = redis_hgetall(redis, key)
+    embedding_infos = []
+    for now_embedding_name, now_preset_name in bind_infos.items():
+        if now_preset_name == preset_name:
+            embedding_info = get_embedding_name_info(app_id, now_embedding_name)
+            if embedding_info:
+                embedding_info["embedding_name"] = now_embedding_name
+                embedding_info["embedding_max_tokens"] = int(embedding_info.get("embedding_max_tokens","2048"))
+                embedding_info["embedding_max_blocks"] = int(embedding_info.get("embedding_max_blocks", "5"))
+                embedding_infos.append(embedding_info)
+    return embedding_infos
 
 def get_embedding_index(app_id, embedding_name):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
