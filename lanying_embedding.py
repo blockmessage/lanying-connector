@@ -52,7 +52,8 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
         "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
         "preset_name":preset_name,
         "embedding_max_tokens":2048,
-        "embedding_max_blocks":5
+        "embedding_max_blocks":5,
+        "embedding_content": "请严格按照下面的知识回答我之后的所有问题:"
     })
     redis.rpush(get_embedding_names_key(app_id), embedding_name)
     redis.hmset(get_embedding_uuid_key(embedding_uuid),
@@ -91,16 +92,30 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
     redis = lanying_redis.get_redis_stack_connection()
+    if new_embedding_name != embedding_name and new_embedding_name != "":
+        new_embedding_name_info = get_embedding_name_info(app_id, new_embedding_name)
+        if new_embedding_name_info:
+            logging.debug(f"configure_embedding | new_embedding_name_info exists:{new_embedding_name_info}")
+            return {'result':"error", 'message': 'new_embedding_name exist'}
+        else:
+            redis.rename(get_embedding_name_key(app_id,embedding_name), get_embedding_name_key(app_id,new_embedding_name))
+            unbind_preset_name(app_id, embedding_name)
+            list_key = get_embedding_names_key(app_id)
+            redis.lrem(list_key, 1, embedding_name)
+            redis.rpush(list_key, new_embedding_name)
+            embedding_name = new_embedding_name
     redis.hmset(get_embedding_name_key(app_id, embedding_name), {
         "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
         "preset_name":preset_name,
+        "embedding_name": embedding_name,
         "embedding_max_tokens":embedding_max_tokens,
-        "embedding_max_blocks":embedding_max_blocks
+        "embedding_max_blocks":embedding_max_blocks,
+        "embedding_content": embedding_content
     })
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
@@ -117,9 +132,11 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
+            if "embedding_content" not in embedding_info:
+                embedding_info["embedding_content"] = "请严格按照下面的知识回答我之后的所有问题:"
             result.append(embedding_info)
     return result
 
@@ -415,6 +432,11 @@ def bind_preset_name(app_id, preset_name, embedding_name):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_preset_name_key(app_id)
     redis.hset(key, embedding_name, preset_name)
+
+def unbind_preset_name(app_id, embedding_name):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_preset_name_key(app_id)
+    redis.hdel(key, embedding_name)
 
 def is_app_embedding_admin_user(app_id, user_id):
     redis = lanying_redis.get_redis_stack_connection()
