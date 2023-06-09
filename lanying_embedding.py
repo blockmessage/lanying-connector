@@ -215,6 +215,8 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".csv"]:
                 process_csv(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            elif ext in [".txt"]:
+                process_txt(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
             update_doc_field(embedding_uuid, doc_id, "status", "error")
@@ -265,9 +267,19 @@ def process_markdown(config, app_id, embedding_uuid, origin_filename, doc_id, ma
     blocks = []
     total_tokens = 0
     for block in re.split(rule ,markdown, flags=re.MULTILINE):
-        block_tokens, block_blocks = process_block(config, embedding_uuid, block)
+        block_tokens, block_blocks = process_block(config, block)
         total_tokens += block_tokens
         blocks.extend(block_blocks)
+    redis = lanying_redis.get_redis_stack_connection()
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+def process_txt(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+    blocks = []
+    total_tokens = 0
+    with open(filename, 'r', encoding='utf-8') as f:
+        content = f.read()
+        total_tokens, blocks = process_block(config, content)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
@@ -282,7 +294,7 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     redis = lanying_redis.get_redis_stack_connection()
     for i, row in df.iterrows():
         if 'text' in row:
-            block_tokens, block_blocks = process_block(config, embedding_uuid, row['text'])
+            block_tokens, block_blocks = process_block(config, row['text'])
             total_tokens += block_tokens
             total_blocks += len(block_blocks)
             update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
@@ -331,7 +343,7 @@ def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep
             return fetch_embedding(openai_secret_key, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
         raise e
 
-def process_block(config, embedding_uuid, block):
+def process_block(config, block):
     lines = []
     token_cnt = 0
     blocks = []

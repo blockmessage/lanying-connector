@@ -48,7 +48,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                 _,sub_ext = os.path.splitext(sub_filename)
                 if "__MACOSX" in sub_filename:
                     pass
-                elif sub_ext in [".html", ".htm", ".csv"]:
+                elif sub_ext in [".html", ".htm", ".csv", ".txt"]:
                     logging.debug("add_embedding_file | start process sub file: sub_filenames:{sub_filenames}")
                     sub_file_info = zip_ref.getinfo(sub_filename)
                     sub_file_size = sub_file_info.file_size
@@ -63,7 +63,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                             lanying_embedding.update_trace_field(trace_id, "message", "upload embedding sub file error")
                             task_error("fail to upload sub file : app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid},object_name:{object_name}")
                         tasks.append((object_name, sub_filename, doc_id))
-    elif ext in [".html", ".htm", ".csv"]:
+    elif ext in [".html", ".htm", ".csv", ".txt"]:
         file_stat = os.stat(temp_filename)
         file_size = file_stat.st_size
         doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
