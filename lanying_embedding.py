@@ -132,7 +132,7 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
             if "embedding_content" not in embedding_info:
@@ -320,13 +320,16 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                             "summary": "{}"})
             embedding_size = len(embedding_bytes)
             text_size = text_byte_size(text)
+            char_cnt = len(text)
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", 1)
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", embedding_size)
             increase_embedding_uuid_field(redis, embedding_uuid, "text_size", text_size)
+            increase_embedding_uuid_field(redis, embedding_uuid, "char_cnt", char_cnt)
             increase_embedding_uuid_field(redis, embedding_uuid, "token_cnt", token_cnt)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "embedding_count", 1)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "embedding_size", embedding_size)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "text_size", text_size)
+            increase_embedding_doc_field(redis, embedding_uuid, doc_id, "char_cnt", char_cnt)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "token_cnt", token_cnt)
             update_progress(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), 1)
 
@@ -348,7 +351,7 @@ def process_block(config, block):
     token_cnt = 0
     blocks = []
     total_tokens = 0
-    max_block_size = int(config.get('max_block_size', "500"))
+    max_block_size = get_max_token_count(config)
     for line in block.split('\n'):
         line_token_count = num_of_tokens(line + "\n")
         if token_cnt + line_token_count > max_block_size:
@@ -359,7 +362,8 @@ def process_block(config, block):
                 lines = []
                 token_cnt = 0
         if line_token_count > max_block_size:
-            logging.debug(f"drop too long line: {line}")
+            logging.debug(f"processing too long line: {line}")
+            blocks.extend(process_line(line, max_block_size))
             continue
         lines.append(line)
         token_cnt += line_token_count
@@ -368,6 +372,32 @@ def process_block(config, block):
         blocks.append((token_cnt, now_block))
         total_tokens += token_cnt
     return (total_tokens, blocks)
+
+def process_line(text, max_block_size):
+    result = []
+    current_str = ""
+    token_cnt = 0
+    char_cnt = 0
+    for char in text:
+        if token_cnt >= max_block_size:
+            result.append((token_cnt, current_str))
+            current_str = ""
+            token_cnt = 0
+            char_cnt = 0
+        current_str += char
+        char_cnt += 1
+        if token_cnt >= max_block_size - 20 or char_cnt % 20 == 0:
+            token_cnt = num_of_tokens(current_str)
+    if len(current_str) > 0:
+        token_cnt = num_of_tokens(current_str)
+        result.append((token_cnt, current_str))
+    return result
+
+def get_max_token_count(config):
+    max_block_size = int(config.get('max_block_size', "350"))
+    max_token_count = round(max_block_size * 1.3)
+    return max_token_count
+
 
 def generate_block_id(embedding_uuid):
     key = get_embedding_uuid_key(embedding_uuid)
@@ -515,6 +545,7 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", -int(doc_info.get("embedding_size", "0")))
             increase_embedding_uuid_field(redis, embedding_uuid, "text_size", -int(doc_info.get("text_size", "0")))
             increase_embedding_uuid_field(redis, embedding_uuid, "token_cnt", -int(doc_info.get("token_cnt", "0")))
+            increase_embedding_uuid_field(redis, embedding_uuid, "char_cnt", -int(doc_info.get("char_cnt", "0")))
             return True
     return False
 
