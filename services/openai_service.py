@@ -648,7 +648,7 @@ def calc_message_quota(model, text_size):
     if is_chatgpt_model_3_5_16k(model):
         multi = 2
     if is_embedding_model(model):
-        multi = 0.2
+        multi = 0.05
     count = round(text_size / 1024)
     if  count < 1:
         count = 1
