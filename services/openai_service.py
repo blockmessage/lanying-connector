@@ -397,6 +397,8 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
 def model_token_limit(model):
     if is_chatgpt_model_4_32k(model):
         return 32000
+    if is_chatgpt_model_3_5_16k(model):
+        return 16000
     if is_chatgpt_model_4(model):
         return 8000
     return 4000
@@ -500,6 +502,9 @@ def is_chatgpt_model(model):
 
 def is_chatgpt_model_3_5(model):
     return model.startswith("gpt-3.5")
+
+def is_chatgpt_model_3_5_16k(model):
+    return model.startswith("gpt-3.5-turbo-16k")
 
 def is_chatgpt_model_4(model):
     return model.startswith("gpt-4")
@@ -638,6 +643,10 @@ def calc_message_quota(model, text_size):
     multi = 1
     if is_chatgpt_model_4(model):
         multi = 20
+    if is_chatgpt_model_4_32k(model):
+        multi = 40
+    if is_chatgpt_model_3_5_16k(model):
+        multi = 2
     if is_embedding_model(model):
         multi = 0.2
     count = round(text_size / 1024)
