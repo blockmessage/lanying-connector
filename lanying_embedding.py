@@ -141,8 +141,8 @@ def list_embeddings(app_id):
     return result
 
 def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_blocks = 10):
-    if max_blocks > 10:
-        max_blocks = 10
+    if max_blocks > 100:
+        max_blocks = 100
     redis = lanying_redis.get_redis_stack_connection()
     if redis:
         embedding_index = get_embedding_index(app_id, embedding_name)
