@@ -313,7 +313,7 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos):
     max_blocks = 0
     for preset_embedding_info in preset_embedding_infos:
         embedding_name = preset_embedding_info['embedding_name']
-        embedding_max_tokens = preset_embedding_info.get('embedding_max_tokens', 1024)
+        embedding_max_tokens = lanying_embedding.word_num_to_token_num(preset_embedding_info.get('embedding_max_tokens', 1024))
         embedding_max_blocks = preset_embedding_info.get('embedding_max_blocks', 2)
         if max_tokens < embedding_max_tokens:
             max_tokens = embedding_max_tokens

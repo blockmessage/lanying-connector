@@ -395,9 +395,11 @@ def process_line(text, max_block_size):
 
 def get_max_token_count(config):
     max_block_size = int(config.get('max_block_size', "350"))
-    max_token_count = round(max_block_size * 1.3)
+    max_token_count = word_num_to_token_num(max_block_size)
     return max_token_count
 
+def word_num_to_token_num(word_num):
+    return round(word_num * 1.3)
 
 def generate_block_id(embedding_uuid):
     key = get_embedding_uuid_key(embedding_uuid)
