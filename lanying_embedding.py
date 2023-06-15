@@ -11,6 +11,7 @@ import random
 import numpy as np
 from redis.commands.search.query import Query
 import pandas as pd
+import lanying_config
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -143,6 +144,10 @@ def list_embeddings(app_id):
 def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_blocks = 10):
     if max_blocks > 100:
         max_blocks = 100
+    result = check_storage_size(app_id)
+    if result['result'] == 'error':
+        logging.info(f"search_embeddings | skip search for exceed storage limit app, app_id:{app_id}, embedding_name:{embedding_name}")
+        return []
     redis = lanying_redis.get_redis_stack_connection()
     if redis:
         embedding_index = get_embedding_index(app_id, embedding_name)
@@ -219,7 +224,6 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_txt(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
-            update_doc_field(embedding_uuid, doc_id, "status", "error")
             raise e
         increase_embedding_doc_field(redis, embedding_uuid, doc_id, "succ_count", 1)
         update_doc_field(embedding_uuid, doc_id, "status", "finish")
@@ -541,6 +545,7 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
             task.apply_async(args = [app_id, embedding_name, doc_id, embedding_index, 0])
             list_key = get_embedding_doc_list_key(embedding_uuid)
             redis.lrem(list_key, 2, doc_id)
+            restore_storage_size(app_id, embedding_uuid, doc_id)
             info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
             redis.delete(info_key)
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", -int(doc_info.get("embedding_count", "0")))
@@ -585,6 +590,53 @@ def get_doc(embedding_uuid, doc_id):
         return info
     return None
 
+def check_storage_size(app_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    storage_limit = lanying_config.get_config(app_id, "lanying_connector.storage_limit", 0)
+    storage_payg = lanying_config.get_config(app_id, "lanying_connector.storage_payg", 0)
+    if storage_payg == 1 and storage_limit > 0:
+        return {'result':'ok'}
+    now_storage_size = increase_app_storage_file_size(app_id, 0)
+    if storage_limit == 0 or now_storage_size > storage_limit * 1024 * 1024 * 1.1:
+        return {'result': 'error'}
+    return {'result':'ok'}
+
+def add_storage_size(app_id, embedding_uuid, doc_id, file_size):
+    redis = lanying_redis.get_redis_stack_connection()
+    storage_limit = lanying_config.get_config(app_id, "lanying_connector.storage_limit", 0)
+    storage_payg = lanying_config.get_config(app_id, "lanying_connector.storage_payg", 0)
+    if storage_payg == 1 and storage_limit > 0:
+        increase_app_storage_file_size(app_id, file_size)
+        increase_embedding_doc_field(redis, embedding_uuid, doc_id, "storage_file_size", file_size)
+        increase_embedding_uuid_field(redis, embedding_uuid, "storage_file_size", file_size)
+        return {'result':'ok'}
+    now_storage_size = increase_app_storage_file_size(app_id, 0)
+    if now_storage_size + file_size > storage_limit * 1024 * 1024:
+        return {'result': 'error'}
+    now_storage_size = increase_app_storage_file_size(app_id, file_size)
+    if now_storage_size + file_size > storage_limit * 1024 * 1024:
+        increase_app_storage_file_size(app_id, -file_size)
+        return {'result': 'error'}
+    increase_embedding_doc_field(redis, embedding_uuid, doc_id, "storage_file_size", file_size)
+    increase_embedding_uuid_field(redis, embedding_uuid, "storage_file_size", file_size)
+    return {'result':'ok'}
+
+def restore_storage_size(app_id, embedding_uuid, doc_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    doc_info = get_doc(embedding_uuid, doc_id)
+    if doc_info:
+        storage_file_size = doc_info.get('storage_file_size', 0)
+        if storage_file_size > 0:
+            result = increase_embedding_doc_field(redis, embedding_uuid, doc_id, "storage_file_size", -storage_file_size)
+            if result >= 0:
+                increase_embedding_uuid_field(redis, embedding_uuid, "storage_file_size", -storage_file_size)
+                increase_app_storage_file_size(app_id, -storage_file_size)
+
+def increase_app_storage_file_size(app_id, value):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_app_embedding_app_info_key(app_id)
+    return redis.hincrby(key, "storage_file_size", value)
+
 def increase_embedding_doc_field(redis, embedding_uuid, doc_id, field, value):
     redis.hincrby(get_embedding_doc_info_key(embedding_uuid, doc_id), field, value)
 
@@ -623,6 +675,9 @@ def get_embedding_doc_list_key(embedding_uuid):
 
 def get_embedding_doc_info_key(embedding_uuid, doc_id):
     return f"embedding_doc_info:{embedding_uuid}:{doc_id}"
+
+def get_app_embedding_app_info_key(app_id):
+    return f"embedding_app_info:{app_id}"
 
 def redis_lrange(redis, key, start, end):
     return [bytes.decode('utf-8') for bytes in redis.lrange(key, start, end)]
