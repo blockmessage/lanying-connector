@@ -101,7 +101,7 @@ def handle_chat_message(msg, config, retry_times = 3):
     ctype = msg['ctype']
     if ctype == 'TEXT':
         content = msg['content']
-        if content.startswith("/embedding"):
+        if content.startswith("/bluevector"):
             return handle_embedding_command(msg, config)
         pass
     elif ctype == 'FILE':
@@ -793,7 +793,7 @@ def handle_embedding_command(msg, config):
     app_id = msg['appId']
     content = msg['content']
     fields = re.split("[ \t\n]{1,}", content)
-    if (len(fields) > 1 and fields[0] == "/embedding"):
+    if (len(fields) > 1 and fields[0] == "/bluevector"):
         if len(fields) >= 4 and fields[1] == "add":
             embedding_name = fields[2]
             file_uuid = fields[3]
@@ -841,14 +841,18 @@ def handle_embedding_command(msg, config):
                 result.append(f"文档ID:{doc['doc_id']}, 文件名:{doc['filename']}, 状态:{doc['status']}, 进度：{doc.get('progress_finish', '-')}/{doc.get('progress_total', '-')}")
             return f"文档总数:{total}\n最近文档列表为:\n" + "\n".join(result)
         elif len(fields) >= 2  and fields[1] == "help":
-            return embedding_command_help()
+            from_user_id = int(msg['from']['uid'])
+            if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
+                return embedding_command_help()
+            else:
+                return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。"
     return '命令格式不正确，可以用命令如下: \n' + embedding_command_help()
 
 def embedding_command_help():
     return '可以用命令如下: \n' + \
-            '1. 将文件添加到知识库:\n/embedding add <EMBEDDING_NAME> <FILE_ID> \n' + \
-            '2. 查询知识库状态:\n/embedding status <EMBEDDING_NAME>\n' + \
-            '3. 知识库删除文档:\n/embedding delete <EMBEDDING_NAME> <DOC_ID> \n'
+            '1. 将文件添加到知识库:\n/bluevector add <KNOWLEDGE_BASE_NAME> <FILE_ID> \n' + \
+            '2. 查询知识库状态:\n/bluevector status <KNOWLEDGE_BASE_NAME>\n' + \
+            '3. 知识库删除文档:\n/bluevector delete <KNOWLEDGE_BASE_NAME> <DOC_ID> \n'
 
 def add_doc_to_embedding(app_id, embedding_name, dname, url):
     config = lanying_config.get_lanying_connector(app_id)
@@ -893,7 +897,7 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
         for admin_user_id in admin_user_ids:
             if int(admin_user_id) == from_user_id:
                 return {'result':'ok'}
-    return {'result':'error', 'message':'知识库不存在，或者你没有这个知识库的权限'}
+    return {'result':'error', 'message':f'知识库不存在，或者你（ID：{from_user_id}）没有这个知识库的权限'}
 
 def text_byte_size(text):
     return len(text.encode('utf-8'))
