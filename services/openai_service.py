@@ -223,10 +223,10 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
                     embedding_min_distance = now_distance
                 if embedding_content_type == 'summary':
                     context = context + doc.summary + "\n\n"
-                    context_with_distance = context_with_distance + f"[{now_distance}]" + doc.summary + "\n\n"
+                    context_with_distance = context_with_distance + f"[{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}]" + doc.summary + "\n\n"
                 else:
                     context = context + doc.text + "\n\n"
-                    context_with_distance = context_with_distance + f"[{now_distance}]" + doc.text + "\n\n"
+                    context_with_distance = context_with_distance + f"[{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
                 if last_embedding_name != embedding_names_str or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
                     embedding_info['last_embedding_name'] = embedding_names_str

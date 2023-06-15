@@ -148,7 +148,7 @@ def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_
         embedding_index = get_embedding_index(app_id, embedding_name)
         if embedding_index:
             base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
-            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary").paging(0,max_blocks).dialect(2)
+            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id").paging(0,max_blocks).dialect(2)
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
             print(f"topk result:{results}")
             ret = []
