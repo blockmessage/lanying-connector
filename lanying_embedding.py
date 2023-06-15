@@ -155,7 +155,7 @@ def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_
             base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
             query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id").paging(0,max_blocks).dialect(2)
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
-            print(f"topk result:{results}")
+            # logging.debug(f"topk result:{results.docs[:1]}")
             ret = []
             now_tokens = 0
             blocks_num = 0
@@ -263,9 +263,9 @@ def remove_space_line(text):
 def process_html(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     with open(filename, "r") as f:
         html = f.read()
-        process_markdown(config, app_id, embedding_uuid, origin_filename, doc_id, md(html))
+        process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, md(html))
 
-def process_markdown(config, app_id, embedding_uuid, origin_filename, doc_id, markdown):
+def process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, markdown):
     markdown = remove_space_line(markdown)
     rule = config.get('block_split_rule',"^#{1,3} ")
     blocks = []
@@ -277,6 +277,11 @@ def process_markdown(config, app_id, embedding_uuid, origin_filename, doc_id, ma
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+def process_markdown(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+    with open(filename, 'r', encoding='utf-8') as f:
+        content = f.read()
+        process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, content)
 
 def process_txt(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     blocks = []
