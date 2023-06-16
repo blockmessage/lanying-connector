@@ -280,6 +280,40 @@ def delete_doc_from_embedding(service):
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
 
+@app.route("/service/<string:service>/get_embedding_usage", methods=["POST"])
+def get_embedding_usage(service):
+    logging.debug(f"get_embedding_usage | start")
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        logging.debug(f"get_embedding_usage | {data}")
+        service_module = importlib.import_module(f"{service}_service")
+        data = service_module.get_embedding_usage(app_id)
+        resp = app.make_response({'code':200, 'data':data})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+
+@app.route("/service/<string:service>/set_embedding_usage", methods=["POST"])
+def set_embedding_usage(service):
+    logging.debug(f"set_embedding_usage | start")
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        storage_file_size_max = data['storage_file_size_max']
+        logging.debug(f"set_embedding_usage | {data}")
+        service_module = importlib.import_module(f"{service}_service")
+        data = service_module.set_embedding_usage(app_id, storage_file_size_max)
+        resp = app.make_response({'code':200, 'data':data})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
 def queryAndSendMessage(data):
     appId = data['appId']
     fromUserId = data['from']['uid']

@@ -865,6 +865,12 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url):
 def delete_doc_from_embedding(app_id, embedding_name, doc_id):
     return lanying_embedding.delete_doc_from_embedding(app_id, embedding_name, doc_id, delete_doc_data)
 
+def get_embedding_usage(app_id):
+    return lanying_embedding.get_embedding_usage(app_id)
+
+def set_embedding_usage(app_id, storage_file_size_max):
+    return lanying_embedding.set_embedding_usage(app_id, storage_file_size_max)
+
 def save_attachment(from_user_id, attachment):
     redis = lanying_redis.get_redis_connection()
     file_id = redis.incrby(f"lanying-connector:attachment_id:{from_user_id}", 1)

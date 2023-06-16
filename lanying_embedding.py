@@ -640,7 +640,11 @@ def restore_storage_size(app_id, embedding_uuid, doc_id):
 def increase_app_storage_file_size(app_id, value):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_app_embedding_app_info_key(app_id)
-    return redis.hincrby(key, "storage_file_size", value)
+    result = redis.hincrby(key, "storage_file_size", value)
+    storage_file_size_max = redis.hincrby(key, "storage_file_size_max", 0)
+    if storage_file_size_max < result:
+        redis.hset(key, "storage_file_size_max", result)
+    return result
 
 def increase_embedding_doc_field(redis, embedding_uuid, doc_id, field, value):
     redis.hincrby(get_embedding_doc_info_key(embedding_uuid, doc_id), field, value)
@@ -697,3 +701,14 @@ def redis_hgetall(redis, key):
 
 def text_byte_size(text):
     return len(text.encode('utf-8'))
+
+def get_embedding_usage(app_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_app_embedding_app_info_key(app_id)
+    return redis_hgetall(redis, key)
+
+def set_embedding_usage(app_id, storage_file_size_max):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_app_embedding_app_info_key(app_id)
+    redis.hset(key, "storage_file_size_max", storage_file_size_max)
+    return True
