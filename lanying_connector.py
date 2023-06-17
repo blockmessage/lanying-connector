@@ -252,11 +252,16 @@ def add_doc_to_embedding(service):
         data = json.loads(text)
         app_id = data['app_id']
         embedding_name = data['embedding_name']
-        file_name = data['file_name']
-        file_url = data['file_url']
+        type = data.get('type', 'file')
+        if type == 'url':
+            url = data.get('url', '')
+            name = 'url.html'
+        else:
+            name = data.get('file_name','')
+            url = data.get('file_url','')
         logging.debug(f"add_doc_to_embedding | {data}")
         service_module = importlib.import_module(f"{service}_service")
-        service_module.add_doc_to_embedding(app_id, embedding_name, file_name, file_url)
+        service_module.add_doc_to_embedding(app_id, embedding_name, name, url, type)
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})

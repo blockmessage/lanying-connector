@@ -23,7 +23,7 @@ os.makedirs(download_dir, exist_ok=True)
 lanying_config.init()
 
 @app.task
-def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key):
+def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file'):
     storage_limit = lanying_config.get_config(app_id, "lanying_connector.storage_limit", 0)
     storage_payg = lanying_config.get_config(app_id, "lanying_connector.storage_payg", 0)
     logging.debug(f"limit info:storage_limit:{storage_limit}, storage_payg:{storage_payg}")
@@ -39,7 +39,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
     embedding_uuid = embedding_info["embedding_uuid"]
     lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", openai_secret_key)
     temp_filename = os.path.join(f"{download_dir}/{app_id}-{embedding_uuid}-{uuid.uuid4()}{ext}")
-    download_result = lanying_file_storage.download_url(url, headers, temp_filename)
+    download_result = lanying_file_storage.download_url(url, {} if type == 'url' else headers, temp_filename)
     tasks = []
     if download_result["result"] == "error":
         lanying_embedding.update_trace_field(trace_id, "status", "error")
@@ -74,7 +74,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
         file_size = file_stat.st_size
         doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
         object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
-        lanying_embedding.create_doc_info(embedding_uuid, origin_filename, object_name, doc_id, file_size)
+        lanying_embedding.create_doc_info(embedding_uuid, url if type == 'url' else origin_filename, object_name, doc_id, file_size)
         lanying_embedding.add_trace_doc_id(trace_id, doc_id)
         upload_result = lanying_file_storage.upload(object_name, temp_filename)
         if upload_result["result"] == "error":

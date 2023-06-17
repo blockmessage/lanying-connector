@@ -853,14 +853,13 @@ def embedding_command_help():
             '1. 将文件添加到知识库:\n/bluevector add <KNOWLEDGE_BASE_NAME> <FILE_ID> \n' + \
             '2. 查询知识库状态:\n/bluevector status <KNOWLEDGE_BASE_NAME>\n' + \
             '3. 知识库删除文档:\n/bluevector delete <KNOWLEDGE_BASE_NAME> <DOC_ID> \n'
-
-def add_doc_to_embedding(app_id, embedding_name, dname, url):
+def add_doc_to_embedding(app_id, embedding_name, dname, url, type):
     config = lanying_config.get_lanying_connector(app_id)
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
             'user_id': config['lanying_user_id']}
     trace_id = lanying_embedding.create_trace_id()
-    add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token']])
+    add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type])
 
 def delete_doc_from_embedding(app_id, embedding_name, doc_id):
     return lanying_embedding.delete_doc_from_embedding(app_id, embedding_name, doc_id, delete_doc_data)
