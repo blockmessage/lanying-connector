@@ -12,6 +12,7 @@ import numpy as np
 from redis.commands.search.query import Query
 import pandas as pd
 import lanying_config
+from pdfreader import SimplePDFViewer
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -222,6 +223,8 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_csv(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".txt"]:
                 process_txt(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            elif ext in [".pdf"]:
+                process_pdf(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
             raise e
@@ -288,6 +291,22 @@ def process_txt(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     total_tokens = 0
     with open(filename, 'r', encoding='utf-8') as f:
         content = f.read()
+        total_tokens, blocks = process_block(config, content)
+    redis = lanying_redis.get_redis_stack_connection()
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+
+def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+    blocks = []
+    total_tokens = 0
+    content_list = []
+    with open(filename, 'rb') as f:
+        viewer = SimplePDFViewer(f)
+        for canvas in viewer:
+            if canvas.strings:
+                content_list.append("".join(canvas.strings))
+        content = "\n".join(content_list)
         total_tokens, blocks = process_block(config, content)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
@@ -630,7 +649,7 @@ def restore_storage_size(app_id, embedding_uuid, doc_id):
     redis = lanying_redis.get_redis_stack_connection()
     doc_info = get_doc(embedding_uuid, doc_id)
     if doc_info:
-        storage_file_size = doc_info.get('storage_file_size', 0)
+        storage_file_size = int(doc_info.get('storage_file_size', "0"))
         if storage_file_size > 0:
             result = increase_embedding_doc_field(redis, embedding_uuid, doc_id, "storage_file_size", -storage_file_size)
             if result >= 0:
@@ -647,7 +666,7 @@ def increase_app_storage_file_size(app_id, value):
     return result
 
 def increase_embedding_doc_field(redis, embedding_uuid, doc_id, field, value):
-    redis.hincrby(get_embedding_doc_info_key(embedding_uuid, doc_id), field, value)
+    return redis.hincrby(get_embedding_doc_info_key(embedding_uuid, doc_id), field, value)
 
 def generate_doc_id(embedding_uuid):
     key = get_embedding_uuid_key(embedding_uuid)

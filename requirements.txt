@@ -6,6 +6,7 @@ attrs==22.2.0
 autopep8==2.0.0
 beautifulsoup4==4.11.2
 billiard==3.6.4.0
+bitarray==2.7.5
 celery==5.2.7
 certifi==2022.9.24
 charset-normalizer==2.1.1
@@ -41,11 +42,13 @@ openpyxl==3.0.10
 packaging==23.0
 pandas==1.5.2
 pandas-stubs==1.5.2.221124
+pdfreader==0.1.12
 Pillow==9.4.0
 plotly==5.13.1
 prompt-toolkit==3.0.38
 protobuf==3.20.3
 pycodestyle==2.10.0
+pycryptodome==3.18.0
 pyparsing==3.0.9
 python-dateutil==2.8.2
 python-dotenv==0.21.0

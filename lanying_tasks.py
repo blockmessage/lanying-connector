@@ -44,7 +44,13 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
     if download_result["result"] == "error":
         lanying_embedding.update_trace_field(trace_id, "status", "error")
         lanying_embedding.update_trace_field(trace_id, "message", "download embedding file error")
-        task_error(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, url={url}, message:{download_result['message']}")
+        doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
+        lanying_embedding.create_doc_info(embedding_uuid, url if type == 'url' else origin_filename, '', doc_id, 0)
+        lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
+        lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
+        lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "download_failed")
+        logging.error(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, url={url}, message:{download_result['message']}")
+        return
     if ext in [".zip"]:
         with zipfile.ZipFile(temp_filename, 'r') as zip_ref:
             sub_filenames = zip_ref.namelist()
@@ -54,7 +60,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                 right_filename = sub_filename.encode('cp437').decode('utf-8')
                 if "__MACOSX" in sub_filename:
                     pass
-                elif sub_ext in [".html", ".htm", ".csv", ".txt", ".md"]:
+                elif sub_ext in [".html", ".htm", ".csv", ".txt", ".md", ".pdf"]:
                     logging.debug(f"add_embedding_file | start process sub file: sub_filename:{sub_filename}, right_filename:{right_filename}")
                     sub_file_info = zip_ref.getinfo(sub_filename)
                     sub_file_size = sub_file_info.file_size
@@ -69,7 +75,14 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                             lanying_embedding.update_trace_field(trace_id, "message", "upload embedding sub file error")
                             task_error(f"fail to upload sub file : app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid},object_name:{object_name}")
                         tasks.append((object_name, right_filename, doc_id))
-    elif ext in [".html", ".htm", ".csv", ".txt", ".md"]:
+                # else:
+                #     doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
+                #     lanying_embedding.create_doc_info(embedding_uuid, right_filename, '', doc_id, 0)
+                #     lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
+                #     lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
+                #     lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "bad_ext")
+
+    elif ext in [".html", ".htm", ".csv", ".txt", ".md", ".pdf"]:
         file_stat = os.stat(temp_filename)
         file_size = file_stat.st_size
         doc_id = lanying_embedding.generate_doc_id(embedding_uuid)

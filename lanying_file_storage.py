@@ -64,5 +64,15 @@ def download_url(url, headers, filename):
                 logging.debug(f'Downloaded {filename} %.2f MB' % (f.tell() / 1024 / 1024))
             logging.debug(f'Download {filename} complete')
             return {"result":"ok"}
+    elif response.status_code == 200:
+        file_size = int(response.headers.get('Content-Length', "0"))
+        if file_size > max_upload_file_size:
+            logging.debug(f"Download {filename} failed, for file_size:{file_size}")
+            return {"result":"error", "message":"file too large"}
+        logging.debug(f"Download {filename} started, file_size:{file_size}")
+        with open(filename, 'wb') as f:
+            f.write(response.content)
+            return {"result":"ok"}
     logging.debug(f"download {filename} failed, response.status_code:{response.status_code}")
     return {"result":"error", "message":"fail to download file"}
+
