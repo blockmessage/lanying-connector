@@ -225,6 +225,8 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_txt(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".pdf"]:
                 process_pdf(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            elif ext in [".md"]:
+                process_markdown(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
             raise e
