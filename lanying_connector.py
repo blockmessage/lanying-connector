@@ -12,6 +12,7 @@ import time
 import lanying_redis
 import socket
 import uuid
+import lanying_embedding
 def init_logging():
     logdir = f"log/{socket.gethostname()}"
     os.makedirs(logdir, exist_ok=True)
@@ -92,6 +93,7 @@ def saveConfig():
         value = data['value']
         if key.startswith('lanying_connector'):
             lanying_config.save_config(appId, key, value)
+            lanying_embedding.save_app_config(appId, key, value)
             resp = app.make_response('success')
             return resp
         else:

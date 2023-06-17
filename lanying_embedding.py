@@ -618,8 +618,8 @@ def get_doc(embedding_uuid, doc_id):
 
 def check_storage_size(app_id):
     redis = lanying_redis.get_redis_stack_connection()
-    storage_limit = lanying_config.get_config(app_id, "lanying_connector.storage_limit", 0)
-    storage_payg = lanying_config.get_config(app_id, "lanying_connector.storage_payg", 0)
+    storage_limit = get_app_config_int(app_id, "lanying_connector.storage_limit")
+    storage_payg = get_app_config_int(app_id, "lanying_connector.storage_payg")
     if storage_payg == 1 and storage_limit > 0:
         return {'result':'ok'}
     now_storage_size = increase_app_storage_file_size(app_id, 0)
@@ -629,8 +629,8 @@ def check_storage_size(app_id):
 
 def add_storage_size(app_id, embedding_uuid, doc_id, file_size):
     redis = lanying_redis.get_redis_stack_connection()
-    storage_limit = lanying_config.get_config(app_id, "lanying_connector.storage_limit", 0)
-    storage_payg = lanying_config.get_config(app_id, "lanying_connector.storage_payg", 0)
+    storage_limit = get_app_config_int(app_id, "lanying_connector.storage_limit")
+    storage_payg = get_app_config_int(app_id, "lanying_connector.storage_payg")
     if storage_payg == 1 and storage_limit > 0:
         increase_app_storage_file_size(app_id, file_size)
         increase_embedding_doc_field(redis, embedding_uuid, doc_id, "storage_file_size", file_size)
@@ -733,3 +733,17 @@ def set_embedding_usage(app_id, storage_file_size_max):
     key = get_app_embedding_app_info_key(app_id)
     redis.hset(key, "storage_file_size_max", storage_file_size_max)
     return True
+
+def save_app_config(app_id, key, value):
+    if key.startswith("lanying_connector."):
+        redis = lanying_redis.get_redis_stack_connection()
+        name = get_app_config_key(app_id)
+        redis.hset(name, key, value)
+
+def get_app_config_int(app_id, key):
+    redis = lanying_redis.get_redis_stack_connection()
+    name = get_app_config_key(app_id)
+    return redis.hincrby(name, key, 0)
+
+def get_app_config_key(app_id):
+    return f"embedding:app_config:{app_id}"
