@@ -12,7 +12,8 @@ import numpy as np
 from redis.commands.search.query import Query
 import pandas as pd
 import lanying_config
-from pdfreader import SimplePDFViewer
+from pdfminer.high_level import extract_text
+
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -302,14 +303,8 @@ def process_txt(config, app_id, embedding_uuid, filename, origin_filename, doc_i
 def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     blocks = []
     total_tokens = 0
-    content_list = []
-    with open(filename, 'rb') as f:
-        viewer = SimplePDFViewer(f)
-        for canvas in viewer:
-            if canvas.strings:
-                content_list.append("".join(canvas.strings))
-        content = "\n".join(content_list)
-        total_tokens, blocks = process_block(config, content)
+    content = extract_text(filename)
+    total_tokens, blocks = process_block(config, content)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
