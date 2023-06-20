@@ -15,6 +15,7 @@ import copy
 from lanying_tasks import add_embedding_file, delete_doc_data
 import lanying_embedding
 import re
+import lanying_command
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
@@ -101,7 +102,7 @@ def handle_chat_message(msg, config, retry_times = 3):
     ctype = msg['ctype']
     if ctype == 'TEXT':
         content = msg['content']
-        if content.startswith("/bluevector"):
+        if content.startswith("/"):
             return handle_embedding_command(msg, config)
         pass
     elif ctype == 'FILE':
@@ -791,64 +792,87 @@ def handle_chat_file(msg, config):
     return f'上传文件成功， 文件ID:{file_id}'
 
 def handle_embedding_command(msg, config):
-    from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
     content = msg['content']
-    fields = re.split("[ \t\n]{1,}", content)
-    if (len(fields) > 1 and fields[0] == "/bluevector"):
-        if len(fields) >= 4 and fields[1] == "add":
-            embedding_name = fields[2]
-            file_uuid = fields[3]
-            result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
-            if result['result'] == 'error':
-                return result['message']
-            logging.info(f"receive embedding add command: app_id:{app_id}, from_user_id:{from_user_id}, file_uuid:{file_uuid}")
-            attachment_str = get_attachment(from_user_id, file_uuid)
-            if attachment_str:
-                attachment = json.loads(attachment_str)
-                url = attachment['url']
-                dname = attachment['dName']
-                headers = {'app_id': app_id,
-                        'access-token': config['lanying_admin_token'],
-                        'user_id': config['lanying_user_id']}
-                trace_id = lanying_embedding.create_trace_id()
-                add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token']])
-                return f'添加成功，请等待系统处理。'
-            else:
-                return f'文件ID({file_uuid})不存在'
-        elif len(fields) >= 4 and fields[1] == "delete":
-            embedding_name = fields[2]
-            doc_id = fields[3]
-            result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
-            if result['result'] == 'error':
-                return result['message']
-            logging.info(f"receive embedding delete doc command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}")
-            embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
-            if embedding_name_info is None:
-                return f'知识库({embedding_name})不存在'
-            else:
-                doc_info = lanying_embedding.get_doc(embedding_name_info["embedding_uuid"], doc_id)
-                if doc_info is None:
-                    return f"文档ID(doc_id)不存在"
-                delete_doc_from_embedding(app_id, embedding_name, doc_id)
-                return f'删除成功，请等待系统处理。'
-        elif len(fields) >= 3 and fields[1] == "status":
-            embedding_name = fields[2]
-            result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
-            if result['result'] == 'error':
-                return result['message']
-            result = []
-            total, doc_list = lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, -20, -1)
-            for doc in doc_list:
-                result.append(f"文档ID:{doc['doc_id']}, 文件名:{doc['filename']}, 状态:{doc['status']}, 进度：{doc.get('progress_finish', '-')}/{doc.get('progress_total', '-')}")
-            return f"文档总数:{total}\n最近文档列表为:\n" + "\n".join(result)
-        elif len(fields) >= 2  and fields[1] == "help":
-            from_user_id = int(msg['from']['uid'])
-            if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
-                return embedding_command_help()
-            else:
-                return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。"
+    result = lanying_command.find_command(content, app_id)
+    if result["result"] == "found":
+        name = result["name"]
+        args = [msg, config].extend(result["args"])
+        try:
+            return locals()[name](*args)
+        except Exception as e:
+            logging.info(f"eval command exception: app_id:{app_id}, content:{content}")
+            logging.exception(e)
+            return '命令执行失败'
+    else:
+        return '命令格式不正确，可以用命令如下: \n' + embedding_command_help()
+
+def bluevector_add(msg, config, embedding_name, file_uuid):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+    if result['result'] == 'error':
+        return result['message']
+    logging.info(f"receive embedding add command: app_id:{app_id}, from_user_id:{from_user_id}, file_uuid:{file_uuid}")
+    attachment_str = get_attachment(from_user_id, file_uuid)
+    if attachment_str:
+        attachment = json.loads(attachment_str)
+        url = attachment['url']
+        dname = attachment['dName']
+        headers = {'app_id': app_id,
+                'access-token': config['lanying_admin_token'],
+                'user_id': config['lanying_user_id']}
+        trace_id = lanying_embedding.create_trace_id()
+        add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token']])
+        return f'添加成功，请等待系统处理。'
+    else:
+        return f'文件ID({file_uuid})不存在'
+
+def bluevector_delete(msg, config, embedding_name, doc_id):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+    if result['result'] == 'error':
+        return result['message']
+    logging.info(f"receive embedding delete doc command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}")
+    embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
+        return f'知识库({embedding_name})不存在'
+    else:
+        doc_info = lanying_embedding.get_doc(embedding_name_info["embedding_uuid"], doc_id)
+        if doc_info is None:
+            return f"文档ID(doc_id)不存在"
+        delete_doc_from_embedding(app_id, embedding_name, doc_id)
+        return f'删除成功，请等待系统处理。'
+
+def bluevector_status(msg, config, embedding_name):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+    if result['result'] == 'error':
+        return result['message']
+    result = []
+    total, doc_list = lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, -20, -1)
+    for doc in doc_list:
+        result.append(f"文档ID:{doc['doc_id']}, 文件名:{doc['filename']}, 状态:{doc['status']}, 进度：{doc.get('progress_finish', '-')}/{doc.get('progress_total', '-')}")
+    return f"文档总数:{total}\n最近文档列表为:\n" + "\n".join(result)
+
+def bluevector_help(msg, config):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
+        return embedding_command_help()
+    else:
+        return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。"
+
+def bluevector_error(msg, config):
     return '命令格式不正确，可以用命令如下: \n' + embedding_command_help()
+
+def search_on_doc_by_default_preset(msg, config, doc_id, real_msg):
+    return search_on_doc_by_preset(msg, config, "default", doc_id, real_msg)
+
+def search_on_doc_by_preset(msg, config, preset_name, doc_id, real_msg):
+    return f"TODO:{preset_name},{doc_id}, {real_msg}"
 
 def embedding_command_help():
     return '可以用命令如下: \n' + \
