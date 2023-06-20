@@ -24,7 +24,7 @@ os.makedirs(download_dir, exist_ok=True)
 def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file'):
     storage_limit = lanying_embedding.get_app_config_int(app_id, "lanying_connector.storage_limit")
     storage_payg = lanying_embedding.get_app_config_int(app_id, "lanying_connector.storage_payg")
-    logging.debug(f"limit info:storage_limit:{storage_limit}, storage_payg:{storage_payg}")
+    logging.info(f"limit info:storage_limit:{storage_limit}, storage_payg:{storage_payg}")
     lanying_embedding.update_trace_field(trace_id, "status", "start")
     lanying_embedding.clear_trace_doc_id(trace_id)
     _,ext = os.path.splitext(origin_filename)
@@ -52,14 +52,14 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
     if ext in [".zip"]:
         with zipfile.ZipFile(temp_filename, 'r') as zip_ref:
             sub_filenames = zip_ref.namelist()
-            logging.debug(f"add_embedding_file | got zip filenames: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, sub_filenames:{sub_filenames}")
+            logging.info(f"add_embedding_file | got zip filenames: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, sub_filenames:{sub_filenames}")
             for sub_filename in sub_filenames:
                 _,sub_ext = os.path.splitext(sub_filename)
                 right_filename = sub_filename.encode('cp437').decode('utf-8')
                 if "__MACOSX" in sub_filename:
                     pass
                 elif sub_ext in [".html", ".htm", ".csv", ".txt", ".md", ".pdf"]:
-                    logging.debug(f"add_embedding_file | start process sub file: sub_filename:{sub_filename}, right_filename:{right_filename}")
+                    logging.info(f"add_embedding_file | start process sub file: sub_filename:{sub_filename}, right_filename:{right_filename}")
                     sub_file_info = zip_ref.getinfo(sub_filename)
                     sub_file_size = sub_file_info.file_size
                     doc_id = lanying_embedding.generate_doc_id(embedding_uuid)

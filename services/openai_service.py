@@ -24,7 +24,7 @@ MaxTotalTokens = 4000
 def handle_request(request):
     text = request.get_data(as_text=True)
     path = request.path
-    logging.debug(f"receive api request: {text}")
+    logging.info(f"receive api request: {text}")
     auth_result = check_authorization(request)
     if auth_result['result'] == 'error':
         logging.info(f"check_authorization deny, msg={auth_result['msg']}")
@@ -50,7 +50,7 @@ def handle_request(request):
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
     openai_key_type = limit_res['openai_key_type']
-    logging.debug(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
     openai_key = get_openai_key(config, openai_key_type)
     response = forward_request(app_id, request, openai_key)
     if response.status_code == 200:
@@ -68,9 +68,9 @@ def forward_request(app_id, request, openai_key):
     url = "https://api.openai.com" + request.path
     data = request.get_data()
     headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
-    logging.debug(f"forward request start: app_id:{app_id}, url:{url}, data:{data}")
+    logging.info(f"forward request start: app_id:{app_id}, url:{url}, data:{data}")
     response = requests.post(url, data=data, headers=headers)
-    logging.debug(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}, response_content:{response.content}")
+    logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}, response_content:{response.content}")
     return response
 
 def check_authorization(request):
@@ -127,11 +127,11 @@ def handle_chat_message(msg, config, retry_times = 3):
     except Exception as e:
         lcExt = {}
     lastChoosePresetName = get_preset_name(redis, fromUserId, toUserId)
-    logging.debug(f"lastChoosePresetName:{lastChoosePresetName}")
+    logging.info(f"lastChoosePresetName:{lastChoosePresetName}")
     if lastChoosePresetName:
         try:
             preset = preset['presets'][lastChoosePresetName]
-            logging.debug(f"using preset_name:{lastChoosePresetName}")
+            logging.info(f"using preset_name:{lastChoosePresetName}")
             init_preset_defaults(preset, config['preset'])
             preset_name = lastChoosePresetName
         except Exception as e:
@@ -142,7 +142,7 @@ def handle_chat_message(msg, config, retry_times = 3):
     if 'ext' in preset:
         presetExt = copy.deepcopy(preset['ext'])
         del preset['ext']
-    logging.debug(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
+    logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
     isChatGPT = is_chatgpt_model(preset['model'])
     if isChatGPT:
         return handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, retry_times)
@@ -205,7 +205,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         using_embedding = embedding_info.get('using_embedding', 'auto')
         last_embedding_name = embedding_info.get('last_embedding_name', '')
         last_embedding_text = embedding_info.get('last_embedding_text', '')
-        logging.debug(f"using_embedding state: using_embedding={using_embedding}, last_embedding_name={last_embedding_name}, text_byte_size(last_embedding_text)={text_byte_size(last_embedding_text)}, embedding_names_str={embedding_names_str}")
+        logging.info(f"using_embedding state: using_embedding={using_embedding}, last_embedding_name={last_embedding_name}, text_byte_size(last_embedding_text)={text_byte_size(last_embedding_text)}, embedding_names_str={embedding_names_str}")
         if using_embedding == 'once' and last_embedding_text != '' and last_embedding_name == embedding_names_str:
             context = last_embedding_text
             is_use_old_embeddings = True
@@ -251,13 +251,13 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         return history_result['message']
     userHistoryList = history_result['data']
     for userHistory in userHistoryList:
-        logging.debug(f'userHistory:{userHistory}')
+        logging.info(f'userHistory:{userHistory}')
         messages.append(userHistory)
     messages.append({"role": "user", "content": content})
     preset['messages'] = messages
     calcMessagesTokens(messages, preset['model'])
     response = openai.ChatCompletion.create(**preset)
-    logging.debug(f"openai response:{response}")
+    logging.info(f"openai response:{response}")
     add_message_statistic(app_id, config, preset, response, openai_key_type)
     reply = response.choices[0].message.content.strip()
     command = None
@@ -311,7 +311,9 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos):
     list = []
     max_tokens = 0
     max_blocks = 0
+    preset_idx = 0
     for preset_embedding_info in preset_embedding_infos:
+        preset_idx = preset_idx + 1
         embedding_name = preset_embedding_info['embedding_name']
         embedding_max_tokens = lanying_embedding.word_num_to_token_num(preset_embedding_info.get('embedding_max_tokens', 1024))
         embedding_max_blocks = preset_embedding_info.get('embedding_max_blocks', 2)
@@ -323,7 +325,7 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos):
         idx = 0
         for doc in docs:
             idx = idx+1
-            list.append(((idx,float(doc.vector_score)),doc))
+            list.append(((idx,float(doc.vector_score),preset_idx),doc))
     sorted_list = sorted(list)
     ret = []
     now_tokens = 0
@@ -331,7 +333,7 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos):
     for _,doc in sorted_list:
         now_tokens += int(doc.num_of_tokens)
         blocks_num += 1
-        logging.debug(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
+        logging.info(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
         if now_tokens > max_tokens:
             break
         if blocks_num > max_blocks:
@@ -351,7 +353,7 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
     askMessage = {"role": "user", "content": content}
     nowSize = calcMessageTokens(askMessage, model) + messagesSize
     if nowSize + completionTokens >= token_limit:
-        logging.debug(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
+        logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
         return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
     if redis:
         for historyStr in getHistoryList(redis, historyListKey):
@@ -376,21 +378,21 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
             now_history_content = nowHistory.get('content','')
             now_history_bytes = text_byte_size(now_history_content)
             history_bytes += now_history_bytes
-            logging.debug(f"history_bytes: app_id={app_id}, content={now_history_content}, bytes={now_history_bytes}")
+            logging.info(f"history_bytes: app_id={app_id}, content={now_history_content}, bytes={now_history_bytes}")
         if history_count > history_msg_count_min:
             if history_count > history_msg_count_max:
-                logging.debug(f"stop history for history_msg_count_max: app_id={app_id}, history_msg_count_max={history_msg_count_max}, history_count={history_count}")
+                logging.info(f"stop history for history_msg_count_max: app_id={app_id}, history_msg_count_max={history_msg_count_max}, history_count={history_count}")
                 break
             if history_bytes > history_msg_size_max:
-                logging.debug(f"stop history for history_msg_size_max: app_id={app_id}, history_msg_size_max={history_msg_size_max}, history_count={history_count}")
+                logging.info(f"stop history for history_msg_size_max: app_id={app_id}, history_msg_size_max={history_msg_size_max}, history_count={history_count}")
                 break
         if nowSize + historySize + completionTokens < token_limit:
             for nowHistory in reversed(nowHistoryList):
                 res.append(nowHistory)
             nowSize += historySize
-            logging.debug(f'history state: app_id={app_id}, now_prompt_size={nowSize}, history_count={history_count}, history_bytes={history_bytes}')
+            logging.info(f'history state: app_id={app_id}, now_prompt_size={nowSize}, history_count={history_count}, history_bytes={history_bytes}')
         else:
-            logging.debug(f'stop history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
+            logging.info(f'stop history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
             break
     return {'result':'ok', 'data': reversed(res)}
 
@@ -692,15 +694,15 @@ def get_message_statistic_keys(config, app_id):
         return [pay_start_key, month_start_key, everyday_key]
 
 def notify_butler(app_id, event, data):
-    logging.debug(f"notify butler: app_id={app_id}, event={event}, data={json.dumps(data)}")
+    logging.info(f"notify butler: app_id={app_id}, event={event}, data={json.dumps(data)}")
     endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
     try:
         sendResponse = requests.post(f"{endpoint}/app/lanying_connector_event",
                                         headers={'app_id': app_id},
                                         json={'app_id':app_id, 'event':event, 'data':data})
-        logging.debug(sendResponse)
+        logging.info(sendResponse)
     except Exception as e:
-        logging.debug(e)
+        logging.info(e)
 
 def ensure_even(num):
     if num % 2 == 1:
@@ -784,7 +786,7 @@ def handle_chat_file(msg, config):
     check_result = check_upload_embedding(msg, config, ext, app_id)
     if check_result['result'] == 'error':
         return check_result['message']
-    logging.debug(f"recevie embedding file from chat: app_id:{app_id}, attachment_str:{attachment_str}")
+    logging.info(f"recevie embedding file from chat: app_id:{app_id}, attachment_str:{attachment_str}")
     file_id = save_attachment(from_user_id, attachment_str)
     return f'上传文件成功， 文件ID:{file_id}'
 
@@ -800,7 +802,7 @@ def handle_embedding_command(msg, config):
             result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
             if result['result'] == 'error':
                 return result['message']
-            logging.debug(f"receive embedding add command: app_id:{app_id}, from_user_id:{from_user_id}, file_uuid:{file_uuid}")
+            logging.info(f"receive embedding add command: app_id:{app_id}, from_user_id:{from_user_id}, file_uuid:{file_uuid}")
             attachment_str = get_attachment(from_user_id, file_uuid)
             if attachment_str:
                 attachment = json.loads(attachment_str)
@@ -820,7 +822,7 @@ def handle_embedding_command(msg, config):
             result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
             if result['result'] == 'error':
                 return result['message']
-            logging.debug(f"receive embedding delete doc command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}")
+            logging.info(f"receive embedding delete doc command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}")
             embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
             if embedding_name_info is None:
                 return f'知识库({embedding_name})不存在'

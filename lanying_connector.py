@@ -53,7 +53,7 @@ def messages():
     addMsgReceivedCnt(1)
     text = request.get_data(as_text=True)
     data = json.loads(text)
-    logging.debug(data)
+    logging.info(data)
     fromUserId = data['from']['uid']
     toUserId = data['to']['uid']
     type = data['type']
@@ -65,7 +65,7 @@ def messages():
         productId = config['product_id']
     ExpireTime = lanying_config.get_lanying_connector_expire_time(appId)
     if productId == 0 and (ExpireTime == None or (ExpireTime > 0 and now > ExpireTime)):
-        logging.debug(f"service is expired: appId={appId}")
+        logging.info(f"service is expired: appId={appId}")
         resp = app.make_response('service is expired')
         return resp
     callbackSignature = lanying_config.get_lanying_callback_signature(appId)
@@ -76,7 +76,7 @@ def messages():
             resp = app.make_response('callback signature not match')
             return resp
     myUserId = lanying_config.get_lanying_user_id(appId)
-    logging.debug(f'lanying_user_id:{myUserId}')
+    logging.info(f'lanying_user_id:{myUserId}')
     if myUserId != None and toUserId == myUserId and fromUserId != myUserId and type == 'CHAT':
         executor.submit(queryAndSendMessage, data)
     resp = app.make_response('')
@@ -190,7 +190,7 @@ def create_embedding(service):
 
 @app.route("/service/<string:service>/configure_embedding", methods=["POST"])
 def configure_embedding(service):
-    logging.debug(f"configure_embedding | start")
+    logging.info(f"configure_embedding | start")
     headerToken = request.headers.get('access-token', "")
     if accessToken and accessToken == headerToken:
         text = request.get_data(as_text=True)
@@ -203,7 +203,7 @@ def configure_embedding(service):
         embedding_max_blocks = data.get('embedding_max_blocks','5')
         embedding_content = data.get('embedding_content', '')
         new_embedding_name = data['new_embedding_name']
-        logging.debug(f"configure_embedding | {data}")
+        logging.info(f"configure_embedding | {data}")
         service_module = importlib.import_module(f"{service}_service")
         result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name)
         if result['result'] == 'error':
@@ -247,7 +247,7 @@ def list_embedding_docs(service):
 
 @app.route("/service/<string:service>/add_doc_to_embedding", methods=["POST"])
 def add_doc_to_embedding(service):
-    logging.debug(f"add_doc_to_embedding | start")
+    logging.info(f"add_doc_to_embedding | start")
     headerToken = request.headers.get('access-token', "")
     if accessToken and accessToken == headerToken:
         text = request.get_data(as_text=True)
@@ -261,7 +261,7 @@ def add_doc_to_embedding(service):
         else:
             name = data.get('file_name','')
             url = data.get('file_url','')
-        logging.debug(f"add_doc_to_embedding | {data}")
+        logging.info(f"add_doc_to_embedding | {data}")
         service_module = importlib.import_module(f"{service}_service")
         service_module.add_doc_to_embedding(app_id, embedding_name, name, url, type)
         resp = app.make_response({'code':200, 'data':True})
@@ -271,7 +271,7 @@ def add_doc_to_embedding(service):
 
 @app.route("/service/<string:service>/delete_doc_from_embedding", methods=["POST"])
 def delete_doc_from_embedding(service):
-    logging.debug(f"delete_doc_from_embedding | start")
+    logging.info(f"delete_doc_from_embedding | start")
     headerToken = request.headers.get('access-token', "")
     if accessToken and accessToken == headerToken:
         text = request.get_data(as_text=True)
@@ -279,7 +279,7 @@ def delete_doc_from_embedding(service):
         app_id = data['app_id']
         embedding_name = data['embedding_name']
         doc_id = data['doc_id']
-        logging.debug(f"delete_doc_from_embedding | {data}")
+        logging.info(f"delete_doc_from_embedding | {data}")
         service_module = importlib.import_module(f"{service}_service")
         service_module.delete_doc_from_embedding(app_id, embedding_name, doc_id)
         resp = app.make_response({'code':200, 'data':True})
@@ -289,13 +289,13 @@ def delete_doc_from_embedding(service):
 
 @app.route("/service/<string:service>/get_embedding_usage", methods=["POST"])
 def get_embedding_usage(service):
-    logging.debug(f"get_embedding_usage | start")
+    logging.info(f"get_embedding_usage | start")
     headerToken = request.headers.get('access-token', "")
     if accessToken and accessToken == headerToken:
         text = request.get_data(as_text=True)
         data = json.loads(text)
         app_id = data['app_id']
-        logging.debug(f"get_embedding_usage | {data}")
+        logging.info(f"get_embedding_usage | {data}")
         service_module = importlib.import_module(f"{service}_service")
         data = service_module.get_embedding_usage(app_id)
         resp = app.make_response({'code':200, 'data':data})
@@ -306,14 +306,14 @@ def get_embedding_usage(service):
 
 @app.route("/service/<string:service>/set_embedding_usage", methods=["POST"])
 def set_embedding_usage(service):
-    logging.debug(f"set_embedding_usage | start")
+    logging.info(f"set_embedding_usage | start")
     headerToken = request.headers.get('access-token', "")
     if accessToken and accessToken == headerToken:
         text = request.get_data(as_text=True)
         data = json.loads(text)
         app_id = data['app_id']
         storage_file_size_max = data['storage_file_size_max']
-        logging.debug(f"set_embedding_usage | {data}")
+        logging.info(f"set_embedding_usage | {data}")
         service_module = importlib.import_module(f"{service}_service")
         data = service_module.set_embedding_usage(app_id, storage_file_size_max)
         resp = app.make_response({'code':200, 'data':data})
@@ -339,7 +339,7 @@ def queryAndSendMessage(data):
                 newConfig['app_id'] = data['appId']
                 newConfig['msg_id'] = data['msgId']
                 responseText = service_module.handle_chat_message(data, newConfig)
-                logging.debug(f"responseText:{responseText}")
+                logging.info(f"responseText:{responseText}")
                 if len(responseText) > 0:
                     sendMessage(appId, toUserId, fromUserId, responseText)
                 addMsgSentCnt(1)
@@ -357,8 +357,8 @@ def sendMessage(appId, fromUserId, toUserId, content):
         sendResponse = requests.post(apiEndpoint + '/message/send',
                                     headers={'app_id': appId, 'access-token': adminToken},
                                     json={'type':1, 'from_user_id':fromUserId,'targets':[toUserId],'content_type':0, 'content': content, 'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False)})
-        logging.debug(f"Send message, from={fromUserId} to={toUserId} content={content}")
-        logging.debug(sendResponse)
+        logging.info(f"Send message, from={fromUserId} to={toUserId} content={content}")
+        logging.info(sendResponse)
 
 def sendReadAck(appId, fromUserId, toUserId, relatedMid):
     adminToken = lanying_config.get_lanying_admin_token(appId)
@@ -368,7 +368,7 @@ def sendReadAck(appId, fromUserId, toUserId, relatedMid):
         sendResponse = requests.post(apiEndpoint + '/message/send',
                                     headers={'app_id': appId, 'access-token': adminToken},
                                     json={'type':1, 'from_user_id':fromUserId,'targets':[toUserId],'content_type':9, 'content': '', 'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False),'related_mid':relatedMid})
-        logging.debug(sendResponse)
+        logging.info(sendResponse)
 
 def addMsgSentCnt(num):
     redis = lanying_redis.get_redis_connection()

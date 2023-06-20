@@ -35,7 +35,7 @@ def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
 def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE", admin_user_ids = [], preset_name = ''):
-    logging.debug("start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}")
+    logging.info("start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}")
     if app_id is None:
         app_id = ""
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
@@ -77,7 +77,7 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
     result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", "1536", "DISTANCE_METRIC",algo)
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
-    logging.debug(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
+    logging.info(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
 
 def delete_embedding(app_id, embedding_name):
@@ -103,7 +103,7 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
     if new_embedding_name != embedding_name and new_embedding_name != "":
         new_embedding_name_info = get_embedding_name_info(app_id, new_embedding_name)
         if new_embedding_name_info:
-            logging.debug(f"configure_embedding | new_embedding_name_info exists:{new_embedding_name_info}")
+            logging.info(f"configure_embedding | new_embedding_name_info exists:{new_embedding_name_info}")
             return {'result':"error", 'message': 'new_embedding_name exist'}
         else:
             redis.rename(get_embedding_name_key(app_id,embedding_name), get_embedding_name_key(app_id,new_embedding_name))
@@ -157,14 +157,14 @@ def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_
             base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
             query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id").paging(0,max_blocks).dialect(2)
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
-            # logging.debug(f"topk result:{results.docs[:1]}")
+            # logging.info(f"topk result:{results.docs[:1]}")
             ret = []
             now_tokens = 0
             blocks_num = 0
             for doc in results.docs:
                 now_tokens += int(doc.num_of_tokens)
                 blocks_num += 1
-                logging.debug(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
+                logging.info(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
                 if now_tokens > max_tokens:
                     break
                 if blocks_num > max_blocks:
@@ -215,7 +215,7 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
     increase_embedding_doc_field(redis, embedding_uuid, doc_id, "process_count", 1)
     _,ext = os.path.splitext(origin_filename)
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-    # logging.debug(f"process_embedding_file | config:{embedding_uuid_info}")
+    # logging.info(f"process_embedding_file | config:{embedding_uuid_info}")
     if embedding_uuid_info:
         try:
             if ext in [".html", ".htm"]:
@@ -310,10 +310,10 @@ def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
 
 def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
-    logging.debug(f"start process_csv: embedding_uuid={embedding_uuid}, filename={filename}")
+    logging.info(f"start process_csv: embedding_uuid={embedding_uuid}, filename={filename}")
     df = pd.read_csv(filename)
     size = len(df)
-    logging.debug(f"embeddings: size={size}")
+    logging.info(f"embeddings: size={size}")
     total_blocks = 0
     total_tokens = 0
     redis = lanying_redis.get_redis_stack_connection()
@@ -328,7 +328,7 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     openai_secret_key = config["openai_secret_key"]
     is_dry_run = config.get("dry_run", "false") == "true"
-    logging.debug(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
+    logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
     for token_cnt,text in blocks:
         doc_info = get_doc(embedding_uuid, doc_id)
         if doc_info:
@@ -387,7 +387,7 @@ def process_block(config, block):
                 lines = []
                 token_cnt = 0
         if line_token_count > max_block_size:
-            logging.debug(f"processing too long line: {line}")
+            logging.info(f"processing too long line: {line}")
             blocks.extend(process_line(line, max_block_size))
             continue
         lines.append(line)
@@ -635,7 +635,7 @@ def add_storage_size(app_id, embedding_uuid, doc_id, file_size):
     if now_storage_size + file_size > storage_limit * 1024 * 1024:
         return {'result': 'error'}
     now_storage_size = increase_app_storage_file_size(app_id, file_size)
-    if now_storage_size + file_size > storage_limit * 1024 * 1024:
+    if now_storage_size > storage_limit * 1024 * 1024:
         increase_app_storage_file_size(app_id, -file_size)
         return {'result': 'error'}
     increase_embedding_doc_field(redis, embedding_uuid, doc_id, "storage_file_size", file_size)
@@ -685,7 +685,7 @@ def get_embedding_doc_info_list(app_id, embedding_name, start, end):
             doc = get_doc(embedding_uuid,doc_id)
             if doc:
                 doc['doc_id'] = doc_id
-                logging.debug(f"doc_info: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, info:{doc}")
+                logging.info(f"doc_info: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, info:{doc}")
                 result.append(doc)
     return (total, result)
 
