@@ -112,6 +112,11 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
             redis.lrem(list_key, 1, embedding_name)
             redis.rpush(list_key, new_embedding_name)
             embedding_name = new_embedding_name
+            embedding_uuid = embedding_name_info["embedding_uuid"]
+            embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+            if embedding_uuid_info:
+                embedding_uuid_key = get_embedding_uuid_key(embedding_uuid)
+                redis.hset(embedding_uuid_key, "embedding_name", new_embedding_name)
     redis.hmset(get_embedding_name_key(app_id, embedding_name), {
         "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
         "preset_name":preset_name,
