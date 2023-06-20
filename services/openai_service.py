@@ -100,11 +100,16 @@ def handle_chat_message(msg, config, retry_times = 3):
     if checkres['result'] == 'error':
         return checkres['msg']
     ctype = msg['ctype']
+    command_ext = {}
     if ctype == 'TEXT':
         content = msg['content']
         if content.startswith("/"):
-            return handle_embedding_command(msg, config)
-        pass
+            result = handle_embedding_command(msg, config)
+            if isinstance(result, str):
+                if len(result) > 0:
+                    return result
+            elif result["result"] == "continue":
+                command_ext = result["command_ext"]
     elif ctype == 'FILE':
         return handle_chat_file(msg, config)
     else:
@@ -117,27 +122,46 @@ def handle_chat_message(msg, config, retry_times = 3):
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
     redis = lanying_redis.get_redis_connection()
-    preset_name = "default"
     try:
         ext = json.loads(config['ext'])
         lcExt = ext['lanying_connector']
-        if lcExt['preset_name']:
-            preset = preset['presets'][lcExt['preset_name']]
-            init_preset_defaults(preset, config['preset'])
-            preset_name = lcExt['preset_name']
     except Exception as e:
-        lcExt = {}
-    lastChoosePresetName = get_preset_name(redis, fromUserId, toUserId)
-    logging.info(f"lastChoosePresetName:{lastChoosePresetName}")
-    if lastChoosePresetName:
+        pass
+    preset_name = ""
+    if preset_name == "":
         try:
-            preset = preset['presets'][lastChoosePresetName]
-            logging.info(f"using preset_name:{lastChoosePresetName}")
-            init_preset_defaults(preset, config['preset'])
-            preset_name = lastChoosePresetName
+            if "preset_name" in command_ext:
+                if command_ext['preset_name'] != "default":
+                    preset = preset['presets'][command_ext['preset_name']]
+                    init_preset_defaults(preset, config['preset'])
+                preset_name = command_ext['preset_name']
+                logging.info(f"using preset_name from command:{preset_name}")
         except Exception as e:
             logging.exception(e)
-            pass
+    if preset_name == "":
+        try:
+            if 'preset_name' in lcExt:
+                if lcExt['preset_name'] != "default":
+                    preset = preset['presets'][lcExt['preset_name']]
+                    init_preset_defaults(preset, config['preset'])
+                preset_name = lcExt['preset_name']
+                logging.info(f"using preset_name from lc_ext:{preset_name}")
+        except Exception as e:
+            logging.exception(e)
+    if preset_name == "":
+        lastChoosePresetName = get_preset_name(redis, fromUserId, toUserId)
+        logging.info(f"lastChoosePresetName:{lastChoosePresetName}")
+        if lastChoosePresetName:
+            try:
+                if lastChoosePresetName != "default":
+                    preset = preset['presets'][lastChoosePresetName]
+                    init_preset_defaults(preset, config['preset'])
+                preset_name = lastChoosePresetName
+                logging.info(f"using preset_name from last_choose_preset:{preset_name}")
+            except Exception as e:
+                logging.exception(e)
+    if preset_name == "":
+        preset_name = "default"
     if 'presets' in preset:
         del preset['presets']
     if 'ext' in preset:
@@ -146,11 +170,11 @@ def handle_chat_message(msg, config, retry_times = 3):
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
     isChatGPT = is_chatgpt_model(preset['model'])
     if isChatGPT:
-        return handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, retry_times)
+        return handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
     else:
         return ''
 
-def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, retry_times):
+def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
     check_res = check_message_limit(app_id, config)
     if check_res['result'] == 'error':
@@ -158,7 +182,12 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         return check_res['msg']
     openai_key_type = check_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    doc_id = ""
     content = msg['content']
+    if 'new_content' in command_ext:
+        content = command_ext['new_content']
+    if doc_id == "" and 'doc_id' in command_ext:
+        doc_id = command_ext['doc_id']
     openai_api_key = get_openai_key(config, openai_key_type)
     openai.api_key = openai_api_key
     messages = preset.get('messages',[])
@@ -212,7 +241,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             is_use_old_embeddings = True
         if context == '': 
             q_embedding = fetch_embeddings(content)
-            search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos)
+            search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id)
             embedding_min_distance = 1.0
             first_preset_embedding_info = preset_embedding_infos[0]
             embedding_max_distance = presetExt.get('embedding_max_distance', 1.0)
@@ -308,21 +337,28 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             return ''
     return reply
 
-def multi_embedding_search(app_id, q_embedding, preset_embedding_infos):
+def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
     list = []
     max_tokens = 0
     max_blocks = 0
     preset_idx = 0
     for preset_embedding_info in preset_embedding_infos:
-        preset_idx = preset_idx + 1
         embedding_name = preset_embedding_info['embedding_name']
+        if doc_id != "":
+            embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
+            if not ('embedding_uuid' in preset_embedding_info and preset_embedding_info['embedding_uuid'] == embedding_uuid_from_doc_id):
+                logging.info(f"skip embedding_name for doc_id: embedding_name:{embedding_name}, doc_id:{doc_id}")
+                continue
+            else:
+                logging.info(f"choose embedding_name for doc_id: embedding_name:{embedding_name}, doc_id:{doc_id}")
+        preset_idx = preset_idx + 1
         embedding_max_tokens = lanying_embedding.word_num_to_token_num(preset_embedding_info.get('embedding_max_tokens', 1024))
         embedding_max_blocks = preset_embedding_info.get('embedding_max_blocks', 2)
         if max_tokens < embedding_max_tokens:
             max_tokens = embedding_max_tokens
         if max_blocks < embedding_max_blocks:
             max_blocks = embedding_max_blocks
-        docs = lanying_embedding.search_embeddings(app_id, embedding_name, q_embedding, embedding_max_tokens, embedding_max_blocks)
+        docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks)
         idx = 0
         for doc in docs:
             idx = idx+1
@@ -797,15 +833,16 @@ def handle_embedding_command(msg, config):
     result = lanying_command.find_command(content, app_id)
     if result["result"] == "found":
         name = result["name"]
-        args = [msg, config].extend(result["args"])
+        args = [msg, config]
+        args.extend(result["args"])
         try:
-            return locals()[name](*args)
+            return eval(name)(*args)
         except Exception as e:
             logging.info(f"eval command exception: app_id:{app_id}, content:{content}")
             logging.exception(e)
             return '命令执行失败'
     else:
-        return '命令格式不正确，可以用命令如下: \n' + embedding_command_help()
+        return ''
 
 def bluevector_add(msg, config, embedding_name, file_uuid):
     from_user_id = int(msg['from']['uid'])
@@ -861,24 +898,44 @@ def bluevector_help(msg, config):
     from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
     if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
-        return embedding_command_help()
+        return lanying_command.help(app_id, "admin")
     else:
-        return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。"
+        return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。\n" + lanying_command.help(app_id, "normal")
 
 def bluevector_error(msg, config):
-    return '命令格式不正确，可以用命令如下: \n' + embedding_command_help()
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
+        role = "admin"
+    else:
+        role = "normal"
+    return '命令格式不正确,' + lanying_command.help(app_id, role)
 
-def search_on_doc_by_default_preset(msg, config, doc_id, real_msg):
-    return search_on_doc_by_preset(msg, config, "default", doc_id, real_msg)
+def search_on_doc_by_default_preset(msg, config, doc_id, new_content):
+    return search_on_doc_by_preset(msg, config, "default", doc_id, new_content)
 
-def search_on_doc_by_preset(msg, config, preset_name, doc_id, real_msg):
-    return f"TODO:{preset_name},{doc_id}, {real_msg}"
+def search_on_doc_by_preset(msg, config, preset_name, doc_id, new_content):
+    app_id = msg['appId']
+    embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    result = "not_bind"
+    for embedding_info in embedding_infos:
+        embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
+        if 'embedding_uuid' in embedding_info and embedding_info['embedding_uuid'] == embedding_uuid_from_doc_id:
+            doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
+            if doc_info:
+                result = "found"
+            else:
+                result = "not_exist"
+    if result == "not_bind":
+        return "文档ID所在知识库未绑定到此预设"
+    elif result == "not_exist":
+        return "文档ID不存在"
+    else:
+        return {'result':'continue', 'command_ext':{'preset_name':preset_name, "doc_id":doc_id, "new_content":new_content}}
 
-def embedding_command_help():
-    return '可以用命令如下: \n' + \
-            '1. 将文件添加到知识库:\n/bluevector add <KNOWLEDGE_BASE_NAME> <FILE_ID> \n' + \
-            '2. 查询知识库状态:\n/bluevector status <KNOWLEDGE_BASE_NAME>\n' + \
-            '3. 知识库删除文档:\n/bluevector delete <KNOWLEDGE_BASE_NAME> <DOC_ID> \n'
+def search_by_preset(msg, config, preset_name, new_content):
+    return {'result':'continue', 'command_ext':{'preset_name':preset_name, "new_content":new_content}}
+
 def add_doc_to_embedding(app_id, embedding_name, dname, url, type):
     config = lanying_config.get_lanying_connector(app_id)
     headers = {'app_id': app_id,

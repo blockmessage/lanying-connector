@@ -148,7 +148,7 @@ def list_embeddings(app_id):
             result.append(embedding_info)
     return result
 
-def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_blocks = 10):
+def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens = 2048, max_blocks = 10):
     if max_blocks > 100:
         max_blocks = 100
     result = check_storage_size(app_id)
@@ -159,7 +159,10 @@ def search_embeddings(app_id, embedding_name, embedding, max_tokens = 2048, max_
     if redis:
         embedding_index = get_embedding_index(app_id, embedding_name)
         if embedding_index:
-            base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
+            if doc_id == "":
+                base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
+            else:
+                base_query = f"{query_by_doc_id(doc_id)}=>[KNN {max_blocks} @embedding  $vector AS vector_score]"
             query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id").paging(0,max_blocks).dialect(2)
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
             # logging.info(f"topk result:{results.docs[:1]}")
@@ -747,3 +750,10 @@ def get_app_config_int(app_id, key):
 
 def get_app_config_key(app_id):
     return f"embedding:app_config:{app_id}"
+
+def get_embedding_uuid_from_doc_id(doc_id):
+    fields = doc_id.split('-')
+    if len(fields) > 0:
+        return fields[0]
+    else:
+        return None
