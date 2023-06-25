@@ -995,7 +995,7 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
         admin_user_ids_str = embedding_name_info.get("admin_user_ids", "")
         admin_user_ids = admin_user_ids_str.split(',')
         for admin_user_id in admin_user_ids:
-            if int(admin_user_id) == from_user_id:
+            if admin_user_id != '' and int(admin_user_id) == from_user_id:
                 return {'result':'ok'}
     return {'result':'error', 'message':f'知识库不存在，或者你（ID：{from_user_id}）没有这个知识库的权限'}
 
