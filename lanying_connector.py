@@ -349,14 +349,20 @@ def queryAndSendMessage(data):
         sendMessage(appId, toUserId, fromUserId, message_404)
         addMsgSentCnt(1)
 
-def sendMessage(appId, fromUserId, toUserId, content):
+def sendMessage(appId, fromUserId, toUserId, content, ext = {}):
     adminToken = lanying_config.get_lanying_admin_token(appId)
     apiEndpoint = lanying_config.get_lanying_api_endpoint(appId)
     message_antispam = lanying_config.get_message_antispam(appId)
     if adminToken:
         sendResponse = requests.post(apiEndpoint + '/message/send',
                                     headers={'app_id': appId, 'access-token': adminToken},
-                                    json={'type':1, 'from_user_id':fromUserId,'targets':[toUserId],'content_type':0, 'content': content, 'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False)})
+                                    json={'type':1,
+                                          'from_user_id':fromUserId,
+                                          'targets':[toUserId],
+                                          'content_type':0,
+                                          'content': content, 
+                                          'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False),
+                                          'ext': json.dumps(ext, ensure_ascii=False) if ext else ''})
         logging.info(f"Send message, from={fromUserId} to={toUserId} content={content}")
         logging.info(sendResponse)
 

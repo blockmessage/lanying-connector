@@ -192,6 +192,8 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         logging.info(f"using doc_id in command:{doc_id}")
     openai_api_key = get_openai_key(config, openai_key_type)
     openai.api_key = openai_api_key
+    add_reference = presetExt.get('add_reference', 'none')
+    reference_list = []
     messages = preset.get('messages',[])
     now = int(time.time())
     history = {'time':now}
@@ -250,6 +252,8 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
             embedding_content_type = presetExt.get('embedding_content_type', 'text')
             for doc in search_result:
+                if doc.doc_id not in reference_list:
+                    reference_list.append(doc.doc_id)
                 now_distance = float(doc.vector_score)
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
@@ -337,7 +341,13 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             return handle_chat_message(msg, config, retry_times - 1)
         else:
             return ''
-    return reply
+    reply_ext = {}
+    if add_reference == 'body' or add_reference == "both":
+        reply = reply + f"\nreference: {reference_list}"
+    if add_reference == 'ext' or add_reference == "both":
+        reply_ext = {'reference':reference_list}
+    lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+    return ''
 
 def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
     list = []
