@@ -35,7 +35,7 @@ def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
 def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE", admin_user_ids = [], preset_name = ''):
-    logging.info("start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}")
+    logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}")
     if app_id is None:
         app_id = ""
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)

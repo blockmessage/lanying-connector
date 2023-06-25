@@ -58,7 +58,7 @@ def handle_request(request):
         response_content = json.loads(response.content)
         add_message_statistic(app_id, config, preset, response_content, openai_key_type)
     else:
-        logging.info("forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
+        logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
     return {'result':'ok', 'response':response}
 
 def maybe_init_preset_model_for_embedding(preset, path):
@@ -244,7 +244,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             context = last_embedding_text
             is_use_old_embeddings = True
         if context == '': 
-            q_embedding = fetch_embeddings(content)
+            q_embedding = fetch_embeddings(app_id, config, openai_key_type, content)
             search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id)
             embedding_min_distance = 1.0
             first_preset_embedding_info = preset_embedding_infos[0]
@@ -822,8 +822,13 @@ def list_embeddings(app_id):
 def get_embedding_doc_info_list(app_id, embedding_name, start, end):
     return lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, start, end)
      
-def fetch_embeddings(text):
-    return openai.Embedding.create(input=text, engine='text-embedding-ada-002')['data'][0]['embedding']
+def fetch_embeddings(app_id, config, openai_key_type, text):
+    logging.info(f"fetch_embeddings: app_id={app_id}, text={text}")
+    response = openai.Embedding.create(input=text, engine='text-embedding-ada-002')
+    embedding = response['data'][0]['embedding']
+    preset = {'model':'text-embedding-ada-002', 'input':text}
+    add_message_statistic(app_id, config, preset, response, openai_key_type)
+    return embedding
 
 def handle_chat_file(msg, config):
     from_user_id = int(msg['from']['uid'])
