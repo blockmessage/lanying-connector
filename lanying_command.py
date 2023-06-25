@@ -9,9 +9,15 @@ def find_command(content, app_id):
     fields = re.split("[ \t\n]{1,}", content)
     commands = all_commands()
     for command in commands:
-        res = check_command(command, fields, app_id)
-        if res["result"] == 'found':
-            return res
+        command_res = check_command(command, fields, app_id)
+        if command_res["result"] == 'found':
+            return command_res
+        alias_res = check_alias(fields)
+        if alias_res["result"] == 'found':
+            new_fields = alias_res['new_fields']
+            alias_comand_res = check_command(command, new_fields, app_id)
+            if alias_comand_res["result"] == 'found':
+                return alias_comand_res
     return {"result":"not_found"}
 
 def check_command(command, fields, app_id):
@@ -39,10 +45,10 @@ def check_rule(rule, fields, index, app_id):
     elif type == "preset_name":
         preset_names = calc_preset_names(app_id)
         if fields[index] in preset_names:
-            logging.info("lanying_commad found preset_name | preset_name:{fields[index]}, preset_names:{preset_names}")
+            logging.info(f"lanying_commad found preset_name | preset_name:{fields[index]}, preset_names:{preset_names}")
             return [fields[index]]
         else:
-            logging.info("lanying_commad not found preset_name | preset_name:{fields[index]}, preset_names:{preset_names}")
+            logging.info(f"lanying_commad not found preset_name | preset_name:{fields[index]}, preset_names:{preset_names}")
     raise Exception({"not_match", rule, fields, index})
 
 def calc_preset_names(app_id):
@@ -74,8 +80,29 @@ def help(app_id, role):
                     desc = rule["format"].replace("{preset_name}", f"{preset_name}")
                     index = index + 1
                     result.append(f"{index}. {desc}")
+        # if 'desc_extra' in command:
+        #     for desc in command['desc_extra']:
+        #         index = index + 1
+        #         result.append(f"{index}. {desc}")
     return "\n".join(result)
 
+def check_alias(fields):
+    if len(fields) > 0:
+        command = fields[0]
+        for alias_info in all_alias():
+            if alias_info["alias"] == command:
+                new_fields = [alias_info["for"]]
+                new_fields.extend(fields[1:])
+                return {'result':'found', 'new_fields':new_fields}
+    return {'result':'not_found'}
+
+def all_alias():
+    return [
+        {"alias": "bluebird", "for":"default"},
+        {"alias": "blue", "for":"default"},
+        {"alias": "bb", "for":"default"},
+        {"alias": "b", "for":"default"}
+    ]
 def all_commands():
     return [
         {
@@ -143,6 +170,12 @@ def all_commands():
                 "type":"preset_name",
                 "format": "预设({preset_name})下使用文档ID查询:\n/{preset_name} on doc <DOC_ID> <MESSAGE>"
             },
+            "desc_extra": [
+                "默认预设下使用文档ID查询:\n/bluebird on doc <DOC_ID> <MESSAGE>",
+                "默认预设下使用文档ID查询:\n/blue on doc <DOC_ID> <MESSAGE>",
+                "默认预设下使用文档ID查询:\n/bb on doc <DOC_ID> <MESSAGE>",
+                "默认预设下使用文档ID查询:\n/b on doc <DOC_ID> <MESSAGE>"
+            ],
             "rules": [
                 {"type": "preset_name"},
                 {"type": "string_exact", "value": "on"},
@@ -158,6 +191,12 @@ def all_commands():
                 "type":"preset_name",
                 "format": "预设({preset_name})下查询:\n/{preset_name} <MESSAGE>"
             },
+            "desc_extra": [
+                "默认预设下查询:\n/bluebird <MESSAGE>",
+                "默认预设下查询:\n/blue <MESSAGE>",
+                "默认预设下查询:\n/bb <MESSAGE>",
+                "默认预设下查询:\n/b <MESSAGE>"
+            ],
             "rules": [
                 {"type": "preset_name"},
                 {"type": "string_rest"}

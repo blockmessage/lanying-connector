@@ -186,8 +186,10 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
     content = msg['content']
     if 'new_content' in command_ext:
         content = command_ext['new_content']
+        logging.info(f"using content in command:{content}")
     if doc_id == "" and 'doc_id' in command_ext:
         doc_id = command_ext['doc_id']
+        logging.info(f"using doc_id in command:{doc_id}")
     openai_api_key = get_openai_key(config, openai_key_type)
     openai.api_key = openai_api_key
     messages = preset.get('messages',[])
