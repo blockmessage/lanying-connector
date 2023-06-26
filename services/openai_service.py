@@ -551,7 +551,7 @@ def reply_message_read_ack(config):
     toUserId = config['to_user_id']
     msgId = config['msg_id']
     appId = config['app_id']
-    lanying_connector.sendReadAck(appId, toUserId, fromUserId, msgId)
+    lanying_connector.sendReadAckAsync(appId, toUserId, fromUserId, msgId)
 
 def is_chatgpt_model(model):
     return is_chatgpt_model_3_5(model) or is_chatgpt_model_4(model)

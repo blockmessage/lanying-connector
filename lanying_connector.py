@@ -366,6 +366,13 @@ def sendMessage(appId, fromUserId, toUserId, content, ext = {}):
         logging.info(f"Send message, from={fromUserId} to={toUserId} content={content}")
         logging.info(sendResponse)
 
+def sendReadAckAsync(appId, fromUserId, toUserId, relatedMid):
+    executor.submit(sendReadAckAsyncInternal, (appId, fromUserId, toUserId, relatedMid))
+
+def sendReadAckAsyncInternal(data):
+    appId, fromUserId, toUserId, relatedMid = data
+    sendReadAck(appId, fromUserId, toUserId, relatedMid)
+
 def sendReadAck(appId, fromUserId, toUserId, relatedMid):
     adminToken = lanying_config.get_lanying_admin_token(appId)
     apiEndpoint = lanying_config.get_lanying_api_endpoint(appId)
