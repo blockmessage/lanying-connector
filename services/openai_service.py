@@ -201,6 +201,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
     toUserId = config['to_user_id']
     historyListKey = historyListChatGPTKey(fromUserId, toUserId)
     redis = lanying_redis.get_redis_connection()
+    is_debug = 'debug' in presetExt and presetExt['debug'] == True
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
@@ -244,7 +245,9 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             context = last_embedding_text
             is_use_old_embeddings = True
         if context == '': 
-            q_embedding = fetch_embeddings(app_id, config, openai_key_type, content)
+            embedding_history_num = presetExt.get('embedding_history_num', 0)
+            embedding_query_text = calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId)
+            q_embedding = fetch_embeddings(app_id, config, openai_key_type, embedding_query_text)
             search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id)
             embedding_min_distance = 1.0
             first_preset_embedding_info = preset_embedding_infos[0]
@@ -276,7 +279,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
                 embedding_info['last_embedding_text'] = context
                 set_embedding_info(redis, fromUserId, toUserId, embedding_info)
             context = f"{embedding_content}\n\n{context}"
-            if 'debug' in presetExt and presetExt['debug'] == True:
+            if is_debug:
                 if is_use_old_embeddings:
                     lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
                 else:
@@ -303,7 +306,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
     except Exception as e:
         pass
     if command:
-        if 'debug' in presetExt and presetExt['debug'] == True:
+        if is_debug:
             lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}")
         if 'preset_welcome' in command:
             reply = command['preset_welcome']
@@ -451,6 +454,8 @@ def model_token_limit(model):
     if is_chatgpt_model_3_5_16k(model):
         return 16000
     if is_chatgpt_model_4(model):
+        return 8000
+    if is_embedding_model(model):
         return 8000
     return 4000
 
@@ -1022,3 +1027,37 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
 
 def text_byte_size(text):
     return len(text.encode('utf-8'))
+
+def calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId):
+    if embedding_history_num <= 0:
+        return content
+    result = [content]
+    now = int(time.time())
+    history_count = 0
+    history_size = lanying_embedding.num_of_tokens(content)
+    model = 'text-embedding-ada-002'
+    token_limit = model_token_limit(model)
+    redis = lanying_redis.get_redis_connection()
+    for historyStr in reversed(getHistoryList(redis, historyListKey)):
+        history = json.loads(historyStr)
+        if history['time'] < now - expireSeconds:
+            removeHistory(redis, historyListKey, historyStr)
+        else:
+            if history_count < embedding_history_num:
+                if 'list' in history:
+                    pass
+                else:
+                    history_content = history['user']
+                    token_num = lanying_embedding.num_of_tokens(history_content) + 1
+                    if history_size + token_num < token_limit:
+                        history_count += 1
+                        result.append(history_content)
+                        history_size += token_num
+                    else:
+                        break
+            else:
+                break
+    embedding_query_text = '\n'.join(reversed(result))
+    if is_debug:
+        lanying_connector.sendMessage(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}")
+    return embedding_query_text
