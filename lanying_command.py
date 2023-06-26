@@ -110,7 +110,7 @@ def calc_preset_infos(app_id):
 
 def pretty_help(app_id):
     return f"""用法：/command [OPTION] [ARGS]
-使用命令操作企业知识库或限定参考知识范围。
+说明：使用命令操作企业知识库或限定参考知识范围。
 
 可用命令如下:
 1. 查询当前预设绑定的知识库信息：/bluevector info
@@ -120,12 +120,18 @@ def pretty_help(app_id):
 5. 限定AI指令参考范围为文档: /on doc <DOC_ID> <AI_MESSAGE> 
 6. 限定AI指令参考文档全文: /on fulldoc <DOC_ID> <AI_MESSAGE> 
 
-也可以在特定AI预设下执行命令：
+发送消息可以指定AI预设：
+用法：/preset <AI_MESSAGE>
+说明：指示AI将会根据特定预设来回答问题。
+
+命令也支持指定预设：
 用法：/[preset] command [OPTION] [ARGS]
-不指定preset预设，相当于使用默认预设：
+说明：指示AI使用特定预设执行命令。
+
+如果不指定预设，相当于使用默认预设：
 即 /bluevector [OPTION] [ARGS] 相当于执行 /default bluevector [OPTION] [ARGS]
 
-可用预设如下：
+当前可用预设如下：
 {pretty_help_preset_info(app_id)}
 
 通过 /help 或者 /+空格 查看本说明。"""
@@ -167,6 +173,17 @@ def all_commands():
             ]
         },
         {
+            "name": "bluevector_add_with_preset",
+            "desc": "将文件添加到知识库:\n/bluevector add <KNOWLEDGE_BASE_NAME> <FILE_ID>",
+            "rules": [
+                {"type": "preset_name"},
+                {"type": "string_exact", "value": "bluevector"},
+                {"type": "string_exact", "value": "add"},
+                {"type": "string", "value": "string"},
+                {"type": "string", "value": "string"}
+            ]
+        },
+        {
             "name": "bluevector_status",
             "desc": "查询知识库状态:\n/bluevector status <KNOWLEDGE_BASE_NAME>",
             "rules": [
@@ -176,9 +193,30 @@ def all_commands():
             ]
         },
         {
+            "name": "bluevector_status_with_preset",
+            "desc": "查询知识库状态:\n/bluevector status <KNOWLEDGE_BASE_NAME>",
+            "rules": [
+                {"type": "preset_name"},
+                {"type": "string_exact", "value": "bluevector"},
+                {"type": "string_exact", "value": "status"},
+                {"type": "string", "value": "string"}
+            ]
+        },
+        {
             "name": "bluevector_delete",
             "desc": "知识库删除文档:\n/bluevector delete <KNOWLEDGE_BASE_NAME> <DOC_ID>",
             "rules": [
+                {"type": "string_exact", "value": "bluevector"},
+                {"type": "string_exact", "value": "delete"},
+                {"type": "string", "value": "string"},
+                {"type": "string", "value": "string"}
+            ]
+        },
+        {
+            "name": "bluevector_delete_with_preset",
+            "desc": "知识库删除文档:\n/bluevector delete <KNOWLEDGE_BASE_NAME> <DOC_ID>",
+            "rules": [
+                {"type": "preset_name"},
                 {"type": "string_exact", "value": "bluevector"},
                 {"type": "string_exact", "value": "delete"},
                 {"type": "string", "value": "string"},

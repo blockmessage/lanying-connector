@@ -255,7 +255,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
             embedding_content_type = presetExt.get('embedding_content_type', 'text')
             for doc in search_result:
-                if doc.doc_id not in reference_list:
+                if hasattr(doc, 'doc_id') and doc.doc_id not in reference_list:
                     reference_list.append(doc.doc_id)
                 now_distance = float(doc.vector_score)
                 if embedding_min_distance > now_distance:
@@ -887,6 +887,9 @@ def bluevector_add(msg, config, embedding_name, file_uuid):
     else:
         return f'文件ID({file_uuid})不存在'
 
+def bluevector_add_with_preset(msg, config, preset_name, embedding_name, file_uuid):
+    return bluevector_add(msg, config, embedding_name, file_uuid)
+
 def bluevector_delete(msg, config, embedding_name, doc_id):
     from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
@@ -904,6 +907,9 @@ def bluevector_delete(msg, config, embedding_name, doc_id):
         delete_doc_from_embedding(app_id, embedding_name, doc_id)
         return f'删除成功，请等待系统处理。'
 
+def bluevector_delete_with_preset(msg, config, preset_name, embedding_name, doc_id):
+    return bluevector_delete(msg, config, embedding_name, doc_id)
+
 def bluevector_status(msg, config, embedding_name):
     from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
@@ -915,6 +921,9 @@ def bluevector_status(msg, config, embedding_name):
     for doc in doc_list:
         result.append(f"文档ID:{doc['doc_id']}, 文件名:{doc['filename']}, 状态:{doc['status']}, 进度：{doc.get('progress_finish', '-')}/{doc.get('progress_total', '-')}")
     return f"文档总数:{total}\n最近文档列表为:\n" + "\n".join(result)
+
+def bluevector_status_with_preset(msg, config, preset_name, embedding_name):
+    return bluevector_status(msg, config, embedding_name)
 
 def bluevector_info(msg, config):
     return bluevector_info_by_preset(msg, config, "default")
