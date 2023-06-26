@@ -911,22 +911,38 @@ def bluevector_status(msg, config, embedding_name):
         result.append(f"文档ID:{doc['doc_id']}, 文件名:{doc['filename']}, 状态:{doc['status']}, 进度：{doc.get('progress_finish', '-')}/{doc.get('progress_total', '-')}")
     return f"文档总数:{total}\n最近文档列表为:\n" + "\n".join(result)
 
+def bluevector_info(msg, config):
+    return bluevector_info_by_preset(msg, config, "default")
+
+def bluevector_info_by_preset(msg, config, preset_name):
+    app_id = msg['appId']
+    embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    if len(embedding_infos) == 0:
+        return "当前预设未绑定知识库"
+    result = ["当前预设绑定的知识库为："]
+    for embedding_info in embedding_infos:
+        embedding_name = embedding_info['embedding_name']
+        embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+        embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_name_info['embedding_uuid'])
+        max_block_size = int(embedding_uuid_info.get("max_block_size", "350"))
+        storage_file_size = int(embedding_uuid_info.get("storage_file_size", "0"))
+        result.append(f"知识库名称: {embedding_name}, 分片大小:{max_block_size}字, 存储空间:{round(storage_file_size / 1024 / 1024, 3)}MB")
+    return "\n".join(result)
+
 def bluevector_help(msg, config):
     from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
     if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
-        return lanying_command.help(app_id, "admin")
+        return lanying_command.pretty_help(app_id)
     else:
-        return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。\n" + lanying_command.help(app_id, "normal")
+        return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。"
 
 def bluevector_error(msg, config):
-    from_user_id = int(msg['from']['uid'])
+    return '错误：命令格式不正确。\n可以使用 /help 或者 /+空格 查看命令说明。'
+
+def help(msg, config):
     app_id = msg['appId']
-    if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
-        role = "admin"
-    else:
-        role = "normal"
-    return '命令格式不正确,' + lanying_command.help(app_id, role)
+    return lanying_command.pretty_help(app_id)
 
 def search_on_doc_by_default_preset(msg, config, doc_id, new_content):
     return search_on_doc_by_preset(msg, config, "default", doc_id, new_content)
