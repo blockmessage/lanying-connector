@@ -63,15 +63,23 @@ def calc_preset_names(app_id):
             pass
     return preset_names
 
-def calc_custom_preset_infos(app_id):
+def calc_preset_infos(app_id):
     preset_infos = []
     config = lanying_config.get_lanying_connector(app_id)
+    default_desc = ""
+    sep = ""
+    if "preset" in config:
+        ext = config["preset"].get('ext', {})
+        default_desc = ext.get('preset_desc', '')
+    if default_desc != '':
+        sep = " "
+    preset_infos.append(("default", f"{default_desc}{sep}默认预设，也可使用别名 /bluebird 或 /bb 代替"))
     if "preset" in config and "presets" in config["preset"]:
         try:
             for k in config["preset"]["presets"].keys():
                 preset = config["preset"]["presets"][k]
                 ext = preset.get('ext',{})
-                preset_infos.append((k, ext.get('preset_desc', '')))
+                preset_infos.append((k, ext.get('preset_desc', '暂无说明')))
         except Exception as e:
             logging.exception(e)
             pass
@@ -123,8 +131,8 @@ def pretty_help(app_id):
 通过 /help 或者 /+空格 查看本说明。"""
 
 def pretty_help_preset_info(app_id):
-    lines = ["/default：默认预设，也可使用别名 /bluebird 或 /bb 代替"]
-    for name,desc in calc_custom_preset_infos(app_id):
+    lines = []
+    for name,desc in calc_preset_infos(app_id):
         lines.append(f"/{name}：{desc}")
     return "\n".join(lines)
 
