@@ -63,7 +63,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                     sub_file_info = zip_ref.getinfo(sub_filename)
                     sub_file_size = sub_file_info.file_size
                     doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
-                    object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
+                    object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{sub_ext}")
                     lanying_embedding.create_doc_info(embedding_uuid, right_filename, object_name, doc_id, sub_file_size)
                     lanying_embedding.add_trace_doc_id(trace_id, doc_id)
                     with zip_ref.open(sub_filename) as sub_file_ref:
