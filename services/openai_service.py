@@ -91,7 +91,7 @@ def check_authorization(request):
                             return {'result':'ok', 'app_id':app_id, 'config':config}
     except Exception as e:
         pass
-    return {'result':'error', 'msg':'bad_authorization'}
+    return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
 
 def handle_chat_message(msg, config, retry_times = 3):
     reply_message_read_ack(config)
@@ -641,9 +641,9 @@ def check_message_limit(app_id, config):
                 else:
                     return {'result':'ok', 'openai_key_type':'share'}
             else:
-                return {'result':'error', 'msg': lanying_config.get_message_no_quota(app_id)}
+                return {'result':'error', 'code':'no_quota', 'msg': lanying_config.get_message_no_quota(app_id)}
     else:
-        return {'result':'error', 'msg':lanying_config.get_message_404(app_id)}
+        return {'result':'error', 'code':'internal_error','msg':lanying_config.get_message_404(app_id)}
 
 def check_message_per_month_per_user(msg, config):
     app_id = msg['appId']
@@ -661,7 +661,7 @@ def check_message_per_month_per_user(msg, config):
 
 def check_message_deduct_failed(app_id, config):
     if lanying_config.get_lanying_connector_deduct_failed(app_id):
-        return {'result':'error', 'msg':lanying_config.get_message_deduct_failed(app_id)}
+        return {'result':'error', 'code':'deduct_failed', 'msg':lanying_config.get_message_deduct_failed(app_id)}
     return {'result':'ok'}
 
 def get_message_limit_state(app_id):

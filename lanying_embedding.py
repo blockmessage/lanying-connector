@@ -371,9 +371,19 @@ def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep
         return [random.uniform(0, 1) for i in range(1536)]
     openai.api_key = openai_secret_key
     openai.api_base = global_openai_base
+    response = {}
     try:
-        return openai.Embedding.create(input=text, engine='text-embedding-ada-002')['data'][0]['embedding']
+        response = openai.Embedding.create(input=text, engine='text-embedding-ada-002')
+        return response['data'][0]['embedding']
     except Exception as e:
+        logging.info(f"fetch_embedding got error response:{response}")
+        code = ""
+        try:
+            code = response["error"]["code"]
+        except Exception as ee:
+            pass
+        if code in ["bad_authorization","no_quota", "deduct_failed"]:
+            raise Exception(code)
         if retry > 0:
             time.sleep(sleep)
             return fetch_embedding(openai_secret_key, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)

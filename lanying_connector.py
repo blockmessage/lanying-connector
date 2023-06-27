@@ -155,7 +155,7 @@ def openai_request():
         res = service_module.handle_request(request)
         if res['result'] == 'error':
             code = res.get('code', 401)
-            resp = app.make_response({"error":{"type": "invalid_request_error","code":code, "message":res['msg']}})
+            resp = app.make_response({"error":{"type": "invalid_request_error","code":code, "message":res['msg']},"data":[]})
             return resp
         else:
             response = res['response']
