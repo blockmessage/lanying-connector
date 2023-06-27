@@ -285,7 +285,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
                 else:
                     lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}")
             messages.append({'role':'user', 'content':context})
-    history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset)
+    history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt)
     if history_result['result'] == 'error':
         return history_result['message']
     userHistoryList = history_result['data']
@@ -393,10 +393,13 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
         ret.append(doc)
     return ret
 
-def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset):
+def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt):
     history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
     history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
     history_msg_size_max = config.get('history_msg_size_max', 4096)
+    history_msg_count_min = ensure_even(presetExt.get('history_msg_count_min', history_msg_count_min))
+    history_msg_count_max = ensure_even(presetExt.get('history_msg_count_max', history_msg_count_max))
+    history_msg_size_max = presetExt.get('history_msg_size_max', history_msg_size_max)
     completionTokens = preset.get('max_tokens', 1024)
     uidHistoryList = []
     model = preset['model']
