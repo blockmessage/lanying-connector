@@ -69,9 +69,9 @@ def forward_request(app_id, request, openai_key):
     url = "https://api.openai.com" + request.path
     data = request.get_data()
     headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
-    logging.info(f"forward request start: app_id:{app_id}, url:{url}, data:{data}")
+    logging.info(f"forward request start: app_id:{app_id}, url:{url}")
     response = requests.post(url, data=data, headers=headers)
-    logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}, response_content:{response.content}")
+    logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}")
     return response
 
 def check_authorization(request):
