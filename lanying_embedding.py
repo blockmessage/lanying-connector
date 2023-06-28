@@ -13,6 +13,7 @@ from redis.commands.search.query import Query
 import pandas as pd
 import lanying_config
 from pdfminer.high_level import extract_text
+import hashlib
 
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
@@ -151,35 +152,56 @@ def list_embeddings(app_id):
 def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens = 2048, max_blocks = 10):
     if max_blocks > 100:
         max_blocks = 100
+    result = []
+    for extra_block_num in [10, 100, 500, 2000, 5000]:
+        page_size = max_blocks+extra_block_num
+        is_finish,result = search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, page_size)
+        if is_finish:
+            break
+        logging.info(f"search_embeddings not finish: app_id:{app_id}, page_size:{page_size}, extra_block_num:{extra_block_num}")
+    return result
+
+def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, page_size):
     result = check_storage_size(app_id)
     if result['result'] == 'error':
         logging.info(f"search_embeddings | skip search for exceed storage limit app, app_id:{app_id}, embedding_name:{embedding_name}")
-        return []
+        return (True, [])
     redis = lanying_redis.get_redis_stack_connection()
     if redis:
         embedding_index = get_embedding_index(app_id, embedding_name)
         if embedding_index:
             if doc_id == "":
-                base_query = f"*=>[KNN {max_blocks} @embedding $vector AS vector_score]"
+                base_query = f"*=>[KNN {page_size} @embedding $vector AS vector_score]"
             else:
-                base_query = f"{query_by_doc_id(doc_id)}=>[KNN {max_blocks} @embedding  $vector AS vector_score]"
-            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id").paging(0,max_blocks).dialect(2)
+                base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
+            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id","text_hash").paging(0,page_size).dialect(2)
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
             # logging.info(f"topk result:{results.docs[:1]}")
             ret = []
             now_tokens = 0
             blocks_num = 0
+            is_finish = False
+            text_hashes = {'-'}
+            if len(results.docs) < page_size:
+                logging.info(f"search_embeddings finish for no more doc: doc_count:{len(results.docs)}, page_size:{page_size}")
+                is_finish = True
             for doc in results.docs:
+                text_hash = doc.text_hash if hasattr(doc, 'text_hash') else sha256(doc.text)
+                if text_hash in text_hashes:
+                    continue
+                text_hashes.add(text_hash)
                 now_tokens += int(doc.num_of_tokens)
                 blocks_num += 1
                 logging.info(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
                 if now_tokens > max_tokens:
+                    is_finish = True
                     break
                 if blocks_num > max_blocks:
+                    is_finish = True
                     break
                 ret.append(doc)
-            return ret
-    return []
+            return (is_finish, ret)
+    return (True, [])
 
 def get_preset_embedding_infos(app_id, preset_name):
     redis = lanying_redis.get_redis_stack_connection()
@@ -345,7 +367,9 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             embedding = fetch_embedding(openai_secret_key, text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
+            text_hash = sha256(text)
             redis.hmset(key, {"text":text,
+                              "text_hash":text_hash,
                             "embedding":embedding_bytes,
                             "doc_id": doc_id,
                             "num_of_tokens": token_cnt,
@@ -767,3 +791,8 @@ def get_embedding_uuid_from_doc_id(doc_id):
         return fields[0]
     else:
         return None
+
+def sha256(text):
+    value = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    logging.info(f"calc text sha256:{value}")
+    return value

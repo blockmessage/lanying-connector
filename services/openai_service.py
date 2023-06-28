@@ -262,10 +262,10 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
                     embedding_min_distance = now_distance
                 if embedding_content_type == 'summary':
                     context = context + doc.summary + "\n\n"
-                    context_with_distance = context_with_distance + f"[{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}]" + doc.summary + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{doc.id[15:].replace(':','-')}]" + doc.summary + "\n\n"
                 else:
                     context = context + doc.text + "\n\n"
-                    context_with_distance = context_with_distance + f"[{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}]" + doc.text + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{doc.id[15:].replace(':','-')}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
                 if last_embedding_name != embedding_names_str or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
                     embedding_info['last_embedding_name'] = embedding_names_str
@@ -357,6 +357,7 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
     max_tokens = 0
     max_blocks = 0
     preset_idx = 0
+    text_hashes = {'-'}
     for preset_embedding_info in preset_embedding_infos:
         embedding_name = preset_embedding_info['embedding_name']
         if doc_id != "":
@@ -376,6 +377,10 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
         docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks)
         idx = 0
         for doc in docs:
+            text_hash = doc.text_hash if hasattr(doc, 'text_hash') else lanying_embedding.sha256(doc.text)
+            if text_hash in text_hashes:
+                continue
+            text_hashes.add(text_hash)
             idx = idx+1
             list.append(((idx,float(doc.vector_score),preset_idx),doc))
     sorted_list = sorted(list)
