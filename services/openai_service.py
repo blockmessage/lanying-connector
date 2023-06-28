@@ -281,9 +281,9 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             context = f"{embedding_content}\n\n{context}"
             if is_debug:
                 if is_use_old_embeddings:
-                    lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
+                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
                 else:
-                    lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}")
+                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}")
             messages.append({'role':'user', 'content':context})
     history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt)
     if history_result['result'] == 'error':
@@ -307,7 +307,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         pass
     if command:
         if is_debug:
-            lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}")
+            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}")
         if 'preset_welcome' in command:
             reply = command['preset_welcome']
     if command and 'ai_generate' in command and command['ai_generate'] == True:
@@ -340,7 +340,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
     if command and 'ai_generate' in command and command['ai_generate'] == True:
         if retry_times > 0:
             if 'preset_welcome' in command:
-                lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, command['preset_welcome'])
+                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, command['preset_welcome'])
             return handle_chat_message(msg, config, retry_times - 1)
         else:
             return ''
@@ -349,7 +349,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         reply = reply + f"\nreference: {reference_list}"
     if add_reference == 'ext' or add_reference == "both":
         reply_ext = {'reference':reference_list}
-    lanying_connector.sendMessage(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
 def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
@@ -1076,5 +1076,5 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
                 break
     embedding_query_text = '\n'.join(reversed(result))
     if is_debug:
-        lanying_connector.sendMessage(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}")
+        lanying_connector.sendMessageAsync(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}")
     return embedding_query_text

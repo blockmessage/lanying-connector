@@ -341,13 +341,19 @@ def queryAndSendMessage(data):
                 responseText = service_module.handle_chat_message(data, newConfig)
                 logging.info(f"responseText:{responseText}")
                 if len(responseText) > 0:
-                    sendMessage(appId, toUserId, fromUserId, responseText)
+                    sendMessageAsync(appId, toUserId, fromUserId, responseText)
                 addMsgSentCnt(1)
     except Exception as e:
         logging.exception(e)
         message_404 = lanying_config.get_message_404(appId)
-        sendMessage(appId, toUserId, fromUserId, message_404)
+        sendMessageAsync(appId, toUserId, fromUserId, message_404)
         addMsgSentCnt(1)
+
+def sendMessageAsync(appId, fromUserId, toUserId, content, ext = {}):
+    executor.submit(sendMessageAsyncInternal, (appId, fromUserId, toUserId, content, ext))
+def sendMessageAsyncInternal(data):
+    appId, fromUserId, toUserId, content, ext = data
+    sendMessage(appId, fromUserId, toUserId, content, ext)
 
 def sendMessage(appId, fromUserId, toUserId, content, ext = {}):
     adminToken = lanying_config.get_lanying_admin_token(appId)
