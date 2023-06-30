@@ -231,6 +231,8 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
+        question_answers = []
+        question_answer_with_distance = ""
         is_use_old_embeddings = False
         embedding_names = []
         for preset_embedding_info in preset_embedding_infos:
@@ -260,12 +262,21 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
                 now_distance = float(doc.vector_score)
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
-                if embedding_content_type == 'summary':
+                if hasattr(doc, 'question') and doc.question != "":
+                    question_info = {'role':'user', 'content':doc.question}
+                    answer_info = {'role':'assistant', 'content':doc.text}
+                    question_answers.append(question_info)
+                    question_answers.append(answer_info)
+                    if is_debug:
+                        question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{doc.id[15:].replace(':','-')}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
+                elif embedding_content_type == 'summary':
                     context = context + doc.summary + "\n\n"
-                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{doc.id[15:].replace(':','-')}]" + doc.summary + "\n\n"
+                    if is_debug:
+                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{doc.id[15:].replace(':','-')}]" + doc.summary + "\n\n"
                 else:
                     context = context + doc.text + "\n\n"
-                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{doc.id[15:].replace(':','-')}]" + doc.text + "\n\n"
+                    if is_debug:
+                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{doc.id[15:].replace(':','-')}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
                 if last_embedding_name != embedding_names_str or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
                     embedding_info['last_embedding_name'] = embedding_names_str
@@ -278,13 +289,17 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
                 embedding_info['last_embedding_name'] = embedding_names_str
                 embedding_info['last_embedding_text'] = context
                 set_embedding_info(redis, fromUserId, toUserId, embedding_info)
-            context = f"{embedding_content}\n\n{context}"
+            if context != "":
+                context_with_prompt = f"{embedding_content}\n\n{context}"
+                context_with_distance = f"{embedding_content}\n\n{context_with_distance}"
+                messages.append({'role':'user', 'content':context_with_prompt})
+            if len(question_answers) > 0:
+                messages.extend(question_answers)
             if is_debug:
                 if is_use_old_embeddings:
                     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
                 else:
-                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}")
-            messages.append({'role':'user', 'content':context})
+                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{question_answer_with_distance}\n")
     history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt)
     if history_result['result'] == 'error':
         return history_result['message']

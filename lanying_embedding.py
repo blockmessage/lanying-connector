@@ -174,7 +174,7 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
                 base_query = f"*=>[KNN {page_size} @embedding $vector AS vector_score]"
             else:
                 base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
-            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id","text_hash").paging(0,page_size).dialect(2)
+            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id","text_hash","question").paging(0,page_size).dialect(2)
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
             # logging.info(f"topk result:{results.docs[:1]}")
             ret = []
@@ -354,21 +354,34 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
             total_blocks += len(block_blocks)
             update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
             insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+        elif 'question' in row and 'answer' in row:
+            block_tokens, block_blocks = process_question(config, row['question'], row['answer'])
+            total_tokens += block_tokens
+            total_blocks += len(block_blocks)
+            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+            insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
 
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     openai_secret_key = config["openai_secret_key"]
     is_dry_run = config.get("dry_run", "false") == "true"
     logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
-    for token_cnt,text in blocks:
+    for block in blocks:
+        if len(block) == 2:
+            token_cnt,text = block
+            question = ''
+        else:
+            token_cnt, question, text = block
         doc_info = get_doc(embedding_uuid, doc_id)
         if doc_info:
             block_id = generate_block_id(embedding_uuid)
             maybe_rate_limit(5)
-            embedding = fetch_embedding(openai_secret_key, text, is_dry_run)
+            embedding_text = text + question
+            embedding = fetch_embedding(openai_secret_key, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
-            text_hash = sha256(text)
+            text_hash = sha256(embedding_text)
             redis.hmset(key, {"text":text,
+                              "question": question,
                               "text_hash":text_hash,
                             "embedding":embedding_bytes,
                             "doc_id": doc_id,
@@ -376,8 +389,8 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                             "filename": origin_filename,
                             "summary": "{}"})
             embedding_size = len(embedding_bytes)
-            text_size = text_byte_size(text)
-            char_cnt = len(text)
+            text_size = text_byte_size(embedding_text)
+            char_cnt = len(embedding_text)
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", 1)
             increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", embedding_size)
             increase_embedding_uuid_field(redis, embedding_uuid, "text_size", text_size)
@@ -439,6 +452,22 @@ def process_block(config, block):
         blocks.append((token_cnt, now_block))
         total_tokens += token_cnt
     return (total_tokens, blocks)
+
+def process_question(config, question, answer):
+    question_token_cnt = num_of_tokens(question)
+    answer_token_cnt = num_of_tokens(answer)
+    token_limit = embedding_model_token_limit()
+    token_cnt = question_token_cnt + answer_token_cnt
+    if question_token_cnt == 0 or answer_token_cnt == 0:
+        return (0,[])
+    if token_cnt <= token_limit:
+        return (token_cnt, [(token_cnt, question, answer)])
+    else:
+        logging.info("process_question | skip too large question answer: question_token_cnt:{question_token_cnt}, answer_token_cnt:{answer_token_cnt}")
+        return (0, [])
+
+def embedding_model_token_limit():
+    return 8000
 
 def process_line(text, max_block_size):
     result = []
