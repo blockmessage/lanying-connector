@@ -258,8 +258,10 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_pdf(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".md"]:
                 process_markdown(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
-            elif ext in [".doc", ".docx"]:
+            elif ext in [".docx", ".doc"]:
                 process_docx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            elif ext in [".xlsx", "xls"]:
+                process_xlsx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
             raise e
@@ -358,17 +360,74 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     total_blocks = 0
     total_tokens = 0
     redis = lanying_redis.get_redis_stack_connection()
-    for i, row in df.iterrows():
-        if 'text' in row:
-            block_tokens, block_blocks = process_block(config, row['text'])
+    columns = df.columns.to_list()
+    if 'text' in columns or ('question' in columns and 'answer' in columns):
+        for i, row in df.iterrows():
+            if 'question' in row and 'answer' in row:
+                block_tokens, block_blocks = process_question(config, row['question'], row['answer'])
+                total_tokens += block_tokens
+                total_blocks += len(block_blocks)
+                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+            elif 'text' in row:
+                block_tokens, block_blocks = process_block(config, row['text'])
+                total_tokens += block_tokens
+                total_blocks += len(block_blocks)
+                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+    else:
+        df = pd.read_csv(filename, header=None)
+        lines = []
+        for i, row in df.iterrows():
+            line_blocks = []
+            for text in row:
+                line_blocks.append(text)
+            line = '\n'.join(line_blocks)
+            lines.append(line)
+        content = '\n'.join(lines)
+        total_tokens, blocks = process_block(config, content)
+        update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+        insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+    logging.info(f"start process_xlsx: embedding_uuid={embedding_uuid}, filename={filename}")
+    xl_file = pd.ExcelFile(filename)
+    total_blocks = 0
+    total_tokens = 0
+    for sheet_name in xl_file.sheet_names:
+        df = pd.read_excel(filename, sheet_name=sheet_name)
+        size = len(df)
+        logging.info(f"embeddings: size={size}, sheet_name={sheet_name}")
+        redis = lanying_redis.get_redis_stack_connection()
+        columns = df.columns.to_list()
+        if 'text' in columns or ('question' in columns and 'answer' in columns):
+            for i, row in df.iterrows():
+                if 'question' in row and 'answer' in row:
+                    block_tokens, block_blocks = process_question(config, row['question'], row['answer'])
+                    total_tokens += block_tokens
+                    total_blocks += len(block_blocks)
+                    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+                elif 'text' in row:
+                    block_tokens, block_blocks = process_block(config, row['text'])
+                    total_tokens += block_tokens
+                    total_blocks += len(block_blocks)
+                    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+        else:
+            df = pd.read_excel(filename, sheet_name=sheet_name, header=None)
+            lines = []
+            for i, row in df.iterrows():
+                line_blocks = []
+                for text in row:
+                    line_blocks.append(text)
+                line = '\n'.join(line_blocks)
+                lines.append(line)
+            content = '\n'.join(lines)
+            block_tokens, block_blocks = process_block(config, content)
             total_tokens += block_tokens
             total_blocks += len(block_blocks)
-            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
-            insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
-        elif 'question' in row and 'answer' in row:
-            block_tokens, block_blocks = process_question(config, row['question'], row['answer'])
-            total_tokens += block_tokens
-            total_blocks += len(block_blocks)
+            redis = lanying_redis.get_redis_stack_connection()
             update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
             insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
 
@@ -838,4 +897,4 @@ def sha256(text):
     return value
 
 def allow_exts():
-    return [".html", ".htm", ".csv", ".txt", ".md", ".pdf", ".doc", ".docx"]
+    return [".html", ".htm", ".csv", ".txt", ".md", ".pdf", ".docx", ".doc", ".xlsx", ".xls"]
