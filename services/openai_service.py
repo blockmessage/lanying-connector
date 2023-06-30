@@ -1039,7 +1039,8 @@ def add_embedding_to_file():
 def check_upload_embedding(msg, config, ext, app_id):
     from_user_id = int(msg['from']['uid'])
     if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
-        allow_exts  = [".html", ".htm", ".zip", ".csv", ".txt", ".md", ".pdf"]
+        allow_exts  = lanying_embedding.allow_exts()
+        allow_exts.append(".zip")
         if ext in allow_exts:
             return {'result':'ok'}
         else:

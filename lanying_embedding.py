@@ -14,7 +14,7 @@ import pandas as pd
 import lanying_config
 from pdfminer.high_level import extract_text
 import hashlib
-
+import textract
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -258,6 +258,8 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_pdf(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".md"]:
                 process_markdown(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            elif ext in [".doc", ".docx"]:
+                process_docx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
             raise e
@@ -334,6 +336,15 @@ def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     blocks = []
     total_tokens = 0
     content = extract_text(filename)
+    total_tokens, blocks = process_block(config, content)
+    redis = lanying_redis.get_redis_stack_connection()
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+    blocks = []
+    total_tokens = 0
+    content = textract.process(filename).decode("utf-8") 
     total_tokens, blocks = process_block(config, content)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
@@ -825,3 +836,6 @@ def sha256(text):
     value = hashlib.sha256(text.encode('utf-8')).hexdigest()
     logging.info(f"calc text sha256:{value}")
     return value
+
+def allow_exts():
+    return [".html", ".htm", ".csv", ".txt", ".md", ".pdf", ".doc", ".docx"]

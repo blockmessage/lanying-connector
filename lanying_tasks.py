@@ -60,7 +60,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                     pass
                 elif "DS_Store" in sub_filename:
                     pass
-                elif sub_ext in [".html", ".htm", ".csv", ".txt", ".md", ".pdf"]:
+                elif sub_ext in lanying_embedding.allow_exts():
                     logging.info(f"add_embedding_file | start process sub file: sub_filename:{sub_filename}, right_filename:{right_filename}")
                     sub_file_info = zip_ref.getinfo(sub_filename)
                     sub_file_size = sub_file_info.file_size
@@ -86,7 +86,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                         lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
                         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
                         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "bad_ext")
-    elif ext in [".html", ".htm", ".csv", ".txt", ".md", ".pdf"]:
+    elif ext in lanying_embedding.allow_exts():
         file_stat = os.stat(temp_filename)
         file_size = file_stat.st_size
         doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
