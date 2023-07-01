@@ -536,7 +536,7 @@ def calcMessagesTokens(messages, model):
         for message in messages:
             num_tokens += 4
             for key, value in message.items():
-                num_tokens += len(encoding.encode(value))
+                num_tokens += len(encoding.encode(value, disallowed_special=()))
                 if key == "name":
                     num_tokens += -1
         num_tokens += 2
@@ -551,7 +551,7 @@ def calcMessageTokens(message, model):
         num_tokens = 0
         num_tokens += 4
         for key, value in message.items():
-            num_tokens += len(encoding.encode(value))
+            num_tokens += len(encoding.encode(value, disallowed_special=()))
             if key == "name":
                 num_tokens += -1
         return num_tokens
@@ -803,7 +803,7 @@ def calcMessageTokens(message, model):
     num_tokens = 0
     num_tokens += 4
     for key, value in message.items():
-        num_tokens += len(encoding.encode(value))
+        num_tokens += len(encoding.encode(value, disallowed_special=()))
         if key == "name":
             num_tokens += -1
     return num_tokens

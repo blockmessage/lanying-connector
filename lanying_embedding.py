@@ -503,7 +503,7 @@ def generate_block_id(embedding_uuid):
     return redis.hincrby(key, "block_id_seq", 1)
 
 def num_of_tokens(str):
-    return len(tokenizer.encode(str))
+    return len(tokenizer.encode(str, disallowed_special=()))
 
 def maybe_rate_limit(retry):
     redis = lanying_redis.get_redis_stack_connection()
