@@ -14,7 +14,8 @@ import pandas as pd
 import lanying_config
 from pdfminer.high_level import extract_text
 import hashlib
-import textract
+import subprocess
+import docx2txt
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -260,7 +261,7 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_markdown(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".docx", ".doc"]:
                 process_docx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
-            elif ext in [".xlsx", "xls"]:
+            elif ext in [".xlsx", ".xls"]:
                 process_xlsx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
@@ -346,8 +347,18 @@ def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_i
 def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     blocks = []
     total_tokens = 0
-    content = textract.process(filename).decode("utf-8") 
-    total_tokens, blocks = process_block(config, content)
+    _,ext = os.path.splitext(origin_filename)
+    text = ''
+    if ext == ".doc":
+        try:
+            output = subprocess.check_output(['antiword', filename])
+            text = output.decode('utf-8', 'ignore')
+        except subprocess.CalledProcessError:
+            logging.error("Failed to convert the document: app_id:{app_id}, filename:{filename}, doc_id:{doc_id}")
+            raise
+    else:
+        text = docx2txt.process(filename)
+    total_tokens, blocks = process_block(config, text)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
@@ -497,6 +508,7 @@ def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep
         raise e
 
 def process_block(config, block):
+    block = remove_space_line(block)
     lines = []
     token_cnt = 0
     blocks = []
