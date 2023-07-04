@@ -11,7 +11,6 @@ import random
 import numpy as np
 from redis.commands.search.query import Query
 import pandas as pd
-import lanying_config
 from pdfminer.high_level import extract_text
 import hashlib
 import subprocess
@@ -97,7 +96,7 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
@@ -127,6 +126,8 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
         "embedding_max_blocks":embedding_max_blocks,
         "embedding_content": embedding_content
     })
+    if max_block_size > 0:
+        update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"max_block_size", max_block_size)
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
     return {"result":"ok"}
@@ -175,7 +176,7 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
                 base_query = f"*=>[KNN {page_size} @embedding $vector AS vector_score]"
             else:
                 base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
-            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "filename","parent_id", "num_of_tokens", "summary","doc_id","text_hash","question").paging(0,page_size).dialect(2)
+            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question").paging(0,page_size).dialect(2)
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
             # logging.info(f"topk result:{results.docs[:1]}")
             ret = []
@@ -244,7 +245,7 @@ def get_global_embedding_name_key(embedding_name):
 def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_filename, doc_id):
     redis = lanying_redis.get_redis_stack_connection()
     increase_embedding_doc_field(redis, embedding_uuid, doc_id, "process_count", 1)
-    _,ext = os.path.splitext(origin_filename)
+    ext = parse_file_ext(origin_filename)
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
     # logging.info(f"process_embedding_file | config:{embedding_uuid_info}")
     if embedding_uuid_info:
@@ -347,7 +348,7 @@ def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_i
 def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     blocks = []
     total_tokens = 0
-    _,ext = os.path.splitext(origin_filename)
+    ext = parse_file_ext(origin_filename)
     text = ''
     if ext == ".doc":
         try:
@@ -464,11 +465,10 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             redis.hmset(key, {"text":text,
                               "question": question,
                               "text_hash":text_hash,
-                            "embedding":embedding_bytes,
-                            "doc_id": doc_id,
-                            "num_of_tokens": token_cnt,
-                            "filename": origin_filename,
-                            "summary": "{}"})
+                              "embedding":embedding_bytes,
+                              "doc_id": doc_id,
+                              "num_of_tokens": token_cnt,
+                              "summary": "{}"})
             embedding_size = len(embedding_bytes)
             text_size = text_byte_size(embedding_text)
             char_cnt = len(embedding_text)
@@ -910,3 +910,12 @@ def sha256(text):
 
 def allow_exts():
     return [".html", ".htm", ".csv", ".txt", ".md", ".pdf", ".docx", ".doc", ".xlsx", ".xls"]
+
+def parse_file_ext(filename):
+    if is_file_url(filename):
+        return ".html"
+    _,ext = os.path.splitext(filename)
+    return ext
+
+def is_file_url(filename):
+    return filename.startswith("http://") or filename.startswith("https://")

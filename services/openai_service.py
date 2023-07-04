@@ -12,7 +12,7 @@ from dateutil.relativedelta import relativedelta
 import requests
 import os
 import copy
-from lanying_tasks import add_embedding_file, delete_doc_data
+from lanying_tasks import add_embedding_file, delete_doc_data, re_run_doc_to_embedding_by_doc_ids
 import lanying_embedding
 import re
 import lanying_command
@@ -841,8 +841,8 @@ def del_embedding_info(redis, fromUserId, toUserId):
 def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name):
     return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name)
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name):
-    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name)
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size):
+    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size)
 
 def list_embeddings(app_id):
     return lanying_embedding.list_embeddings(app_id)
@@ -1013,6 +1013,29 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type):
             'user_id': config['lanying_user_id']}
     trace_id = lanying_embedding.create_trace_id()
     add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type])
+
+def re_run_doc_to_embedding(app_id, embedding_name, doc_id):
+    embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
+        return {'result':'error','message':'embedding_name not exist'}
+    embedding_uuid = embedding_name_info["embedding_uuid"]
+    doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
+    if doc_info is None:
+        return {'result':'error', 'message':'doc_id not exist'}
+    lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "wait")
+    trace_id = lanying_embedding.create_trace_id()
+    re_run_doc_to_embedding_by_doc_ids.apply_async(args = [trace_id, app_id, embedding_uuid, [doc_id]])
+    return {'result':'ok', 'data':True}
+
+def re_run_all_doc_to_embedding(app_id, embedding_name):
+    embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
+        return {'result':'error','message':'embedding_name not exist'}
+    embedding_uuid = embedding_name_info["embedding_uuid"]
+    trace_id = lanying_embedding.create_trace_id()
+    doc_ids = lanying_embedding.get_embedding_doc_id_list(embedding_uuid, 0, -1)
+    re_run_doc_to_embedding_by_doc_ids.apply_async(args = [trace_id, app_id, embedding_uuid, doc_ids])
+    return {'result':'ok', 'data':True}
 
 def delete_doc_from_embedding(app_id, embedding_name, doc_id):
     return lanying_embedding.delete_doc_from_embedding(app_id, embedding_name, doc_id, delete_doc_data)

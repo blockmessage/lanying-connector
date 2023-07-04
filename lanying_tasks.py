@@ -27,7 +27,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
     logging.info(f"limit info:storage_limit:{storage_limit}, storage_payg:{storage_payg}")
     lanying_embedding.update_trace_field(trace_id, "status", "start")
     lanying_embedding.clear_trace_doc_id(trace_id)
-    _,ext = os.path.splitext(origin_filename)
+    ext = lanying_embedding.parse_file_ext(origin_filename)
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
     if embedding_info is None:
         logging.info(f"embedding_name not exist: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}")
@@ -54,7 +54,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             sub_filenames = zip_ref.namelist()
             logging.info(f"add_embedding_file | got zip filenames: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, sub_filenames:{sub_filenames}")
             for sub_filename in sub_filenames:
-                _,sub_ext = os.path.splitext(sub_filename)
+                sub_ext = lanying_embedding.parse_file_ext(sub_filename)
                 right_filename = sub_filename.encode('cp437').decode('utf-8')
                 if "__MACOSX" in sub_filename:
                     pass
@@ -80,9 +80,10 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                     if sub_file_info.is_dir():
                         pass
                     else:
+                        sub_file_size = sub_file_info.file_size
                         logging.info(f"add_embedding_file | skip process sub file: sub_filename:{sub_filename}, right_filename:{right_filename}")
                         doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
-                        lanying_embedding.create_doc_info(embedding_uuid, right_filename, '', doc_id, 0)
+                        lanying_embedding.create_doc_info(embedding_uuid, right_filename, '', doc_id, sub_file_size)
                         lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
                         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
                         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "bad_ext")
@@ -101,10 +102,10 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
         tasks.append((object_name, origin_filename, doc_id))
     for now_object_name, now_origin_filename, now_doc_id in tasks:
         lanying_embedding.add_doc_to_embedding(embedding_uuid, now_doc_id)
-        process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, now_object_name, now_origin_filename, now_doc_id])
+        process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, now_object_name, now_origin_filename, now_doc_id, False])
 
 @app.task
-def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id):
+def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False):
     embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
     if embedding_uuid_info is None:
         logging.info(f"process_embedding_file skip for not_found embedding_uuid_info | embedding_uuid:{embedding_uuid}")
@@ -112,23 +113,55 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin
     doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
     if doc_info is None:
         return
-    file_size = int(doc_info["file_size"])
-    result = lanying_embedding.add_storage_size(app_id, embedding_uuid, doc_id, file_size)
-    if result["result"] == "error":
-        logging.info(f"process_embedding_file | reach storage limit, app_id:{app_id}, embedding_uuid:{embedding_uuid},doc_id:{doc_id}")
-        lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
-        lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "storage_limit")
-        return
+    is_storage_size_increased = False
     try:
+        storage_file_size = int(doc_info.get('storage_file_size', "0"))
         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "processing")
-        _,ext = os.path.splitext(origin_filename)
+        lanying_embedding.update_doc_field(embedding_uuid, doc_id, "max_block_size", embedding_uuid_info['max_block_size'])
+        ext = lanying_embedding.parse_file_ext(origin_filename)
         temp_filename = os.path.join(f"{download_dir}/sub-{app_id}-{embedding_uuid}-{uuid.uuid4()}{ext}")
-        download_result = lanying_file_storage.download(object_name, temp_filename)
+        if is_regenerate and lanying_embedding.is_file_url(origin_filename):
+            download_result = lanying_file_storage.download_url(origin_filename, {}, temp_filename)
+            logging.info("re download from url | app_id={app_id}, doc_id={doc_id}, result={download_result}")
+            if download_result["result"] == "error" and object_name != '':
+                download_result = lanying_file_storage.download(object_name, temp_filename)
+        else:
+            download_result = lanying_file_storage.download(object_name, temp_filename)
         if download_result["result"] == "error":
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "download_error")
-            lanying_embedding.restore_storage_size(app_id, embedding_uuid, doc_id)
             task_error(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_uuid}, object_name={object_name},doc_id:{doc_id}, message:{download_result['message']}")
+        old_file_size = int(doc_info["file_size"])
+        file_stat = os.stat(temp_filename)
+        file_size = file_stat.st_size
+        if file_size != old_file_size:
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, "file_size", file_size)
+        delta_file_size = file_size - storage_file_size
+        result = lanying_embedding.add_storage_size(app_id, embedding_uuid, doc_id, delta_file_size)
+        if result["result"] == "error":
+            logging.info(f"process_embedding_file | reach storage limit, app_id:{app_id}, embedding_uuid:{embedding_uuid},doc_id:{doc_id}")
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "storage_limit")
+            return
+        is_storage_size_increased = True
+        if is_regenerate:
+            redis = lanying_redis.get_redis_stack_connection()
+            lanying_embedding.increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", -int(doc_info.get("embedding_count", "0")))
+            lanying_embedding.increase_embedding_doc_field(redis, embedding_uuid, doc_id, "embedding_count", -int(doc_info.get("embedding_count", "0")))
+            lanying_embedding.increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", -int(doc_info.get("embedding_size", "0")))
+            lanying_embedding.increase_embedding_doc_field(redis, embedding_uuid, doc_id, "embedding_size", -int(doc_info.get("embedding_size", "0")))
+            lanying_embedding.increase_embedding_uuid_field(redis, embedding_uuid, "text_size", -int(doc_info.get("text_size", "0")))
+            lanying_embedding.increase_embedding_doc_field(redis, embedding_uuid, doc_id, "text_size", -int(doc_info.get("text_size", "0")))
+            lanying_embedding.increase_embedding_uuid_field(redis, embedding_uuid, "token_cnt", -int(doc_info.get("token_cnt", "0")))
+            lanying_embedding.increase_embedding_doc_field(redis, embedding_uuid, doc_id, "token_cnt", -int(doc_info.get("token_cnt", "0")))
+            lanying_embedding.increase_embedding_uuid_field(redis, embedding_uuid, "char_cnt", -int(doc_info.get("char_cnt", "0")))
+            lanying_embedding.increase_embedding_doc_field(redis, embedding_uuid, doc_id, "char_cnt", -int(doc_info.get("char_cnt", "0")))
+            embedding_name = embedding_uuid_info["embedding_name"]
+            embedding_index = lanying_embedding.get_embedding_index(app_id, embedding_name)
+            if embedding_index:
+                logging.info("start clean old doc data | app_id={app_id}, doc_id:{doc_id}")
+                delete_doc_data(app_id, embedding_name, doc_id, embedding_index, 0)
+                logging.info("finish clean old doc data | app_id={app_id}, doc_id:{doc_id}")
         lanying_embedding.process_embedding_file(trace_id, app_id, embedding_uuid, temp_filename, origin_filename, doc_id)
     except Exception as e:
         reason = "exception"
@@ -140,9 +173,24 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin
             pass
         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", reason)
-        lanying_embedding.restore_storage_size(app_id, embedding_uuid, doc_id)
+        if is_storage_size_increased:
+            lanying_embedding.restore_storage_size(app_id, embedding_uuid, doc_id)
         logging.error(f"fail to process embedding file:trace_id={trace_id}, app_id={app_id}, embedding_uuid={embedding_uuid}, object_name={object_name},doc_id:{doc_id}")
         raise e
+
+@app.task
+def re_run_doc_to_embedding_by_doc_ids(trace_id, app_id, embedding_uuid, doc_ids):
+    for doc_id in doc_ids:
+        try:
+            doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
+            if doc_info:
+                lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "wait")
+                lanying_embedding.update_doc_field(embedding_uuid, doc_id, "update_time", int(time.time()))
+                lanying_embedding.update_doc_field(embedding_uuid, doc_id, "progress_total", 0)
+                lanying_embedding.update_doc_field(embedding_uuid, doc_id, "progress_finish", 0)
+                process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, doc_info['object_name'], doc_info['filename'], doc_id, True])
+        except Exception as e:
+            logging.exception(e)
 
 @app.task
 def delete_doc_data(app_id, embedding_name, doc_id, embedding_index, last_total):
