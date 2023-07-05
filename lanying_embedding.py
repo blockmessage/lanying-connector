@@ -150,32 +150,37 @@ def list_embeddings(app_id):
             result.append(embedding_info)
     return result
 
-def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens = 2048, max_blocks = 10):
+def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc):
     if max_blocks > 100:
         max_blocks = 100
     result = []
     for extra_block_num in [10, 100, 500, 2000, 5000]:
         page_size = max_blocks+extra_block_num
-        is_finish,result = search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, page_size)
+        is_finish,result = search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size)
         if is_finish:
             break
         logging.info(f"search_embeddings not finish: app_id:{app_id}, page_size:{page_size}, extra_block_num:{extra_block_num}")
     return result
 
-def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, page_size):
+def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size):
     result = check_storage_size(app_id)
     if result['result'] == 'error':
         logging.info(f"search_embeddings | skip search for exceed storage limit app, app_id:{app_id}, embedding_name:{embedding_name}")
         return (True, [])
+    logging.info(f"search_embeddings_internal | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, max_tokens:{max_tokens}, max_blocks:{max_blocks}, is_fulldoc:{is_fulldoc}, page_size:{page_size}")
     redis = lanying_redis.get_redis_stack_connection()
     if redis:
         embedding_index = get_embedding_index(app_id, embedding_name)
         if embedding_index:
             if doc_id == "":
                 base_query = f"*=>[KNN {page_size} @embedding $vector AS vector_score]"
+            elif is_fulldoc:
+                base_query = query_by_doc_id(doc_id)
             else:
                 base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
-            query = Query(base_query).sort_by("vector_score").return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question").paging(0,page_size).dialect(2)
+            query = Query(base_query).return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question").paging(0,page_size).dialect(2)
+            if not is_fulldoc:
+                query = query.sort_by("vector_score")
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
             # logging.info(f"topk result:{results.docs[:1]}")
             ret = []
@@ -183,10 +188,21 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
             blocks_num = 0
             is_finish = False
             text_hashes = {'-'}
-            if len(results.docs) < page_size:
-                logging.info(f"search_embeddings finish for no more doc: doc_count:{len(results.docs)}, page_size:{page_size}")
+            docs = results.docs
+            if is_fulldoc:
+                docs_for_sort = []
+                index = 0
+                for doc in docs:
+                    index = index + 1
+                    seg_id = parse_segment_id_int_value(doc.id)
+                    docs_for_sort.append(((seg_id, index),doc))
+                docs = []
+                for _,doc in sorted(docs_for_sort):
+                    docs.append(doc)
+            if len(docs) < page_size:
+                logging.info(f"search_embeddings finish for no more doc: doc_count:{len(docs)}, page_size:{page_size}")
                 is_finish = True
-            for doc in results.docs:
+            for doc in docs:
                 text_hash = doc.text_hash if hasattr(doc, 'text_hash') else sha256(doc.text)
                 if text_hash in text_hashes:
                     continue
@@ -919,3 +935,14 @@ def parse_file_ext(filename):
 
 def is_file_url(filename):
     return filename.startswith("http://") or filename.startswith("https://")
+
+def parse_segment_id_int_value(seg_id):
+    fields = seg_id.split('-')
+    try:
+        return int(fields[len(fields)-1])
+    except Exception as e:
+        try:
+            fields = seg_id.split(':')
+            return int(fields[len(fields)-1])
+        except Exception as ee:
+            return 0

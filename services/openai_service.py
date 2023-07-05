@@ -176,6 +176,7 @@ def handle_chat_message(msg, config, retry_times = 3):
 
 def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
+    model = preset['model']
     check_res = check_message_limit(app_id, config)
     if check_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={check_res['msg']}")
@@ -183,13 +184,15 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
     openai_key_type = check_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
     doc_id = ""
+    is_fulldoc = False
     content = msg['content']
     if 'new_content' in command_ext:
         content = command_ext['new_content']
         logging.info(f"using content in command:{content}")
     if doc_id == "" and 'doc_id' in command_ext:
         doc_id = command_ext['doc_id']
-        logging.info(f"using doc_id in command:{doc_id}")
+        is_fulldoc = command_ext.get('is_fulldoc', False)
+        logging.info(f"using doc_id in command:{doc_id}, is_fulldoc:{is_fulldoc}")
     openai_api_key = get_openai_key(config, openai_key_type)
     openai.api_key = openai_api_key
     add_reference = presetExt.get('add_reference', 'none')
@@ -247,19 +250,23 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
             context = last_embedding_text
             is_use_old_embeddings = True
         if context == '': 
-            embedding_history_num = presetExt.get('embedding_history_num', 0)
-            embedding_query_text = calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId)
-            q_embedding = fetch_embeddings(app_id, config, openai_key_type, embedding_query_text)
-            search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id)
             embedding_min_distance = 1.0
             first_preset_embedding_info = preset_embedding_infos[0]
             embedding_max_distance = presetExt.get('embedding_max_distance', 1.0)
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
             embedding_content_type = presetExt.get('embedding_content_type', 'text')
+            embedding_history_num = presetExt.get('embedding_history_num', 0)
+            embedding_query_text = calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId)
+            q_embedding = fetch_embeddings(app_id, config, openai_key_type, embedding_query_text)
+            ask_message = {"role": "user", "content": content}
+            embedding_message =  {"role": "user", "content": embedding_content}
+            embedding_token_limit = model_token_limit(model) - calcMessagesTokens(messages, model) - preset.get('max_tokens', 1024) - calcMessageTokens(ask_message, model) - calcMessageTokens(embedding_message, model)
+            logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
+            search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
             for doc in search_result:
                 if hasattr(doc, 'doc_id') and doc.doc_id not in reference_list:
                     reference_list.append(doc.doc_id)
-                now_distance = float(doc.vector_score)
+                now_distance = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
                 if hasattr(doc, 'question') and doc.question != "":
@@ -368,7 +375,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
-def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
+def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit):
     list = []
     max_tokens = 0
     max_blocks = 0
@@ -386,11 +393,16 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
         preset_idx = preset_idx + 1
         embedding_max_tokens = lanying_embedding.word_num_to_token_num(preset_embedding_info.get('embedding_max_tokens', 1024))
         embedding_max_blocks = preset_embedding_info.get('embedding_max_blocks', 2)
+        if is_fulldoc:
+            embedding_max_tokens = embedding_token_limit
+            embedding_max_blocks = max(100, embedding_max_blocks)
+        if embedding_max_tokens > embedding_token_limit:
+            embedding_max_tokens = embedding_token_limit
         if max_tokens < embedding_max_tokens:
             max_tokens = embedding_max_tokens
         if max_blocks < embedding_max_blocks:
             max_blocks = embedding_max_blocks
-        docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks)
+        docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc)
         idx = 0
         for doc in docs:
             text_hash = doc.text_hash if hasattr(doc, 'text_hash') else lanying_embedding.sha256(doc.text)
@@ -398,13 +410,18 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id):
                 continue
             text_hashes.add(text_hash)
             idx = idx+1
-            list.append(((idx,float(doc.vector_score),preset_idx),doc))
+            vector_store = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
+            if is_fulldoc:
+                seq_id = parse_segment_id_int_value(doc.id)
+                list.append(((seq_id,idx, preset_idx),doc))
+            else:
+                list.append(((idx,vector_store,preset_idx),doc))
     sorted_list = sorted(list)
     ret = []
     now_tokens = 0
     blocks_num = 0
     for _,doc in sorted_list:
-        now_tokens += int(doc.num_of_tokens)
+        now_tokens += int(doc.num_of_tokens) + 1
         blocks_num += 1
         logging.info(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
         if now_tokens > max_tokens:
@@ -799,16 +816,6 @@ def check_message_rate(app_id, path):
         return {'result':'error', 'code':429, 'msg': 'request too fast'}
     return {'result':'ok'}
 
-def calcMessageTokens(message, model):
-    encoding = tiktoken.encoding_for_model(model)
-    num_tokens = 0
-    num_tokens += 4
-    for key, value in message.items():
-        num_tokens += len(encoding.encode(value, disallowed_special=()))
-        if key == "name":
-            num_tokens += -1
-    return num_tokens
-
 def init_preset_defaults(preset, preset_default):
     for k,v in preset_default.items():
         if k not in ['presets', 'ext'] and k not in preset:
@@ -1003,6 +1010,28 @@ def search_on_doc_by_preset(msg, config, preset_name, doc_id, new_content):
         return "文档ID不存在"
     else:
         return {'result':'continue', 'command_ext':{'preset_name':preset_name, "doc_id":doc_id, "new_content":new_content}}
+    
+def search_on_fulldoc_by_default_preset(msg, config, doc_id, new_content):
+    return search_on_fulldoc_by_preset(msg, config, "default", doc_id, new_content)
+
+def search_on_fulldoc_by_preset(msg, config, preset_name, doc_id, new_content):
+    app_id = msg['appId']
+    embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    result = "not_bind"
+    for embedding_info in embedding_infos:
+        embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
+        if 'embedding_uuid' in embedding_info and embedding_info['embedding_uuid'] == embedding_uuid_from_doc_id:
+            doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
+            if doc_info:
+                result = "found"
+            else:
+                result = "not_exist"
+    if result == "not_bind":
+        return "文档ID所在知识库未绑定到此预设"
+    elif result == "not_exist":
+        return "文档ID不存在"
+    else:
+        return {'result':'continue', 'command_ext':{'preset_name':preset_name, "doc_id":doc_id, "new_content":new_content, "is_fulldoc": True}}
 
 def search_by_preset(msg, config, preset_name, new_content):
     return {'result':'continue', 'command_ext':{'preset_name':preset_name, "new_content":new_content}}
@@ -1122,3 +1151,14 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
 def parse_segment_id(seg_id):
     fields = seg_id.split(':')
     return fields[len(fields)-1]
+
+def parse_segment_id_int_value(seg_id):
+    fields = seg_id.split('-')
+    try:
+        return int(fields[len(fields)-1])
+    except Exception as e:
+        try:
+            fields = seg_id.split(':')
+            return int(fields[len(fields)-1])
+        except Exception as ee:
+            return 0

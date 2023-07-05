@@ -265,6 +265,26 @@ def all_commands():
             ]
         },
         {
+            "name": "search_on_fulldoc_by_default_preset",
+            "desc": "默认预设下使用文档ID全文查询:\n/on doc <DOC_ID> <MESSAGE>",
+            "rules": [
+                {"type": "string_exact", "value": "on"},
+                {"type": "string_exact", "value": "fulldoc"},
+                {"type": "string"},
+                {"type": "string_rest"}
+            ]
+        },
+        {
+            "name": "search_on_fulldoc_by_preset",
+            "rules": [
+                {"type": "preset_name"},
+                {"type": "string_exact", "value": "on"},
+                {"type": "string_exact", "value": "fulldoc"},
+                {"type": "string"},
+                {"type": "string_rest"}
+            ]
+        },
+        {
             "name": "bluevector_info_by_preset",
             "rules": [
                 {"type": "preset_name"},
