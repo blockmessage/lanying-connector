@@ -309,7 +309,8 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         messages.append(userHistory)
     messages.append({"role": "user", "content": content})
     preset['messages'] = messages
-    calcMessagesTokens(messages, preset['model'])
+    preset_message_lines = "\n".join([f"{message.get('role','')}:{message.get('content','')}" for message in messages])
+    logging.info(f"==========final preset messages============\n{preset_message_lines}")
     response = openai.ChatCompletion.create(**preset)
     logging.info(f"openai response:{response}")
     add_message_statistic(app_id, config, preset, response, openai_key_type)
