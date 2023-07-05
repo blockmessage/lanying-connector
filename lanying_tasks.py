@@ -146,6 +146,7 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin
         is_storage_size_increased = True
         if is_regenerate:
             redis = lanying_redis.get_redis_stack_connection()
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, "block_id_seq", 0)
             lanying_embedding.increase_embedding_uuid_field(redis, embedding_uuid, "embedding_count", -int(doc_info.get("embedding_count", "0")))
             lanying_embedding.increase_embedding_doc_field(redis, embedding_uuid, doc_id, "embedding_count", -int(doc_info.get("embedding_count", "0")))
             lanying_embedding.increase_embedding_uuid_field(redis, embedding_uuid, "embedding_size", -int(doc_info.get("embedding_size", "0")))

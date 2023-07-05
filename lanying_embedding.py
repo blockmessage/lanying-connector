@@ -69,7 +69,6 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
                 "algo": algo,
                 "size": 0,
                 "doc_id_seq": 0,
-                "block_id_seq":0,
                 "embedding_count":0,
                 "embedding_size": 0,
                 "text_size": 0,
@@ -455,7 +454,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             token_cnt, question, text = block
         doc_info = get_doc(embedding_uuid, doc_id)
         if doc_info:
-            block_id = generate_block_id(embedding_uuid)
+            block_id = generate_block_id(embedding_uuid, doc_id)
             maybe_rate_limit(5)
             embedding_text = text + question
             embedding = fetch_embedding(openai_secret_key, embedding_text, is_dry_run)
@@ -579,10 +578,11 @@ def get_max_token_count(config):
 def word_num_to_token_num(word_num):
     return round(word_num * 1.3)
 
-def generate_block_id(embedding_uuid):
-    key = get_embedding_uuid_key(embedding_uuid)
+def generate_block_id(embedding_uuid, doc_id):
+    key = get_embedding_doc_info_key(embedding_uuid,doc_id)
     redis = lanying_redis.get_redis_stack_connection()
-    return redis.hincrby(key, "block_id_seq", 1)
+    result = redis.hincrby(key, "block_id_seq", 1)
+    return f"{doc_id}-{result}"
 
 def num_of_tokens(str):
     return len(tokenizer.encode(str, disallowed_special=()))
