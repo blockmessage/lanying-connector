@@ -422,7 +422,7 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, 
     now_tokens = 0
     blocks_num = 0
     for _,doc in sorted_list:
-        now_tokens += int(doc.num_of_tokens) + 1
+        now_tokens += int(doc.num_of_tokens) + 8
         blocks_num += 1
         logging.info(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
         if now_tokens > max_tokens:
