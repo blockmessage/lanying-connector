@@ -851,11 +851,11 @@ def del_embedding_info(redis, fromUserId, toUserId):
         key = embedding_info_key(fromUserId,toUserId)
         redis.delete(key)
 
-def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name):
-    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name)
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size):
+    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size)
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size):
-    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size)
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size):
+    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size)
 
 def list_embeddings(app_id):
     return lanying_embedding.list_embeddings(app_id)

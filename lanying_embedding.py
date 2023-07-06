@@ -15,6 +15,7 @@ from pdfminer.high_level import extract_text
 import hashlib
 import subprocess
 import docx2txt
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -35,7 +36,7 @@ class IgnoringScriptConverter(MarkdownConverter):
 def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
-def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE", admin_user_ids = [], preset_name = ''):
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size):
     logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}")
     if app_id is None:
         app_id = ""
@@ -66,6 +67,7 @@ def create_embedding(app_id, embedding_name, max_block_size = 500, algo="COSINE"
                 "index": index_key,
                 "prefix": data_prefix_key,
                 "max_block_size": max_block_size,
+                "overlapping_size":overlapping_size,
                 "algo": algo,
                 "size": 0,
                 "doc_id_seq": 0,
@@ -95,7 +97,7 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
@@ -127,6 +129,7 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
     })
     if max_block_size > 0:
         update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"max_block_size", max_block_size)
+    update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"overlapping_size", overlapping_size)
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
     return {"result":"ok"}
@@ -142,7 +145,7 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
             if "embedding_content" not in embedding_info:
@@ -498,7 +501,10 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "char_cnt", char_cnt)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "token_cnt", token_cnt)
             update_progress(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), 1)
-            logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},text_hash:{text_hash}=====\n{text}")
+            question_desc = ''
+            if question != '':
+                question_desc = f"question:{question}\nanswer:"
+            logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},text_hash:{text_hash}=====\n{question_desc}{text}")
 
 def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
     if is_dry_run:
@@ -525,31 +531,23 @@ def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep
 
 def process_block(config, block):
     block = remove_space_line(block)
-    lines = []
-    token_cnt = 0
-    blocks = []
+    chunks = []
     total_tokens = 0
     max_block_size = get_max_token_count(config)
-    for line in block.split('\n'):
-        line_token_count = num_of_tokens(line + "\n")
-        if token_cnt + line_token_count > max_block_size:
-            if token_cnt > 0:
-                now_block = "\n".join(lines) + "\n"
-                blocks.append((token_cnt, now_block))
-                total_tokens += token_cnt
-                lines = []
-                token_cnt = 0
-        if line_token_count > max_block_size:
-            logging.info(f"processing too long line: {line}")
-            blocks.extend(process_line(line, max_block_size))
-            continue
-        lines.append(line)
-        token_cnt += line_token_count
-    if token_cnt > 0:
-        now_block = "\n".join(lines) + "\n"
-        blocks.append((token_cnt, now_block))
-        total_tokens += token_cnt
-    return (total_tokens, blocks)
+    overlapping_size = get_overlapping_size(config)
+    text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+            encoding_name="cl100k_base",
+            chunk_size=max_block_size,
+            chunk_overlap=overlapping_size,
+            separators=["\n", "。",".", "，", ","," ", ""]
+        )
+    texts = text_splitter.split_text(block)
+    for text in texts:
+        text = text.lstrip(",.，。 \n")
+        token_count = num_of_tokens(text)
+        total_tokens += token_count
+        chunks.append((token_count,text))
+    return (total_tokens, chunks)
 
 def process_question(config, question, answer):
     question_token_cnt = num_of_tokens(question)
@@ -588,9 +586,14 @@ def process_line(text, max_block_size):
     return result
 
 def get_max_token_count(config):
-    max_block_size = int(config.get('max_block_size', "350"))
+    max_block_size = max(350, int(config.get('max_block_size', "350")))
     max_token_count = word_num_to_token_num(max_block_size)
     return max_token_count
+
+def get_overlapping_size(config):
+    overlapping_size = max(0, int(config.get('overlapping_size', "0")))
+    token_count = word_num_to_token_num(overlapping_size)
+    return token_count
 
 def word_num_to_token_num(word_num):
     return round(word_num * 1.3)

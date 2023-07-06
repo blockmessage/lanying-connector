@@ -178,8 +178,9 @@ def create_embedding(service):
         admin_user_ids = data.get('admin_user_ids',[])
         max_block_size = data.get('max_block_size', 500)
         preset_name = data.get('preset_name', '')
+        overlapping_size = data.get('overlapping_size', 0)
         service_module = importlib.import_module(f"{service}_service")
-        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name)
+        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
@@ -204,9 +205,10 @@ def configure_embedding(service):
         embedding_content = data.get('embedding_content', '')
         new_embedding_name = data['new_embedding_name']
         max_block_size = data.get('max_block_size', 0)
+        overlapping_size = data.get('overlapping_size', 0)
         logging.info(f"configure_embedding | {data}")
         service_module = importlib.import_module(f"{service}_service")
-        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size)
+        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
