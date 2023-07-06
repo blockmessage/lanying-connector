@@ -406,7 +406,11 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, 
         docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc)
         idx = 0
         for doc in docs:
-            text_hash = doc.text_hash if hasattr(doc, 'text_hash') else lanying_embedding.sha256(doc.text)
+            if hasattr(doc, 'text_hash'):
+                text_hash = doc.text_hash
+            else:
+                text_hash = lanying_embedding.sha256(doc.text)
+                logging.info(f"calc text sha256:{text_hash}")
             if text_hash in text_hashes:
                 continue
             text_hashes.add(text_hash)

@@ -498,6 +498,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "char_cnt", char_cnt)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "token_cnt", token_cnt)
             update_progress(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), 1)
+            logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},text_hash:{text_hash}=====\n{text}")
 
 def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
     if is_dry_run:
@@ -921,7 +922,6 @@ def get_embedding_uuid_from_doc_id(doc_id):
 
 def sha256(text):
     value = hashlib.sha256(text.encode('utf-8')).hexdigest()
-    logging.info(f"calc text sha256:{value}")
     return value
 
 def allow_exts():
