@@ -269,21 +269,22 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
                 now_distance = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
+                segment_id = lanying_embedding.parse_segment_id_int_value(doc.id)
                 if hasattr(doc, 'question') and doc.question != "":
                     question_info = {'role':'user', 'content':doc.question}
                     answer_info = {'role':'assistant', 'content':doc.text}
                     question_answers.append(question_info)
                     question_answers.append(answer_info)
                     if is_debug:
-                        question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{parse_segment_id(doc.id)}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
+                        question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
                 elif embedding_content_type == 'summary':
                     context = context + doc.summary + "\n\n"
                     if is_debug:
-                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{parse_segment_id(doc.id)}]" + doc.summary + "\n\n"
+                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.summary + "\n\n"
                 else:
                     context = context + doc.text + "\n\n"
                     if is_debug:
-                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{parse_segment_id(doc.id)}]" + doc.text + "\n\n"
+                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
                 if last_embedding_name != embedding_names_str or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
                     embedding_info['last_embedding_name'] = embedding_names_str
@@ -412,7 +413,7 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, 
             idx = idx+1
             vector_store = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
             if is_fulldoc:
-                seq_id = parse_segment_id_int_value(doc.id)
+                seq_id = lanying_embedding.parse_segment_id_int_value(doc.id)
                 list.append(((seq_id,idx, preset_idx),doc))
             else:
                 list.append(((idx,vector_store,preset_idx),doc))
@@ -1147,18 +1148,3 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
     if is_debug:
         lanying_connector.sendMessageAsync(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}")
     return embedding_query_text
-
-def parse_segment_id(seg_id):
-    fields = seg_id.split(':')
-    return fields[len(fields)-1]
-
-def parse_segment_id_int_value(seg_id):
-    fields = seg_id.split('-')
-    try:
-        return int(fields[len(fields)-1])
-    except Exception as e:
-        try:
-            fields = seg_id.split(':')
-            return int(fields[len(fields)-1])
-        except Exception as ee:
-            return 0
