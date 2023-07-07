@@ -539,6 +539,7 @@ def process_block(config, block):
             encoding_name="cl100k_base",
             chunk_size=max_block_size,
             chunk_overlap=overlapping_size,
+            disallowed_special=(),
             separators=["\n", "。",".", "，", ","," ", ""]
         )
     texts = text_splitter.split_text(block)

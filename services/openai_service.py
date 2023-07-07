@@ -625,7 +625,7 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type):
         total_tokens = usage.get('total_tokens', 0)
         text_size = calc_used_text_size(preset, response)
         model = preset['model']
-        message_count_quota = calc_message_quota(model, text_size)
+        message_count_quota = calc_message_quota(model, total_tokens)
         redis = lanying_redis.get_redis_connection()
         product_id = config.get('product_id', 0)
         if product_id == 0:
@@ -664,12 +664,12 @@ def add_quota(redis, key, field, quota):
 
 def check_message_limit(app_id, config):
     message_per_month = config.get('message_per_month', 0)
-    enable_extra_price = False
-    if config.get('enable_extra_price', 0) == 1:
-        enable_extra_price = True
     product_id = config.get('product_id', 0)
     if product_id == 0:
         return {'result':'ok', 'openai_key_type':'self'}
+    enable_extra_price = False
+    if config.get('enable_extra_price', 0) == 1 and product_id >= 7005:
+        enable_extra_price = True
     redis = lanying_redis.get_redis_connection()
     if redis:
         key = get_message_statistic_keys(config, app_id)[0]
@@ -741,7 +741,7 @@ def check_model_allow(model):
         return {'result':'ok'}
     return {'result':'error', 'msg':f'model {model} is not supported'}
 
-def calc_message_quota(model, text_size):
+def calc_message_quota(model, total_tokens):
     multi = 1
     if is_chatgpt_model_4(model):
         multi = 20
@@ -751,7 +751,7 @@ def calc_message_quota(model, text_size):
         multi = 2
     if is_embedding_model(model):
         multi = 0.05
-    count = round(text_size / 1024)
+    count = round(total_tokens / 2048)
     if  count < 1:
         count = 1
     return count * multi
