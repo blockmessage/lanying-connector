@@ -102,16 +102,6 @@ def saveConfig():
     resp = app.make_response('fail')
     return resp
 
-@app.route("/config", methods=["GET"])
-def getConfig():
-    showConfigAppId = os.getenv('LANYING_CONNECTOR_SHOW_CONFIG_APP_ID')
-    if showConfigAppId:
-        config = lanying_config.get_lanying_connector(showConfigAppId)
-        resp = app.make_response(json.dumps(config['preset']['messages'], ensure_ascii=False))
-        return resp
-    resp = app.make_response('')
-    return resp
-
 @app.route("/service/<string:service>/buy_message_quota", methods=["POST"])
 def buy_message_quota(service):
     headerToken = request.headers.get('access-token', "")
