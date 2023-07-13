@@ -63,8 +63,7 @@ def messages():
     productId = 0
     if config and 'product_id' in config:
         productId = config['product_id']
-    ExpireTime = lanying_config.get_lanying_connector_expire_time(appId)
-    if productId == 0 and (ExpireTime == None or (ExpireTime > 0 and now > ExpireTime)):
+    if productId == 0:
         logging.info(f"service is expired: appId={appId}")
         resp = app.make_response('service is expired')
         return resp
