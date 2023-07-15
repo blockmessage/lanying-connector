@@ -122,7 +122,7 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin
         temp_filename = os.path.join(f"{download_dir}/sub-{app_id}-{embedding_uuid}-{uuid.uuid4()}{ext}")
         if is_regenerate and lanying_embedding.is_file_url(origin_filename):
             download_result = lanying_file_storage.download_url(origin_filename, {}, temp_filename)
-            logging.info("re download from url | app_id={app_id}, doc_id={doc_id}, result={download_result}")
+            logging.info(f"re download from url | app_id={app_id}, doc_id={doc_id}, result={download_result}")
             if download_result["result"] == "error" and object_name != '':
                 download_result = lanying_file_storage.download(object_name, temp_filename)
         else:
@@ -160,9 +160,9 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin
             embedding_name = embedding_uuid_info["embedding_name"]
             embedding_index = lanying_embedding.get_embedding_index(app_id, embedding_name)
             if embedding_index:
-                logging.info("start clean old doc data | app_id={app_id}, doc_id:{doc_id}")
+                logging.info(f"start clean old doc data | app_id={app_id}, doc_id:{doc_id}")
                 delete_doc_data(app_id, embedding_name, doc_id, embedding_index, 0)
-                logging.info("finish clean old doc data | app_id={app_id}, doc_id:{doc_id}")
+                logging.info(f"finish clean old doc data | app_id={app_id}, doc_id:{doc_id}")
         lanying_embedding.process_embedding_file(trace_id, app_id, embedding_uuid, temp_filename, origin_filename, doc_id)
     except Exception as e:
         reason = "exception"

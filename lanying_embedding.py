@@ -560,7 +560,7 @@ def process_question(config, question, answer):
     if token_cnt <= token_limit:
         return (token_cnt, [(token_cnt, question, answer)])
     else:
-        logging.info("process_question | skip too large question answer: question_token_cnt:{question_token_cnt}, answer_token_cnt:{answer_token_cnt}")
+        logging.info(f"process_question | skip too large question answer: question_token_cnt:{question_token_cnt}, answer_token_cnt:{answer_token_cnt}")
         return (0, [])
 
 def embedding_model_token_limit():
