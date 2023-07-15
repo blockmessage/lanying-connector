@@ -53,7 +53,7 @@ def service_post_messages(app_id):
     resp = make_response(reply)
     return resp
 
-def handle_chat_message(message, config):
+def handle_chat_message(config, message):
     checkres = check_message_user_ids(config, message)
     if checkres['result'] == 'error':
         return ''

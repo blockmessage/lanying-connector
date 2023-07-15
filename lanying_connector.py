@@ -359,7 +359,7 @@ def handle_lanying_messages(data):
         newConfig['ext'] = message['ext']
         newConfig['app_id'] = message['appId']
         newConfig['msg_id'] = message['msgId']
-        responseText = service_module.handle_chat_message(message, newConfig)
+        responseText = service_module.handle_chat_message(newConfig, message)
         logging.info(f"handle_lanying_messages | service={service}, appId={appId}, responseText:{responseText}")
         if len(responseText) > 0:
             sendMessageAsync(appId, toUserId, fromUserId, responseText)

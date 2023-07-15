@@ -103,7 +103,7 @@ def check_message_user_id(config, msg):
         return {'result':'ok'}
     return {'result':'error', 'msg':''}
 
-def handle_chat_message(msg, config, retry_times = 3):
+def handle_chat_message(config, msg, retry_times = 3):
     checkres = check_message_user_id(config, msg)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -186,11 +186,11 @@ def handle_chat_message(msg, config, retry_times = 3):
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
     isChatGPT = is_chatgpt_model(preset['model'])
     if isChatGPT:
-        return handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
+        return handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
     else:
         return ''
 
-def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
+def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
     model = preset['model']
     check_res = check_message_limit(app_id, config)
@@ -381,7 +381,7 @@ def handle_chat_message_chatgpt(msg, config, preset, lcExt, presetExt, preset_na
         if retry_times > 0:
             if 'preset_welcome' in command:
                 lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, command['preset_welcome'])
-            return handle_chat_message(msg, config, retry_times - 1)
+            return handle_chat_message(config, msg, retry_times - 1)
         else:
             return ''
     reply_ext = {}
