@@ -93,10 +93,26 @@ def check_authorization(request):
         pass
     return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
 
+def check_message_user_id(config, msg):
+    fromUserId = msg['from']['uid']
+    toUserId = msg['to']['uid']
+    type = msg['type']
+    myUserId = config['lanying_user_id']
+    logging.info(f'lanying_user_id:{myUserId}')
+    if myUserId != None and toUserId == myUserId and fromUserId != myUserId and type == 'CHAT':
+        return {'result':'ok'}
+    return {'result':'error', 'msg':''}
+
 def handle_chat_message(msg, config, retry_times = 3):
+    checkres = check_message_user_id(config, msg)
+    if checkres['result'] == 'error':
+        return checkres['msg']
     reply_message_read_ack(config)
     preset = copy.deepcopy(config['preset'])
     checkres = check_message_deduct_failed(msg['appId'], config)
+    if checkres['result'] == 'error':
+        return checkres['msg']
+    checkres = check_product_id(msg['appId'], config)
     if checkres['result'] == 'error':
         return checkres['msg']
     ctype = msg['ctype']
@@ -705,6 +721,15 @@ def check_message_per_month_per_user(msg, config):
 def check_message_deduct_failed(app_id, config):
     if lanying_config.get_lanying_connector_deduct_failed(app_id):
         return {'result':'error', 'code':'deduct_failed', 'msg':lanying_config.get_message_deduct_failed(app_id)}
+    return {'result':'ok'}
+
+def check_product_id(app_id, config):
+    productId = 0
+    if config and 'product_id' in config:
+        productId = config['product_id']
+    if productId == 0:
+        logging.info(f"service is expired: app_id={app_id}")
+        return {'result':'error', 'msg':'service is expired'}
     return {'result':'ok'}
 
 def get_message_limit_state(app_id):

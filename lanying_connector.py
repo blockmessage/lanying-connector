@@ -43,6 +43,9 @@ def create_app():
         app.debug = True
     return app
 app = create_app()
+import wechat_official_account_service
+app.register_blueprint(wechat_official_account_service.bp)
+
 @app.route("/", methods=["GET"])
 def index():
     service = lanying_config.get_lanying_connector_service('')
@@ -54,19 +57,7 @@ def messages():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     logging.info(data)
-    fromUserId = data['from']['uid']
-    toUserId = data['to']['uid']
-    type = data['type']
     appId = data['appId']
-    now = time.time()
-    config = lanying_config.get_lanying_connector(appId)
-    productId = 0
-    if config and 'product_id' in config:
-        productId = config['product_id']
-    if productId == 0:
-        logging.info(f"service is expired: appId={appId}")
-        resp = app.make_response('service is expired')
-        return resp
     callbackSignature = lanying_config.get_lanying_callback_signature(appId)
     if callbackSignature and len(callbackSignature) > 0:
         headSignature = request.headers.get('signature')
@@ -74,10 +65,11 @@ def messages():
             logging.info(f'callback signature not match: appId={appId}')
             resp = app.make_response('callback signature not match')
             return resp
-    myUserId = lanying_config.get_lanying_user_id(appId)
-    logging.info(f'lanying_user_id:{myUserId}')
-    if myUserId != None and toUserId == myUserId and fromUserId != myUserId and type == 'CHAT':
-        executor.submit(queryAndSendMessage, data)
+    service_list = lanying_config.get_service_list()
+    for service in service_list:
+        config = lanying_config.get_service_config(appId, service)
+        if config:
+            executor.submit(handle_lanying_messages, (config, service, data))
     resp = app.make_response('')
     return resp
 
@@ -354,33 +346,30 @@ def set_embedding_usage(service):
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
 
-def queryAndSendMessage(data):
-    appId = data['appId']
-    fromUserId = data['from']['uid']
-    toUserId = data['to']['uid']
-    content = data['content']
+def handle_lanying_messages(data):
+    config, service, message = data
+    appId = message['appId']
+    fromUserId = message['from']['uid']
+    toUserId = message['to']['uid']
     try:
-        service = lanying_config.get_lanying_connector_service(appId)
-        if service:
-            service_module = importlib.import_module(f"{service}_service")
-            config = lanying_config.get_lanying_connector(appId)
-            if config:
-                newConfig = copy.deepcopy(config)
-                newConfig['from_user_id'] = fromUserId
-                newConfig['to_user_id'] = toUserId
-                newConfig['ext'] = data['ext']
-                newConfig['app_id'] = data['appId']
-                newConfig['msg_id'] = data['msgId']
-                responseText = service_module.handle_chat_message(data, newConfig)
-                logging.info(f"responseText:{responseText}")
-                if len(responseText) > 0:
-                    sendMessageAsync(appId, toUserId, fromUserId, responseText)
-                addMsgSentCnt(1)
+        service_module = importlib.import_module(f"{service}_service")
+        newConfig = copy.deepcopy(config)
+        newConfig['from_user_id'] = fromUserId
+        newConfig['to_user_id'] = toUserId
+        newConfig['ext'] = message['ext']
+        newConfig['app_id'] = message['appId']
+        newConfig['msg_id'] = message['msgId']
+        responseText = service_module.handle_chat_message(message, newConfig)
+        logging.info(f"handle_lanying_messages | service={service}, appId={appId}, responseText:{responseText}")
+        if len(responseText) > 0:
+            sendMessageAsync(appId, toUserId, fromUserId, responseText)
+        addMsgSentCnt(1)
     except Exception as e:
         logging.exception(e)
-        message_404 = lanying_config.get_message_404(appId)
-        sendMessageAsync(appId, toUserId, fromUserId, message_404)
-        addMsgSentCnt(1)
+        if service == 'openai':
+            message_404 = lanying_config.get_message_404(appId)
+            sendMessageAsync(appId, toUserId, fromUserId, message_404)
+            addMsgSentCnt(1)
 
 def sendMessageAsync(appId, fromUserId, toUserId, content, ext = {}):
     executor.submit(sendMessageAsyncInternal, (appId, fromUserId, toUserId, content, ext))

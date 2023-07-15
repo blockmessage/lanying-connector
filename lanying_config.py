@@ -47,8 +47,15 @@ def get_config_field(appId, key, field, default):
         return value.get(field, default)
     return default
 
-def get_all_config():
-    return configs
+def get_all_config(app_id = None):
+    if app_id is None:
+        return configs
+    app_prefix = prefix + app_id + '.'
+    ret = {}
+    for k,v in configs.items():
+        if k.startswith(app_prefix):
+            ret[k] = v
+    return ret
 
 def get_lanying_user_id(appId):
     if mode == 'etcd':
@@ -129,5 +136,24 @@ def get_lanying_connector(appId):
 def get_lanying_connector_default_openai_api_key():
     return os.getenv('OPENAI_API_KEY')
 
+def get_service_config(app_id, service):
+    if mode == 'etcd':
+        config = get_config(app_id, f"lanying_connector.service.{service}", None)
+        if service == 'openai' and config is None:
+            config = get_config(app_id, 'lanying_connector', None)
+        if config and 'enable' in config and config['enable'] == True:
+            return config
+        return None
+    with open(f"configs/{service}.json", "r") as f:
+        config = json.load(f)
+        if service == 'openai':
+            openaiAPIKey = os.getenv('OPENAI_API_KEY')
+            if openaiAPIKey:
+                config['openai_api_key'] = openaiAPIKey
+        return config
+
 def get_lanying_api_endpoint(appId):
     return os.getenv('LANYING_API_ENDPOINT', 'https://s-1-3-api.maximtop.cn')
+
+def get_service_list():
+    return os.getenv('LANYING_CONNECTOR_SERVICE_LIST', 'openai,wechat_official_account').split(',')
