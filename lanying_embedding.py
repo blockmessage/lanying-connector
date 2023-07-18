@@ -411,8 +411,8 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
         for i, row in df.iterrows():
             line_blocks = []
             for text in row:
-                line_blocks.append(text)
-            line = '\n'.join(line_blocks)
+                line_blocks.append(str(text))
+            line = '\t'.join(line_blocks)
             lines.append(line)
         content = '\n'.join(lines)
         total_tokens, blocks = process_block(config, content)
@@ -450,8 +450,8 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
             for i, row in df.iterrows():
                 line_blocks = []
                 for text in row:
-                    line_blocks.append(text)
-                line = '\n'.join(line_blocks)
+                    line_blocks.append(str(text))
+                line = '\t'.join(line_blocks)
                 lines.append(line)
             content = '\n'.join(lines)
             block_tokens, block_blocks = process_block(config, content)

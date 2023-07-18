@@ -58,18 +58,17 @@ def messages():
     data = json.loads(text)
     logging.info(data)
     appId = data['appId']
-    callbackSignature = lanying_config.get_lanying_callback_signature(appId)
-    if callbackSignature and len(callbackSignature) > 0:
-        headSignature = request.headers.get('signature')
-        if callbackSignature != headSignature:
-            logging.info(f'callback signature not match: appId={appId}')
-            resp = app.make_response('callback signature not match')
-            return resp
+    headSignature = request.headers.get('signature','')
     service_list = lanying_config.get_service_list()
     for service in service_list:
         config = lanying_config.get_service_config(appId, service)
         if config:
-            executor.submit(handle_lanying_messages, (config, service, data))
+            callbackSignature = config.get('lanying_callback_signature','')
+            if callbackSignature == '' or callbackSignature == headSignature:
+                logging.info(f'callback signature match: appId={appId}, service={service}')
+                executor.submit(handle_lanying_messages, (config, service, data))
+            else:
+                logging.info(f'callback signature not match: appId={appId}, service={service}')
     resp = app.make_response('')
     return resp
 

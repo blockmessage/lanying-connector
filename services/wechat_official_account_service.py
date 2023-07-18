@@ -11,18 +11,20 @@ import json
 import lanying_message
 
 service = 'wechat_official_account'
-bp = Blueprint(service, __name__, url_prefix='/service/wechat_official_account')
+bp = Blueprint(service, __name__)
 
-@bp.route("/app/<string:app_id>/messages", methods=["GET"])
+@bp.route("/service/wechat_official_account/app/<string:app_id>/messages", methods=["GET"])
+@bp.route("/wechat/official/messages/<string:app_id>", methods=["GET"])
 def service_get_messages(app_id):
     logging.info(f"app_id:{app_id}, args:{request.args.to_dict()}")
     if check_token(app_id):
         echostr = request.args.get('echostr')
         resp = make_response(echostr)
         return resp
-    return 'failed'
+    return 'bad_signature'
 
-@bp.route("/app/<string:app_id>/messages", methods=["POST"])
+@bp.route("/service/wechat_official_account/app/<string:app_id>/messages", methods=["POST"])
+@bp.route("/wechat/official/messages/<string:app_id>", methods=["POST"])
 def service_post_messages(app_id):
     xml_data = request.data
     reply = 'failed'
@@ -96,9 +98,9 @@ def check_token(app_id):
     config = lanying_config.get_service_config(app_id, service)
     if config:
         wechat_message_token = config.get('wechat_message_token')
-        signature = request.args.get('signature')
-        timestamp = request.args.get('timestamp')
-        nonce = request.args.get('nonce')
+        signature = request.args.get('signature','')
+        timestamp = request.args.get('timestamp','')
+        nonce = request.args.get('nonce','')
         sign_list = sorted([wechat_message_token,timestamp,nonce])
         mysignature = hashlib.sha1("".join(sign_list).encode("utf-8")).hexdigest()
         logging.info(f"my:{mysignature},got:{signature}")
@@ -113,7 +115,7 @@ def get_or_register_user(app_id, username):
         user_id = int(result)
         return user_id
     else:
-        user_id = register_user(app_id, "wechat_"+username)
+        user_id = register_anonymous_user(app_id, username, "wechat_")
         if user_id:
             im_key = im_user_key(app_id, user_id)
             redis.set(key, user_id)
@@ -168,12 +170,12 @@ def im_user_key(app_id, user_id):
 def wechat_access_token_key(app_id):
     return f"{service}:wechat_access_token:{app_id}"
 
-def register_user(app_id, username):
+def register_anonymous_user(app_id, username, prefix):
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     password = get_random_string(32)
-    response = requests.post(apiEndpoint + '/user/register/v2',
+    response = requests.post(apiEndpoint + '/user/register/anonymous',
                                 headers={'app_id': app_id},
-                                json={'username':username,
+                                json={'username':prefix,
                                         'password': password})
     logging.info(f"register user, app_id={app_id}, username={username}, response={response.content}")
     logging.info(password)
