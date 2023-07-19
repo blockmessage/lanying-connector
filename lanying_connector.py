@@ -238,15 +238,20 @@ def add_doc_to_embedding(service):
         app_id = data['app_id']
         embedding_name = data['embedding_name']
         type = data.get('type', 'file')
-        if type == 'url':
-            url = data.get('url', '')
-            name = 'url.html'
-        else:
-            name = data.get('file_name','')
-            url = data.get('file_url','')
-        logging.info(f"add_doc_to_embedding | {data}")
-        service_module = importlib.import_module(f"{service}_service")
-        service_module.add_doc_to_embedding(app_id, embedding_name, name, url, type)
+        if type in ["file", "url", "site"]:
+            limit = data.get('limit', -1)
+            if type == 'url':
+                url = data.get('url', '')
+                name = 'url.html'
+            elif type == 'site':
+                url = data.get('url', '')
+                name = 'site.txt'
+            else:
+                name = data.get('file_name','')
+                url = data.get('file_url','')
+            logging.info(f"add_doc_to_embedding | {data}")
+            service_module = importlib.import_module(f"{service}_service")
+            service_module.add_doc_to_embedding(app_id, embedding_name, name, url, type, limit)
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})

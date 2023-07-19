@@ -2,6 +2,8 @@ from minio import Minio
 import os
 import logging
 import requests
+from langchain.document_loaders import WebBaseLoader
+import re
 
 server = os.getenv("FILE_STORAGE_SERVER", "localhost:9000")
 accesskey = os.getenv("FILE_STORAGE_ACCESS_KEY")
@@ -79,3 +81,18 @@ def download_url(url, headers, filename):
         logging.exception(e)
     return {"result":"error", "message":"fail to download file"}
 
+def download_url_in_text_format(url, filename):
+    try:
+        doc = WebBaseLoader(url).load()[0]
+        content = remove_space_line(doc.page_content).encode('utf-8')
+        with open(filename, 'wb') as f:
+            f.write(content)
+            return {"result":"ok"}
+    except Exception as e:
+        logging.exception(e)
+    return {"result":"error", "message":"fail to download file"}
+
+def remove_space_line(text):
+    lines = text.split('\n')
+    new_lines = [line for line in lines if not re.match(r'^\s*$', line)]
+    return '\n'.join(new_lines)

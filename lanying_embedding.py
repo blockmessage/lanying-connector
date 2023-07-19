@@ -260,10 +260,9 @@ def get_global_embedding_name_info(embedding_name):
 def get_global_embedding_name_key(embedding_name):
     return f"embedding_config:alias:{embedding_name}"
 
-def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_filename, doc_id):
+def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_filename, doc_id, ext):
     redis = lanying_redis.get_redis_stack_connection()
     increase_embedding_doc_field(redis, embedding_uuid, doc_id, "process_count", 1)
-    ext = parse_file_ext(origin_filename)
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
     # logging.info(f"process_embedding_file | config:{embedding_uuid_info}")
     if embedding_uuid_info:
@@ -710,13 +709,16 @@ def get_embedding_data_key(embedding_uuid, block_id):
 def get_app_embedding_admin_user_key(app_id):
     return f"embedding_admin_user_id:{app_id}"
 
-def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size):
+def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size, ext, type, source):
     redis = lanying_redis.get_redis_stack_connection()
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
     redis.hmset(info_key, {"filename":filename,
                            "object_name":object_name,
                            "time": int(time.time()),
                            "file_size": file_size,
+                           "ext": ext,
+                           "type": type,
+                           "source": source,
                            "status": "wait"})
 def update_doc_field(embedding_uuid, doc_id, field, value):
     redis = lanying_redis.get_redis_stack_connection()

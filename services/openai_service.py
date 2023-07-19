@@ -943,7 +943,7 @@ def bluevector_add(msg, config, embedding_name, file_uuid):
                 'access-token': config['lanying_admin_token'],
                 'user_id': config['lanying_user_id']}
         trace_id = lanying_embedding.create_trace_id()
-        add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token']])
+        add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
         return f'添加成功，请等待系统处理。'
     else:
         return f'文件ID({file_uuid})不存在'
@@ -1066,13 +1066,13 @@ def search_on_fulldoc_by_preset(msg, config, preset_name, doc_id, new_content):
 def search_by_preset(msg, config, preset_name, new_content):
     return {'result':'continue', 'command_ext':{'preset_name':preset_name, "new_content":new_content}}
 
-def add_doc_to_embedding(app_id, embedding_name, dname, url, type):
+def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit):
     config = lanying_config.get_lanying_connector(app_id)
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
             'user_id': config['lanying_user_id']}
     trace_id = lanying_embedding.create_trace_id()
-    add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type])
+    add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit])
 
 def re_run_doc_to_embedding(app_id, embedding_name, doc_id):
     embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
