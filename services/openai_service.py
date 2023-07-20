@@ -250,6 +250,7 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
+        question_merge = presetExt.get('question_merge', True)
         question_answers = []
         question_answer_with_distance = ""
         is_use_old_embeddings = False
@@ -267,6 +268,7 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
             is_use_old_embeddings = True
         if context == '': 
             embedding_min_distance = 1.0
+            embedding_role = presetExt.get('embedding_role', 'system')
             first_preset_embedding_info = preset_embedding_infos[0]
             embedding_max_distance = presetExt.get('embedding_max_distance', 1.0)
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
@@ -275,7 +277,7 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
             embedding_query_text = calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId)
             q_embedding = fetch_embeddings(app_id, config, openai_key_type, embedding_query_text)
             ask_message = {"role": "user", "content": content}
-            embedding_message =  {"role": "user", "content": embedding_content}
+            embedding_message =  {"role": embedding_role, "content": embedding_content}
             embedding_token_limit = model_token_limit(model) - calcMessagesTokens(messages, model) - preset.get('max_tokens', 1024) - calcMessageTokens(ask_message, model) - calcMessageTokens(embedding_message, model)
             logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
             search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
@@ -287,12 +289,18 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
                     embedding_min_distance = now_distance
                 segment_id = lanying_embedding.parse_segment_id_int_value(doc.id)
                 if hasattr(doc, 'question') and doc.question != "":
-                    question_info = {'role':'user', 'content':doc.question}
-                    answer_info = {'role':'assistant', 'content':doc.text}
-                    question_answers.append(question_info)
-                    question_answers.append(answer_info)
-                    if is_debug:
-                        question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
+                    if question_merge:
+                        qa_text = "\n问:" + doc.question + "\n答:" + doc.text + "\n\n"
+                        context = context + qa_text
+                        if is_debug:
+                            context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"
+                    else:
+                        question_info = {'role':'user', 'content':doc.question}
+                        answer_info = {'role':'assistant', 'content':doc.text}
+                        question_answers.append(question_info)
+                        question_answers.append(answer_info)
+                        if is_debug:
+                            question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
                 elif embedding_content_type == 'summary':
                     context = context + doc.summary + "\n\n"
                     if is_debug:
@@ -316,7 +324,7 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
             if context != "":
                 context_with_prompt = f"{embedding_content}\n\n{context}"
                 context_with_distance = f"{embedding_content}\n\n{context_with_distance}"
-                messages.append({'role':'user', 'content':context_with_prompt})
+                messages.append({'role':embedding_role, 'content':context_with_prompt})
             if len(question_answers) > 0:
                 messages.extend(question_answers)
             if is_debug:
