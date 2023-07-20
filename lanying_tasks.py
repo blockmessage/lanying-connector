@@ -12,7 +12,7 @@ import lanying_file_storage
 import lanying_embedding
 import uuid
 import zipfile
-from langchain.document_loaders.recursive_url_loader import RecursiveUrlLoader
+from recursive_url_loader import RecursiveUrlLoader
 import io
 
 app = Celery('lanying-connector',
