@@ -212,6 +212,7 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
     openai_api_key = get_openai_key(config, openai_key_type)
     openai.api_key = openai_api_key
     add_reference = presetExt.get('add_reference', 'none')
+    reference = presetExt.get('reference')
     reference_list = []
     messages = preset.get('messages',[])
     now = int(time.time())
@@ -393,10 +394,40 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
         else:
             return ''
     reply_ext = {}
-    if add_reference == 'body' or add_reference == "both":
-        reply = reply + f"\nreference: {reference_list}"
-    if add_reference == 'ext' or add_reference == "both":
-        reply_ext = {'reference':reference_list}
+    if reference:
+        location = reference.get('location', 'none')
+        if location == 'ext' or location == "both":
+            doc_desc_list = []
+            seq = 0
+            for doc_id in reference_list:
+                embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
+                doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
+                if doc_info:
+                    seq += 1
+                    filename = doc_info.get('filename', '')
+                    doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':filename})
+            reply_ext = {'reference':doc_desc_list}
+        if location == 'body' or location == "both":
+            doc_format = reference.get('style', '{seq}.{doc_id}.{link}')
+            seperator = reference.get('seperator', ',')
+            prefix = reference.get('prefix', 'reference: ')
+            doc_desc_list = []
+            seq = 0
+            for doc_id in reference_list:
+                embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
+                doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
+                if doc_info:
+                    seq += 1
+                    filename = doc_info.get('filename', '')
+                    doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', filename)
+                    doc_desc_list.append(doc_desc)
+            if len(doc_desc_list) > 0:
+                reply = reply + "\n" + prefix + seperator.join(doc_desc_list)
+    else:
+        if add_reference == 'body' or add_reference == "both":
+            reply = reply + f"\nreference: {reference_list}"
+        if add_reference == 'ext' or add_reference == "both":
+            reply_ext = {'reference':reference_list}
     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
