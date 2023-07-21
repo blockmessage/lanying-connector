@@ -118,6 +118,7 @@ def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, do
         try:
             source = doc.metadata['source']
             page_bytes = doc.metadata['page_bytes']
+            logging.info(f"load_site found url: app_id={app_id}, embedding_uuid={embedding_uuid},url:{source}, len:{len(page_bytes)}")
             if len(source) > 0 and len(page_bytes) > 0:
                 doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
                 object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
@@ -129,6 +130,8 @@ def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, do
                     lanying_embedding.update_trace_field(trace_id, "message", "upload embedding sub file error")
                     task_error(f"fail to upload sub file : app_id={app_id}, embedding_uuid={embedding_uuid},object_name:{object_name},source:{source}")
                 tasks.append((object_name, source, doc_id))
+                lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
+                process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, object_name, source, doc_id, False])
         except Exception as e:
             logging.exception(e)
         doc_cnt += 1
@@ -137,9 +140,6 @@ def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, do
             break
         if ttl < 0:
             break
-    for now_object_name, now_origin_filename, now_doc_id in tasks:
-        lanying_embedding.add_doc_to_embedding(embedding_uuid, now_doc_id)
-        process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, now_object_name, now_origin_filename, now_doc_id, False])
     if len(tasks) > 0:
         load_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit])
     else:
