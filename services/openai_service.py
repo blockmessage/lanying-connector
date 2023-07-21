@@ -290,7 +290,7 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
                 segment_id = lanying_embedding.parse_segment_id_int_value(doc.id)
                 if hasattr(doc, 'question') and doc.question != "":
                     if question_merge:
-                        qa_text = "\n问:" + doc.question + "\n答:" + doc.text + "\n\n"
+                        qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
                         context = context + qa_text
                         if is_debug:
                             context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"

@@ -245,7 +245,7 @@ def add_doc_to_embedding(service):
                 name = 'url.html'
             elif type == 'site':
                 url = data.get('url', '')
-                name = 'site.txt'
+                name = 'site.html'
             else:
                 name = data.get('file_name','')
                 url = data.get('file_url','')
