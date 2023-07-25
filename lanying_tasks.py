@@ -14,6 +14,7 @@ import uuid
 import zipfile
 import lanying_url_loader
 import io
+import json
 
 app = Celery('lanying-connector',
              backend=lanying_redis.get_task_redis_server(),
@@ -113,13 +114,15 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
 @app.task
 def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit):
     tasks = []
-    ttl = 10
+    ttl = 50
+    is_finish = True
     for doc in lanying_url_loader.do_task(site_task_id, url):
-        try:
-            source = doc.metadata['source']
-            page_bytes = doc.metadata['page_bytes']
-            logging.info(f"load_site found url: app_id={app_id}, embedding_uuid={embedding_uuid},url:{source}, len:{len(page_bytes)}")
-            if len(source) > 0 and len(page_bytes) > 0:
+        is_finish = False
+        if doc:
+            try:
+                source = doc.metadata['source']
+                page_bytes = doc.metadata['page_bytes']
+                logging.info(f"load_site found url: app_id={app_id}, embedding_uuid={embedding_uuid},url:{source}, len:{len(page_bytes)}")
                 doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
                 object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
                 lanying_embedding.create_doc_info(embedding_uuid, source, object_name, doc_id, len(page_bytes), ext, type, url)
@@ -132,18 +135,63 @@ def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, do
                 tasks.append((object_name, source, doc_id))
                 lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
                 process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, object_name, source, doc_id, False])
-        except Exception as e:
-            logging.exception(e)
-        doc_cnt += 1
+            except Exception as e:
+                logging.exception(e)
+            doc_cnt += 1
         ttl -= 1
         if limit > 0 and doc_cnt > limit:
+            is_finish = True
             break
         if ttl < 0:
             break
-    if len(tasks) > 0:
+    if not is_finish:
         load_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit])
     else:
         lanying_url_loader.clean_task(site_task_id)
+
+
+@app.task
+def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit, task_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    task_info = lanying_embedding.get_task(embedding_uuid, task_id)
+    if task_info is None:
+        lanying_url_loader.clean_task(site_task_id)
+        return
+    lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "processing")
+    ttl = 50
+    is_finish = True
+    for doc in lanying_url_loader.do_task(site_task_id, url):
+        is_finish = False
+        if doc:
+            try:
+                task_info = lanying_embedding.get_task(embedding_uuid, task_id)
+                if task_info is None:
+                    return
+                source = doc.metadata['source']
+                page_bytes = doc.metadata['page_bytes']
+                logging.info(f"prepare_site found url: app_id={app_id}, embedding_uuid={embedding_uuid},url:{source}, len:{len(page_bytes)}, site_task_id:{site_task_id}, task_id:{site_task_id}")
+                block_num = lanying_embedding.estimate_html(embedding_uuid, page_bytes.decode("utf-8"))
+                file_size = len(page_bytes)
+                if lanying_embedding.get_task_detail_field(embedding_uuid, task_id, source) is None:
+                    field_value = {'file_size':file_size, 'block_num': block_num}
+                    lanying_embedding.set_task_detail_field(embedding_uuid,task_id, source, json.dumps(field_value, ensure_ascii=False))
+                    lanying_embedding.increase_task_field(embedding_uuid, task_id, "block_num", block_num)
+                    lanying_embedding.increase_task_field(embedding_uuid, task_id, "file_size", file_size)
+                    lanying_embedding.increase_task_field(embedding_uuid, task_id, "found_num", 1)
+            except Exception as e:
+                logging.exception(e)
+            doc_cnt += 1
+        lanying_embedding.increase_task_field(embedding_uuid, task_id, "visited_num", 1)
+        ttl -= 1
+        if limit > 0 and doc_cnt > limit:
+            is_finish = True
+            break
+        if ttl < 0:
+            break
+    if not is_finish:
+        prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit, task_id])
+    else:
+        lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "finish")
 
 @app.task
 def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False):

@@ -12,10 +12,11 @@ from dateutil.relativedelta import relativedelta
 import requests
 import os
 import copy
-from lanying_tasks import add_embedding_file, delete_doc_data, re_run_doc_to_embedding_by_doc_ids
+from lanying_tasks import add_embedding_file, delete_doc_data, re_run_doc_to_embedding_by_doc_ids, prepare_site
 import lanying_embedding
 import re
 import lanying_command
+import lanying_url_loader
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
@@ -183,7 +184,7 @@ def handle_chat_message(config, msg, retry_times = 3):
     if 'ext' in preset:
         presetExt = copy.deepcopy(preset['ext'])
         del preset['ext']
-    logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)}")
+    logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
     isChatGPT = is_chatgpt_model(preset['model'])
     if isChatGPT:
         return handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
@@ -1110,8 +1111,19 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit):
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
             'user_id': config['lanying_user_id']}
-    trace_id = lanying_embedding.create_trace_id()
-    add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit])
+    embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_info:
+        trace_id = lanying_embedding.create_trace_id()
+        if type == 'site':
+            embedding_uuid = embedding_info['embedding_uuid']
+            task_id = lanying_embedding.create_task(embedding_uuid, type, url)
+            lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
+            site_task_id = lanying_url_loader.create_task(url)
+            lanying_embedding.update_task_field(embedding_uuid, task_id, "site_task_id", site_task_id)
+            prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, url, 0, limit, task_id])
+        else:
+            result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit])
+            logging.info(f"add_doc_to_embedding | result={result}")
 
 def re_run_doc_to_embedding(app_id, embedding_name, doc_id):
     embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)

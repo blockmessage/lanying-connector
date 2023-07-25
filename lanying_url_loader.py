@@ -10,9 +10,12 @@ from urllib.parse import urljoin
 
 # this file is edit from source of langchain.document_loaders.recursive_url_loader
 
-def create_task(url):
+def create_task(url, advised_task_id = None):
     redis = lanying_redis.get_redis_stack_connection()
-    task_id = str(uuid.uuid4())
+    if advised_task_id:
+        task_id = advised_task_id
+    else:
+        task_id = str(uuid.uuid4())
     redis.rpush(to_visit_key(task_id), url)
     redis.sadd(visited_key(task_id), url)
     return task_id
@@ -62,7 +65,8 @@ def do_task(task_id, root_url)-> Iterator[Document]:
         logging.info(f"load_url:  task_id:{task_id}, visit url:{url}, root_url:{root_url},filter_url:{filter_url}, visit_filter_url:{visit_filter_url}")
         try:
             response = requests.get(url,timeout=(20.0, 60.0))
-            if response.status_code == 200 and response.headers.get('Content-Type') == 'text/html':
+            content_type = response.headers.get('Content-Type')
+            if response.status_code == 200 and content_type.startswith('text/html'):
                 response_url = response.url
                 soup = BeautifulSoup(response.text, "html.parser")
                 all_links = [link.get("href") for link in soup.find_all("a")]
@@ -84,8 +88,10 @@ def do_task(task_id, root_url)-> Iterator[Document]:
                 if url.startswith(filter_url):
                     redis.sadd(found_key(task_id), url)
                     yield Document(page_content=response.text, metadata={'source':url, 'page_bytes':response.content})
+                else:
+                    yield None
             else:
-                logging.info(f"skip for status_code:{response.status_code}, url:{url}")
+                logging.info(f"skip for status_code:{response.status_code}, url:{url}, content_type:{content_type}")
         except Exception as e:
             logging.exception(e)
 

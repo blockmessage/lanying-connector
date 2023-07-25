@@ -319,12 +319,24 @@ def remove_space_line(text):
     new_lines = [line for line in lines if not re.match(r'^\s*$', line)]
     return '\n'.join(new_lines)
 
+def estimate_html(embedding_uuid, html):
+    redis = lanying_redis.get_redis_stack_connection()
+    embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+    blocks = markdown_to_blocks(embedding_uuid_info, md(html))
+    return len(blocks)
+
 def process_html(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     with open(filename, "r") as f:
         html = f.read()
         process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, md(html))
 
 def process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, markdown):
+    blocks = markdown_to_blocks(config, markdown)
+    redis = lanying_redis.get_redis_stack_connection()
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+def markdown_to_blocks(config, markdown):
     markdown = remove_space_line(markdown)
     rule = config.get('block_split_rule',"^#{1,3} ")
     blocks = []
@@ -333,9 +345,7 @@ def process_markdown_content(config, app_id, embedding_uuid, origin_filename, do
         block_tokens, block_blocks = process_block(config, block)
         total_tokens += block_tokens
         blocks.extend(block_blocks)
-    redis = lanying_redis.get_redis_stack_connection()
-    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
-    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+    return blocks
 
 def process_markdown(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     with open(filename, 'r', encoding='utf-8') as f:
@@ -709,6 +719,65 @@ def get_embedding_data_key(embedding_uuid, block_id):
 def get_app_embedding_admin_user_key(app_id):
     return f"embedding_admin_user_id:{app_id}"
 
+def create_task(embedding_uuid, type, url):
+    redis = lanying_redis.get_redis_stack_connection()
+    embedding_uuid_key = get_embedding_uuid_key(embedding_uuid)
+    task_id_seq = redis.hincrby(embedding_uuid_key, "task_id_seq", 1)
+    task_id = f"{embedding_uuid}-{task_id_seq}"
+    info_key = get_embedding_task_info_key(embedding_uuid, task_id)
+    task_list_key = get_embedding_task_list_key(embedding_uuid)
+    redis.hmset(info_key, {
+        "embedding_uuid":embedding_uuid,
+        "type": type,
+        "url": url,
+        "time": int(time.time()),
+        "status": "wait",
+        "visited_num": 0,
+        "to_visit_num": 0,
+        "found_num": 0,
+        "file_size": 0,
+        "block_num": 0
+    })
+    redis.rpush(task_list_key, task_id)
+    return task_id
+
+def get_task(embedding_uuid, task_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    info_key = get_embedding_task_info_key(embedding_uuid, task_id)
+    info = redis_hgetall(redis, info_key)
+    if "type" in info:
+        return info
+    return None
+
+def get_task_details(embedding_uuid, task_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    return redis_hgetall(redis, key)
+
+def get_task_detail_fields(embedding_uuid, task_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    return redis_hkeys(redis, key)
+
+def get_task_detail_field(embedding_uuid, task_id, field):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    return redis.hget(key, field)
+
+def set_task_detail_field(embedding_uuid, task_id, field, value):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    redis.hset(key, field, value)
+
+def update_task_field(embedding_uuid, task_id, field, value):
+    redis = lanying_redis.get_redis_stack_connection()
+    info_key = get_embedding_task_info_key(embedding_uuid, task_id)
+    return redis.hset(info_key, field, value)
+
+def increase_task_field(embedding_uuid, task_id, field, value):
+    redis = lanying_redis.get_redis_stack_connection()
+    return redis.hincrby(get_embedding_task_info_key(embedding_uuid, task_id), field, value)
+
 def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size, ext, type, source):
     redis = lanying_redis.get_redis_stack_connection()
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
@@ -877,11 +946,23 @@ def get_embedding_doc_list_key(embedding_uuid):
 def get_embedding_doc_info_key(embedding_uuid, doc_id):
     return f"embedding_doc_info:{embedding_uuid}:{doc_id}"
 
+def get_embedding_task_list_key(embedding_uuid):
+    return f"embedding_task_list:{embedding_uuid}"
+
+def get_embedding_task_info_key(embedding_uuid, task_id):
+    return f"embedding_task_info:{embedding_uuid}:{task_id}"
+
+def get_embedding_task_detail_key(embedding_uuid, task_id):
+    return f"embedding_task_detail:{embedding_uuid}:{task_id}"
+
 def get_app_embedding_app_info_key(app_id):
     return f"embedding_app_info:{app_id}"
 
 def redis_lrange(redis, key, start, end):
     return [bytes.decode('utf-8') for bytes in redis.lrange(key, start, end)]
+
+def redis_hkeys(redis, key):
+    return [bytes.decode('utf-8') for bytes in redis.hkeys(key)]
 
 def redis_hgetall(redis, key):
     kvs = redis.hgetall(key)
