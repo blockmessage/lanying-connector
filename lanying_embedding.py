@@ -16,6 +16,8 @@ import hashlib
 import subprocess
 import docx2txt
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+import lanying_url_loader
+import json
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
@@ -736,10 +738,42 @@ def create_task(embedding_uuid, type, url):
         "to_visit_num": 0,
         "found_num": 0,
         "file_size": 0,
-        "block_num": 0
+        "block_num": 0,
+        "processing_total_num": 0,
+        "processing_success_num": 0,
+        "processing_fail_num": 0
     })
     redis.rpush(task_list_key, task_id)
     return task_id
+
+def get_task_list(embedding_uuid):
+    task_list = []
+    redis = lanying_redis.get_redis_stack_connection()
+    task_list_key = get_embedding_task_list_key(embedding_uuid)
+    for task_id in redis_lrange(redis, task_list_key, 0, -1):
+        task_info = get_task(embedding_uuid, task_id)
+        if task_info:
+            if 'site_task_id' in task_info:
+                site_task_id = task_info['site_task_id']
+                site_task_info = lanying_url_loader.info_task(site_task_id)
+                task_info['visited_num'] = site_task_info['visited']
+                task_info['to_visit_num'] = site_task_info['to_visit']
+                task_info['found_num'] = site_task_info['found']
+            task_info["task_id"] = task_id
+            task_list.append(task_info)
+    return task_list
+
+def delete_task(embedding_uuid, task_id):
+    task_info = get_task(embedding_uuid, task_id)
+    if task_info:
+        redis = lanying_redis.get_redis_stack_connection()
+        info_key = get_embedding_task_info_key(embedding_uuid, task_id)
+        task_list_key = get_embedding_task_list_key(embedding_uuid)
+        task_detail_key = get_embedding_task_detail_key(embedding_uuid, task_id)
+        redis.delete(info_key, task_detail_key)
+        redis.lrem(task_list_key,2, task_id)
+        if 'site_task_id' in task_info:
+            lanying_url_loader.clean_task(task_info['site_task_id'])
 
 def get_task(embedding_uuid, task_id):
     redis = lanying_redis.get_redis_stack_connection()
@@ -753,6 +787,24 @@ def get_task_details(embedding_uuid, task_id):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_embedding_task_detail_key(embedding_uuid, task_id)
     return redis_hgetall(redis, key)
+
+def get_task_details_iterator(embedding_uuid, task_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    for k,v in redis.hscan_iter(key, '*'):
+        json_data = json.loads(v)
+        url = k.decode("utf-8")
+        yield (url, json_data)
+
+def get_task_details_count(embedding_uuid, task_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    return redis.hlen(key)
+
+def delete_task_details_by_fields(embedding_uuid, task_id, fields):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    redis.hdel(key, *fields)
 
 def get_task_detail_fields(embedding_uuid, task_id):
     redis = lanying_redis.get_redis_stack_connection()

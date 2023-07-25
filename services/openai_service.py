@@ -12,7 +12,7 @@ from dateutil.relativedelta import relativedelta
 import requests
 import os
 import copy
-from lanying_tasks import add_embedding_file, delete_doc_data, re_run_doc_to_embedding_by_doc_ids, prepare_site
+from lanying_tasks import add_embedding_file, delete_doc_data, re_run_doc_to_embedding_by_doc_ids, prepare_site,continue_site_task
 import lanying_embedding
 import re
 import lanying_command
@@ -927,7 +927,14 @@ def list_embeddings(app_id):
 
 def get_embedding_doc_info_list(app_id, embedding_name, start, end):
     return lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, start, end)
-     
+
+def list_embedding_tasks(app_id, embedding_name):
+    embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info:
+        task_list = lanying_embedding.get_task_list(embedding_name_info['embedding_uuid'])
+        return task_list
+    return []
+
 def fetch_embeddings(app_id, config, openai_key_type, text):
     logging.info(f"fetch_embeddings: app_id={app_id}, text={text}")
     response = openai.Embedding.create(input=text, engine='text-embedding-ada-002')
@@ -1124,6 +1131,30 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit):
         else:
             result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit])
             logging.info(f"add_doc_to_embedding | result={result}")
+
+def continue_embedding_task(app_id, embedding_name, task_id):
+    config = lanying_config.get_lanying_connector(app_id)
+    embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_info:
+        embedding_uuid = embedding_info['embedding_uuid']
+        task_info = lanying_embedding.get_task(embedding_uuid, task_id)
+        if task_info:
+            if task_info["status"] != "finish":
+                return {'result':'error', 'message': 'task_status_must_be_finish'}
+            else:
+                lanying_embedding.update_task_field(embedding_uuid,task_id, "status", "adding")
+                trace_id = lanying_embedding.create_trace_id()
+                lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
+                total_num = lanying_embedding.get_task_details_count(embedding_uuid, task_id)
+                lanying_embedding.update_task_field(embedding_uuid, task_id, "processing_total_num", total_num)
+                continue_site_task.apply_async(args = [trace_id, app_id, embedding_uuid, task_id])
+    return {'result':'ok'}
+
+def delete_embedding_task(app_id, embedding_name, task_id):
+    embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if embedding_info:
+        embedding_uuid = embedding_info['embedding_uuid']
+        lanying_embedding.delete_task(embedding_uuid, task_id)
 
 def re_run_doc_to_embedding(app_id, embedding_name, doc_id):
     embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)

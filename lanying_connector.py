@@ -228,6 +228,59 @@ def list_embedding_docs(service):
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
 
+@app.route("/service/<string:service>/list_embedding_tasks", methods=["POST"])
+def list_embedding_tasks(service):
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        logging.info(f"list_embedding_tasks | data:{data}")
+        service_module = importlib.import_module(f"{service}_service")
+        task_list = service_module.list_embedding_tasks(app_id, embedding_name)
+        resp = app.make_response({'code':200, 'data':{'list':task_list}})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+
+@app.route("/service/<string:service>/continue_embedding_task", methods=["POST"])
+def continue_embedding_task(service):
+    logging.info(f"continue_embedding_task | start")
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        task_id = data['task_id']
+        logging.info(f"continue_embedding_task | data:{data}")
+        service_module = importlib.import_module(f"{service}_service")
+        service_module.continue_embedding_task(app_id, embedding_name, task_id)
+        resp = app.make_response({'code':200, 'data':True})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
+@app.route("/service/<string:service>/delete_embedding_task", methods=["POST"])
+def delete_embedding_task(service):
+    logging.info(f"delete_embedding_task | start")
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = data['app_id']
+        embedding_name = data['embedding_name']
+        task_id = data['task_id']
+        logging.info(f"delete_embedding_task | data:{data}")
+        service_module = importlib.import_module(f"{service}_service")
+        service_module.delete_embedding_task(app_id, embedding_name, task_id)
+        resp = app.make_response({'code':200, 'data':True})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
 @app.route("/service/<string:service>/add_doc_to_embedding", methods=["POST"])
 def add_doc_to_embedding(service):
     logging.info(f"add_doc_to_embedding | start")
@@ -241,17 +294,17 @@ def add_doc_to_embedding(service):
         if type in ["file", "url", "site"]:
             limit = data.get('limit', -1)
             if type == 'url':
-                url = data.get('url', '')
+                content = data.get('url', '')
                 name = 'url.html'
             elif type == 'site':
-                url = data.get('url', '')
+                content = data.get('url', '')
                 name = 'site.html'
             else:
                 name = data.get('file_name','')
-                url = data.get('file_url','')
+                content = data.get('file_url','')
             logging.info(f"add_doc_to_embedding | {data}")
             service_module = importlib.import_module(f"{service}_service")
-            service_module.add_doc_to_embedding(app_id, embedding_name, name, url, type, limit)
+            service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit)
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
