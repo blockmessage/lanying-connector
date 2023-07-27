@@ -105,7 +105,7 @@ def buy_message_quota(service):
         app_id = data['app_id']
         type = data['type']
         value = data['value']
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         result = service_module.buy_message_quota(app_id, type, value)
         if result > 0:
             resp = app.make_response({'code':200, 'data':result})
@@ -123,7 +123,7 @@ def get_message_limit_state(service):
         text = request.get_data(as_text=True)
         data = json.loads(text)
         app_id = data['app_id']
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         result = service_module.get_message_limit_state(app_id)
         resp = app.make_response({'code':200, 'data':result})
         return resp
@@ -135,7 +135,7 @@ def get_message_limit_state(service):
 def openai_request():
     try:
         service = "openai"
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         res = service_module.handle_request(request)
         if res['result'] == 'error':
             code = res.get('code', 401)
@@ -163,7 +163,7 @@ def create_embedding(service):
         max_block_size = data.get('max_block_size', 500)
         preset_name = data.get('preset_name', '')
         overlapping_size = data.get('overlapping_size', 0)
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
@@ -191,7 +191,7 @@ def configure_embedding(service):
         max_block_size = data.get('max_block_size', 0)
         overlapping_size = data.get('overlapping_size', 0)
         logging.info(f"configure_embedding | {data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
@@ -208,7 +208,7 @@ def list_embeddings(service):
         text = request.get_data(as_text=True)
         data = json.loads(text)
         app_id = data['app_id']
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         result = service_module.list_embeddings(app_id)
         resp = app.make_response({'code':200, 'data':{'total':len(result), 'list':result}})
         return resp
@@ -225,7 +225,7 @@ def list_embedding_docs(service):
         embedding_name = data['embedding_name']
         start = data.get('start', 0)
         end = data.get('end', 20)
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         total, doc_list = service_module.get_embedding_doc_info_list(app_id, embedding_name, start, end)
         resp = app.make_response({'code':200, 'data':{'total':total, 'list':doc_list}})
         return resp
@@ -241,7 +241,7 @@ def list_embedding_tasks(service):
         app_id = data['app_id']
         embedding_name = data['embedding_name']
         logging.info(f"list_embedding_tasks | data:{data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         task_list = service_module.list_embedding_tasks(app_id, embedding_name)
         resp = app.make_response({'code':200, 'data':{'list':task_list}})
         return resp
@@ -260,7 +260,7 @@ def continue_embedding_task(service):
         embedding_name = data['embedding_name']
         task_id = data['task_id']
         logging.info(f"continue_embedding_task | data:{data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         service_module.continue_embedding_task(app_id, embedding_name, task_id)
         resp = app.make_response({'code':200, 'data':True})
         return resp
@@ -278,7 +278,7 @@ def delete_embedding_task(service):
         embedding_name = data['embedding_name']
         task_id = data['task_id']
         logging.info(f"delete_embedding_task | data:{data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         service_module.delete_embedding_task(app_id, embedding_name, task_id)
         resp = app.make_response({'code':200, 'data':True})
         return resp
@@ -307,7 +307,7 @@ def add_doc_to_embedding(service):
                 name = data.get('file_name','')
                 content = data.get('file_url','')
             logging.info(f"add_doc_to_embedding | {data}")
-            service_module = importlib.import_module(f"{service}_service")
+            service_module = get_service_module(service)
             service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit)
         resp = app.make_response({'code':200, 'data':True})
         return resp
@@ -325,7 +325,7 @@ def delete_doc_from_embedding(service):
         embedding_name = data['embedding_name']
         doc_id = data['doc_id']
         logging.info(f"delete_doc_from_embedding | {data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         service_module.delete_doc_from_embedding(app_id, embedding_name, doc_id)
         resp = app.make_response({'code':200, 'data':True})
         return resp
@@ -343,7 +343,7 @@ def re_run_doc_to_embedding(service):
         embedding_name = data['embedding_name']
         doc_id = data['doc_id']
         logging.info(f"re_run_doc_to_embedding | {data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         result = service_module.re_run_doc_to_embedding(app_id, embedding_name, doc_id)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
@@ -363,7 +363,7 @@ def re_run_all_doc_to_embedding(service):
         app_id = data['app_id']
         embedding_name = data['embedding_name']
         logging.info(f"re_run_all_doc_to_embedding | {data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         result = service_module.re_run_all_doc_to_embedding(app_id, embedding_name)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
@@ -382,7 +382,7 @@ def get_embedding_usage(service):
         data = json.loads(text)
         app_id = data['app_id']
         logging.info(f"get_embedding_usage | {data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         data = service_module.get_embedding_usage(app_id)
         resp = app.make_response({'code':200, 'data':data})
         return resp
@@ -400,7 +400,7 @@ def set_embedding_usage(service):
         app_id = data['app_id']
         storage_file_size_max = data['storage_file_size_max']
         logging.info(f"set_embedding_usage | {data}")
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         data = service_module.set_embedding_usage(app_id, storage_file_size_max)
         resp = app.make_response({'code':200, 'data':data})
         return resp
@@ -413,7 +413,7 @@ def handle_lanying_messages(data):
     fromUserId = message['from']['uid']
     toUserId = message['to']['uid']
     try:
-        service_module = importlib.import_module(f"{service}_service")
+        service_module = get_service_module(service)
         newConfig = copy.deepcopy(config)
         newConfig['from_user_id'] = fromUserId
         newConfig['to_user_id'] = toUserId
@@ -503,3 +503,6 @@ def msgSentCntKey():
 
 def msgReceivedCntKey():
     return "lanying:connector:msg:received:cnt"
+
+def get_service_module(service):
+    return importlib.import_module(f"{service}_service")
