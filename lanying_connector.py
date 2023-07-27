@@ -48,8 +48,12 @@ app.register_blueprint(wechat_official_account_service.bp)
 
 @app.route("/", methods=["GET"])
 def index():
-    service = lanying_config.get_lanying_connector_service('')
-    return render_template("index.html", msgReceivedCnt=getMsgReceivedCnt(), msgSentCnt=getMsgSentCnt(), service=service)
+    if lanying_config.is_show_info_page():
+        service = lanying_config.get_lanying_connector_service('')
+        return render_template("index.html", msgReceivedCnt=getMsgReceivedCnt(), msgSentCnt=getMsgSentCnt(), service=service)
+    else:
+        resp = app.make_response('')
+        return resp
 
 @app.route("/messages", methods=["POST"])
 def messages():

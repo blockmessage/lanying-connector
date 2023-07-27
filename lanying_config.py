@@ -157,3 +157,8 @@ def get_lanying_api_endpoint(appId):
 
 def get_service_list():
     return os.getenv('LANYING_CONNECTOR_SERVICE_LIST', 'openai,wechat_official_account').split(',')
+
+def is_show_info_page():
+    if mode == 'etcd':
+        return False
+    return True
