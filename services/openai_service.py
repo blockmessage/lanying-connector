@@ -129,7 +129,7 @@ def check_authorization(request):
                         if token == config.get('access_token', ''):
                             return {'result':'ok', 'app_id':app_id, 'config':config}
     except Exception as e:
-        pass
+        logging.exception(e)
     return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
 
 def check_message_user_id(config, msg):
@@ -1190,6 +1190,8 @@ def re_run_doc_to_embedding(app_id, embedding_name, doc_id):
     if doc_info is None:
         return {'result':'error', 'message':'doc_id not exist'}
     lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "wait")
+    config = lanying_config.get_lanying_connector(app_id)
+    lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
     trace_id = lanying_embedding.create_trace_id()
     re_run_doc_to_embedding_by_doc_ids.apply_async(args = [trace_id, app_id, embedding_uuid, [doc_id]])
     return {'result':'ok', 'data':True}
@@ -1201,6 +1203,8 @@ def re_run_all_doc_to_embedding(app_id, embedding_name):
     embedding_uuid = embedding_name_info["embedding_uuid"]
     trace_id = lanying_embedding.create_trace_id()
     doc_ids = lanying_embedding.get_embedding_doc_id_list(embedding_uuid, 0, -1)
+    config = lanying_config.get_lanying_connector(app_id)
+    lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
     re_run_doc_to_embedding_by_doc_ids.apply_async(args = [trace_id, app_id, embedding_uuid, doc_ids])
     return {'result':'ok', 'data':True}
 

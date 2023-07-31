@@ -55,7 +55,7 @@ def download_url(url, headers, filename):
         headers['Range'] = 'bytes=0-'
         response = requests.get(url, headers=headers, stream=True)
         if response.status_code == 206:
-            file_size = int(response.headers.get('Content-Length'))
+            file_size = int(response.headers.get('Content-Length', "0"))
             if file_size > max_upload_file_size:
                 logging.info(f"Download {filename} failed, for file_size:{file_size}")
                 return {"result":"error", "message":"file too large"}
