@@ -133,8 +133,11 @@ def get_lanying_connector(appId):
                 config['openai_api_key'] = openaiAPIKey
             return config
 
-def get_lanying_connector_default_openai_api_key():
-    return os.getenv('OPENAI_API_KEY')
+def get_lanying_connector_default_api_key(vendor):
+    return os.getenv(f'{vendor.upper()}_API_KEY')
+
+def get_lanying_connector_default_api_group_id(vendor):
+    return os.getenv(f'{vendor.upper()}_API_GROUP_ID', '')
 
 def get_service_config(app_id, service):
     if mode == 'etcd':

@@ -17,11 +17,42 @@ import lanying_embedding
 import re
 import lanying_command
 import lanying_url_loader
+import lanying_vendor
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
+
+def handle_embedding_request(request):
+    auth_result = check_authorization(request)
+    if auth_result['result'] == 'error':
+        logging.info(f"check_authorization deny, msg={auth_result['msg']}")
+        return auth_result
+    app_id = auth_result['app_id']
+    config = auth_result['config']
+    rate_res = check_message_rate(app_id, request.path)
+    if rate_res['result'] == 'error':
+        logging.info(f"check_message_rate deny: app_id={app_id}, msg={rate_res['msg']}")
+        return rate_res
+    deduct_res = check_message_deduct_failed(app_id, config)
+    if deduct_res['result'] == 'error':
+        logging.info(f"check_message_deduct_failed deny: app_id={app_id}, msg={deduct_res['msg']}")
+        return deduct_res
+    request_text = request.get_data(as_text=True)
+    data = json.loads(request_text)
+    vendor = data.get('vendor')
+    text = data.get('text')
+    limit_res = check_message_limit(app_id, config, vendor)
+    if limit_res['result'] == 'error':
+        logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
+        return limit_res
+    openai_key_type = limit_res['openai_key_type']
+    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    auth_info = get_preset_auth_info(config, openai_key_type, vendor)
+    prepare_info = lanying_vendor.prepare_embedding(vendor,auth_info, 'db')
+    response = lanying_vendor.embedding(vendor, prepare_info, text)
+    return response
 
 def handle_request(request):
     text = request.get_data(as_text=True)
@@ -43,21 +74,27 @@ def handle_request(request):
         return deduct_res
     preset = json.loads(text)
     maybe_init_preset_model_for_embedding(preset, path)
-    model_res = check_model_allow(preset['model'])
+    preset_name = "default"
+    vendor = "openai"
+    model = preset['model']
+    model_config = lanying_vendor.get_chat_model_config(vendor, model)
+    if model_config is None:
+        model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+    model_res = check_model_allow(model_config, model)
     if model_res['result'] == 'error':
         logging.info(f"check_model_allow deny: app_id={app_id}, msg={model_res['msg']}")
         return model_res
-    limit_res = check_message_limit(app_id, config)
+    limit_res = check_message_limit(app_id, config, vendor)
     if limit_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
     openai_key_type = limit_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
-    openai_key = get_openai_key(config, openai_key_type)
-    response = forward_request(app_id, request, openai_key)
+    auth_info = get_preset_auth_info(config, openai_key_type, vendor)
+    response = forward_request(app_id, request, auth_info)
     if response.status_code == 200:
         response_content = json.loads(response.content)
-        add_message_statistic(app_id, config, preset, response_content, openai_key_type)
+        add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
     else:
         logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
     return {'result':'ok', 'response':response}
@@ -66,7 +103,8 @@ def maybe_init_preset_model_for_embedding(preset, path):
     if path == '/v1/engines/text-embedding-ada-002/embeddings':
         preset['model'] = 'text-embedding-ada-002'
 
-def forward_request(app_id, request, openai_key):
+def forward_request(app_id, request, auth_info):
+    openai_key = auth_info.get('api_key','')
     url = "https://api.openai.com" + request.path
     data = request.get_data()
     headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
@@ -185,16 +223,19 @@ def handle_chat_message(config, msg, retry_times = 3):
         presetExt = copy.deepcopy(preset['ext'])
         del preset['ext']
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
-    isChatGPT = is_chatgpt_model(preset['model'])
-    if isChatGPT:
-        return handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
+    vendor = config.get('vendor', 'openai')
+    if 'vendor' in preset:
+        vendor = preset['vendor']
+    model_config = lanying_vendor.get_chat_model_config(vendor, preset['model'])
+    if model_config:
+        return handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
     else:
-        return ''
+        return f''
 
-def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
+def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
     model = preset['model']
-    check_res = check_message_limit(app_id, config)
+    check_res = check_message_limit(app_id, config, vendor)
     if check_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={check_res['msg']}")
         return check_res['msg']
@@ -210,8 +251,8 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
         doc_id = command_ext['doc_id']
         is_fulldoc = command_ext.get('is_fulldoc', False)
         logging.info(f"using doc_id in command:{doc_id}, is_fulldoc:{is_fulldoc}")
-    openai_api_key = get_openai_key(config, openai_key_type)
-    openai.api_key = openai_api_key
+    auth_info = get_preset_auth_info(config, openai_key_type, vendor)
+    prepare_info = lanying_vendor.prepare_chat(vendor, auth_info, preset)
     add_reference = presetExt.get('add_reference', 'none')
     reference = presetExt.get('reference')
     reference_list = []
@@ -235,20 +276,12 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
         addHistory(redis, historyListKey, {'list':customHistoryList, 'time':now})
     if 'ai_generate' in lcExt and lcExt['ai_generate'] == False:
         return ''
-    if content == '/reset_prompt':
+    if content == '/reset_prompt' or content == "/reset":
         removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
         del_embedding_info(redis, fromUserId, toUserId)
         return 'prompt is reset'
-    preset_embedding_infos = []
-    if 'embedding_name' in presetExt:
-        preset_embedding_infos.append(presetExt)
-    other_preset_embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
-    if len(other_preset_embedding_infos) > 0:
-        if 'embedding_name' in presetExt:
-            preset_embedding_infos.extend([item for item in other_preset_embedding_infos if item.get("embedding_name") != presetExt["embedding_name"]])
-        else:
-            preset_embedding_infos.extend(other_preset_embedding_infos)
+    preset_embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
@@ -276,13 +309,12 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
             embedding_content_type = presetExt.get('embedding_content_type', 'text')
             embedding_history_num = presetExt.get('embedding_history_num', 0)
-            embedding_query_text = calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId)
-            q_embedding = fetch_embeddings(app_id, config, openai_key_type, embedding_query_text)
+            embedding_query_text = calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config)
             ask_message = {"role": "user", "content": content}
             embedding_message =  {"role": embedding_role, "content": embedding_content}
-            embedding_token_limit = model_token_limit(model) - calcMessagesTokens(messages, model) - preset.get('max_tokens', 1024) - calcMessageTokens(ask_message, model) - calcMessageTokens(embedding_message, model)
+            embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(messages, model, vendor) - preset.get('max_tokens', 1024) - calcMessageTokens(ask_message, model, vendor) - calcMessageTokens(embedding_message, model, vendor)
             logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
-            search_result = multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
+            search_result = multi_embedding_search(app_id, config, openai_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
             for doc in search_result:
                 if hasattr(doc, 'doc_id') and doc.doc_id not in reference_list:
                     reference_list.append(doc.doc_id)
@@ -334,7 +366,7 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
                     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
                 else:
                     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{question_answer_with_distance}\n")
-    history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt)
+    history_result = loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
     if history_result['result'] == 'error':
         return history_result['message']
     userHistoryList = history_result['data']
@@ -345,10 +377,10 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
     preset['messages'] = messages
     preset_message_lines = "\n".join([f"{message.get('role','')}:{message.get('content','')}" for message in messages])
     logging.info(f"==========final preset messages============\n{preset_message_lines}")
-    response = openai.ChatCompletion.create(**preset)
-    logging.info(f"openai response:{response}")
-    add_message_statistic(app_id, config, preset, response, openai_key_type)
-    reply = response.choices[0].message.content.strip()
+    response = lanying_vendor.chat(vendor, prepare_info, preset)
+    logging.info(f"vendor response | vendor:{vendor}, response:{response}")
+    add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
+    reply = response['reply']
     command = None
     try:
         command = json.loads(reply)['lanying-connector']
@@ -432,12 +464,13 @@ def handle_chat_message_chatgpt(config, msg, preset, lcExt, presetExt, preset_na
     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
-def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit):
+def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit):
     list = []
     max_tokens = 0
     max_blocks = 0
     preset_idx = 0
     text_hashes = {'-'}
+    embedding_cache = {}
     for preset_embedding_info in preset_embedding_infos:
         embedding_name = preset_embedding_info['embedding_name']
         if doc_id != "":
@@ -447,6 +480,14 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, 
                 continue
             else:
                 logging.info(f"choose embedding_name for doc_id: embedding_name:{embedding_name}, doc_id:{doc_id}")
+        embedding_uuid = preset_embedding_info['embedding_uuid']
+        embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
+        vendor = embedding_uuid_info.get('vendor', 'openai')
+        if vendor in embedding_cache:
+            q_embedding = embedding_cache[vendor]
+        else:
+            q_embedding = fetch_embeddings(app_id, config, api_key_type, embedding_query_text, vendor)
+            embedding_cache[vendor] = q_embedding
         preset_idx = preset_idx + 1
         embedding_max_tokens = lanying_embedding.word_num_to_token_num(preset_embedding_info.get('embedding_max_tokens', 1024))
         embedding_max_blocks = preset_embedding_info.get('embedding_max_blocks', 2)
@@ -492,7 +533,7 @@ def multi_embedding_search(app_id, q_embedding, preset_embedding_infos, doc_id, 
         ret.append(doc)
     return ret
 
-def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt):
+def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor):
     history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
     history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
     history_msg_size_max = config.get('history_msg_size_max', 4096)
@@ -502,10 +543,10 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
     completionTokens = preset.get('max_tokens', 1024)
     uidHistoryList = []
     model = preset['model']
-    token_limit = model_token_limit(model)
-    messagesSize = calcMessagesTokens(messages, model)
+    token_limit = model_token_limit(model_config)
+    messagesSize = calcMessagesTokens(messages, model, vendor)
     askMessage = {"role": "user", "content": content}
-    nowSize = calcMessageTokens(askMessage, model) + messagesSize
+    nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
         return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
@@ -528,7 +569,7 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
-            historySize += calcMessageTokens(nowHistory, model)
+            historySize += calcMessageTokens(nowHistory, model, vendor)
             now_history_content = nowHistory.get('content','')
             now_history_bytes = text_byte_size(now_history_content)
             history_bytes += now_history_bytes
@@ -546,20 +587,13 @@ def loadHistoryChatGPT(config, app_id, redis, historyListKey, content, messages,
             nowSize += historySize
             logging.info(f'history state: app_id={app_id}, now_prompt_size={nowSize}, history_count={history_count}, history_bytes={history_bytes}')
         else:
-            logging.info(f'stop history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
+            logging.info(f'stop history for max tokens: app_id={app_id}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
             break
+    logging.info(f"history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
     return {'result':'ok', 'data': reversed(res)}
 
-def model_token_limit(model):
-    if is_chatgpt_model_4_32k(model):
-        return 32000
-    if is_chatgpt_model_3_5_16k(model):
-        return 16000
-    if is_chatgpt_model_4(model):
-        return 8000
-    if is_embedding_model(model):
-        return 8000
-    return 4000
+def model_token_limit(model_config):
+    return model_config['token_limit']
 
 def historyListChatGPTKey(fromUserId, toUserId):
     return "lanying:connector:history:list:chatGPT:" + fromUserId + ":" + toUserId
@@ -608,9 +642,9 @@ def del_preset_name(redis, fromUserId, toUserId):
         key = preset_name_key(fromUserId,toUserId)
         redis.delete(key)
 
-def calcMessagesTokens(messages, model):
+def calcMessagesTokens(messages, model, vendor):
     try:
-        encoding = tiktoken.encoding_for_model(model)
+        encoding = lanying_vendor.encoding_for_model(vendor, model)
         num_tokens = 0
         for message in messages:
             num_tokens += 4
@@ -624,9 +658,9 @@ def calcMessagesTokens(messages, model):
         logging.exception(e)
         return MaxTotalTokens
 
-def calcMessageTokens(message, model):
+def calcMessageTokens(message, model, vendor):
     try:
-        encoding = tiktoken.encoding_for_model(model)
+        encoding = lanying_vendor.encoding_for_model(vendor, model)
         num_tokens = 0
         num_tokens += 4
         for key, value in message.items():
@@ -638,15 +672,27 @@ def calcMessageTokens(message, model):
         logging.exception(e)
         return MaxTotalTokens
 
-def get_openai_key(config, openai_key_type):
-    openai_api_key = ''
+def get_preset_auth_info(config, openai_key_type, vendor):
     if openai_key_type == 'share':
-        DefaultApiKey = lanying_config.get_lanying_connector_default_openai_api_key()
+        DefaultApiKey = lanying_config.get_lanying_connector_default_api_key(vendor)
+        DefaultApiGroupId = lanying_config.get_lanying_connector_default_api_group_id(vendor)
         if DefaultApiKey:
-            openai_api_key = DefaultApiKey
+            return {
+                'api_key':DefaultApiKey,
+                'api_group_id':DefaultApiGroupId
+            }
     else:
-        openai_api_key = config['openai_api_key']
-    return openai_api_key
+        return get_preset_self_auth_info(config, vendor)
+
+def get_preset_self_auth_info(config, vendor):
+    auth_info = config.get('vendors', {}).get(vendor)
+    if auth_info is None and vendor == "openai": # for compatibility
+        api_key = config.get('openai_api_key', '')
+        if api_key != '':
+            auth_info = {
+                'api_key': api_key
+            }
+    return auth_info
 
 def reply_message_read_ack(config):
     fromUserId = config['from_user_id']
@@ -655,33 +701,15 @@ def reply_message_read_ack(config):
     appId = config['app_id']
     lanying_connector.sendReadAckAsync(appId, toUserId, fromUserId, msgId)
 
-def is_chatgpt_model(model):
-    return is_chatgpt_model_3_5(model) or is_chatgpt_model_4(model)
-
-def is_chatgpt_model_3_5(model):
-    return model.startswith("gpt-3.5")
-
-def is_chatgpt_model_3_5_16k(model):
-    return model.startswith("gpt-3.5-turbo-16k")
-
-def is_chatgpt_model_4(model):
-    return model.startswith("gpt-4")
-
-def is_chatgpt_model_4_32k(model):
-    return model.startswith("gpt-4-32k")
-
-def is_embedding_model(model):
-    return model.startswith("text-embedding-ada-002")
-
-def add_message_statistic(app_id, config, preset, response, openai_key_type):
+def add_message_statistic(app_id, config, preset, response, openai_key_type, model_config):
     if 'usage' in response:
         usage = response['usage']
         completion_tokens = usage.get('completion_tokens',0)
         prompt_tokens = usage.get('prompt_tokens', 0)
         total_tokens = usage.get('total_tokens', 0)
-        text_size = calc_used_text_size(preset, response)
+        text_size = calc_used_text_size(preset, response, model_config)
         model = preset['model']
-        message_count_quota = calc_message_quota(model, total_tokens)
+        message_count_quota = calc_message_quota(model_config, total_tokens)
         redis = lanying_redis.get_redis_connection()
         product_id = config.get('product_id', 0)
         if product_id == 0:
@@ -710,15 +738,15 @@ def add_quota(redis, key, field, quota):
         return redis.hincrby(key, field, quota)
     else:
         field_float = field + "_float"
-        new_quota = redis.hincrby(key, field_float, round(quota * 100))
-        if new_quota >= 100:
-            increment = new_quota // 100
-            redis.hincrby(key, field_float, - increment * 100)
+        new_quota = redis.hincrby(key, field_float, round(quota * 10000))
+        if new_quota >= 10000:
+            increment = new_quota // 10000
+            redis.hincrby(key, field_float, - increment * 10000)
             return redis.hincrby(key, field, increment)
         else:
             return redis.hincrby(key, field, 0)
 
-def check_message_limit(app_id, config):
+def check_message_limit(app_id, config, vendor):
     message_per_month = config.get('message_per_month', 0)
     product_id = config.get('product_id', 0)
     if product_id == 0:
@@ -734,8 +762,8 @@ def check_message_limit(app_id, config):
             return {'result':'ok', 'openai_key_type':'share'}
         else:
             if enable_extra_price:
-                openai_api_key = config.get('openai_api_key', '')
-                if len(openai_api_key) > 0:
+                self_auth_info = get_preset_self_auth_info(config, vendor)
+                if self_auth_info:
                     return {'result':'ok', 'openai_key_type':'self'}
                 else:
                     return {'result':'ok', 'openai_key_type':'share'}
@@ -799,39 +827,28 @@ def buy_message_quota(app_id, type, value):
                 return redis.hincrby(key, 'message_count_quota_buy_self', value)
     return -1
 
-def check_model_allow(model):
-    if is_chatgpt_model(model):
-        return {'result':'ok'}
-    if is_embedding_model(model):
+def check_model_allow(model_config, model):
+    if model_config:
         return {'result':'ok'}
     return {'result':'error', 'msg':f'model {model} is not supported'}
 
-def calc_message_quota(model, total_tokens):
-    multi = 1
-    if is_chatgpt_model_4(model):
-        multi = 20
-    if is_chatgpt_model_4_32k(model):
-        multi = 40
-    if is_chatgpt_model_3_5_16k(model):
-        multi = 2
-    if is_embedding_model(model):
-        multi = 0.05
+def calc_message_quota(model_config, total_tokens):
+    multi = model_config['quota']
     count = round(total_tokens / 2048)
     if  count < 1:
         count = 1
     return count * multi
 
-def calc_used_text_size(preset, response):
+def calc_used_text_size(preset, response, model_config):
     text_size = 0
-    model = preset['model']
-    if is_chatgpt_model(model):
+    if model_config['type'] == "chat":
         for message in preset['messages']:
             text_size += text_byte_size(message.get('content', ''))
-        text_size += text_byte_size(response['choices'][0]['message']['content'].strip())
-    elif is_embedding_model(model):
+        text_size += text_byte_size(response['reply'])
+    elif model_config['type'] == "embedding":
         text_size += text_byte_size(preset['input'])
     else:
-        text_size += text_byte_size(preset['prompt'])
+        raise Exception(f'bad model config:{model_config}')
     return text_size
 
 def get_message_statistic_keys(config, app_id):
@@ -916,11 +933,11 @@ def del_embedding_info(redis, fromUserId, toUserId):
         key = embedding_info_key(fromUserId,toUserId)
         redis.delete(key)
 
-def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size):
-    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size)
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor):
+    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor)
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size):
-    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size)
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor):
+    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor)
 
 def list_embeddings(app_id):
     return lanying_embedding.list_embeddings(app_id)
@@ -935,12 +952,20 @@ def list_embedding_tasks(app_id, embedding_name):
         return task_list
     return []
 
-def fetch_embeddings(app_id, config, openai_key_type, text):
-    logging.info(f"fetch_embeddings: app_id={app_id}, text={text}")
-    response = openai.Embedding.create(input=text, engine='text-embedding-ada-002')
-    embedding = response['data'][0]['embedding']
-    preset = {'model':'text-embedding-ada-002', 'input':text}
-    add_message_statistic(app_id, config, preset, response, openai_key_type)
+def fetch_embeddings(app_id, config, openai_key_type, text, vendor):
+    embedding_api_key_type = openai_key_type
+    logging.info(f"fetch_embeddings: app_id={app_id}, vendor:{vendor}, text={text}")
+    auth_info = get_preset_auth_info(config, embedding_api_key_type, vendor)
+    if auth_info is None:
+        embedding_api_key_type = "share"
+        auth_info = get_preset_auth_info(config, embedding_api_key_type, vendor)
+    prepare_info = lanying_vendor.prepare_embedding(vendor, auth_info, 'query')
+    response = lanying_vendor.embedding(vendor, prepare_info, text)
+    embedding = response['embedding']
+    model = response['model']
+    preset = {'model':model, 'input':text}
+    model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+    add_message_statistic(app_id, config, preset, response, embedding_api_key_type, model_config)
     return embedding
 
 def handle_chat_file(msg, config):
@@ -1226,7 +1251,7 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
 def text_byte_size(text):
     return len(text.encode('utf-8'))
 
-def calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId):
+def calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config):
     if embedding_history_num <= 0:
         return content
     result = [content]
@@ -1234,7 +1259,7 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
     history_count = 0
     history_size = lanying_embedding.num_of_tokens(content)
     model = 'text-embedding-ada-002'
-    token_limit = model_token_limit(model)
+    token_limit = model_token_limit(model_config)
     redis = lanying_redis.get_redis_connection()
     for historyStr in reversed(getHistoryList(redis, historyListKey)):
         history = json.loads(historyStr)

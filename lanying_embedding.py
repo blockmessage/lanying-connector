@@ -5,7 +5,7 @@ import time
 import re
 import tiktoken
 from markdownify import MarkdownConverter
-import openai
+import requests
 import os
 import random
 import numpy as np
@@ -20,7 +20,7 @@ import lanying_url_loader
 import json
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
-global_openai_base = os.getenv("EMBEDDING_OPENAI_BASE", "https://lanying-connector.lanyingim.com/v1")
+global_embedding_api_url = os.getenv("EMBEDDING_API_URL", "https://lanying-connector.lanyingim.com/fetch_embeddings")
 
 tokenizer = tiktoken.get_encoding("cl100k_base")
 
@@ -38,8 +38,8 @@ class IgnoringScriptConverter(MarkdownConverter):
 def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
-def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size):
-    logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}")
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor):
+    logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}, vendor:{vendor}")
     if app_id is None:
         app_id = ""
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
@@ -75,6 +75,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
                 "doc_id_seq": 0,
                 "embedding_count":0,
                 "embedding_size": 0,
+                "vendor": vendor,
                 "text_size": 0,
                 "time": now,
                 "status": "ok"})
@@ -99,7 +100,7 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
@@ -132,6 +133,7 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
     if max_block_size > 0:
         update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"max_block_size", max_block_size)
     update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"overlapping_size", overlapping_size)
+    update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"vendor", vendor)
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
     return {"result":"ok"}
@@ -147,7 +149,7 @@ def list_embeddings(app_id):
             embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
             embedding_uuid = embedding_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size"]:
+            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size", "vendor"]:
                 if key in embedding_uuid_info:
                     embedding_info[key] = embedding_uuid_info[key]
             if "embedding_content" not in embedding_info:
@@ -235,6 +237,7 @@ def get_preset_embedding_infos(app_id, preset_name):
             embedding_info = get_embedding_name_info(app_id, now_embedding_name)
             if embedding_info:
                 embedding_info["embedding_name"] = now_embedding_name
+                embedding_info["embedding_uuid"] = embedding_info["embedding_uuid"]
                 embedding_info["embedding_max_tokens"] = int(embedding_info.get("embedding_max_tokens","2048"))
                 embedding_info["embedding_max_blocks"] = int(embedding_info.get("embedding_max_blocks", "5"))
                 embedding_infos.append(embedding_info)
@@ -474,6 +477,7 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
 
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     openai_secret_key = config["openai_secret_key"]
+    vendor = config.get('vendor', 'openai')
     is_dry_run = config.get("dry_run", "false") == "true"
     logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
     for block in blocks:
@@ -487,7 +491,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             block_id = generate_block_id(embedding_uuid, doc_id)
             maybe_rate_limit(5)
             embedding_text = text + question
-            embedding = fetch_embedding(openai_secret_key, embedding_text, is_dry_run)
+            embedding = fetch_embedding(vendor, openai_secret_key, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
             text_hash = sha256(embedding_text)
@@ -511,33 +515,38 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "text_size", text_size)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "char_cnt", char_cnt)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "token_cnt", token_cnt)
+            update_doc_field(embedding_uuid, doc_id, "vendor", vendor)
             update_progress(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), 1)
             question_desc = ''
             if question != '':
                 question_desc = f"question:{question}\nanswer:"
             logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},text_hash:{text_hash}=====\n{question_desc}{text}")
 
-def fetch_embedding(openai_secret_key, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
+def fetch_embedding(vendor, openai_secret_key, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
     if is_dry_run:
         return [random.uniform(0, 1) for i in range(1536)]
-    openai.api_key = openai_secret_key
-    openai.api_base = global_openai_base
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {openai_secret_key}"}
+    body = {
+        "text": text,
+        "vendor": vendor
+    }
     response = {}
     try:
-        response = openai.Embedding.create(input=text, engine='text-embedding-ada-002')
-        return response['data'][0]['embedding']
+        response = requests.post(global_embedding_api_url, headers=headers, json = body).json()
+        return response['embedding']
     except Exception as e:
         logging.info(f"fetch_embedding got error response:{response}")
         code = ""
         try:
-            code = response["error"]["code"]
+            code = response["code"]
         except Exception as ee:
             pass
         if code in ["bad_authorization","no_quota", "deduct_failed"]:
             raise Exception(code)
         if retry > 0:
             time.sleep(sleep)
-            return fetch_embedding(openai_secret_key, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
+            return fetch_embedding(vendor, openai_secret_key, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
         raise e
 
 def process_block(config, block):
@@ -830,7 +839,7 @@ def increase_task_field(embedding_uuid, task_id, field, value):
     redis = lanying_redis.get_redis_stack_connection()
     return redis.hincrby(get_embedding_task_info_key(embedding_uuid, task_id), field, value)
 
-def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size, ext, type, source):
+def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size, ext, type, source, vendor):
     redis = lanying_redis.get_redis_stack_connection()
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
     redis.hmset(info_key, {"filename":filename,
@@ -840,6 +849,7 @@ def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size, ex
                            "ext": ext,
                            "type": type,
                            "source": source,
+                           "vendor": vendor,
                            "status": "wait"})
 def update_doc_field(embedding_uuid, doc_id, field, value):
     redis = lanying_redis.get_redis_stack_connection()

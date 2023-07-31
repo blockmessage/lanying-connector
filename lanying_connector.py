@@ -150,6 +150,20 @@ def openai_request():
         logging.exception(e)
         resp = app.make_response({"error":{"type": "internal_server_error","code":500, "message":"Internal Server Error"}})
         return resp
+
+@app.route("/fetch_embeddings", methods=["POST"])
+def embedding_request():
+    try:
+        service = "openai"
+        service_module = get_service_module(service)
+        res = service_module.handle_embedding_request(request)
+        resp = app.make_response(res)
+        return resp
+    except Exception as e:
+        logging.exception(e)
+        resp = app.make_response({"result":"error", "reason":"exception"})
+        return resp
+
 @app.route("/service/<string:service>/create_embedding", methods=["POST"])
 def create_embedding(service):
     headerToken = request.headers.get('access-token', "")
@@ -163,8 +177,9 @@ def create_embedding(service):
         max_block_size = data.get('max_block_size', 500)
         preset_name = data.get('preset_name', '')
         overlapping_size = data.get('overlapping_size', 0)
+        vendor = data.get('vendor', 'openai')
         service_module = get_service_module(service)
-        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size)
+        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
@@ -190,9 +205,10 @@ def configure_embedding(service):
         new_embedding_name = data['new_embedding_name']
         max_block_size = data.get('max_block_size', 0)
         overlapping_size = data.get('overlapping_size', 0)
+        vendor = data.get('vendor', 'openai')
         logging.info(f"configure_embedding | {data}")
         service_module = get_service_module(service)
-        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size)
+        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
