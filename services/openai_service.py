@@ -844,7 +844,11 @@ def calc_used_text_size(preset, response, model_config):
     if model_config['type'] == "chat":
         for message in preset['messages']:
             text_size += text_byte_size(message.get('content', ''))
-        text_size += text_byte_size(response['reply'])
+        if 'reply' in response:
+            reply = response['reply']
+        else:
+            reply = response['choices'][0]['message']['content'].strip()
+        text_size += text_byte_size(reply)
     elif model_config['type'] == "embedding":
         text_size += text_byte_size(preset['input'])
     else:
