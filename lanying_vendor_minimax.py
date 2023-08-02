@@ -10,14 +10,14 @@ def model_configs():
             "type": "chat",
             "is_prefix": True,
             "quota": 0.01,
-            "token_limit": 10000
+            "token_limit": 12000
         },
         {
             "model": 'embo-01',
             "type": "embedding",
             "is_prefix": True,
             "quota": 0.0005,
-            "token_limit": 10000
+            "token_limit": 12000
         }
     ]
 
