@@ -304,6 +304,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if context == '': 
             embedding_min_distance = 1.0
             embedding_role = presetExt.get('embedding_role', 'system')
+            if is_fulldoc:
+                embedding_role = "user"
             first_preset_embedding_info = preset_embedding_infos[0]
             embedding_max_distance = presetExt.get('embedding_max_distance', 1.0)
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
