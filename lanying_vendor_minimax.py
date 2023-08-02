@@ -10,14 +10,14 @@ def model_configs():
             "type": "chat",
             "is_prefix": True,
             "quota": 0.01,
-            "token_limit": 12000
+            "token_limit": 10000
         },
         {
             "model": 'embo-01',
             "type": "embedding",
             "is_prefix": True,
             "quota": 0.0005,
-            "token_limit": 12000
+            "token_limit": 10000
         }
     ]
 
@@ -156,14 +156,16 @@ def format_preset(prepare_info, preset):
             bot_setting = []
             for message in preset.get('messages',[]):
                 if 'role' in message and 'content' in message:
-                    if message['role'] == 'system':
-                        bot_setting.append({'bot_name':bot_name, 'content': message['content']})
-                    elif message['role'] == 'user':
-                        messages.append({'sender_type': 'USER', 'sender_name': user_name, 'text': message['content']})
-                    elif message['role'] == 'assistant':
-                        messages.append({'sender_type': 'BOT', 'sender_name' : bot_name,'text': message['content']})
+                    if message['content'] != '':
+                        if message['role'] == 'system':
+                            bot_setting.append({'bot_name':bot_name, 'content': message['content']})
+                        elif message['role'] == 'user':
+                            messages.append({'sender_type': 'USER', 'sender_name': user_name, 'text': message['content']})
+                        elif message['role'] == 'assistant':
+                            messages.append({'sender_type': 'BOT', 'sender_name' : bot_name,'text': message['content']})
                 elif 'text' in message:
-                    messages.append(message)
+                    if message['text'] != '':
+                        messages.append(message)
             payload[key] = messages
             if len(bot_setting) > 0:
                 payload['bot_setting'] = maybe_merge_bot_settings(bot_setting)
