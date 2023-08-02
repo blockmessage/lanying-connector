@@ -18,6 +18,7 @@ import docx2txt
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import lanying_url_loader
 import json
+import pdfplumber
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_api_url = os.getenv("EMBEDDING_API_URL", "https://lanying-connector.lanyingim.com/fetch_embeddings")
@@ -371,11 +372,29 @@ def process_txt(config, app_id, embedding_uuid, filename, origin_filename, doc_i
 def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     blocks = []
     total_tokens = 0
-    content = extract_text(filename)
+    content = extract_pdf(filename)
     total_tokens, blocks = process_block(config, content)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+def extract_pdf(filename):
+    try:
+        with pdfplumber.open(filename) as pdf:
+            texts = []
+            tables = []
+            for page in pdf.pages:
+                texts.append(page.extract_text())
+                for table in page.extract_tables():
+                    rows = []
+                    for row in table:
+                        rows.append(f"{row}")
+                    tables.append("\n".join(rows))
+            return "\n".join(texts) + "\n\n" + "\n\n".join(tables)
+    except Exception as e:
+        logging.info("failed to extract pdf by pdfplumber")
+        logging.exception(e)
+        return extract_text(filename)
 
 def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     blocks = []
