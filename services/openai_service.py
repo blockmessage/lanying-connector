@@ -1144,7 +1144,7 @@ def search_on_fulldoc_by_preset(msg, config, preset_name, doc_id, new_content):
 def search_by_preset(msg, config, preset_name, new_content):
     return {'result':'continue', 'command_ext':{'preset_name':preset_name, "new_content":new_content}}
 
-def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit):
+def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_depth, filters, urls):
     config = lanying_config.get_lanying_connector(app_id)
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
@@ -1156,9 +1156,9 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit):
             embedding_uuid = embedding_info['embedding_uuid']
             task_id = lanying_embedding.create_task(embedding_uuid, type, url)
             lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
-            site_task_id = lanying_url_loader.create_task(url)
+            site_task_id = lanying_url_loader.create_task(urls)
             lanying_embedding.update_task_field(embedding_uuid, task_id, "site_task_id", site_task_id)
-            prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, url, 0, limit, task_id])
+            prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, urls, 0, limit, task_id, max_depth, filters])
         else:
             result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit])
             logging.info(f"add_doc_to_embedding | result={result}")

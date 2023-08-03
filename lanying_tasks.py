@@ -213,7 +213,7 @@ def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
 
 
 @slow_queue.task
-def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit, task_id):
+def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters):
     task_info = lanying_embedding.get_task(embedding_uuid, task_id)
     if task_info is None:
         lanying_url_loader.clean_task(site_task_id)
@@ -227,7 +227,7 @@ def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url,
         return
     ttl = 50
     is_finish = True
-    for doc in lanying_url_loader.do_task(site_task_id, url):
+    for doc in lanying_url_loader.do_task(site_task_id, urls, max_depth, filters):
         is_finish = False
         if doc:
             try:

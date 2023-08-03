@@ -313,18 +313,25 @@ def add_doc_to_embedding(service):
         type = data.get('type', 'file')
         if type in ["file", "url", "site"]:
             limit = data.get('limit', -1)
+            urls = data.get('urls', [])
+            max_depth = data.get('max_depth', 0)
+            filters = data.get('filters', [])
             if type == 'url':
                 content = data.get('url', '')
                 name = 'url.html'
             elif type == 'site':
                 content = data.get('url', '')
                 name = 'site.html'
+                if len(urls) == 0 and len(filters) == 0 : # for old
+                    urls.append(content)
+                    filters.append(filters)
+                    max_depth = 100000000
             else:
                 name = data.get('file_name','')
                 content = data.get('file_url','')
             logging.info(f"add_doc_to_embedding | {data}")
             service_module = get_service_module(service)
-            service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit)
+            service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit, max_depth, filters, urls)
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})

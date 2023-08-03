@@ -7,17 +7,16 @@ from bs4 import BeautifulSoup
 import uuid
 import lanying_redis
 from urllib.parse import urljoin
+import json
 
 # this file is edit from source of langchain.document_loaders.recursive_url_loader
 
-def create_task(url, advised_task_id = None):
+def create_task(urls):
     redis = lanying_redis.get_redis_stack_connection()
-    if advised_task_id:
-        task_id = advised_task_id
-    else:
-        task_id = str(uuid.uuid4())
-    redis.rpush(to_visit_key(task_id), url)
-    redis.sadd(visited_key(task_id), url)
+    task_id = str(uuid.uuid4())
+    for url in urls:
+        redis.rpush(to_visit_key(task_id), to_json({'url':url, 'depth':0}))
+        redis.sadd(visited_key(task_id), url)
     return task_id
 
 def clean_task(task_id):
@@ -32,37 +31,23 @@ def info_task(task_id):
         'found': redis.scard(found_key(task_id))
     }
 
-def do_task(task_id, root_url)-> Iterator[Document]:
+def do_task(task_id, urls, max_depth, filters)-> Iterator[Document]:
+    if len(urls) == 0:
+        return
+    first_url = urls[0]
     redis = lanying_redis.get_redis_stack_connection()
-    parse_root_url = urlparse(root_url.strip(' '))
-    filter_url = f"{parse_root_url.scheme}://{parse_root_url.netloc}{parse_root_url.path if parse_root_url.path != '' else '/'}"
-    visit_filter_url_bytes = redis.get(visit_filter_url_key(task_id))
-    is_use_new_visit_filter_url = False
-    if visit_filter_url_bytes:
-        is_use_new_visit_filter_url = True
-        visit_filter_url = visit_filter_url_bytes.decode('utf-8')
-    else:
-        visit_filter_url = filter_url
+    parse_first_url= urlparse(first_url.strip(' '))
+    root_url = f"{parse_first_url.scheme}://{parse_first_url.netloc}/"
     while(True):
-        url = redis.lpop(to_visit_key(task_id))
-        if url is None:
-            if not is_use_new_visit_filter_url:
-                last_found_num = redis.scard(found_key(task_id))
-                if last_found_num < 4:
-                    visit_filter_url = f"{parse_root_url.scheme}://{parse_root_url.netloc}/"
-                    if visit_filter_url != filter_url:
-                        is_use_new_visit_filter_url = True
-                        redis.set(visit_filter_url_key(task_id), visit_filter_url)
-                        redis.delete(visited_key(task_id))
-                        logging.info(f"try find more | task_id:{task_id}, root_url:{root_url}, filter_url:{filter_url}, visit_filter_url:{visit_filter_url}, last_found_num:{last_found_num}")
-                        redis.rpush(to_visit_key(task_id), visit_filter_url)
-                        redis.sadd(visited_key(task_id), visit_filter_url)
-                        continue
+        to_visit_bytes = redis.lpop(to_visit_key(task_id))
+        if to_visit_bytes is None:
             break
-        url = url.decode("utf-8")
+        to_visit_info = from_json(to_visit_bytes)
+        url = to_visit_info['url']
+        depth = to_visit_info['depth']
         if redis.sismember(found_key(task_id), url):
             continue
-        logging.info(f"load_url:  task_id:{task_id}, visit url:{url}, root_url:{root_url},filter_url:{filter_url}, visit_filter_url:{visit_filter_url}")
+        logging.info(f"load_url:  task_id:{task_id}, visit url:{url}, root_url:{root_url},depth:{depth}, max_depth:{max_depth}, filters:{filters}")
         try:
             response = requests.get(url,timeout=(20.0, 60.0))
             content_type = response.headers.get('Content-Type')
@@ -80,12 +65,19 @@ def do_task(task_id, root_url)-> Iterator[Document]:
 
                 for link in absolute_paths:
                     # logging.info(f"sub link:{link}, visit_filter_url:{visit_filter_url},filter_url:{filter_url}")
-                    if not redis.sismember(visited_key(task_id), link):
-                        if link.startswith(visit_filter_url):
-                            logging.info(f"add to_visit:  task_id:{task_id}, visit url:{url}, link:{link}, root_url:{root_url},filter_url:{filter_url}, visit_filter_url:{visit_filter_url}")
-                            redis.rpush(to_visit_key(task_id), link)
-                            redis.sadd(visited_key(task_id), link)
-                if url.startswith(filter_url):
+                    if depth < max_depth and link.startswith(root_url) and not redis.sismember(visited_key(task_id), link):
+                        logging.info(f"add to_visit:  task_id:{task_id}, visit url:{url}, link:{link}, root_url:{root_url}, child_depth:{depth + 1}")
+                        redis.rpush(to_visit_key(task_id), to_json({'url':link, 'depth': depth + 1}))
+                        redis.sadd(visited_key(task_id), link)
+                found = False
+                if filters == []:
+                    found = True
+                else:
+                    for filter in filters:
+                        if len(filter) > 0 and url.startswith(filter):
+                            found = True
+                            break
+                if found:
                     redis.sadd(found_key(task_id), url)
                     yield Document(page_content=response.text, metadata={'source':url, 'page_bytes':response.content})
                 else:
@@ -103,13 +95,15 @@ def format_link(url):
     return url
 
 def to_visit_key(task_id):
-    return f"lanying-embedding:url-loader:task:{task_id}:to_visit"
+    return f"lanying-embedding:url-loader:task:{task_id}:to_visit:v2"
 
 def visited_key(task_id):
-    return f"lanying-embedding:url-loader:task:{task_id}:visited"
+    return f"lanying-embedding:url-loader:task:{task_id}:visited:"
 
 def found_key(task_id):
     return f"lanying-embedding:url-loader:task:{task_id}:found"
 
-def visit_filter_url_key(task_id):
-    return f"lanying-embedding:url-loader:task:{task_id}:visit_filter_url"
+def to_json(dict):
+    return json.dumps(dict, ensure_ascii=False)
+def from_json(text):
+    return json.loads(text)
