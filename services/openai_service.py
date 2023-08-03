@@ -1154,7 +1154,7 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
         trace_id = lanying_embedding.create_trace_id()
         if type == 'site':
             embedding_uuid = embedding_info['embedding_uuid']
-            task_id = lanying_embedding.create_task(embedding_uuid, type, url)
+            task_id = lanying_embedding.create_task(embedding_uuid, type, urls)
             lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
             site_task_id = lanying_url_loader.create_task(urls)
             lanying_embedding.update_task_field(embedding_uuid, task_id, "site_task_id", site_task_id)

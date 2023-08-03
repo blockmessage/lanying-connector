@@ -749,7 +749,7 @@ def get_embedding_data_key(embedding_uuid, block_id):
 def get_app_embedding_admin_user_key(app_id):
     return f"embedding_admin_user_id:{app_id}"
 
-def create_task(embedding_uuid, type, url):
+def create_task(embedding_uuid, type, urls):
     redis = lanying_redis.get_redis_stack_connection()
     embedding_uuid_key = get_embedding_uuid_key(embedding_uuid)
     task_id_seq = redis.hincrby(embedding_uuid_key, "task_id_seq", 1)
@@ -759,7 +759,7 @@ def create_task(embedding_uuid, type, url):
     redis.hmset(info_key, {
         "embedding_uuid":embedding_uuid,
         "type": type,
-        "url": url,
+        "url": f"{urls[0]} ...",
         "time": int(time.time()),
         "status": "wait",
         "visited_num": 0,
