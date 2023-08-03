@@ -15,8 +15,9 @@ def create_task(urls):
     redis = lanying_redis.get_redis_stack_connection()
     task_id = str(uuid.uuid4())
     for url in urls:
-        redis.rpush(to_visit_key(task_id), to_json({'url':url, 'depth':0}))
-        redis.sadd(visited_key(task_id), url)
+        if url.startswith("http://") or url.startswith("https://"):
+            redis.rpush(to_visit_key(task_id), to_json({'url':url, 'depth':0}))
+            redis.sadd(visited_key(task_id), url)
     return task_id
 
 def clean_task(task_id):
@@ -38,6 +39,7 @@ def do_task(task_id, urls, max_depth, filters)-> Iterator[Document]:
     redis = lanying_redis.get_redis_stack_connection()
     parse_first_url= urlparse(first_url.strip(' '))
     root_url = f"{parse_first_url.scheme}://{parse_first_url.netloc}/"
+    http_root_url = f"http://{parse_first_url.netloc}/"
     while(True):
         to_visit_bytes = redis.lpop(to_visit_key(task_id))
         if to_visit_bytes is None:
@@ -55,6 +57,8 @@ def do_task(task_id, urls, max_depth, filters)-> Iterator[Document]:
                 response_url = response.url
                 soup = BeautifulSoup(response.text, "html.parser")
                 all_links = [link.get("href") for link in soup.find_all("a")]
+                for li in soup.find_all("li", attrs={'data-link': True}):
+                    all_links.append(li['data-link'])
 
                 absolute_paths = list(
                     {
@@ -65,7 +69,7 @@ def do_task(task_id, urls, max_depth, filters)-> Iterator[Document]:
 
                 for link in absolute_paths:
                     # logging.info(f"sub link:{link}, visit_filter_url:{visit_filter_url},filter_url:{filter_url}")
-                    if depth < max_depth and link.startswith(root_url) and not redis.sismember(visited_key(task_id), link):
+                    if depth < max_depth and (link.startswith(root_url) or link.startswith(http_root_url)) and not redis.sismember(visited_key(task_id), link):
                         logging.info(f"add to_visit:  task_id:{task_id}, visit url:{url}, link:{link}, root_url:{root_url}, child_depth:{depth + 1}")
                         redis.rpush(to_visit_key(task_id), to_json({'url':link, 'depth': depth + 1}))
                         redis.sadd(visited_key(task_id), link)
@@ -74,7 +78,7 @@ def do_task(task_id, urls, max_depth, filters)-> Iterator[Document]:
                     found = True
                 else:
                     for filter in filters:
-                        if len(filter) > 0 and url.startswith(filter):
+                        if len(filter) > 0 and (url.startswith(filter) or url.startswith(filter.replace('https://','http://'))):
                             found = True
                             break
                 if found:

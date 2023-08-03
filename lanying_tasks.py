@@ -256,7 +256,7 @@ def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls
         if ttl < 0:
             break
     if not is_finish:
-        prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit, task_id])
+        prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters])
     else:
         lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "finish")
 

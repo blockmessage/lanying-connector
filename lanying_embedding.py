@@ -759,7 +759,7 @@ def create_task(embedding_uuid, type, urls):
     redis.hmset(info_key, {
         "embedding_uuid":embedding_uuid,
         "type": type,
-        "url": f"{urls[0]} ...",
+        "url": urls[0],
         "time": int(time.time()),
         "status": "wait",
         "visited_num": 0,
@@ -830,9 +830,10 @@ def get_task_details_count(embedding_uuid, task_id):
     return redis.hlen(key)
 
 def delete_task_details_by_fields(embedding_uuid, task_id, fields):
-    redis = lanying_redis.get_redis_stack_connection()
-    key = get_embedding_task_detail_key(embedding_uuid, task_id)
-    redis.hdel(key, *fields)
+    if len(fields) > 0:
+        redis = lanying_redis.get_redis_stack_connection()
+        key = get_embedding_task_detail_key(embedding_uuid, task_id)
+        redis.hdel(key, *fields)
 
 def get_task_detail_fields(embedding_uuid, task_id):
     redis = lanying_redis.get_redis_stack_connection()
