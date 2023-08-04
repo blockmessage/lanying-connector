@@ -230,7 +230,7 @@ def handle_chat_message(config, msg, retry_times = 3):
     if model_config:
         return handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
     else:
-        return f''
+        return f'不支持模型：{preset["model"]}'
 
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']

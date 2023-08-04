@@ -27,7 +27,7 @@ def clean_task(task_id):
 def info_task(task_id):
     redis = lanying_redis.get_redis_stack_connection()
     return {
-        'to_visit': redis.llen(to_visit_key(task_id)),
+        'to_visit': redis.llen(to_visit_key(task_id)) + redis.llen(to_visit_key_old(task_id)),
         'visited': redis.scard(visited_key(task_id)),
         'found': redis.scard(found_key(task_id))
     }
@@ -97,6 +97,9 @@ def format_link(url):
     if index != -1:
         return url[:index]
     return url
+
+def to_visit_key_old(task_id):
+    return f"lanying-embedding:url-loader:task:{task_id}:to_visit"
 
 def to_visit_key(task_id):
     return f"lanying-embedding:url-loader:task:{task_id}:to_visit:v2"
