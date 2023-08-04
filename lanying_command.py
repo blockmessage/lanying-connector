@@ -119,6 +119,7 @@ def pretty_help(app_id):
 4. 从知识库中删除文档: /bluevector delete <KNOWLEDGE_BASE_NAME> <DOC_ID> 
 5. 限定AI指令参考范围为文档: /on doc <DOC_ID> <AI_MESSAGE> 
 6. 限定AI指令参考文档全文: /on fulldoc <DOC_ID> <AI_MESSAGE> 
+7. 设置默认知识库： /bluevector mode auto <KNOWLEDGE_BASE_NAME>
 
 发送消息可以指定AI预设：
 用法：/preset <AI_MESSAGE>
@@ -162,6 +163,16 @@ def all_alias():
     ]
 def all_commands():
     return [
+        {
+            "name": "bluevector_mode",
+            "desc": "设置默认知识库",
+            "rules": [
+                {"type": "string_exact", "value": "bluevector"},
+                {"type": "string_exact", "value": "mode"},
+                {"type": "string_exact", "value": "auto"},
+                {"type": "string", "value": "string"}
+            ]
+        },
         {
             "name": "bluevector_add",
             "desc": "将文件添加到知识库:\n/bluevector add <KNOWLEDGE_BASE_NAME> <FILE_ID>",

@@ -165,6 +165,10 @@ def handle_chat_message(config, msg, retry_times = 3):
                     return result
             elif result["result"] == "continue":
                 command_ext = result["command_ext"]
+        elif content.startswith('http://') or content.startswith('https://'):
+            result = handle_chat_links(msg, config)
+            if len(result) > 0:
+                return result
     elif ctype == 'FILE':
         return handle_chat_file(msg, config)
     else:
@@ -974,20 +978,6 @@ def fetch_embeddings(app_id, config, openai_key_type, text, vendor):
     add_message_statistic(app_id, config, preset, response, embedding_api_key_type, model_config)
     return embedding
 
-def handle_chat_file(msg, config):
-    from_user_id = int(msg['from']['uid'])
-    app_id = msg['appId']
-    attachment_str = msg['attachment']
-    attachment = json.loads(attachment_str)
-    dname = attachment['dName']
-    _,ext = os.path.splitext(dname)
-    check_result = check_upload_embedding(msg, config, ext, app_id)
-    if check_result['result'] == 'error':
-        return check_result['message']
-    logging.info(f"recevie embedding file from chat: app_id:{app_id}, attachment_str:{attachment_str}")
-    file_id = save_attachment(from_user_id, attachment_str)
-    return f'上传文件成功， 文件ID:{file_id}'
-
 def handle_embedding_command(msg, config):
     app_id = msg['appId']
     content = msg['content']
@@ -1004,6 +994,22 @@ def handle_embedding_command(msg, config):
             return '命令执行失败'
     else:
         return ''
+def bluevector_mode(msg, config, embedding_name):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    embedding_names = lanying_embedding.list_embedding_names(app_id)
+    can_manage_embedding_names = []
+    for now_embedding_name in embedding_names:
+        result = check_can_manage_embedding(app_id, now_embedding_name, from_user_id)
+        if result['result'] == 'ok':
+            can_manage_embedding_names.append(now_embedding_name)
+    if embedding_name in can_manage_embedding_names:
+        redis = lanying_redis.get_redis_connection()
+        key = user_default_embedding_name_key(app_id, from_user_id)
+        redis.set(key, embedding_name)
+        return f"设置成功"
+    else:
+        return f"设置失败：「{embedding_name}」不是合法知识库名称， 合法值为：{can_manage_embedding_names}"
 
 def bluevector_add(msg, config, embedding_name, file_uuid):
     from_user_id = int(msg['from']['uid'])
@@ -1294,3 +1300,99 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
     if is_debug:
         lanying_connector.sendMessageAsync(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}")
     return embedding_query_text
+
+def handle_chat_file(msg, config):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    attachment_str = msg['attachment']
+    attachment = json.loads(attachment_str)
+    dname = attachment['dName']
+    _,ext = os.path.splitext(dname)
+    check_result = check_upload_embedding(msg, config, ext, app_id)
+    if check_result['result'] == 'error':
+        return check_result['message']
+    logging.info(f"recevie embedding file from chat: app_id:{app_id}, attachment_str:{attachment_str}")
+    embedding_names = lanying_embedding.list_embedding_names(app_id)
+    can_manage_embedding_names = []
+    for now_embedding_name in embedding_names:
+        result = check_can_manage_embedding(app_id, now_embedding_name, from_user_id)
+        if result['result'] == 'ok':
+            can_manage_embedding_names.append(now_embedding_name)
+    if len(can_manage_embedding_names) == 1:
+        embedding_name = can_manage_embedding_names[0]
+        logging.info(f"choose embedding_name for unique: {can_manage_embedding_names}")
+        url = attachment['url']
+        dname = attachment['dName']
+        headers = {'app_id': app_id,
+                'access-token': config['lanying_admin_token'],
+                'user_id': config['lanying_user_id']}
+        trace_id = lanying_embedding.create_trace_id()
+        add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
+        return f'添加到知识库({embedding_name})成功，请等待系统处理。'
+    else:
+        default_embedding_name = get_user_default_embedding_name(app_id, from_user_id)
+        if default_embedding_name and default_embedding_name in can_manage_embedding_names:
+            logging.info(f"choose embedding_name for default: default:{default_embedding_name}, all:{can_manage_embedding_names}")
+            embedding_name = default_embedding_name
+            url = attachment['url']
+            dname = attachment['dName']
+            headers = {'app_id': app_id,
+                    'access-token': config['lanying_admin_token'],
+                    'user_id': config['lanying_user_id']}
+            trace_id = lanying_embedding.create_trace_id()
+            add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
+            return f'添加到知识库({embedding_name})成功，请等待系统处理。'
+        else:
+            file_id = save_attachment(from_user_id, attachment_str)
+            return f'上传文件成功， 文件ID:{file_id} 。\n您绑定了多个知识库{can_manage_embedding_names}, 可以设置默认知识库来自动添加文档到知识库,\n命令格式为：/bluevector mode auto <KNOWLEDGE_BASE_NAME>'
+
+def handle_chat_links(msg, config):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    content = msg['content']
+    fields = re.split("[ \r\n]{1,}", content)
+    urls = []
+    for field in fields:
+        if field.startswith("https://") or field.startswith("http://"):
+            urls.append(field)
+    if len(urls) == 0:
+        return ""
+    if not lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
+        return ""
+    embedding_names = lanying_embedding.list_embedding_names(app_id)
+    can_manage_embedding_names = []
+    for embedding_name in embedding_names:
+        result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+        if result['result'] == 'ok':
+            can_manage_embedding_names.append(embedding_name)
+    if len(can_manage_embedding_names) == 0:
+        return ""
+    elif len(can_manage_embedding_names) == 1:
+        embedding_name = can_manage_embedding_names[0]
+        for url in urls:
+            headers = {}
+            trace_id = lanying_embedding.create_trace_id()
+            add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
+        return f'添加到知识库({embedding_name})成功，请等待系统处理。'
+    else:
+        default_embedding_name = get_user_default_embedding_name(app_id, from_user_id)
+        if default_embedding_name and default_embedding_name in can_manage_embedding_names:
+            for url in urls:
+                headers = {}
+                trace_id = lanying_embedding.create_trace_id()
+                add_embedding_file.apply_async(args = [trace_id, app_id, default_embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
+            return f'添加到知识库({default_embedding_name})成功，请等待系统处理。'
+        else:
+            return f"您绑定了多个知识库{can_manage_embedding_names}，请设置默认知识库名称， 命令格式为：/bluevector mode auto <KNOWLEDGE_BASE_NAME>"
+
+def get_user_default_embedding_name(app_id, user_id):
+    redis = lanying_redis.get_redis_connection()
+    key = user_default_embedding_name_key(app_id, user_id)
+    result = redis.get(key)
+    if result:
+        return result.decode('utf-8')
+    else:
+        return None
+
+def user_default_embedding_name_key(app_id, user_id):
+    return f'lanying_connector:user_default_embedding_name:{app_id}:{user_id}'

@@ -158,6 +158,11 @@ def list_embeddings(app_id):
             result.append(embedding_info)
     return result
 
+def list_embedding_names(app_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    list_key = get_embedding_names_key(app_id)
+    return redis_lrange(redis, list_key, 0, -1)
+
 def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc):
     if max_blocks > 100:
         max_blocks = 100
