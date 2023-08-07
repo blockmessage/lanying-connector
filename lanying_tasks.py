@@ -57,6 +57,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "download_failed")
             logging.error(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, url={url}, message:{download_result['message']}")
+            lanying_embedding.trace_finish(trace_id, app_id, "error", "download failed", doc_id, embedding_name)
             return
         if ext in [".zip"]:
             with zipfile.ZipFile(temp_filename, 'r') as zip_ref:
@@ -107,6 +108,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             if upload_result["result"] == "error":
                 lanying_embedding.update_trace_field(trace_id, "status", "error")
                 lanying_embedding.update_trace_field(trace_id, "message", "upload embedding file error")
+                lanying_embedding.trace_finish(trace_id, app_id, "error", "upload embedding file error", doc_id, embedding_name)
                 task_error(f"fail to upload embedding: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, url={url}, message:{upload_result['message']}")
             tasks.append((object_name, origin_filename, doc_id))
     for now_object_name, now_origin_filename, now_doc_id in tasks:
@@ -273,6 +275,7 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
     if embedding_uuid_info is None:
         logging.info(f"process_embedding_file skip for not_found embedding_uuid_info | embedding_uuid:{embedding_uuid}")
         return
+    embedding_name = embedding_uuid_info['embedding_name']
     doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
     if doc_info is None:
         return
@@ -314,6 +317,7 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
                 lanying_embedding.increase_task_field(embedding_uuid, doc_task_id, "processing_fail_num", 1)
                 maybe_task_finish(embedding_uuid, doc_task_id)
             logging.info(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_uuid}, object_name={object_name},doc_id:{doc_id}, message:{download_result['message']}")
+            lanying_embedding.trace_finish(trace_id, app_id, "error", "download file error", doc_id, embedding_name)
             return
         old_file_size = int(doc_info["file_size"])
         file_stat = os.stat(temp_filename)
@@ -329,6 +333,7 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
             if doc_task_id:
                 lanying_embedding.increase_task_field(embedding_uuid, doc_task_id, "processing_fail_num", 1)
                 maybe_task_finish(embedding_uuid, doc_task_id)
+            lanying_embedding.trace_finish(trace_id, app_id, "error", "storage limit", doc_id, embedding_name)
             return
         is_storage_size_increased = True
         if is_regenerate:
@@ -354,6 +359,7 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
         if doc_task_id:
             lanying_embedding.increase_task_field(embedding_uuid, doc_task_id, "processing_success_num", 1)
             maybe_task_finish(embedding_uuid, doc_task_id)
+        lanying_embedding.trace_finish(trace_id, app_id, "success", "success", doc_id, embedding_name)
     except Exception as e:
         reason = "exception"
         try:
@@ -370,6 +376,7 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
             lanying_embedding.increase_task_field(embedding_uuid, doc_task_id, "processing_fail_num", 1)
             maybe_task_finish(embedding_uuid, doc_task_id)
         logging.error(f"fail to process embedding file:trace_id={trace_id}, app_id={app_id}, embedding_uuid={embedding_uuid}, object_name={object_name},doc_id:{doc_id}")
+        lanying_embedding.trace_finish(trace_id, app_id, "error", reason, doc_id, embedding_name)
         raise e
 
 def maybe_task_finish(embedding_uuid, task_id):

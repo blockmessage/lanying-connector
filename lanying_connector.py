@@ -164,6 +164,19 @@ def embedding_request():
         resp = app.make_response({"result":"error", "reason":"exception"})
         return resp
 
+@app.route("/trace_finish", methods=["POST"])
+def trace_finish():
+    try:
+        service = "openai"
+        service_module = get_service_module(service)
+        service_module.trace_finish(request)
+        resp = app.make_response({'code':200, 'data':True})
+        return resp
+    except Exception as e:
+        logging.exception(e)
+        resp = app.make_response({"result":"error", "reason":"exception"})
+        return resp
+
 @app.route("/service/<string:service>/create_embedding", methods=["POST"])
 def create_embedding(service):
     headerToken = request.headers.get('access-token', "")

@@ -22,7 +22,7 @@ import pdfplumber
 import lanying_config
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
-global_embedding_api_url = os.getenv("EMBEDDING_API_URL", "https://lanying-connector.lanyingim.com/fetch_embeddings")
+global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
 
 tokenizer = tiktoken.get_encoding("cl100k_base")
 
@@ -557,8 +557,9 @@ def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 
         "vendor": vendor
     }
     response = {}
+    url = global_embedding_lanying_connector_server + "/fetch_embeddings"
     try:
-        response = requests.post(global_embedding_api_url, headers=headers, json = body).json()
+        response = requests.post(url, headers=headers, json = body).json()
         return response['embedding']
     except Exception as e:
         logging.info(f"fetch_embedding got error response:{response}")
@@ -670,6 +671,27 @@ def create_trace_id():
         if redis.hsetnx(key, "status", "wait") > 0:
             return trace_id
 
+def trace_finish(trace_id, app_id, status, message, doc_id, embedding_name):
+    notify_user = get_trace_field(trace_id, "notify_user")
+    if notify_user:
+        auth_secret = lanying_config.get_embedding_auth_secret()
+        headers = {"Content-Type": "application/json",
+                "Authorization": f"Bearer {app_id}-{auth_secret}"}
+        body = {
+            "trace_id": trace_id,
+            "status":status,
+            "message": message,
+            "doc_id":doc_id,
+            "embedding_name": embedding_name
+        }
+        response = {}
+        url = global_embedding_lanying_connector_server + "/trace_finish"
+        try:
+            response = requests.post(url, headers=headers, json = body)
+            logging.info(f"trace_finish got response:{response}")
+        except Exception as e:
+            logging.exception(e)
+
 def update_trace_field(trace_id, field, value):
     redis = lanying_redis.get_redis_stack_connection()
     key = trace_id_key(trace_id)
@@ -679,6 +701,16 @@ def get_all_trace_fields(trace_id):
     redis = lanying_redis.get_redis_stack_connection()
     key = trace_id_key(trace_id)
     return redis_hgetall(redis, key)
+
+def get_trace_field(trace_id, field):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = trace_id_key(trace_id)
+    return redis_hget(redis, key, field)
+
+def delete_trace_field(trace_id, field):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = trace_id_key(trace_id)
+    redis.hdel(key, field)
 
 def add_trace_doc_id(trace_id, doc_id):
     redis = lanying_redis.get_redis_stack_connection()
@@ -1059,6 +1091,11 @@ def redis_hgetall(redis, key):
         for k,v in kvs.items():
             ret[k.decode('utf-8')] = v.decode('utf-8')
     return ret
+def redis_hget(redis, key, field):
+    result = redis.hget(key, field)
+    if result:
+        return result.decode('utf-8')
+    return None
 
 def text_byte_size(text):
     return len(text.encode('utf-8'))

@@ -54,6 +54,31 @@ def handle_embedding_request(request):
     response = lanying_vendor.embedding(vendor, prepare_info, text)
     return response
 
+def trace_finish(request):
+    auth_result = check_embedding_authorization(request)
+    if auth_result['result'] == 'error':
+        logging.info(f"check_authorization deny, msg={auth_result['msg']}")
+        return auth_result
+    app_id = auth_result['app_id']
+    config = auth_result['config']
+    request_text = request.get_data(as_text=True)
+    data = json.loads(request_text)
+    trace_id = data.get('trace_id')
+    status = data.get('status')
+    message = data.get('message', '')
+    doc_id = data.get('doc_id','')
+    embedding_name = data.get('embedding_name', '')
+    notify_user = lanying_embedding.get_trace_field(trace_id, "notify_user")
+    if notify_user:
+        lanying_embedding.delete_trace_field(trace_id, "notify_user")
+        user_id = int(notify_user)
+        lanying_user_id = config['lanying_user_id']
+        if status == "success":
+            lanying_connector.sendMessageAsync(app_id, lanying_user_id, user_id, f"文章（ID：{doc_id}）已加入知识库 {embedding_name}，有用的知识又增加了，谢谢您 ♪(･ω･)ﾉ")
+        else:
+            lanying_connector.sendMessageAsync(app_id, lanying_user_id, user_id, f"文章（ID：{doc_id}）加入知识库 {embedding_name}失败：{message}")
+        
+
 def handle_request(request):
     text = request.get_data(as_text=True)
     path = request.path
@@ -143,12 +168,11 @@ def check_embedding_authorization(request):
                 tokens = token.split("-")
                 if len(tokens) == 2:
                     auth_secret = lanying_config.get_embedding_auth_secret()
-                    if auth_secret == token[1]:
+                    if auth_secret == tokens[1]:
                         app_id = tokens[0]
                         config = lanying_config.get_lanying_connector(app_id)
                         if config:
-                            if token == config.get('access_token', ''):
-                                return {'result':'ok', 'app_id':app_id, 'config':config}
+                            return {'result':'ok', 'app_id':app_id, 'config':config}
     except Exception as e:
         logging.exception(e)
     return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
@@ -1048,6 +1072,7 @@ def bluevector_add(msg, config, embedding_name, file_uuid):
                 'access-token': config['lanying_admin_token'],
                 'user_id': config['lanying_user_id']}
         trace_id = lanying_embedding.create_trace_id()
+        lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
         add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
         return f'添加成功，请等待系统处理。'
     else:
@@ -1348,6 +1373,7 @@ def handle_chat_file(msg, config):
                 'access-token': config['lanying_admin_token'],
                 'user_id': config['lanying_user_id']}
         trace_id = lanying_embedding.create_trace_id()
+        lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
         add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
         return f'添加到知识库({embedding_name})成功，请等待系统处理。'
     else:
@@ -1361,6 +1387,7 @@ def handle_chat_file(msg, config):
                     'access-token': config['lanying_admin_token'],
                     'user_id': config['lanying_user_id']}
             trace_id = lanying_embedding.create_trace_id()
+            lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
             add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
             return f'添加到知识库({embedding_name})成功，请等待系统处理。'
         else:
@@ -1393,6 +1420,7 @@ def handle_chat_links(msg, config):
         for url in urls:
             headers = {}
             trace_id = lanying_embedding.create_trace_id()
+            lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
             add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
         return f'添加到知识库({embedding_name})成功，请等待系统处理。'
     else:
@@ -1401,6 +1429,7 @@ def handle_chat_links(msg, config):
             for url in urls:
                 headers = {}
                 trace_id = lanying_embedding.create_trace_id()
+                lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
                 add_embedding_file.apply_async(args = [trace_id, app_id, default_embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
             return f'添加到知识库({default_embedding_name})成功，请等待系统处理。'
         else:
