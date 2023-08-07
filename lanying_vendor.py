@@ -1,9 +1,11 @@
 import lanying_vendor_openai
 import lanying_vendor_minimax
+import lanying_vendor_baidu
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
-    'minimax': lanying_vendor_minimax
+    'minimax': lanying_vendor_minimax,
+    'baidu': lanying_vendor_baidu
 }
 def get_module(vendor):
     return vendor_to_module.get(vendor)

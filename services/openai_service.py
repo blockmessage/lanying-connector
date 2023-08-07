@@ -727,9 +727,11 @@ def get_preset_auth_info(config, openai_key_type, vendor):
     if openai_key_type == 'share':
         DefaultApiKey = lanying_config.get_lanying_connector_default_api_key(vendor)
         DefaultApiGroupId = lanying_config.get_lanying_connector_default_api_group_id(vendor)
+        DefaultSecretKey = lanying_config.get_lanying_connector_default_secret_key(vendor)
         if DefaultApiKey:
             return {
                 'api_key':DefaultApiKey,
+                'secret_key':DefaultSecretKey,
                 'api_group_id':DefaultApiGroupId
             }
     else:

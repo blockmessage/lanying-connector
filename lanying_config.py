@@ -139,6 +139,9 @@ def get_lanying_connector_default_api_key(vendor):
 def get_lanying_connector_default_api_group_id(vendor):
     return os.getenv(f'{vendor.upper()}_API_GROUP_ID', '')
 
+def get_lanying_connector_default_secret_key(vendor):
+    return os.getenv(f'{vendor.upper()}_SECRET_KEY', '')
+
 def get_service_config(app_id, service):
     if mode == 'etcd':
         config = get_config(app_id, f"lanying_connector.service.{service}", None)

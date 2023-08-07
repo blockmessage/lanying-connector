@@ -30,3 +30,29 @@ def get_redis_stack_connection():
 
 def get_task_redis_server():
     return os.getenv('LANYING_CONNECTOR_TASK_REDIS_SERVER', "redis://localhost:6379")
+
+def redis_lrange(redis, key, start, end):
+    return [bytes.decode('utf-8') for bytes in redis.lrange(key, start, end)]
+
+def redis_hkeys(redis, key):
+    return [bytes.decode('utf-8') for bytes in redis.hkeys(key)]
+
+def redis_hgetall(redis, key):
+    kvs = redis.hgetall(key)
+    ret = {}
+    if kvs:
+        for k,v in kvs.items():
+            ret[k.decode('utf-8')] = v.decode('utf-8')
+    return ret
+
+def redis_hget(redis, key, field):
+    result = redis.hget(key, field)
+    if result:
+        return result.decode('utf-8')
+    return None
+
+def redis_get(redis, key):
+    result = redis.get(key)
+    if result:
+        return result.decode('utf-8')
+    return None
