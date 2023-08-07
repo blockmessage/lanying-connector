@@ -25,7 +25,7 @@ maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
 def handle_embedding_request(request):
-    auth_result = check_authorization(request)
+    auth_result = check_embedding_authorization(request)
     if auth_result['result'] == 'error':
         logging.info(f"check_authorization deny, msg={auth_result['msg']}")
         return auth_result
@@ -128,6 +128,27 @@ def check_authorization(request):
                     if config:
                         if token == config.get('access_token', ''):
                             return {'result':'ok', 'app_id':app_id, 'config':config}
+    except Exception as e:
+        logging.exception(e)
+    return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
+
+def check_embedding_authorization(request):
+    try:
+        authorization = request.headers.get('Authorization')
+        if authorization:
+            bearer_token = str(authorization)
+            prefix = "Bearer "
+            if bearer_token.startswith(prefix):
+                token = bearer_token[len(prefix):]
+                tokens = token.split("-")
+                if len(tokens) == 2:
+                    auth_secret = lanying_config.get_embedding_auth_secret()
+                    if auth_secret == token[1]:
+                        app_id = tokens[0]
+                        config = lanying_config.get_lanying_connector(app_id)
+                        if config:
+                            if token == config.get('access_token', ''):
+                                return {'result':'ok', 'app_id':app_id, 'config':config}
     except Exception as e:
         logging.exception(e)
     return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}

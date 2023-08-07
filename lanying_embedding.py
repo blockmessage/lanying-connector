@@ -19,6 +19,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 import lanying_url_loader
 import json
 import pdfplumber
+import lanying_config
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_api_url = os.getenv("EMBEDDING_API_URL", "https://lanying-connector.lanyingim.com/fetch_embeddings")
@@ -500,7 +501,6 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
             insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
 
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
-    openai_secret_key = config["openai_secret_key"]
     vendor = config.get('vendor', 'openai')
     is_dry_run = config.get("dry_run", "false") == "true"
     logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
@@ -515,7 +515,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             block_id = generate_block_id(embedding_uuid, doc_id)
             maybe_rate_limit(5)
             embedding_text = text + question
-            embedding = fetch_embedding(vendor, openai_secret_key, embedding_text, is_dry_run)
+            embedding = fetch_embedding(app_id, vendor, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
             text_hash = sha256(embedding_text)
@@ -546,11 +546,12 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                 question_desc = f"question:{question}\nanswer:"
             logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},text_hash:{text_hash}=====\n{question_desc}{text}")
 
-def fetch_embedding(vendor, openai_secret_key, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
+def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
     if is_dry_run:
         return [random.uniform(0, 1) for i in range(1536)]
+    auth_secret = lanying_config.get_embedding_auth_secret()
     headers = {"Content-Type": "application/json",
-               "Authorization": f"Bearer {openai_secret_key}"}
+               "Authorization": f"Bearer {app_id}-{auth_secret}"}
     body = {
         "text": text,
         "vendor": vendor
@@ -570,7 +571,7 @@ def fetch_embedding(vendor, openai_secret_key, text, is_dry_run=False, retry = 1
             raise Exception(code)
         if retry > 0:
             time.sleep(sleep)
-            return fetch_embedding(vendor, openai_secret_key, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
+            return fetch_embedding(app_id, vendor, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
         raise e
 
 def process_block(config, block):

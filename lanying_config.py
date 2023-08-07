@@ -165,3 +165,6 @@ def is_show_info_page():
     if mode == 'etcd':
         return False
     return True
+
+def get_embedding_auth_secret():
+    return os.getenv('EMBEDDING_AUTH_SECRET')
