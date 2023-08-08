@@ -14,8 +14,17 @@ def model_configs():
             "model": 'ERNIE-Bot-turbo',
             "type": "chat",
             "is_prefix": False,
+            "quota": 0.5,
+            "token_limit": 10000,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant'
+        },
+        {
+            "model": 'ERNIE-Bot',
+            "type": "chat",
+            "is_prefix": False,
             "quota": 1,
-            "token_limit": 10000
+            "token_limit": 1900,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
         },
         {
             "model": 'Embedding-V1',
@@ -68,7 +77,8 @@ def chat(prepare_info, preset):
             'result': 'error',
             'reason': 'fail_to_get_access_token'
         }
-    url = f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant?access_token={access_token}"
+    model_url = get_chat_model_url(preset['model'])
+    url = f"{model_url}?access_token={access_token}"
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json"}
     logging.info(f"baidu chat_completion start | preset={preset}, final_preset={final_preset}, access_token_len={len(access_token)}")
@@ -197,3 +207,10 @@ def format_preset(prepare_info, preset):
 def access_token_key(api_key, secret_key):
     sha_value = hashlib.sha256((api_key+secret_key).encode('utf-8')).hexdigest()
     return f"lanying-connector:baidu:access-token:{api_key}:{sha_value}"
+
+
+def get_chat_model_url(model):
+    for config in model_configs():
+        if config['model'] == model:
+            return config['url']
+    return None
