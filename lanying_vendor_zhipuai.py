@@ -35,9 +35,10 @@ def prepare_chat(auth_info, preset):
 def chat(prepare_info, preset):
     zhipuai.api_key = prepare_info['api_key']
     final_preset = format_preset(preset)
-    response = zhipuai.model_api.invoke(**final_preset)
-    logging.info(f"vendor openai response: {response}")
     try:
+        logging.info(f"zhipuai chat_completion start | preset={preset}, final_preset={final_preset}")
+        response = zhipuai.model_api.invoke(**final_preset)
+        logging.info(f"zhipuai chat_completion finish | response={response}")
         usage = response.get('usage',{})
         return {
             'result': 'ok',
@@ -53,8 +54,7 @@ def chat(prepare_info, preset):
         logging.info(f"fail to transform response:{response}")
         return {
             'result': 'error',
-            'reason': 'unknown',
-            'response': response 
+            'reason': 'unknown'
         }
 
 def prepare_embedding(auth_info, _):

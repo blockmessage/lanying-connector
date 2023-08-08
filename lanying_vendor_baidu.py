@@ -30,7 +30,7 @@ def model_configs():
             "model": 'Embedding-V1',
             "type": "embedding",
             "is_prefix": False,
-            "quota": 0.05,
+            "quota": 0.15,
             "token_limit": 10000
         }
     ]

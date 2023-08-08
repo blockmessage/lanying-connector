@@ -2,12 +2,14 @@ import lanying_vendor_openai
 import lanying_vendor_minimax
 import lanying_vendor_baidu
 import lanying_vendor_zhipuai
+import lanying_vendor_azure
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
     'minimax': lanying_vendor_minimax,
     'baidu': lanying_vendor_baidu,
-    'zhipuai': lanying_vendor_zhipuai
+    'zhipuai': lanying_vendor_zhipuai,
+    "azure": lanying_vendor_azure
 }
 def get_module(vendor):
     return vendor_to_module.get(vendor)
