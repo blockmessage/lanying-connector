@@ -3,6 +3,7 @@ import lanying_vendor_minimax
 import lanying_vendor_baidu
 import lanying_vendor_zhipuai
 import lanying_vendor_azure
+import copy
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
@@ -13,6 +14,17 @@ vendor_to_module = {
 }
 def get_module(vendor):
     return vendor_to_module.get(vendor)
+
+def list_models():
+    models = []
+    for vendor,module in vendor_to_module.items():
+        for config in module.model_configs():
+            new_config = copy.deepcopy(config)
+            if 'url' in new_config:
+                del new_config['url']
+            new_config['vendor'] = vendor
+            models.append(new_config)
+    return models
 
 def get_chat_model_config(vendor, model):
     module = get_module(vendor)

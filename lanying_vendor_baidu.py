@@ -148,11 +148,14 @@ def embedding(prepare_info, text):
                 'reason': error_msg,
                 'code': error_code
             }
+        embedding = res['data'][0]['embedding']
+        if len(embedding) < 1536:
+            embedding = embedding + [0.0 for i in range(1536-len(embedding))]
         usage = res.get('usage',{})
         return {
             'result': 'ok',
             'model': model,
-            'embedding': res['data'][0]['embedding'],
+            'embedding': embedding,
             'usage': {
                 'completion_tokens' : usage.get('completion_tokens',0),
                 'prompt_tokens' : usage.get('prompt_tokens', 0),

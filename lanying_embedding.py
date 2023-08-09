@@ -503,7 +503,8 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     vendor = config.get('vendor', 'openai')
     is_dry_run = config.get("dry_run", "false") == "true"
-    logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}")
+    max_block_size = get_max_token_count(config)
+    logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}, vendor:{vendor}, max_block_size:{max_block_size}")
     for block in blocks:
         if len(block) == 2:
             token_cnt,text = block
@@ -544,7 +545,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             question_desc = ''
             if question != '':
                 question_desc = f"question:{question}\nanswer:"
-            logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},text_hash:{text_hash}=====\n{question_desc}{text}")
+            logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},max_block_size:{max_block_size}, text_hash:{text_hash}=====\n{question_desc}{text}")
 
 def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
     if is_dry_run:
@@ -635,6 +636,8 @@ def process_line(text, max_block_size):
 def get_max_token_count(config):
     max_block_size = max(350, int(config.get('max_block_size', "350")))
     max_token_count = word_num_to_token_num(max_block_size)
+    if config.get('vendor', 'openai') == 'baidu':
+        return min(max_token_count, 360)
     return max_token_count
 
 def get_overlapping_size(config):

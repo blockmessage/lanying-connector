@@ -1448,3 +1448,5 @@ def get_user_default_embedding_name(app_id, user_id):
 
 def user_default_embedding_name_key(app_id, user_id):
     return f'lanying_connector:user_default_embedding_name:{app_id}:{user_id}'
+def list_models():
+    return lanying_vendor.list_models()

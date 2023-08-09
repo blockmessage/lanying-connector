@@ -1,6 +1,9 @@
 import logging
 import tiktoken
 import zhipuai
+import json
+
+SYSTEM_MESSAGE_DEFAULT = '好的'
 
 def model_configs():
     return [
@@ -40,9 +43,25 @@ def chat(prepare_info, preset):
         response = zhipuai.model_api.invoke(**final_preset)
         logging.info(f"zhipuai chat_completion finish | response={response}")
         usage = response.get('usage',{})
+        reply = response['data']['choices'][0]['content'].strip()
+        try:
+            if reply.startswith('"'):
+                reply_str = json.loads(reply)
+                if isinstance(reply_str, str):
+                    reply = reply_str
+                if reply.startswith('"'):
+                    reply_str = json.loads(reply)
+                    if isinstance(reply_str, str):
+                        reply = reply_str
+                    if reply.startswith('"'):
+                        reply_str = json.loads(reply)
+                        if isinstance(reply_str, str):
+                            reply = reply_str
+        except Exception as e:
+            pass
         return {
             'result': 'ok',
-            'reply' : response['data']['choices'][0]['content'].strip(),
+            'reply' : reply,
             'usage' : {
                 'completion_tokens' : usage.get('completion_tokens',0),
                 'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -63,8 +82,8 @@ def prepare_embedding(auth_info, _):
     }
 
 
-def encoding_for_model(model): 
-    return tiktoken.encoding_for_model(model)
+def encoding_for_model(model): # for temp
+    return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(preset):
     support_fields = ['model', "prompt", "temperature", "top_p"]
@@ -74,10 +93,21 @@ def format_preset(preset):
             messages = []
             for message in preset.get('messages', []) + preset.get('prompt', []):
                 if 'role' in message and 'content' in message:
-                    if message['role'] == "system":
-                        messages.append({'role':'user', 'content': message['content']})
-                    else:
-                        messages.append({'role':message['role'], 'content': message['content']})
+                    role = message['role']
+                    content = message['content']
+                    if len(content) > 0:
+                        if role == "system":
+                            messages.append({'role':'user', 'content':content})
+                            messages.append({'role':'assistant', 'content':SYSTEM_MESSAGE_DEFAULT})
+                        elif role == "user":
+                            if len(messages) > 0 and messages[-1]['role'] == 'user':
+                                messages.append({'role':'assistant', 'content':SYSTEM_MESSAGE_DEFAULT})
+                            messages.append({'role':'user', 'content':content})
+                        elif role == 'assistant':
+                            if len(messages) > 0 and messages[-1]['role'] == 'user':
+                                messages.append({'role':'assistant', 'content':content})
+                            else:
+                                logging.info("dropping a assistant message: {message}")
             ret[key] = messages
         elif key == 'top_p':
             if key in preset:

@@ -96,6 +96,18 @@ def saveConfig():
     resp = app.make_response('fail')
     return resp
 
+@app.route("/list_models", methods=["POST"])
+def list_models():
+    headerToken = request.headers.get('access-token', "")
+    if accessToken and accessToken == headerToken:
+        service = "openai"
+        service_module = get_service_module(service)
+        result = service_module.list_models()
+        resp = app.make_response({'code':200, 'data':result})
+        return resp
+    resp = app.make_response({'code':401, 'message':'bad authorization'})
+    return resp
+
 @app.route("/service/<string:service>/buy_message_quota", methods=["POST"])
 def buy_message_quota(service):
     headerToken = request.headers.get('access-token', "")
