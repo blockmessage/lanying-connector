@@ -10,6 +10,7 @@ import string
 import json
 import lanying_message
 
+official_account_max_message_size = 600
 service = 'wechat_official_account'
 bp = Blueprint(service, __name__)
 
@@ -81,18 +82,20 @@ def check_message_user_ids(config, message):
 def send_wechat_message(config, app_id, message, to_username):
     access_token = get_wechat_access_token(config, app_id)
     content = message['content']
-    data = {
-        "touser": to_username,
-        "msgtype": "text",
-        "text": {
-            "content": content
+    content_list = split_string_by_size(content, official_account_max_message_size)
+    for now_content in content_list:
+        data = {
+            "touser": to_username,
+            "msgtype": "text",
+            "text": {
+                "content": now_content
+            }
         }
-    }
-    logging.info(f"send_wechat_message start | app_id:{app_id}, to_username:{to_username}, content:{content}")
-    url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={access_token}"
-    response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'))
-    result = response.json()
-    logging.info(f"send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{content}, result:{result}")
+        logging.info(f"send_wechat_message start | app_id:{app_id}, to_username:{to_username}, content:{now_content}")
+        url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={access_token}"
+        response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        result = response.json()
+        logging.info(f"send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
 
 def check_token(app_id):
     config = lanying_config.get_service_config(app_id, service)
@@ -189,3 +192,6 @@ def register_anonymous_user(app_id, username, prefix):
 def get_random_string(length):
     letters = string.ascii_letters
     return ''.join(random.choice(letters) for i in range(length))
+
+def split_string_by_size(input_string, chunk_size):
+    return [input_string[i:i+chunk_size] for i in range(0, len(input_string), chunk_size)]
