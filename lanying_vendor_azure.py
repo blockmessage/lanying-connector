@@ -10,6 +10,7 @@ def model_configs():
             "is_prefix": True,
             "quota": 2,
             "token_limit": 16000,
+            'order': 2,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-03-15-preview'
         },
         {
@@ -18,6 +19,7 @@ def model_configs():
             "is_prefix": True,
             "quota": 1,
             "token_limit": 4000,
+            'order': 1,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-03-15-preview'
         },
         {
@@ -26,6 +28,7 @@ def model_configs():
             "is_prefix": True,
             "quota": 0.05,
             "token_limit": 8000,
+            'order': 1000,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-03-15-preview'
         }
     ]

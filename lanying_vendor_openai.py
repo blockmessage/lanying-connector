@@ -9,35 +9,41 @@ def model_configs():
             "type": "chat",
             "is_prefix": True,
             "quota": 40,
-            "token_limit": 32000
+            "token_limit": 32000,
+            'order': 4,
+            'hidden': True
         },
         {
             "model": 'gpt-4',
             "type": "chat",
             "is_prefix": True,
             "quota": 20,
-            "token_limit": 8000
+            "token_limit": 8000,
+            'order': 3
         },
         {
             "model": 'gpt-3.5-turbo-16k',
             "type": "chat",
             "is_prefix": True,
             "quota": 2,
-            "token_limit": 16000
+            "token_limit": 16000,
+            'order': 2
         },
         {
-            "model": 'gpt-3.5',
+            "model": 'gpt-3.5-turbo',
             "type": "chat",
             "is_prefix": True,
             "quota": 1,
-            "token_limit": 4000
+            "token_limit": 4000,
+            'order': 1
         },
         {
             "model": 'text-embedding-ada-002',
             "type": "embedding",
             "is_prefix": True,
             "quota": 0.05,
-            "token_limit": 8000
+            "token_limit": 8000,
+            'order': 1000
         }
     ]
 

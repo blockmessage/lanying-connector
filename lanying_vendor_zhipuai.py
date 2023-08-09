@@ -12,21 +12,24 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1,
-            "token_limit": 4000
+            "token_limit": 4000,
+            'order': 1
         },
         {
             "model": 'chatglm_std',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.5,
-            "token_limit": 4000
+            "token_limit": 4000,
+            'order': 2
         },
         {
             "model": 'chatglm_lite',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.2,
-            "token_limit": 4000
+            "token_limit": 4000,
+            'order': 3
         }
     ]
 

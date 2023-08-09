@@ -10,6 +10,7 @@ def model_configs():
             "type": "chat",
             "is_prefix": True,
             "quota": 0.01,
+            'order': 1,
             "token_limit": 11000
         },
         {
@@ -17,6 +18,7 @@ def model_configs():
             "type": "embedding",
             "is_prefix": True,
             "quota": 0.0005,
+            'order': 1000,
             "token_limit": 11000
         }
     ]

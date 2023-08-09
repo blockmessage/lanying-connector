@@ -16,6 +16,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 10000,
+            'order': 1,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant'
         },
         {
@@ -24,6 +25,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 1,
             "token_limit": 1900,
+            "token_limit_type": "prompt",
+            'order': 2,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
         },
         {
@@ -31,6 +34,7 @@ def model_configs():
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.15,
+            'order': 1000,
             "token_limit": 10000
         }
     ]
