@@ -58,9 +58,17 @@ def chat(prepare_info, preset):
         logging.info(f"azure chat_completion finish | code={response.status_code}, response={response.text}")
         res = response.json()
         usage = res.get('usage',{})
+        response_message = res['choices'][0]['message']
+        reply = response_message.get('content', "")
+        if reply:
+            reply = reply.strip()
+        else:
+            reply = ''
+        function_call = response_message.get('function_call')
         return {
             'result': 'ok',
-            'reply' : res['choices'][0]['message']['content'].strip(),
+            'reply' : reply,
+            'function_call': function_call,
             'usage' : {
                 'completion_tokens' : usage.get('completion_tokens',0),
                 'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -113,13 +121,23 @@ def encoding_for_model(model):
     if model.startswith("gpt-35-turbo"):
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
     return tiktoken.encoding_for_model(model)
-    
+
 def format_preset(preset):
-    support_fields = ["model", "messages", "functions", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user"]
+    support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user"]
     ret = dict()
     for key in support_fields:
         if key in preset:
-            ret[key] = preset[key]
+            if key == "functions":
+                functions = []
+                for function in preset['functions']:
+                    function_obj = {}
+                    for k,v in function.items():
+                        if k != "callback":
+                            function_obj[k] = v
+                    functions.append(function_obj)
+                ret[key] = functions
+            else:
+                ret[key] = preset[key]
     return ret
 
 def get_chat_model_url(model):

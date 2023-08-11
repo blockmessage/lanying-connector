@@ -65,13 +65,22 @@ def prepare_chat(auth_info, preset):
 def chat(prepare_info, preset):
     openai.api_key = prepare_info['api_key']
     final_preset = format_preset(preset)
+    logging.info(f"vendor openai chat request: {final_preset}")
     response = openai.ChatCompletion.create(**final_preset)
-    logging.info(f"vendor openai response: {response}")
+    logging.info(f"vendor openai chat response: {response}")
     try:
         usage = response.get('usage',{})
+        response_message = response['choices'][0]['message']
+        reply = response_message.get('content', "")
+        if reply:
+            reply = reply.strip()
+        else:
+            reply = ''
+        function_call = response_message.get('function_call')
         return {
             'result': 'ok',
-            'reply' : response['choices'][0]['message']['content'].strip(),
+            'reply' : reply,
+            'function_call': function_call,
             'usage' : {
                 'completion_tokens' : usage.get('completion_tokens',0),
                 'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -130,5 +139,15 @@ def format_preset(preset):
     ret = dict()
     for key in support_fields:
         if key in preset:
-            ret[key] = preset[key]
+            if key == "functions":
+                functions = []
+                for function in preset['functions']:
+                    function_obj = {}
+                    for k,v in function.items():
+                        if k in ["name", "description", "parameters"]:
+                            function_obj[k] = v
+                    functions.append(function_obj)
+                ret[key] = functions
+            else:
+                ret[key] = preset[key]
     return ret

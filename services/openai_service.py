@@ -18,6 +18,7 @@ import re
 import lanying_command
 import lanying_url_loader
 import lanying_vendor
+import lanying_utils
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
@@ -431,6 +432,15 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     response = lanying_vendor.chat(vendor, prepare_info, preset)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
     add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
+    function_call_times = 3
+    while function_call_times > 0:
+        function_call = response.get('function_call')
+        if function_call:
+            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call}")
+            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info)
+            function_call_times -= 1
+        else:
+            break
     reply = response['reply']
     command = None
     try:
@@ -512,8 +522,112 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             reply = reply + f"\nreference: {reference_list}"
         if add_reference == 'ext' or add_reference == "both":
             reply_ext = {'reference':reference_list}
-    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+    if len(reply) > 0:
+        lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
+
+def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info):
+    function_name = function_call.get('name')
+    function_args = json.loads(function_call.get('arguments', '{}'))
+    functions = preset.get('functions', [])
+    function_config = {}
+    for function in functions:
+        if function['name'] == function_name:
+            function_config = function
+    if 'callback' in function_config:
+        callback = function_config['callback']
+        method = callback.get('method', 'get')
+        url = fill_function_args(function_args, callback.get('url', ''))
+        params = fill_function_args(function_args, callback.get('params', {}))
+        headers = fill_function_args(function_args, callback.get('headers', {}))
+        body = fill_function_args(function_args, callback.get('body', {}))
+        if lanying_utils.is_valid_public_url(url):
+            logging.info(f"start request function callback | app_id:{app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
+            if method == 'get':
+                function_response = requests.get(url, params=params, headers=headers, timeout = (20.0, 40.0))
+            else:
+                function_response = requests.post(url, params=params, headers=headers, json = body, timeout = (20.0, 40.0))
+            function_content = function_response.text
+            logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
+            function_message = {
+                "role": "function",
+                "name": function_name,
+                "content": function_content
+            }
+            response_message = {
+                "role": "assistant",
+                "content": "",
+                "function_call": function_call
+            }
+            append_message(preset, model_config, response_message)
+            append_message(preset, model_config, function_message)
+            response = lanying_vendor.chat(vendor, prepare_info, preset)
+            logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+            return response
+    raise Exception('bad_preset_function')
+
+def fill_function_args(function_args, obj):
+    if isinstance(obj, str):
+        for k,v in function_args.items():
+            obj = obj.replace("{" + k + "}", v)
+        return obj
+    elif isinstance(obj, list):
+        ret = []
+        for item in obj:
+            new_item = fill_function_args(function_args, item)
+            ret.append(new_item)
+        return ret
+    elif isinstance(obj, dict):
+        ret = {}
+        for k,v in obj.items():
+            ret[k] = fill_function_args(function_args, v)
+        return ret
+    else:
+        return obj
+
+def append_message(preset, model_config, message):
+    model = model_config['model']
+    vendor = model_config['vendor']
+    messages = preset.get('messages', [])
+    completionTokens = preset.get('max_tokens', 1024)
+    token_limit = model_token_limit(model_config)
+    message_size = calcMessageTokens(message, model, vendor)
+    if message_size > (token_limit - completionTokens) / 2:
+        trunc_size = max(100, round(len(message['content']) * (token_limit - completionTokens) / 2 / message_size))
+        logging.info(f"trunc function message length | old: {len(message['content'])}, new: {trunc_size}, message:{message}")
+        message['content'] = message['content'][:trunc_size]
+    messages.append(message)
+    token_cnt = 0
+    for msg in messages:
+        token_cnt += calcMessageTokens(msg, model, vendor)
+    while token_cnt + completionTokens > token_limit:
+        delete_list = []
+        for i in range(len(messages)):
+            if i > 0 and i < len(messages) - 4:
+                if messages[i]['role'] == 'system':
+                    delete_list.append(i)
+                    token_cnt -= calcMessageTokens(messages[i], model, vendor)
+                    break
+                elif messages[i]['role'] == 'user' and  messages[i+1]['role'] == 'assistant':
+                    token_cnt -= calcMessageTokens(messages[i], model, vendor)
+                    token_cnt -= calcMessageTokens(messages[i+1], model, vendor)
+                    delete_list.append(i)
+                    delete_list.append(i+1)
+                    break
+        if len(delete_list) == 1:
+            del messages[delete_list[0]]
+        elif len(delete_list) == 2:
+            del messages[delete_list[1]]
+            del messages[delete_list[0]]
+        elif len(delete_list) == 0:
+            logging.info(f"can not found message to delete in first stage | messages: {messages}, model_config:{model_config}")
+            if messages[0]['role'] == 'system':
+                token_cnt -= calcMessageTokens(messages[0], model, vendor)
+                del messages[0]
+            else:
+                raise Exception('fail to limit message size')
+    preset['messages'] = messages
+    return preset
 
 def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit):
     list = []
@@ -715,7 +829,11 @@ def calcMessageTokens(message, model, vendor):
         num_tokens = 0
         num_tokens += 4
         for key, value in message.items():
-            num_tokens += len(encoding.encode(value, disallowed_special=()))
+            if isinstance(value, dict):
+                for k,v in value.items():
+                    num_tokens += len(encoding.encode(v, disallowed_special=()))
+            else:
+                num_tokens += len(encoding.encode(value, disallowed_special=()))
             if key == "name":
                 num_tokens += -1
         return num_tokens

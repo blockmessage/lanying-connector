@@ -35,9 +35,13 @@ def get_chat_model_config(vendor, model):
                 is_prefix = config.get('is_prefix', True)
                 now_model = config.get('model')
                 if is_prefix and model.startswith(now_model):
-                    return config
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
                 if model == now_model:
-                    return config
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
     return None
 
 def get_embedding_model_config(vendor, model):

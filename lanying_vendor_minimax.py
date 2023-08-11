@@ -40,6 +40,8 @@ def prepare_chat(auth_info, preset):
                 elif message['sender_type'] == 'BOT':
                     messages.append({'role':'assistant', 'content': message['text']})
                     bot_name = message['sender_name']
+                elif message['sender_type'] == 'FUNCTION':
+                    messages.append({'role':'function', 'content': message['text']})
             elif 'role' in message and 'content' in message:
                 messages.append(message)
         preset['messages'] = messages
@@ -69,6 +71,7 @@ def chat(prepare_info, preset):
             return {
                 'result': 'ok',
                 'reply': res['reply'],
+                'function_call': res.get('function_call'),
                 'usage': {
                     'completion_tokens' : usage.get('completion_tokens',0),
                     'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -145,7 +148,7 @@ def encoding_for_model(model): # for temp
 def format_preset(prepare_info, preset):
     bot_name = prepare_info['bot_name']
     user_name = prepare_info['user_name']
-    support_fields = ['model', "tokens_to_generate", "temperature", "top_p", "mask_sensitive_info", "messages", "bot_setting", "reply_constraints"]
+    support_fields = ['model', "tokens_to_generate", "temperature", "top_p", "mask_sensitive_info", "messages", "bot_setting", "reply_constraints", "functions"]
     payload = dict()
     for key in support_fields:
         if key == 'tokens_to_generate':
@@ -158,13 +161,18 @@ def format_preset(prepare_info, preset):
             bot_setting = []
             for message in preset.get('messages',[]):
                 if 'role' in message and 'content' in message:
-                    if message['content'] != '':
+                    if message['content'] != '' or 'function_call' in message:
                         if message['role'] == 'system':
                             bot_setting.append({'bot_name':bot_name, 'content': message['content']})
                         elif message['role'] == 'user':
                             messages.append({'sender_type': 'USER', 'sender_name': user_name, 'text': message['content']})
                         elif message['role'] == 'assistant':
-                            messages.append({'sender_type': 'BOT', 'sender_name' : bot_name,'text': message['content']})
+                            if 'function_call' in message:
+                                messages.append({'sender_type': 'BOT', 'sender_name' : bot_name, 'text': message['content'], 'function_call': message['function_call']})
+                            else:
+                                messages.append({'sender_type': 'BOT', 'sender_name' : bot_name,'text': message['content']})
+                        elif message['role'] == 'function':
+                            messages.append({'sender_type': 'FUNCTION', 'sender_name': message.get('name', 'FUNCTION'), 'text': message['content']})
                 elif 'text' in message:
                     if message['text'] != '':
                         messages.append(message)
@@ -193,7 +201,17 @@ def format_preset(prepare_info, preset):
             else:
                 payload[key] = preset[key]
         elif key in preset:
-            payload[key] = preset[key]
+            if key == "functions":
+                functions = []
+                for function in preset['functions']:
+                    function_obj = {}
+                    for k,v in function.items():
+                        if k in ["name", "description", "parameters"]:
+                            function_obj[k] = v
+                    functions.append(function_obj)
+                payload[key] = functions
+            else:
+                payload[key] = preset[key]
     return payload
 
 def maybe_merge_bot_settings(bot_setting):
