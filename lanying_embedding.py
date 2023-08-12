@@ -192,7 +192,7 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
                 base_query = query_by_doc_id(doc_id)
             else:
                 base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
-            query = Query(base_query).return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question").paging(0,page_size).dialect(2)
+            query = Query(base_query).return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question","function").paging(0,page_size).dialect(2)
             if not is_fulldoc:
                 query = query.sort_by("vector_score")
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
@@ -438,6 +438,12 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
                 total_blocks += len(block_blocks)
                 update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
                 insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+            elif 'text' in row and 'function' in row:
+                block_tokens, block_blocks = process_function(config, row['text'], row['function'])
+                total_tokens += block_tokens
+                total_blocks += len(block_blocks)
+                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
             elif 'text' in row:
                 block_tokens, block_blocks = process_block(config, row['text'])
                 total_tokens += block_tokens
@@ -509,8 +515,13 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
         if len(block) == 2:
             token_cnt,text = block
             question = ''
-        else:
+            function = ''
+        elif len(block) == 3:
             token_cnt, question, text = block
+            function = ''
+        elif len(block) == 4:
+            token_cnt, _, text, function = block
+            question = ''
         doc_info = get_doc(embedding_uuid, doc_id)
         if doc_info:
             block_id = generate_block_id(embedding_uuid, doc_id)
@@ -519,13 +530,14 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             embedding = fetch_embedding(app_id, vendor, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
-            text_hash = sha256(embedding_text)
+            text_hash = sha256(embedding_text+function)
             redis.hmset(key, {"text":text,
                               "question": question,
                               "text_hash":text_hash,
                               "embedding":embedding_bytes,
                               "doc_id": doc_id,
                               "num_of_tokens": token_cnt,
+                              "function": function,
                               "summary": "{}"})
             embedding_size = len(embedding_bytes)
             text_size = text_byte_size(embedding_text)
@@ -609,6 +621,26 @@ def process_question(config, question, answer):
     else:
         logging.info(f"process_question | skip too large question answer: question_token_cnt:{question_token_cnt}, answer_token_cnt:{answer_token_cnt}")
         return (0, [])
+
+def process_function(config, text, function):
+    try:
+        function_obj = json.loads(function)
+        if "name" in function_obj and "description" in function_obj and "parameters" in function_obj and 'callback' in function_obj:
+            text_token_cnt = num_of_tokens(text)
+            function_token_cnt = num_of_tokens(function)
+            token_limit = embedding_model_token_limit()
+            token_cnt = function_token_cnt
+            if text_token_cnt == 0:
+                return (0,[])
+            if text_token_cnt <= token_limit:
+                return (token_cnt, [(token_cnt, "function", text, function)])
+            else:
+                logging.info(f"process_function | skip too large function: text_token_cnt:{text_token_cnt}, function_token_cnt:{function_token_cnt}")
+                return (0, [])
+    except Exception as e:
+        logging.exception(e)
+        logging.info(f"fail to process_function | text:{text}, function:{function}")
+    return {0, []}
 
 def embedding_model_token_limit():
     return 8000
