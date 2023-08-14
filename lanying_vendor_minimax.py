@@ -9,7 +9,7 @@ def model_configs():
             "model": 'abab5.5-chat',
             "type": "chat",
             "is_prefix": True,
-            "quota": 0.01,
+            "quota": 1,
             'order': 1,
             "token_limit": 11000
         },
