@@ -496,6 +496,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         location = reference.get('location', 'none')
         if location == 'ext' or location == "both":
             doc_desc_list = []
+            links = []
             seq = 0
             for doc_id,doc_reference in reference_list:
                 embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
@@ -506,13 +507,16 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         link = doc_reference
                     else:
                         link = doc_info.get('filename', '')
-                    doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link})
+                    if link not in links:
+                        links.append(link)
+                        doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link})
             reply_ext = {'reference':doc_desc_list}
         if location == 'body' or location == "both":
             doc_format = reference.get('style', '{seq}.{doc_id}.{link}')
             seperator = reference.get('seperator', ',')
             prefix = reference.get('prefix', 'reference: ')
             doc_desc_list = []
+            links = []
             seq = 0
             for doc_id,doc_reference in reference_list:
                 embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
@@ -523,8 +527,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         link = doc_reference
                     else:
                         link = doc_info.get('filename', '')
-                    doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', link)
-                    doc_desc_list.append(doc_desc)
+                    if link not in links:
+                        links.append(link)
+                        doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', link)
+                        doc_desc_list.append(doc_desc)
             if len(doc_desc_list) > 0:
                 reply = reply + "\n" + prefix + seperator.join(doc_desc_list)
     else:
