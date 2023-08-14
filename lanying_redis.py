@@ -29,7 +29,10 @@ def get_redis_stack_connection():
     return conn
 
 def get_task_redis_server():
-    return os.getenv('LANYING_CONNECTOR_TASK_REDIS_SERVER', "redis://localhost:6379")
+    return os.getenv('LANYING_CONNECTOR_TASK_REDIS_SERVER', "redis://localhost:6379/1")
+
+def get_slow_task_redis_server():
+    return os.getenv('LANYING_CONNECTOR_SLOW_TASK_REDIS_SERVER', "redis://localhost:6379/2")
 
 def redis_lrange(redis, key, start, end):
     return [bytes.decode('utf-8') for bytes in redis.lrange(key, start, end)]
