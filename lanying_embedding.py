@@ -192,7 +192,7 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
                 base_query = query_by_doc_id(doc_id)
             else:
                 base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
-            query = Query(base_query).return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question","function").paging(0,page_size).dialect(2)
+            query = Query(base_query).return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question","function", "reference").paging(0,page_size).dialect(2)
             if not is_fulldoc:
                 query = query.sort_by("vector_score")
             results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
@@ -433,7 +433,7 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     if 'text' in columns or ('question' in columns and 'answer' in columns):
         for i, row in df.iterrows():
             if 'question' in row and 'answer' in row:
-                block_tokens, block_blocks = process_question(config, row['question'], row['answer'])
+                block_tokens, block_blocks = process_question(config, row['question'], row['answer'], row.get('reference', ''))
                 total_tokens += block_tokens
                 total_blocks += len(block_blocks)
                 update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
@@ -478,7 +478,13 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
         if 'text' in columns or ('question' in columns and 'answer' in columns):
             for i, row in df.iterrows():
                 if 'question' in row and 'answer' in row:
-                    block_tokens, block_blocks = process_question(config, row['question'], row['answer'])
+                    block_tokens, block_blocks = process_question(config, row['question'], row['answer'], row.get('reference', ''))
+                    total_tokens += block_tokens
+                    total_blocks += len(block_blocks)
+                    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+                elif 'text' in row and 'function' in row:
+                    block_tokens, block_blocks = process_function(config, row['text'], row['function'])
                     total_tokens += block_tokens
                     total_blocks += len(block_blocks)
                     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
@@ -516,12 +522,16 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             token_cnt,text = block
             question = ''
             function = ''
-        elif len(block) == 3:
-            token_cnt, question, text = block
+            reference = ''
+        elif len(block) == 5 and block[1] == 'question':
+            token_cnt, _, question, text, reference = block
             function = ''
-        elif len(block) == 4:
+        elif len(block) == 4 and block[1] == 'function':
             token_cnt, _, text, function = block
             question = ''
+            reference = ''
+        else:
+            raise Exception(f"bad_block: {block}")
         doc_info = get_doc(embedding_uuid, doc_id)
         if doc_info:
             block_id = generate_block_id(embedding_uuid, doc_id)
@@ -538,6 +548,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                               "doc_id": doc_id,
                               "num_of_tokens": token_cnt,
                               "function": function,
+                              "reference": reference,
                               "summary": "{}"})
             embedding_size = len(embedding_bytes)
             text_size = text_byte_size(embedding_text)
@@ -609,7 +620,7 @@ def process_block(config, block):
         chunks.append((token_count,text))
     return (total_tokens, chunks)
 
-def process_question(config, question, answer):
+def process_question(config, question, answer, reference):
     question_token_cnt = num_of_tokens(question)
     answer_token_cnt = num_of_tokens(answer)
     token_limit = embedding_model_token_limit()
@@ -617,7 +628,7 @@ def process_question(config, question, answer):
     if question_token_cnt == 0 or answer_token_cnt == 0:
         return (0,[])
     if token_cnt <= token_limit:
-        return (token_cnt, [(token_cnt, question, answer)])
+        return (token_cnt, [(token_cnt, "question", question, answer, reference)])
     else:
         logging.info(f"process_question | skip too large question answer: question_token_cnt:{question_token_cnt}, answer_token_cnt:{answer_token_cnt}")
         return (0, [])

@@ -78,7 +78,6 @@ def trace_finish(request):
             lanying_connector.sendMessageAsync(app_id, lanying_user_id, user_id, f"文章（ID：{doc_id}）已加入知识库 {embedding_name}，有用的知识又增加了，谢谢您 ♪(･ω･)ﾉ")
         else:
             lanying_connector.sendMessageAsync(app_id, lanying_user_id, user_id, f"文章（ID：{doc_id}）加入知识库 {embedding_name}失败：{message}")
-        
 
 def handle_request(request):
     text = request.get_data(as_text=True)
@@ -368,8 +367,13 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
             search_result = multi_embedding_search(app_id, config, openai_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
             for doc in search_result:
-                if hasattr(doc, 'doc_id') and doc.doc_id not in reference_list:
-                    reference_list.append(doc.doc_id)
+                if hasattr(doc, 'doc_id'):
+                    if hasattr(doc, 'reference'):
+                        doc_reference = doc.reference
+                    else:
+                        doc_reference = ''
+                    if (doc.doc_id, doc_reference) not in reference_list:
+                        reference_list.append((doc.doc_id, doc_reference))
                 now_distance = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
@@ -493,13 +497,16 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if location == 'ext' or location == "both":
             doc_desc_list = []
             seq = 0
-            for doc_id in reference_list:
+            for doc_id,doc_reference in reference_list:
                 embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
                 doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
                 if doc_info:
                     seq += 1
-                    filename = doc_info.get('filename', '')
-                    doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':filename})
+                    if len(doc_reference) > 0:
+                        link = doc_reference
+                    else:
+                        link = doc_info.get('filename', '')
+                    doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link})
             reply_ext = {'reference':doc_desc_list}
         if location == 'body' or location == "both":
             doc_format = reference.get('style', '{seq}.{doc_id}.{link}')
@@ -507,21 +514,30 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             prefix = reference.get('prefix', 'reference: ')
             doc_desc_list = []
             seq = 0
-            for doc_id in reference_list:
+            for doc_id,doc_reference in reference_list:
                 embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
                 doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
                 if doc_info:
                     seq += 1
-                    filename = doc_info.get('filename', '')
-                    doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', filename)
+                    if len(doc_reference) > 0:
+                        link = doc_reference
+                    else:
+                        link = doc_info.get('filename', '')
+                    doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', link)
                     doc_desc_list.append(doc_desc)
             if len(doc_desc_list) > 0:
                 reply = reply + "\n" + prefix + seperator.join(doc_desc_list)
     else:
         if add_reference == 'body' or add_reference == "both":
-            reply = reply + f"\nreference: {reference_list}"
+            reference_doc_id_list = []
+            for doc_id, reference in reference_list:
+                reference_doc_id_list.append(doc_id)
+            reply = reply + f"\nreference: {reference_doc_id_list}"
         if add_reference == 'ext' or add_reference == "both":
-            reply_ext = {'reference':reference_list}
+            reference_doc_id_list = []
+            for doc_id, reference in reference_list:
+                reference_doc_id_list.append(doc_id)
+            reply_ext = {'reference':reference_doc_id_list}
     if len(reply) > 0:
         lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
