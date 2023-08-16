@@ -120,15 +120,22 @@ def handle_request(request):
     if response.status_code == 200:
         if stream:
             def generate_response():
-                lines = []
+                contents = []
                 try:
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        lines.append(line_str)
                         # logging.info(f"stream got line:{line_str}|")
+                        if line_str.startswith('data:'):
+                            try:
+                                data = json.loads(line_str[5:])
+                                content = data['choices'][0]['delta']['content']
+                                contents.append(content)
+                            except Exception as e:
+                                pass
                         yield line_str + '\n'
                 finally:
-                    response_json = stream_lines_to_response(preset, lines, vendor)
+                    reply = ''.join(contents)
+                    response_json = stream_lines_to_response(preset, reply, vendor)
                     add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
         else:
@@ -1613,17 +1620,7 @@ def user_default_embedding_name_key(app_id, user_id):
 def list_models():
     return lanying_vendor.list_models()
 
-def stream_lines_to_response(preset, lines, vendor):
-    contents = []
-    for line in lines:
-        if line.startswith('data:'):
-            try:
-                data = json.loads(line[5:])
-                content = data['choices'][0]['delta']['content']
-                contents.append(content)
-            except Exception as e:
-                pass
-    reply = ''.join(contents)
+def stream_lines_to_response(preset, reply, vendor):
     prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor)
     completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
     response = {
