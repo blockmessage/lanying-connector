@@ -125,7 +125,7 @@ def handle_request(request):
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
                         lines.append(line_str)
-                        logging.info(f"stream got line:{line_str}|")
+                        # logging.info(f"stream got line:{line_str}|")
                         yield line_str + '\n'
                 finally:
                     response_json = stream_lines_to_response(preset, lines, vendor)
