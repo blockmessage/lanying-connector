@@ -116,10 +116,24 @@ def handle_request(request):
     openai_key_type = limit_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
-    response = forward_request(app_id, request, auth_info)
+    stream,response = forward_request(app_id, request, auth_info)
     if response.status_code == 200:
-        response_content = json.loads(response.content)
-        add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
+        if stream:
+            def generate_response():
+                lines = []
+                try:
+                    for line in response.iter_lines():
+                        line_str = line.decode('utf-8')
+                        lines.append(line_str)
+                        logging.info(f"stream got line:{line_str}|")
+                        yield line_str + '\n'
+                finally:
+                    response_json = stream_lines_to_response(preset, lines, vendor)
+                    add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
+            return {'result':'ok', 'response':response, 'iter': generate_response}
+        else:
+            response_content = json.loads(response.content)
+            add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
     else:
         logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
     return {'result':'ok', 'response':response}
@@ -133,10 +147,18 @@ def forward_request(app_id, request, auth_info):
     url = "https://api.openai.com" + request.path
     data = request.get_data()
     headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
-    logging.info(f"forward request start: app_id:{app_id}, url:{url}")
-    response = requests.post(url, data=data, headers=headers)
-    logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}")
-    return response
+    request_json = json.loads(data)
+    stream = request_json.get('stream', False)
+    if stream:
+        logging.info(f"forward request stream start: app_id:{app_id}, url:{url}")
+        response = requests.post(url, data=data, headers=headers, stream=stream)
+        logging.info(f"forward request stream finish: app_id:{app_id}, status_code: {response.status_code}")
+        return (stream, response)
+    else:
+        logging.info(f"forward request start: app_id:{app_id}, url:{url}")
+        response = requests.post(url, data=data, headers=headers)
+        logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}")
+        return (stream, response)
 
 def check_authorization(request):
     try:
@@ -1590,3 +1612,27 @@ def user_default_embedding_name_key(app_id, user_id):
     return f'lanying_connector:user_default_embedding_name:{app_id}:{user_id}'
 def list_models():
     return lanying_vendor.list_models()
+
+def stream_lines_to_response(preset, lines, vendor):
+    contents = []
+    for line in lines:
+        if line.startswith('data:'):
+            try:
+                data = json.loads(line[5:])
+                content = data['choices'][0]['delta']['content']
+                contents.append(content)
+            except Exception as e:
+                pass
+    reply = ''.join(contents)
+    prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor)
+    completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
+    response = {
+        'reply': reply,
+        'usage':{
+            'completion_tokens' : completion_tokens,
+            'prompt_tokens' : prompt_tokens,
+            'total_tokens' : prompt_tokens + completion_tokens
+        }
+    }
+    logging.info(f"stream_lines_to_response | response:{response}")
+    return response

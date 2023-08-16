@@ -155,9 +155,13 @@ def openai_request():
             return resp
         else:
             response = res['response']
-            response.headers['Content-Encoding'] = 'identity'
-            resp = Response(response.content, status=response.status_code, headers=response.headers.items())
-            return resp
+            iter = res.get('iter')
+            if iter:
+                return Response(iter(), status=response.status_code, headers=response.headers.items())
+            else:
+                response.headers['Content-Encoding'] = 'identity'
+                resp = Response(response.content, status=response.status_code, headers=response.headers.items())
+                return resp
     except Exception as e:
         logging.exception(e)
         resp = app.make_response({"error":{"type": "internal_server_error","code":500, "message":"Internal Server Error"}})
