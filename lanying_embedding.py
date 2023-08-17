@@ -586,7 +586,7 @@ def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 
         response = requests.post(url, headers=headers, json = body).json()
         return response['embedding']
     except Exception as e:
-        logging.info(f"fetch_embedding got error response:{response}")
+        logging.info(f"fetch_embedding got error response:{response}, text:{text}, vendor:{vendor}")
         code = ""
         try:
             code = response["code"]
@@ -615,9 +615,10 @@ def process_block(config, block):
     texts = text_splitter.split_text(block)
     for text in texts:
         text = text.lstrip(",.，。 \n")
-        token_count = num_of_tokens(text)
-        total_tokens += token_count
-        chunks.append((token_count,text))
+        if len(text) > 0:
+            token_count = num_of_tokens(text)
+            total_tokens += token_count
+            chunks.append((token_count,text))
     return (total_tokens, chunks)
 
 def process_question(config, question, answer, reference):
