@@ -63,6 +63,7 @@ Pillow==9.4.0
 plotly==5.13.1
 prompt-toolkit==3.0.38
 protobuf==3.20.3
+psycopg2-binary==2.9.7
 pycodestyle==2.10.0
 pycparser==2.21
 pycryptodome==3.18.0

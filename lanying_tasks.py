@@ -353,7 +353,9 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
             embedding_index = lanying_embedding.get_embedding_index(app_id, embedding_name)
             if embedding_index:
                 logging.info(f"start clean old doc data | app_id={app_id}, doc_id:{doc_id}")
-                delete_doc_data(app_id, embedding_name, doc_id, embedding_index, 0)
+                db_type = embedding_uuid_info.get('db_type', 'redis')
+                db_table_name = embedding_uuid_info.get('db_table_name', '')
+                delete_doc_data(app_id, embedding_name, doc_id, embedding_index, 0, db_type, db_table_name)
                 logging.info(f"finish clean old doc data | app_id={app_id}, doc_id:{doc_id}")
         lanying_embedding.process_embedding_file(trace_id, app_id, embedding_uuid, temp_filename, origin_filename, doc_id, ext)
         if doc_task_id:
@@ -408,8 +410,8 @@ def re_run_doc_to_embedding_by_doc_ids(trace_id, app_id, embedding_uuid, doc_ids
             logging.exception(e)
 
 @normal_queue.task
-def delete_doc_data(app_id, embedding_name, doc_id, embedding_index, last_total):
-    lanying_embedding.search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total)
+def delete_doc_data(app_id, embedding_name, doc_id, embedding_index, last_total, db_type, db_table_name):
+    lanying_embedding.search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total, db_type, db_table_name)
 
 def task_error(message):
     logging.error(message)

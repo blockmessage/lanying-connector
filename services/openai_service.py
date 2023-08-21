@@ -406,7 +406,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 now_distance = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
-                segment_id = lanying_embedding.parse_segment_id_int_value(doc.id)
+                segment_id = lanying_embedding.parse_segment_id_int_value(doc)
                 if hasattr(doc, 'question') and doc.question != "":
                     if question_merge:
                         qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
@@ -730,7 +730,7 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
             idx = idx+1
             vector_store = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
             if is_fulldoc:
-                seq_id = lanying_embedding.parse_segment_id_int_value(doc.id)
+                seq_id = lanying_embedding.parse_segment_id_int_value(doc)
                 list.append(((seq_id,idx, preset_idx),doc))
             else:
                 list.append(((idx,vector_store,preset_idx),doc))

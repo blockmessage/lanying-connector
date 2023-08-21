@@ -20,6 +20,7 @@ import lanying_url_loader
 import json
 import pdfplumber
 import lanying_config
+import lanying_pgvector
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -41,7 +42,8 @@ def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
 def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor):
-    logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}, vendor:{vendor}")
+    db_type = get_embedding_default_db_type(app_id)
+    logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}, vendor:{vendor}, embedding_db_type: {db_type}")
     if app_id is None:
         app_id = ""
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
@@ -52,6 +54,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     embedding_uuid = generate_embedding_id()
     index_key = get_embedding_index_key(embedding_uuid)
     data_prefix_key = get_embedding_data_prefix_key(embedding_uuid)
+    db_table_name = f"embedding_{embedding_uuid}_{app_id}"
     redis.hmset(get_embedding_name_key(app_id, embedding_name), {
         "app_id":app_id,
         "embedding_name": embedding_name,
@@ -80,11 +83,21 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
                 "vendor": vendor,
                 "text_size": 0,
                 "time": now,
+                "db_type": db_type,
+                "db_table_name": db_table_name,
                 "status": "ok"})
-    result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", "1536", "DISTANCE_METRIC",algo)
+    if db_type == 'redis':
+        result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", "1536", "DISTANCE_METRIC",algo)
+        logging.info(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
+    elif db_type == 'pgvector':
+        with lanying_pgvector.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
+            cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
+            cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
+            conn.commit()
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
-    logging.info(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
 
 def delete_embedding(app_id, embedding_name):
@@ -176,6 +189,57 @@ def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens, max
         logging.info(f"search_embeddings not finish: app_id:{app_id}, page_size:{page_size}, extra_block_num:{extra_block_num}")
     return result
 
+def search_in_redis(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_index):
+    redis = lanying_redis.get_redis_stack_connection()
+    if doc_id == "":
+        base_query = f"*=>[KNN {page_size} @embedding $vector AS vector_score]"
+    elif is_fulldoc:
+        base_query = query_by_doc_id(doc_id)
+    else:
+        base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
+    query = Query(base_query).return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question","function", "reference").paging(0,page_size).dialect(2)
+    if not is_fulldoc:
+        query = query.sort_by("vector_score")
+    return redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
+
+def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info):
+    page_size = int(page_size)
+    db_table_name = embedding_uuid_info['db_table_name']
+    db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '10'))
+    with lanying_pgvector.get_connection() as conn:
+        cursor = conn.cursor()
+        embedding_str = f"{embedding}"
+        if doc_id == "":
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score FROM {db_table_name} ORDER BY embedding <=> %s LIMIT %s;"
+            args = [embedding_str, embedding_str, page_size]
+        elif is_fulldoc:
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,'0.0' AS vector_score FROM {db_table_name} where doc_id = %s ORDER BY doc_id LIMIT %s;"
+            args =  [doc_id, page_size]
+        else:
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score FROM {db_table_name} where doc_id = %s ORDER BY embedding <=> %s LIMIT %s;"
+            args = [embedding_str, doc_id, embedding_str, page_size]
+        logging.info(f"query:{query},args:{args}")
+        cursor.execute(f"SET ivfflat.probes = {db_ivfflat_probes};")
+        cursor.execute(query, args)
+        rows = cursor.fetchall()
+        logging.info(f"rows:{rows}")
+        class MyDocument:
+            pass
+        results = MyDocument()
+        docs = []
+        names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id', 'vector_score']
+        for row in rows:
+            doc = MyDocument()
+            for index,name in enumerate(names):
+                logging.info(f"index:{index}, name:{name}, value:{row[index]}")
+                doc.__dict__[name] = row[index]
+            logging.info(f"doc:{doc}")
+            docs.append(doc)
+        setattr(results, 'docs', docs)
+        logging.info(f"results:{results}")
+        logging.info(f"docs:{docs}")
+        return results
+
 def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size):
     result = check_storage_size(app_id)
     if result['result'] == 'error':
@@ -186,16 +250,13 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
     if redis:
         embedding_index = get_embedding_index(app_id, embedding_name)
         if embedding_index:
-            if doc_id == "":
-                base_query = f"*=>[KNN {page_size} @embedding $vector AS vector_score]"
-            elif is_fulldoc:
-                base_query = query_by_doc_id(doc_id)
+            embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+            embedding_uuid_info = get_embedding_uuid_info(embedding_name_info['embedding_uuid'])
+            db_type = embedding_uuid_info.get('db_type', 'redis')
+            if db_type == 'pgvector':
+                results = search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info)
             else:
-                base_query = f"{query_by_doc_id(doc_id)}=>[KNN {page_size} @embedding  $vector AS vector_score]"
-            query = Query(base_query).return_fields("text", "vector_score", "num_of_tokens", "summary","doc_id","text_hash","question","function", "reference").paging(0,page_size).dialect(2)
-            if not is_fulldoc:
-                query = query.sort_by("vector_score")
-            results = redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
+                results = search_in_redis(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_index)
             # logging.info(f"topk result:{results.docs[:1]}")
             ret = []
             now_tokens = 0
@@ -208,7 +269,7 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
                 index = 0
                 for doc in docs:
                     index = index + 1
-                    seg_id = parse_segment_id_int_value(doc.id)
+                    seg_id = parse_segment_id_int_value(doc)
                     docs_for_sort.append(((seg_id, index),doc))
                 docs = []
                 for _,doc in sorted(docs_for_sort):
@@ -514,6 +575,7 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
 
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     vendor = config.get('vendor', 'openai')
+    db_type = config.get('db_type', 'redis')
     is_dry_run = config.get("dry_run", "false") == "true"
     max_block_size = get_max_token_count(config)
     logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}, vendor:{vendor}, max_block_size:{max_block_size}")
@@ -541,15 +603,23 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
             text_hash = sha256(embedding_text+function)
-            redis.hmset(key, {"text":text,
-                              "question": question,
-                              "text_hash":text_hash,
-                              "embedding":embedding_bytes,
-                              "doc_id": doc_id,
-                              "num_of_tokens": token_cnt,
-                              "function": function,
-                              "reference": reference,
-                              "summary": "{}"})
+            if db_type == "pgvector":
+                db_table_name = config['db_table_name']
+                with lanying_pgvector.get_connection() as conn:
+                    cursor = conn.cursor()
+                    insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
+                    conn.commit()
+            else:
+                redis.hmset(key, {"text":text,
+                                "question": question,
+                                "text_hash":text_hash,
+                                "embedding":embedding_bytes,
+                                "doc_id": doc_id,
+                                "num_of_tokens": token_cnt,
+                                "function": function,
+                                "reference": reference,
+                                "summary": "{}"})
             embedding_size = len(embedding_bytes)
             text_size = text_byte_size(embedding_text)
             char_cnt = len(embedding_text)
@@ -974,8 +1044,11 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
         embedding_name_info = get_embedding_name_info(app_id, embedding_name)
         embedding_uuid = embedding_name_info["embedding_uuid"]
         doc_info = get_doc(embedding_uuid, doc_id)
-        if doc_info:
-            task.apply_async(args = [app_id, embedding_name, doc_id, embedding_index, 0])
+        embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+        if doc_info and embedding_uuid_info:
+            db_type = embedding_uuid_info.get('db_type', 'redis')
+            db_table_name = embedding_uuid_info.get('db_table_name', '')
+            task.apply_async(args = [app_id, embedding_name, doc_id, embedding_index, 0, db_type, db_table_name])
             list_key = get_embedding_doc_list_key(embedding_uuid)
             redis.lrem(list_key, 2, doc_id)
             restore_storage_size(app_id, embedding_uuid, doc_id)
@@ -989,24 +1062,31 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
             return True
     return False
 
-def search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total):
-    redis = lanying_redis.get_redis_stack_connection()
-    base_query = query_by_doc_id(doc_id)
-    query = Query(base_query).no_content().paging(0, 200).dialect(2)
-    results = redis.ft(embedding_index).search(query)
-    logging.info(f"search for delete  | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}, result:{results}")
-    if results.total == 0 or results.total == last_total:
-        logging.info(f"search for delete stop  | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}")
-        return
-    keys = []
-    for doc in results.docs:
-        keys.append(doc.id)
-    if len(keys) > 0:
-        redis.delete(*keys)
-    if len(keys) < results.total:
-        search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, results.total)
+def search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total, db_type, db_table_name):
+    logging.info(f"delete doc_id from embedding| db_type={db_type}, app_id={app_id}, embedding_name={embedding_name}, doc_id={doc_id}")
+    if db_type == 'pgvector':
+        with lanying_pgvector.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"delete from {db_table_name} where doc_id = %s", [doc_id])
+            conn.commit()
     else:
-        logging.info(f"search for delete stop for last page | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}")
+        redis = lanying_redis.get_redis_stack_connection()
+        base_query = query_by_doc_id(doc_id)
+        query = Query(base_query).no_content().paging(0, 200).dialect(2)
+        results = redis.ft(embedding_index).search(query)
+        logging.info(f"search for delete  | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}, result:{results}")
+        if results.total == 0 or results.total == last_total:
+            logging.info(f"search for delete stop  | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}")
+            return
+        keys = []
+        for doc in results.docs:
+            keys.append(doc.id)
+        if len(keys) > 0:
+            redis.delete(*keys)
+        if len(keys) < results.total:
+            search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, results.total, db_type, db_table_name)
+        else:
+            logging.info(f"search for delete stop for last page | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, last_total:{last_total}")
 
 def query_by_doc_id(doc_id):
     if len(doc_id) < 30:
@@ -1195,7 +1275,11 @@ def parse_file_ext(filename):
 def is_file_url(filename):
     return filename.startswith("http://") or filename.startswith("https://")
 
-def parse_segment_id_int_value(seg_id):
+def parse_segment_id_int_value(doc):
+    if hasattr(doc, 'block_id'):
+        seg_id = doc.block_id
+    else:
+        seg_id = doc.id
     fields = seg_id.split('-')
     try:
         return int(fields[len(fields)-1])
@@ -1205,3 +1289,19 @@ def parse_segment_id_int_value(seg_id):
             return int(fields[len(fields)-1])
         except Exception as ee:
             return 0
+
+def get_embedding_default_db_type(app_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = f"lanying_connector:embedding:default_db_type"
+    value = lanying_redis.redis_hget(redis, key, '*')
+    if value:
+        return value
+    value = lanying_redis.redis_hget(redis, key, app_id)
+    if value:
+        return value
+    return 'redis'
+
+def set_embedding_default_db_type(app_id, default_db_type):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = f"lanying_connector:embedding:default_db_type"
+    redis.hset(key, app_id, default_db_type)
