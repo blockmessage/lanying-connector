@@ -3,6 +3,11 @@ from psycopg2 import pool
 import os
 
 connection_pool = None
+
+def get_connection():
+    if connection_pool:
+        return connection_pool.getconn()
+
 sql_pool_host = os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')
 if sql_pool_host:
     sql_pool_min_connection = int(os.getenv('LANYING_CONNECTOR_SQL_POOL_MIN_CONNECTION', '5'))
@@ -21,7 +26,7 @@ if sql_pool_host:
         host=sql_pool_host,
         port=sql_pool_port
     )
-
-def get_connection():
-    if connection_pool:
-        return connection_pool.getconn()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        conn.commit()
