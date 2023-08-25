@@ -151,9 +151,15 @@ def maybe_init_preset_model_for_embedding(preset, path):
 
 def forward_request(app_id, request, auth_info):
     openai_key = auth_info.get('api_key','')
-    url = "https://api.openai.com" + request.path
+    proxy_domain = os.getenv('LANYING_CONNECTOR_OPENAI_PROXY_DOMAIN', '')
+    if len(proxy_domain) > 0:
+        proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
+        url = proxy_domain + request.path
+        headers = {"Content-Type":"application/json", "Authorization-Next":"Bearer " + openai_key,  "Authorization":"Basic " + proxy_api_key}
+    else:
+        url = "https://api.openai.com" + request.path
+        headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
     data = request.get_data()
-    headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
     request_json = json.loads(data)
     stream = request_json.get('stream', False)
     if stream:

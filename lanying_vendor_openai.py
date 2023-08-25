@@ -1,6 +1,7 @@
 import logging
 import openai
 import tiktoken
+import os
 
 def model_configs():
     return [
@@ -65,8 +66,9 @@ def prepare_chat(auth_info, preset):
 def chat(prepare_info, preset):
     openai.api_key = prepare_info['api_key']
     final_preset = format_preset(preset)
+    headers = maybe_add_proxy_headers(prepare_info)
     logging.info(f"vendor openai chat request: {final_preset}")
-    response = openai.ChatCompletion.create(**final_preset)
+    response = openai.ChatCompletion.create(**final_preset, headers = headers)
     logging.info(f"vendor openai chat response: {response}")
     try:
         usage = response.get('usage',{})
@@ -106,8 +108,9 @@ def embedding(prepare_info, text):
     openai.api_key = api_key
     type = prepare_info.get('type', '')
     model = 'text-embedding-ada-002'
+    headers = maybe_add_proxy_headers(prepare_info)
     logging.info(f"openai embedding start | type={type}, api_key:{api_key[:4]}...{api_key[-4:]}")
-    response = openai.Embedding.create(input=text, engine=model)
+    response = openai.Embedding.create(input=text, engine=model, headers=headers)
     try:
         embedding = response['data'][0]['embedding']
         usage = response.get('usage',{})
@@ -151,3 +154,16 @@ def format_preset(preset):
             else:
                 ret[key] = preset[key]
     return ret
+
+def maybe_add_proxy_headers(prepare_info):
+    proxy_api_base = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_BASE", '')
+    proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
+    api_key = prepare_info['api_key']
+    if len(proxy_api_base) > 0:
+        openai.api_base = proxy_api_base
+        return {
+            "Authorization": f"Basic {proxy_api_key}",
+            "Authorization-Next": f"Bearer {api_key}"
+        }
+    else:
+        return {}
