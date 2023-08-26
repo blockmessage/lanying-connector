@@ -9,6 +9,7 @@ import random
 import string
 import json
 import lanying_message
+import os
 
 official_account_max_message_size = 600
 service = 'wechat_official_account'
@@ -92,8 +93,9 @@ def send_wechat_message(config, app_id, message, to_username):
             }
         }
         logging.info(f"send_wechat_message start | app_id:{app_id}, to_username:{to_username}, content:{now_content}")
-        url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={access_token}"
-        response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        server, headers = get_proxy_info()
+        url = f"{server}/cgi-bin/message/custom/send?access_token={access_token}"
+        response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
         result = response.json()
         logging.info(f"send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
 
@@ -154,8 +156,9 @@ def get_wechat_access_token(config, app_id):
     return None
 
 def get_wechat_access_token_internal(app_id, wechat_app_id, wechat_app_secret):
-    url = f"https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid={wechat_app_id}&secret={wechat_app_secret}"
-    response = requests.get(url)
+    server, headers = get_proxy_info()
+    url = f"{server}/cgi-bin/token?grant_type=client_credential&appid={wechat_app_id}&secret={wechat_app_secret}"
+    response = requests.get(url, headers=headers)
     data = response.json()
     if 'access_token' in data:
         logging.info(f"get_wechat_access_token_internal success | appid={app_id}")
@@ -195,3 +198,16 @@ def get_random_string(length):
 
 def split_string_by_size(input_string, chunk_size):
     return [input_string[i:i+chunk_size] for i in range(0, len(input_string), chunk_size)]
+
+def get_proxy_info():
+    proxy_server = os.getenv("LANYING_CONNECTOR_WECHAT_PROXY_SERVER", '')
+    if len(proxy_server) > 0:
+        proxy_key = os.getenv("LANYING_CONNECTOR_WECHAT_PROXY_KEY", '')
+        headers = {
+            "Authorization": f"Basic {proxy_key}",
+        }
+        return (proxy_server, headers)
+    else:
+        server = "https://api.weixin.qq.com"
+        headers = {}
+        return (server, headers)
