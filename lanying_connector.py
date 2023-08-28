@@ -86,8 +86,10 @@ def saveConfig():
         key = data.get('key', 'lanying_connector')
         value = data['value']
         if key.startswith('lanying_connector'):
+            logging.info(f"update config:appId:{appId}, key:{key}")
             lanying_config.save_config(appId, key, value)
             lanying_embedding.save_app_config(appId, key, value)
+            maybeSyncConfig(appId, key, value, accessToken, data.get('sync_all', False))
             resp = app.make_response('success')
             return resp
         else:
@@ -95,6 +97,30 @@ def saveConfig():
             return resp
     resp = app.make_response('fail')
     return resp
+
+def maybeSyncConfig(appId, key, value, accessToken, syncAll):
+    server = os.getenv("SYNC_ETCD_CONFIG_TO_SERVER", '')
+    if len(server) > 0:
+        if syncAll:
+            for k,v in lanying_config.get_all_config().items():
+                now_app_id,now_key = lanying_config.parse_key(k)
+                now_value = json.dumps(v, ensure_ascii=False)
+                syncConfig(server, now_app_id, now_key, now_value, accessToken)
+        syncConfig(server, appId, key, value, accessToken)
+
+def syncConfig(server, appId, key, value, accessToken):
+    headers = {
+        'access-token': accessToken
+    }
+    body = {
+        'app_id': appId,
+        'key': key,
+        'value': value
+    }
+    logging.info(f"sync config to server start: server:{server}, app_id:{appId}, key:{key}")
+    url = server + "/config"
+    response = requests.post(url, headers=headers, json=body)
+    logging.info(f"sync config to server finish: server:{server}, app_id:{appId}, key:{key}, response:{response.text}")
 
 @app.route("/list_models", methods=["POST"])
 def list_models():

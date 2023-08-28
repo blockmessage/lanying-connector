@@ -57,6 +57,12 @@ def get_all_config(app_id = None):
             ret[k] = v
     return ret
 
+def parse_key(key):
+    key_without_prefix = key[len(prefix):]
+    app_id = key_without_prefix.split('.')[0]
+    short_key = key_without_prefix[(len(app_id)+1):]
+    return (app_id, short_key)
+
 def get_lanying_user_id(appId):
     if mode == 'etcd':
         return get_config_field(appId, 'lanying_connector', 'lanying_user_id', None)
