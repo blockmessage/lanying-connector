@@ -204,6 +204,58 @@ def migrate_embedding_from_redis_to_pgvector_all():
         print(f"found app_id: {app_id}")
         migrate_embedding_from_redis_to_pgvector_for_app_id(app_id)
 
+def clean_embedding_from_redis_for_one(app_id, embedding_name):
+    redis = lanying_redis.get_redis_stack_connection()
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
+        print(f"skip for not exist embedding_name: app_id:{app_id}, embedding_name:{embedding_name}")
+        return
+    embedding_uuid = embedding_name_info['embedding_uuid']
+    embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+    if embedding_uuid_info is None:
+        print(f"skip for not exist embedding_uuid: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}")
+        return
+    db_type = embedding_uuid_info.get('db_type', 'redis')
+    if db_type == 'redis':
+        print(f"skip for redis db: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}")
+        return
+    db_table_name = f"embedding_{embedding_uuid}_{app_id}"
+    data_prefix = embedding_uuid_info.get('prefix', '')
+    if data_prefix == '':
+        print(f"skip for data_prefix is empty: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}")
+        return
+    key_count = 0
+    keys_to_delete = []
+    for bytes in redis.scan_iter(match=f'{data_prefix}*', count=100):
+        key_count += 1
+        data_key = bytes.decode('utf-8')
+        print(f"found data key: key_count:{key_count}, data_key:{data_key}")
+        keys_to_delete.append(data_key)
+    for key in keys_to_delete:
+        if key.startswith('embedding_data:'):
+            res = redis.delete(key)
+            print(f"delete key:{key}, res:{res}")
+        else:
+            print(f"========================== skip delete for key:{data_key}")
+    print(f"finish clean: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
+
+def clean_embedding_from_redis_for_app_id(app_id):
+    print(f"now processing app_id:{app_id}")
+    embedding_names = list_embedding_names(app_id)
+    for embedding_name in embedding_names:
+        print(f"found embedding_name: {embedding_name}")
+        clean_embedding_from_redis_for_one(app_id, embedding_name)
+
+def clean_embedding_from_redis_all():
+    redis = lanying_redis.get_redis_stack_connection()
+    keys = lanying_redis.redis_keys(redis, "embedding_names:*")
+    for key in keys:
+        print(f"parsing key: {key}")
+        fields = key.split(':')
+        app_id = fields[1]
+        print(f"found app_id: {app_id}")
+        clean_embedding_from_redis_for_app_id(app_id)
+
 def delete_embedding(app_id, embedding_name):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info:
