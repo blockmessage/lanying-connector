@@ -21,7 +21,7 @@ if sql_pool_host:
     sql_pool_user = os.getenv('LANYING_CONNECTOR_SQL_POOL_USER', 'user')
     sql_pool_password = os.getenv('LANYING_CONNECTOR_SQL_POOL_PASSWORD', '')
     # 创建连接池
-    connection_pool = psycopg2.pool.SimpleConnectionPool(
+    connection_pool = psycopg2.pool.ThreadedConnectionPool(
         minconn=sql_pool_min_connection,
         maxconn=sql_pool_max_connection,
         dbname=sql_pool_db_name,
