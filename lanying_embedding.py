@@ -102,6 +102,108 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     bind_preset_name(app_id, preset_name, embedding_name)
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
 
+def migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name):
+    redis = lanying_redis.get_redis_stack_connection()
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
+        print(f"skip for not exist embedding_name: app_id:{app_id}, embedding_name:{embedding_name}")
+        return
+    embedding_uuid = embedding_name_info['embedding_uuid']
+    embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+    if embedding_uuid_info is None:
+        print(f"skip for not exist embedding_uuid: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}")
+        return
+    db_type = embedding_uuid_info.get('db_type', 'redis')
+    if db_type == 'pgvector':
+        print(f"skip for already pgvector: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}")
+        return
+    db_table_name = f"embedding_{embedding_uuid}_{app_id}"
+    data_prefix = embedding_uuid_info.get('prefix', '')
+    if data_prefix == '':
+        print(f"skip for data_prefix is empty: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}")
+        return
+    with lanying_pgvector.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"DROP TABLE IF EXISTS {db_table_name};")
+        cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
+        cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
+        cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
+        conn.commit()
+        cursor.close()
+        lanying_pgvector.put_connection(conn)
+    key_count = 0
+    for bytes in redis.scan_iter(match=f'{data_prefix}*', count=100):
+        key_count += 1
+        data_key = bytes.decode('utf-8')
+        print(f"found data key: key_count:{key_count}, data_key:{data_key}")
+        migrate_embedding_from_redis_to_pgvector_for_key(db_table_name, key_count, data_key, data_prefix, redis)
+    print(f"update db_type: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
+    redis.hmset(get_embedding_uuid_key(embedding_uuid),
+                {"db_type": 'pgvector',
+                "db_table_name": db_table_name})
+    with lanying_pgvector.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM {db_table_name}")
+        row_count = cursor.fetchone()[0]
+        cursor.close()
+        lanying_pgvector.put_connection(conn)
+        print(f"check row count: key_count:{key_count}, row_count:{row_count}, equal: {key_count == row_count}")
+    print(f"finish migration: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
+
+def redis_hgetall_with_embedding(redis, key):
+    kvs = redis.hgetall(key)
+    ret = {}
+    if kvs:
+        for k,v in kvs.items():
+            new_k = k.decode('utf-8')
+            if new_k == 'embedding':
+                ret[new_k] = v
+            else:
+                ret[new_k] = v.decode('utf-8')
+    return ret
+
+def migrate_embedding_from_redis_to_pgvector_for_key(db_table_name, key_count, data_key, data_prefix, redis):
+    info = redis_hgetall_with_embedding(redis, data_key)
+    block_id = data_key[len(data_prefix):]
+    text = info.get('text', '')
+    question = info.get('question', '')
+    text_hash = info.get('text_hash', '')
+    function = info.get('function', '')
+    embedding_bytes = info.get('embedding', b'')
+    doc_id = info.get('doc_id', '')
+    num_of_tokens = int(info.get('num_of_tokens', '0'))
+    reference = info.get('reference', '')
+    summary = info.get('summary', '{}')
+    embedding = np.frombuffer(embedding_bytes, dtype=np.float64).tolist()
+    if text_hash == '':
+        embedding_text = text + question
+        text_hash = sha256(embedding_text+function)
+    with lanying_pgvector.get_connection() as conn:
+        cursor = conn.cursor()
+        insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        cursor.execute(insert_query, (embedding, text, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id))
+        conn.commit()
+        cursor.close()
+        lanying_pgvector.put_connection(conn)
+    print(f"insert data finish | block_id:{block_id}, db_table_name:{db_table_name}, key_count:{key_count}, data_prefix:{data_prefix}")
+
+def migrate_embedding_from_redis_to_pgvector_for_app_id(app_id):
+    print(f"now processing app_id:{app_id}")
+    embedding_names = list_embedding_names(app_id)
+    for embedding_name in embedding_names:
+        print(f"found embedding_name: {embedding_name}")
+        migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name)
+
+def migrate_embedding_from_redis_to_pgvector_all():
+    redis = lanying_redis.get_redis_stack_connection()
+    keys = lanying_redis.redis_keys(redis, "embedding_names:*")
+    for key in keys:
+        print(f"parsing key: {key}")
+        fields = key.split(':')
+        app_id = fields[1]
+        print(f"found app_id: {app_id}")
+        migrate_embedding_from_redis_to_pgvector_for_app_id(app_id)
+
 def delete_embedding(app_id, embedding_name):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info:

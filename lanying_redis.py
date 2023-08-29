@@ -59,3 +59,7 @@ def redis_get(redis, key):
     if result:
         return result.decode('utf-8')
     return None
+
+def redis_keys(redis, prefix):
+    return [bytes.decode('utf-8') for bytes in redis.keys(prefix)]
+    
