@@ -8,6 +8,10 @@ def get_connection():
     if connection_pool:
         return connection_pool.getconn()
 
+def put_connection(conn):
+    if connection_pool:
+        return connection_pool.putconn(conn)
+
 sql_pool_host = os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')
 if sql_pool_host:
     sql_pool_min_connection = int(os.getenv('LANYING_CONNECTOR_SQL_POOL_MIN_CONNECTION', '5'))
@@ -30,3 +34,5 @@ if sql_pool_host:
         cursor = conn.cursor()
         cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         conn.commit()
+        cursor.close()
+        put_connection(conn)

@@ -96,6 +96,8 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
             cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
             conn.commit()
+            cursor.close()
+            lanying_pgvector.put_connection(conn)
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
@@ -222,6 +224,8 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
         cursor.execute(f"SET ivfflat.probes = {db_ivfflat_probes};")
         cursor.execute(query, args)
         rows = cursor.fetchall()
+        cursor.close()
+        lanying_pgvector.put_connection(conn)
         logging.info(f"rows:{rows}")
         class MyDocument:
             pass
@@ -610,6 +614,8 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                     insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                     cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
                     conn.commit()
+                    cursor.close()
+                    lanying_pgvector.put_connection(conn)
             else:
                 redis.hmset(key, {"text":text,
                                 "question": question,
@@ -1069,6 +1075,8 @@ def search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, 
             cursor = conn.cursor()
             cursor.execute(f"delete from {db_table_name} where doc_id = %s", [doc_id])
             conn.commit()
+            cursor.close()
+            lanying_pgvector.put_connection(conn)
     else:
         redis = lanying_redis.get_redis_stack_connection()
         base_query = query_by_doc_id(doc_id)
