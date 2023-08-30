@@ -936,6 +936,8 @@ def maybe_rate_limit(retry):
     now = time.time()
     key = f"embedding:rate_limit:{int(now)}"
     count = redis.incrby(key, 1)
+    if count == 1:
+        redis.expire(key, 10)
     if count > global_embedding_rate_limit and retry > 0:
         time.sleep(int(now)+1 - now + 0.1 * random.random())
         maybe_rate_limit(retry-1)
