@@ -470,6 +470,48 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     logging.info(f"==========final preset messages============\n{preset_message_lines}")
     response = lanying_vendor.chat(vendor, prepare_info, preset)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
+    stream_msg_id = 0
+    reply_ext = {
+            'ai': {
+            }
+        }
+    if 'reply_generator' in response:
+        reply_generator = response.get('reply_generator')
+        reply = response['reply']
+        stream_interval = max(1, presetExt.get('stream_interval', 3))
+        stream_collect_count = presetExt.get('stream_collect_count', 10)
+        content_collect = []
+        content_count = 0
+        collect_start_time = time.time()
+        reply_ext = {
+            'ai': {
+                'stream': True,
+                'stream_interval': stream_interval
+            }
+        }
+        for delta in reply_generator:
+            delta_content = delta.get('content', '')
+            content_count += 1
+            content_collect.append(delta_content)
+            collect_now = time.time()
+            delta_time = collect_now - collect_start_time
+            if delta_time >= stream_interval and content_count >= stream_collect_count:
+                message_to_send = ''.join(content_collect)
+                if stream_msg_id > 0:
+                    lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, {}, True)
+                else:
+                    try:
+                        stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
+                    except Exception as e:
+                        pass
+                reply += message_to_send
+                content_count = 0
+                content_collect = []
+                collect_start_time = collect_now
+        reply += ''.join(content_collect)
+        stream_reponse = stream_lines_to_response(preset, reply, vendor)
+        response['reply'] = reply
+        response['usage'] = stream_reponse['usage']
     add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
     function_call_times = 3
     while function_call_times > 0:
@@ -526,7 +568,6 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             return handle_chat_message(config, msg, retry_times - 1)
         else:
             return ''
-    reply_ext = {}
     if reference:
         location = reference.get('location', 'none')
         if location == 'ext' or location == "both":
@@ -545,7 +586,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     if link not in links:
                         links.append(link)
                         doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link})
-            reply_ext = {'reference':doc_desc_list}
+            reply_ext['reference'] = doc_desc_list
         if location == 'body' or location == "both":
             doc_format = reference.get('style', '{seq}.{doc_id}.{link}')
             seperator = reference.get('seperator', ',')
@@ -578,9 +619,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             reference_doc_id_list = []
             for doc_id, reference in reference_list:
                 reference_doc_id_list.append(doc_id)
-            reply_ext = {'reference':reference_doc_id_list}
+            reply_ext['reference'] = reference_doc_id_list
     if len(reply) > 0:
-        lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+        if stream_msg_id > 0:
+            lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, False)
+        else:
+            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
 def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info):

@@ -2,6 +2,7 @@ import logging
 import openai
 import tiktoken
 import os
+import types
 
 def model_configs():
     return [
@@ -70,6 +71,20 @@ def chat(prepare_info, preset):
     logging.info(f"vendor openai chat request: {final_preset}")
     response = openai.ChatCompletion.create(**final_preset, headers = headers)
     logging.info(f"vendor openai chat response: {response}")
+    if isinstance(response, types.GeneratorType):
+        def generator():
+            for chunk in response:
+                yield chunk['choices'][0]['delta']
+        return {
+            'result': 'ok',
+            'reply' : '',
+            'reply_generator': generator(),
+            'usage' : {
+                'completion_tokens': 0,
+                'prompt_tokens': 0,
+                'total_tokens': 0
+            }
+        }
     try:
         usage = response.get('usage',{})
         response_message = response['choices'][0]['message']
@@ -138,7 +153,7 @@ def encoding_for_model(model):
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
-    support_fields = ['model', "messages", "functions", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user"]
+    support_fields = ['model', "messages", "functions", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
     ret = dict()
     for key in support_fields:
         if key in preset:
