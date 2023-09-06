@@ -473,6 +473,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     stream_msg_id = 0
     reply_ext = {
             'ai': {
+                'stream': False
             }
         }
     if 'reply_generator' in response:
