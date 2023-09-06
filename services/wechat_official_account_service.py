@@ -58,7 +58,7 @@ def service_post_messages(app_id):
     return resp
 
 def handle_chat_message(config, message):
-    checkres = check_message_user_ids(config, message)
+    checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
         return ''
     app_id = message['appId']
@@ -69,15 +69,30 @@ def handle_chat_message(config, message):
         send_wechat_message(config, app_id, message, wechat_username)
     return ''
 
-def check_message_user_ids(config, message):
+def check_message_need_send(config, message):
     from_user_id = int(message['from']['uid'])
     to_user_id = int(message['to']['uid'])
     type = message['type']
     my_user_id = config['lanying_user_id']
-    if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and type == 'CHAT':
-        logging.info(f'lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},result:ok')
+    if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and (type == 'CHAT' or type == 'REPLACE'):
+        ext = message.get('ext', '')
+        try:
+            json_ext = json.loads(ext)
+        except Exception as e:
+            json_ext = {}
+        try:
+            is_stream = (json_ext['ai']['stream'] == True)
+        except Exception as e:
+            is_stream = False
+        if type != 'REPLACE' and is_stream:
+            logging.info(f"skip chat and stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
+            return {'result':'error', 'msg':''}
+        if type == 'REPLACE' and not is_stream:
+            logging.info(f"skip REPLACE and not stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
+            return {'result':'error', 'msg':''}
+        logging.info(f'check_message_need_send: lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},result:ok')
         return {'result':'ok'}
-    logging.info(f'lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id}, type:{type},result:error:{my_user_id != None} { from_user_id == my_user_id} {to_user_id != my_user_id} { type == "CHAT"}')
+    logging.info(f'skip other user msg: lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id}, type:{type}')
     return {'result':'error', 'msg':''}
 
 def send_wechat_message(config, app_id, message, to_username):
