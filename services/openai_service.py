@@ -476,7 +476,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 'stream': False
             }
         }
-    if 'reply_generator' in response:
+    is_stream = ('reply_generator' in response)
+    if is_stream:
         reply_generator = response.get('reply_generator')
         reply = response['reply']
         stream_interval = max(1, presetExt.get('stream_interval', 3))
@@ -625,6 +626,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if stream_msg_id > 0:
             lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, False)
         else:
+            reply_ext['ai']['stream'] = False
             lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
