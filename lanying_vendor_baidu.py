@@ -251,7 +251,7 @@ def format_preset(prepare_info, preset):
                                 if len(messages) > 0 and messages[-1]['role'] == 'user':
                                     messages.append({'role':'assistant', 'content':content})
                                 else:
-                                    logging.info("dropping a assistant message: {message}")
+                                    logging.info(f"dropping a assistant message: {message}")
                 ret[key] = messages
             else:
                 ret[key] = preset[key]

@@ -272,7 +272,6 @@ def handle_chat_message(config, msg, retry_times = 3):
             if "preset_name" in command_ext:
                 if command_ext['preset_name'] != "default":
                     preset = preset['presets'][command_ext['preset_name']]
-                    init_preset_defaults(preset, config['preset'])
                 preset_name = command_ext['preset_name']
                 logging.info(f"using preset_name from command:{preset_name}")
         except Exception as e:
@@ -282,7 +281,6 @@ def handle_chat_message(config, msg, retry_times = 3):
             if 'preset_name' in lcExt:
                 if lcExt['preset_name'] != "default":
                     preset = preset['presets'][lcExt['preset_name']]
-                    init_preset_defaults(preset, config['preset'])
                 preset_name = lcExt['preset_name']
                 logging.info(f"using preset_name from lc_ext:{preset_name}")
         except Exception as e:
@@ -294,7 +292,6 @@ def handle_chat_message(config, msg, retry_times = 3):
             try:
                 if lastChoosePresetName != "default":
                     preset = preset['presets'][lastChoosePresetName]
-                    init_preset_defaults(preset, config['preset'])
                 preset_name = lastChoosePresetName
                 logging.info(f"using preset_name from last_choose_preset:{preset_name}")
             except Exception as e:
@@ -1184,11 +1181,6 @@ def check_message_rate(app_id, path):
         logging.info(f"app:{app_id} is exceed rate limit, limit is {limit}, count is {count}")
         return {'result':'error', 'code':429, 'msg': 'request too fast'}
     return {'result':'ok'}
-
-def init_preset_defaults(preset, preset_default):
-    for k,v in preset_default.items():
-        if k not in ['presets', 'ext'] and k not in preset:
-            preset[k] = v
 
 def embedding_info_key(fromUserId, toUserId):
     return "lanying:connector:embedding_info:" + fromUserId + ":" + toUserId

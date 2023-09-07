@@ -43,15 +43,42 @@ def chat(prepare_info, preset):
     final_preset = format_preset(preset)
     try:
         logging.info(f"zhipuai chat_completion start | preset={preset}, final_preset={final_preset}")
-        response = zhipuai.model_api.invoke(**final_preset)
-        logging.info(f"zhipuai chat_completion finish | response={response}")
-        usage = response.get('usage',{})
-        reply = response['data']['choices'][0]['content'].strip()
-        try:
-            if reply.startswith('"'):
-                reply_str = json.loads(reply)
-                if isinstance(reply_str, str):
-                    reply = reply_str
+        stream = final_preset.get("stream", False)
+        if 'stream' in final_preset:
+            del final_preset['stream']
+        if stream:
+            response = zhipuai.model_api.sse_invoke(**final_preset)
+            logging.info(f"zhipuai chat_completion finish | stream={stream}")
+            def generator():
+                for event in response.events():
+                    if event.event == "add":
+                        yield {'content':event.data}
+                    elif event.event == "error" or event.event == "interrupted":
+                        logging.info(f"got error event:{event.event}, {event.data}")
+                    elif event.event == "finish":
+                        text = ''
+                        if hasattr(event, 'data'):
+                            text = event.data
+                        meta = json.loads(event.meta)
+                        yield {'content': text, 'usage': meta.get('usage', {})}
+                    else:
+                        logging.info(f"unknown event:{event.event}, {event.data}")
+            return {
+                'result': 'ok',
+                'reply' : '',
+                'reply_generator': generator(),
+                'usage' : {
+                    'completion_tokens': 0,
+                    'prompt_tokens': 0,
+                    'total_tokens': 0
+                }
+            }
+        else:
+            response = zhipuai.model_api.invoke(**final_preset)
+            logging.info(f"zhipuai chat_completion finish | response={response}")
+            usage = response.get('usage',{})
+            reply = response['data']['choices'][0]['content'].strip()
+            try:
                 if reply.startswith('"'):
                     reply_str = json.loads(reply)
                     if isinstance(reply_str, str):
@@ -60,17 +87,21 @@ def chat(prepare_info, preset):
                         reply_str = json.loads(reply)
                         if isinstance(reply_str, str):
                             reply = reply_str
-        except Exception as e:
-            pass
-        return {
-            'result': 'ok',
-            'reply' : reply,
-            'usage' : {
-                'completion_tokens' : usage.get('completion_tokens',0),
-                'prompt_tokens' : usage.get('prompt_tokens', 0),
-                'total_tokens' : usage.get('total_tokens', 0)
+                        if reply.startswith('"'):
+                            reply_str = json.loads(reply)
+                            if isinstance(reply_str, str):
+                                reply = reply_str
+            except Exception as e:
+                pass
+            return {
+                'result': 'ok',
+                'reply' : reply,
+                'usage' : {
+                    'completion_tokens' : usage.get('completion_tokens',0),
+                    'prompt_tokens' : usage.get('prompt_tokens', 0),
+                    'total_tokens' : usage.get('total_tokens', 0)
+                }
             }
-        }
     except Exception as e:
         logging.exception(e)
         logging.info(f"fail to transform response:{response}")
@@ -89,7 +120,7 @@ def encoding_for_model(model): # for temp
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(preset):
-    support_fields = ['model', "prompt", "temperature", "top_p"]
+    support_fields = ['model', "prompt", "temperature", "top_p", "stream"]
     ret = dict()
     for key in support_fields:
         if key == 'prompt':
@@ -110,7 +141,7 @@ def format_preset(preset):
                             if len(messages) > 0 and messages[-1]['role'] == 'user':
                                 messages.append({'role':'assistant', 'content':content})
                             else:
-                                logging.info("dropping a assistant message: {message}")
+                                logging.info(f"dropping a assistant message: {message}")
             ret[key] = messages
         elif key == 'top_p':
             if key in preset:
