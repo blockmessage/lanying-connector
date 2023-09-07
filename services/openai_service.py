@@ -135,7 +135,7 @@ def handle_request(request):
                         yield line_str + '\n'
                 finally:
                     reply = ''.join(contents)
-                    response_json = stream_lines_to_response(preset, reply, vendor)
+                    response_json = stream_lines_to_response(preset, reply, vendor, {})
                     add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
         else:
@@ -491,9 +491,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 'stream_interval': stream_interval
             }
         }
+        stream_usage = {}
         for delta in reply_generator:
             delta_content = delta.get('content', '')
-            content_count += 1
+            if 'usage' in delta:
+                stream_usage = delta['usage']
+            content_count += len(delta_content)
             content_collect.append(delta_content)
             collect_now = time.time()
             delta_time = collect_now - collect_start_time
@@ -511,7 +514,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 content_collect = []
                 collect_start_time = collect_now
         reply += ''.join(content_collect)
-        stream_reponse = stream_lines_to_response(preset, reply, vendor)
+        stream_reponse = stream_lines_to_response(preset, reply, vendor, stream_usage)
         response['reply'] = reply
         response['usage'] = stream_reponse['usage']
     add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
@@ -1673,15 +1676,21 @@ def user_default_embedding_name_key(app_id, user_id):
 def list_models():
     return lanying_vendor.list_models()
 
-def stream_lines_to_response(preset, reply, vendor):
-    prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor)
-    completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
+def stream_lines_to_response(preset, reply, vendor, usage):
+    if 'total_tokens' in usage:
+        total_tokens = usage['total_tokens']
+        prompt_tokens = usage.get('prompt_tokens', 0)
+        completion_tokens = usage.get('completion_tokens', total_tokens - prompt_tokens)
+    else:
+        prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor)
+        completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
+        total_tokens = prompt_tokens + completion_tokens
     response = {
         'reply': reply,
         'usage':{
             'completion_tokens' : completion_tokens,
             'prompt_tokens' : prompt_tokens,
-            'total_tokens' : prompt_tokens + completion_tokens
+            'total_tokens' : total_tokens
         }
     }
     logging.info(f"stream_lines_to_response | response:{response}")

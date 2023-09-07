@@ -1,7 +1,7 @@
 import requests
 import logging
 import tiktoken
-
+import json
 
 def model_configs():
     return [
@@ -60,30 +60,72 @@ def chat(prepare_info, preset):
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json", "Authorization": api_key}
     logging.info(f"minimax chat_completion start | preset={preset}, final_preset={final_preset}, url:{url}, api_key:{api_key[:10]}...{api_key[-6:]}")
-    response = requests.request("POST", url, headers=headers, json=final_preset)
-    logging.info(f"minimax chat_completion finish | code={response.status_code}, response={response.text}")
     try:
-        res = response.json()
-        base_resp = res.get('base_resp',{})
-        status_code = base_resp.get('status_code', 0)
-        if status_code == 0:
-            usage = res.get('usage',{})
-            return {
-                'result': 'ok',
-                'reply': res['reply'],
-                'function_call': res.get('function_call'),
-                'usage': {
-                    'completion_tokens' : usage.get('completion_tokens',0),
-                    'prompt_tokens' : usage.get('prompt_tokens', 0),
-                    'total_tokens' : usage.get('total_tokens', 0)
+        stream = final_preset.get("stream", False)
+        if stream:
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=stream)
+            logging.info(f"minimax chat_completion finish | code={response.status_code}, stream={stream}")
+            if response.status_code == 200:
+                def generator():
+                    for line in response.iter_lines():
+                        line_str = line.decode('utf-8')
+                        logging.info(f"stream got line:{line_str}|")
+                        if line_str.startswith('data:'):
+                            try:
+                                data = json.loads(line_str[5:])
+                                if 'usage' in data:
+                                    yield {'usage': data['usage']}
+                                else:
+                                    text = data['choices'][0]['messages'][0]['text']
+                                    yield {'content': text}
+                            except Exception as e:
+                                pass
+                return {
+                    'result': 'ok',
+                    'reply' : '',
+                    'reply_generator': generator(),
+                    'usage' : {
+                        'completion_tokens': 0,
+                        'prompt_tokens': 0,
+                        'total_tokens': 0
+                    }
                 }
-            }
+            else:
+                logging.info(f"fail to get stream: response:{response.text}")
+                response_json = {}
+                try:
+                    response_json = response.json()
+                except Exception as e:
+                    pass
+                return {
+                    'result': 'error',
+                    'reason': 'bad_status_code',
+                    'response': response_json
+                }
         else:
-            return {
-                'result': 'error',
-                'reason': base_resp.get('status_msg', ''),
-                'response': res 
-            }
+            response = requests.request("POST", url, headers=headers, json=final_preset)
+            logging.info(f"minimax chat_completion finish | code={response.status_code}, response={response.text}")
+            res = response.json()
+            base_resp = res.get('base_resp',{})
+            status_code = base_resp.get('status_code', 0)
+            if status_code == 0:
+                usage = res.get('usage',{})
+                return {
+                    'result': 'ok',
+                    'reply': res['reply'],
+                    'function_call': res.get('function_call'),
+                    'usage': {
+                        'completion_tokens' : usage.get('completion_tokens',0),
+                        'prompt_tokens' : usage.get('prompt_tokens', 0),
+                        'total_tokens' : usage.get('total_tokens', 0)
+                    }
+                }
+            else:
+                return {
+                    'result': 'error',
+                    'reason': base_resp.get('status_msg', ''),
+                    'response': res 
+                }
     except Exception as e:
         logging.exception(e)
         logging.info(f"fail to transform response:{response}")
@@ -148,7 +190,7 @@ def encoding_for_model(model): # for temp
 def format_preset(prepare_info, preset):
     bot_name = prepare_info['bot_name']
     user_name = prepare_info['user_name']
-    support_fields = ['model', "tokens_to_generate", "temperature", "top_p", "mask_sensitive_info", "messages", "bot_setting", "reply_constraints", "functions"]
+    support_fields = ['model', "tokens_to_generate", "temperature", "top_p", "mask_sensitive_info", "messages", "bot_setting", "reply_constraints", "functions", "stream"]
     payload = dict()
     for key in support_fields:
         if key == 'tokens_to_generate':
