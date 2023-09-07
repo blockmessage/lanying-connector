@@ -57,7 +57,7 @@ def chat(prepare_info, preset):
         logging.info(f"azure chat_completion start | preset={preset}, final_preset={final_preset}, url:{url}")
         stream = final_preset.get("stream", False)
         if stream:
-            response = requests.request("POST", url, headers=headers, json=final_preset, stream=stream)
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
             logging.info(f"azure chat_completion finish | code={response.status_code}, stream:{stream}")
             if response.status_code == 200:
                 def generator():

@@ -63,13 +63,13 @@ def chat(prepare_info, preset):
     try:
         stream = final_preset.get("stream", False)
         if stream:
-            response = requests.request("POST", url, headers=headers, json=final_preset, stream=stream)
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
             logging.info(f"minimax chat_completion finish | code={response.status_code}, stream={stream}")
             if response.status_code == 200:
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        logging.info(f"stream got line:{line_str}|")
+                        # logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])

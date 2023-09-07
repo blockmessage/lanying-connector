@@ -85,29 +85,75 @@ def chat(prepare_info, preset):
     url = f"{model_url}?access_token={access_token}"
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json"}
-    logging.info(f"baidu chat_completion start | preset={preset}, final_preset={final_preset}, access_token_len={len(access_token)}")
-    response = requests.request("POST", url, headers=headers, json=final_preset)
-    logging.info(f"baidu chat_completion finish | code={response.status_code}, response={response.text}")
     try:
-        res = response.json()
-        error_code = res.get('error_code')
-        error_msg = res.get('error_msg')
-        if error_code:
+        logging.info(f"baidu chat_completion start | preset={preset}, final_preset={final_preset}, access_token_len={len(access_token)}")
+        stream = final_preset.get("stream", False)
+        if stream:
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
+            logging.info(f"baidu chat_completion finish | code={response.status_code}, stream={stream}")
+            if response.status_code == 200:
+                def generator():
+                    completion_tokens = 0
+                    for line in response.iter_lines():
+                        line_str = line.decode('utf-8')
+                        # logging.info(f"stream got line:{line_str}|")
+                        if line_str.startswith('data:'):
+                            try:
+                                data = json.loads(line_str[5:])
+                                text = data.get('result','')
+                                if 'usage' in data:
+                                    usage = data['usage']
+                                    completion_tokens += usage.get('completion_tokens', 0)
+                                    usage['completion_tokens'] = completion_tokens
+                                    yield {'usage': usage, 'content': text}
+                                else:
+                                    yield {'content': text}
+                            except Exception as e:
+                                pass
+                return {
+                    'result': 'ok',
+                    'reply' : '',
+                    'reply_generator': generator(),
+                    'usage' : {
+                        'completion_tokens': 0,
+                        'prompt_tokens': 0,
+                        'total_tokens': 0
+                    }
+                }
+            else:
+                logging.info(f"fail to get stream: response:{response.text}")
+                response_json = {}
+                try:
+                    response_json = response.json()
+                except Exception as e:
+                    pass
+                return {
+                    'result': 'error',
+                    'reason': 'bad_status_code',
+                    'response': response_json
+                }
+        else:
+            response = requests.request("POST", url, headers=headers, json=final_preset)
+            logging.info(f"baidu chat_completion finish | code={response.status_code}, response={response.text}")
+            res = response.json()
+            error_code = res.get('error_code')
+            error_msg = res.get('error_msg')
+            if error_code:
+                return {
+                    'result': 'error',
+                    'reason': error_msg,
+                    'code': error_code
+                }
+            usage = res.get('usage',{})
             return {
-                'result': 'error',
-                'reason': error_msg,
-                'code': error_code
+                'result': 'ok',
+                'reply': res['result'],
+                'usage': {
+                    'completion_tokens' : usage.get('completion_tokens',0),
+                    'prompt_tokens' : usage.get('prompt_tokens', 0),
+                    'total_tokens' : usage.get('total_tokens', 0)
+                }
             }
-        usage = res.get('usage',{})
-        return {
-            'result': 'ok',
-            'reply': res['result'],
-            'usage': {
-                'completion_tokens' : usage.get('completion_tokens',0),
-                'prompt_tokens' : usage.get('prompt_tokens', 0),
-                'total_tokens' : usage.get('total_tokens', 0)
-            }
-        }
     except Exception as e:
         logging.exception(e)
         logging.info(f"fail to transform response:{response}")
@@ -183,7 +229,7 @@ def encoding_for_model(model): # for temp
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(prepare_info, preset):
-    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id"]
+    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id", "stream"]
     ret = dict()
     for key in support_fields:
         if key in preset:

@@ -911,7 +911,7 @@ def get_max_token_count(config):
     max_block_size = max(350, int(config.get('max_block_size', "350")))
     max_token_count = word_num_to_token_num(max_block_size)
     if config.get('vendor', 'openai') == 'baidu':
-        return min(max_token_count, 360)
+        return min(max_token_count, 300)
     return max_token_count
 
 def get_overlapping_size(config):

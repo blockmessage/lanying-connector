@@ -164,7 +164,7 @@ def forward_request(app_id, request, auth_info):
     stream = request_json.get('stream', False)
     if stream:
         logging.info(f"forward request stream start: app_id:{app_id}, url:{url}")
-        response = requests.post(url, data=data, headers=headers, stream=stream)
+        response = requests.post(url, data=data, headers=headers, stream=True)
         logging.info(f"forward request stream finish: app_id:{app_id}, status_code: {response.status_code}")
         return (stream, response)
     else:
