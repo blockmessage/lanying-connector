@@ -1,6 +1,7 @@
 import logging
 import tiktoken
 import requests
+import json
 
 def model_configs():
     return [
@@ -54,27 +55,65 @@ def chat(prepare_info, preset):
     headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
     try:
         logging.info(f"azure chat_completion start | preset={preset}, final_preset={final_preset}, url:{url}")
-        response = requests.request("POST", url, headers=headers, json=final_preset)
-        logging.info(f"azure chat_completion finish | code={response.status_code}, response={response.text}")
-        res = response.json()
-        usage = res.get('usage',{})
-        response_message = res['choices'][0]['message']
-        reply = response_message.get('content', "")
-        if reply:
-            reply = reply.strip()
+        stream = final_preset.get("stream", False)
+        if stream:
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=stream)
+            logging.info(f"azure chat_completion finish | code={response.status_code}, stream:{stream}")
+            if response.status_code == 200:
+                def generator():
+                    for line in response.iter_lines():
+                        line_str = line.decode('utf-8')
+                        # logging.info(f"stream got line:{line_str}|")
+                        if line_str.startswith('data:'):
+                            try:
+                                data = json.loads(line_str[5:])
+                                yield data['choices'][0]['delta']
+                            except Exception as e:
+                                pass
+                return {
+                    'result': 'ok',
+                    'reply' : '',
+                    'reply_generator': generator(),
+                    'usage' : {
+                        'completion_tokens': 0,
+                        'prompt_tokens': 0,
+                        'total_tokens': 0
+                    }
+                }
+            else:
+                logging.info(f"fail to get stream: response:{response.text}")
+                response_json = {}
+                try:
+                    response_json = response.json()
+                except Exception as e:
+                    pass
+                return {
+                    'result': 'error',
+                    'reason': 'bad_status_code',
+                    'response': response_json
+                }
         else:
-            reply = ''
-        function_call = response_message.get('function_call')
-        return {
-            'result': 'ok',
-            'reply' : reply,
-            'function_call': function_call,
-            'usage' : {
-                'completion_tokens' : usage.get('completion_tokens',0),
-                'prompt_tokens' : usage.get('prompt_tokens', 0),
-                'total_tokens' : usage.get('total_tokens', 0)
+            response = requests.request("POST", url, headers=headers, json=final_preset)
+            logging.info(f"azure chat_completion finish | code={response.status_code}, response={response.text}")
+            res = response.json()
+            usage = res.get('usage',{})
+            response_message = res['choices'][0]['message']
+            reply = response_message.get('content', "")
+            if reply:
+                reply = reply.strip()
+            else:
+                reply = ''
+            function_call = response_message.get('function_call')
+            return {
+                'result': 'ok',
+                'reply' : reply,
+                'function_call': function_call,
+                'usage' : {
+                    'completion_tokens' : usage.get('completion_tokens',0),
+                    'prompt_tokens' : usage.get('prompt_tokens', 0),
+                    'total_tokens' : usage.get('total_tokens', 0)
+                }
             }
-        }
     except Exception as e:
         logging.exception(e)
         return {
@@ -123,7 +162,7 @@ def encoding_for_model(model):
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
-    support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user"]
+    support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
     ret = dict()
     for key in support_fields:
         if key in preset:
