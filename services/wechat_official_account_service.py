@@ -10,6 +10,7 @@ import string
 import json
 import lanying_message
 import os
+import time
 
 official_account_max_message_size = 600
 service = 'wechat_official_account'
@@ -28,6 +29,7 @@ def service_get_messages(app_id):
 @bp.route("/service/wechat_official_account/app/<string:app_id>/messages", methods=["POST"])
 @bp.route("/wechat/official/messages/<string:app_id>", methods=["POST"])
 def service_post_messages(app_id):
+    start_time = time.time()
     xml_data = request.data
     reply = 'failed'
     logging.info(f"app_id:{app_id}, xml_data:{xml_data}, request.args:{request.args.to_dict()}, headers:{request.headers.to_wsgi_list()}")
@@ -41,13 +43,55 @@ def service_post_messages(app_id):
                 from_user_name = xml.find('FromUserName').text
                 create_time = xml.find('CreateTime').text
                 content = xml.find('Content').text
-                msg_id = xml.find('MsgId').text
-                logging.info(f"app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},msg_type:{msg_type},content:{content},msg_id:{msg_id}")
-                logging.info(f"request.headers:{request.headers.items()}")
+                msg_id = int(xml.find('MsgId').text)
+                verify_type = config.get('type', 'verified')
+                logging.info(f"got wechat message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},msg_type:{msg_type},content:{content},msg_id:{msg_id}, verify_type:{verify_type}")
                 user_id = get_or_register_user(app_id, from_user_name)
                 if user_id:
-                    lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content)
-                    reply = 'success'
+                    if verify_type == 'unverified':
+                        reply_expire_time = start_time + int(os.getenv("WECHAT_OFFICIAL_ACCOUNT_REPLY_EXPIRE_TIME", "3"))
+                        last_msg_id_key = f"wechat_official_account:last_msg_id:{user_id}"
+                        key = subscribe_key(user_id, msg_id)
+                        redis = lanying_redis.get_redis_connection()
+                        keys = [key]
+                        if redis.exists(*keys) == 0:
+                            redis.hincrby(key, "retry_count", 1)
+                            redis.expire(key, 600)
+                            last_msg_id_str = lanying_redis.redis_get(redis, last_msg_id_key)
+                            if content == "1" and last_msg_id_str:
+                                redis.hset(key, 'watch_msg_id', last_msg_id_str)
+                                key = subscribe_key(user_id, int(last_msg_id_str))
+                                reply = wait_reply_msg(key, reply_expire_time, False)
+                            else:
+                                redis.set(last_msg_id_key, msg_id)
+                                ext = {
+                                    'ai':{
+                                        'feedback':{
+                                            'wechat_msg_id':msg_id
+                                        }
+                                    }
+                                }
+                                lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content, ext)
+                                reply = wait_reply_msg(key, reply_expire_time, False)
+                        else:
+                            retry_count = redis.hincrby(key, "retry_count", 1)
+                            redis.expire(key, 600)
+                            watch_msg_id_str = lanying_redis.redis_hget(redis, key, 'watch_msg_id')
+                            if watch_msg_id_str:
+                                key = subscribe_key(user_id, int(watch_msg_id_str))
+                            reply = wait_reply_msg(key, reply_expire_time, retry_count >=3)
+                        if len(reply) > 0:
+                            reply = f"""<xml>
+                                    <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                                    <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                                    <CreateTime>{int(time.time())}</CreateTime>
+                                    <MsgType><![CDATA[text]]></MsgType>
+                                    <Content><![CDATA[{reply}]]></Content>
+                                    </xml>
+                                    """
+                    else:
+                        lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content)
+                        reply = 'success'
                 else:
                     logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
             else:
@@ -57,16 +101,74 @@ def service_post_messages(app_id):
     resp = make_response(reply)
     return resp
 
+def subscribe_key(user_id, msg_id):
+    return f"wechat_official_account:subscribe:{user_id}:{msg_id}"
+
+def wait_reply_msg(key, expire_time, is_last):
+    redis = lanying_redis.get_redis_connection()
+    now = time.time()
+    info = {}
+    tip = '我还需要一些时间思考，如果希望收到我的信息，请发送数字1确认。'
+    while now < expire_time:
+        info = lanying_redis.redis_hgetall(redis, key)
+        now = time.time()
+        if now > expire_time:
+            break
+        message = info.get('message', '')
+        start = int(info.get('start', '0'))
+        if 'finish' in info and info['finish'] == '1':
+            message_len = len(message)
+            if message_len > start + official_account_max_message_size:
+                send_len = official_account_max_message_size - len(tip) - 2
+                redis.hset(key, 'start', start+send_len)
+                reply = message[start:start+send_len] + '\n\n' + tip
+                logging.info(f"reply wechat unfinish message | {reply}")
+                return reply
+            elif message_len >= start:
+                redis.hset(key, 'start', start+official_account_max_message_size)
+                reply = message[start:start+official_account_max_message_size]
+                logging.info(f"reply wechat last message | {reply}")
+                return reply
+            else:
+                reply = '没有更多消息'
+                logging.info(f"reply wechat nomore message | {reply}")
+                return reply
+        now = time.time()
+        time.sleep(min(max(0,expire_time-now), 500))
+        now = time.time()
+    if is_last:
+        logging.info(f"reply wechat getmore message | {tip}")
+        return tip
+    else:
+        time.sleep(6)
+        return 'wait'
+
 def handle_chat_message(config, message):
     checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
         return ''
     app_id = message['appId']
     to_user_id = message['to']['uid']
-    logging.info(f"{service} | handle_chat_message do for user_id, app_id={app_id}, to_user_id:{to_user_id}")
-    wechat_username = get_wechat_username(app_id, to_user_id)
-    if wechat_username:
-        send_wechat_message(config, app_id, message, wechat_username)
+    verify_type = config.get('type', 'verified')
+    logging.info(f"{service} | handle_chat_message do for user_id, app_id={app_id}, to_user_id:{to_user_id}, verify_type:{verify_type}")
+    if verify_type == 'unverified':
+        redis = lanying_redis.get_redis_connection()
+        wechat_msg_id = 0
+        try:
+            ext_json = json.loads(message['ext'])
+            wechat_msg_id = int(ext_json['ai']['feedback']['wechat_msg_id'])
+        except Exception as e:
+            pass
+        if wechat_msg_id > 0:
+            key = subscribe_key(to_user_id, wechat_msg_id)
+            redis.hmset(key, {
+                'finish':"1",
+                "message": message['content']
+            })
+    else:
+        wechat_username = get_wechat_username(app_id, to_user_id)
+        if wechat_username:
+            send_wechat_message(config, app_id, message, wechat_username)
     return ''
 
 def check_message_need_send(config, message):

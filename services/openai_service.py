@@ -263,7 +263,10 @@ def handle_chat_message(config, msg, retry_times = 3):
     redis = lanying_redis.get_redis_connection()
     try:
         ext = json.loads(config['ext'])
-        lcExt = ext['lanying_connector']
+        if 'ai' in ext:
+            lcExt = ext['ai']
+        elif 'lanying_connector' in ext:
+            lcExt = ext['lanying_connector']
     except Exception as e:
         pass
     preset_name = ""
@@ -473,6 +476,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 'stream': False
             }
         }
+    if 'feedback' in lcExt:
+        reply_ext['ai']['feedback'] = lcExt['feedback']
     is_stream = ('reply_generator' in response)
     if is_stream:
         reply_generator = response.get('reply_generator')
@@ -482,12 +487,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         content_collect = []
         content_count = 0
         collect_start_time = time.time()
-        reply_ext = {
-            'ai': {
-                'stream': True,
-                'stream_interval': stream_interval
-            }
-        }
+        reply_ext['ai']['stream'] = True
+        reply_ext['ai']['stream_interval'] = stream_interval
         stream_usage = {}
         for delta in reply_generator:
             delta_content = delta.get('content', '')

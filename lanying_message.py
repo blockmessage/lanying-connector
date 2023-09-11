@@ -29,3 +29,12 @@ def send_message(config, appId, fromUserId, toUserId, content, ext = {}):
                                           'ext': json.dumps(ext, ensure_ascii=False) if ext else ''})
         logging.info(f"Send message, from={fromUserId} to={toUserId} content={content}")
         logging.info(sendResponse)
+        try:
+            res = sendResponse.json()
+            if 'msg_ids' in res:
+                msg_ids = res['msg_ids']
+                if len(msg_ids) > 0:
+                    return msg_ids[0]
+        except Exception as e:
+            pass
+        return 0
