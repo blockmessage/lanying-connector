@@ -68,7 +68,8 @@ def service_post_messages(app_id):
                                     'ai':{
                                         'feedback':{
                                             'wechat_msg_id':msg_id
-                                        }
+                                        },
+                                        'force_stream': True
                                     }
                                 }
                                 lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content, ext)
@@ -108,7 +109,7 @@ def wait_reply_msg(key, expire_time, is_last):
     redis = lanying_redis.get_redis_connection()
     now = time.time()
     info = {}
-    tip = '我还需要一些时间思考，如果希望收到我的信息，请发送数字1确认。'
+    tip = '...（消息超长，回复1继续接收）'
     while now < expire_time:
         info = lanying_redis.redis_hgetall(redis, key)
         now = time.time()

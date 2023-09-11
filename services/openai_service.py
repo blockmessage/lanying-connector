@@ -468,6 +468,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     preset['messages'] = messages
     preset_message_lines = "\n".join([f"{message.get('role','')}:{message.get('content','')}" for message in messages])
     logging.info(f"==========final preset messages============\n{preset_message_lines}")
+    if 'force_stream' in lcExt and lcExt['force_stream'] == True:
+        logging.info("force use stream")
+        preset['stream'] = True
+    oper_msg_config = {
+        'force_callback': True
+    }
     response = lanying_vendor.chat(vendor, prepare_info, preset)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
     stream_msg_id = 0
@@ -489,6 +495,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         collect_start_time = time.time()
         reply_ext['ai']['stream'] = True
         reply_ext['ai']['stream_interval'] = stream_interval
+        reply_ext['ai']['seq'] = 0
+        reply_ext['ai']['finish'] = False
         stream_usage = {}
         for delta in reply_generator:
             delta_content = delta.get('content', '')
@@ -501,9 +509,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             if delta_time >= stream_interval and content_count >= stream_collect_count:
                 message_to_send = ''.join(content_collect)
                 if stream_msg_id > 0:
-                    lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, {}, True)
+                    reply_ext['ai']['seq'] += 1
+                    lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
                 else:
                     try:
+                        reply_ext['ai']['seq'] += 1
                         stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
                     except Exception as e:
                         pass
@@ -625,7 +635,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             reply_ext['reference'] = reference_doc_id_list
     if len(reply) > 0:
         if stream_msg_id > 0:
-            lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, False)
+            reply_ext['ai']['seq'] += 1
+            reply_ext['ai']['finish'] = True
+            lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, oper_msg_config, False)
         else:
             reply_ext['ai']['stream'] = False
             lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)

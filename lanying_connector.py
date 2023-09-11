@@ -559,19 +559,20 @@ def sendReadAck(appId, fromUserId, toUserId, relatedMid):
                                     json={'type':1, 'from_user_id':fromUserId,'targets':[toUserId],'content_type':9, 'content': '', 'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False),'related_mid':relatedMid})
         logging.info(sendResponse)
 
-def sendMessageOperAsync(appId, fromUserId, toUserId, relatedMid, ctype, content, ext = {}, online_only = False):
-    executor.submit(sendMessageOperAsyncInternal, (appId, fromUserId, toUserId, relatedMid, ctype, content, ext, online_only))
+def sendMessageOperAsync(appId, fromUserId, toUserId, relatedMid, ctype, content, ext = {}, msg_config = {}, online_only = False):
+    executor.submit(sendMessageOperAsyncInternal, (appId, fromUserId, toUserId, relatedMid, ctype, content, ext, msg_config, online_only))
 
 def sendMessageOperAsyncInternal(data):
-    appId, fromUserId, toUserId, relatedMid, ctype, content, ext, online_only = data
-    sendMessageOper(appId, fromUserId, toUserId, relatedMid, ctype, content, ext, online_only)
+    appId, fromUserId, toUserId, relatedMid, ctype, content, ext, msg_config, online_only = data
+    sendMessageOper(appId, fromUserId, toUserId, relatedMid, ctype, content, ext, msg_config, online_only)
 
-def sendMessageOper(appId, fromUserId, toUserId, relatedMid, ctype, content, ext, online_only):
+def sendMessageOper(appId, fromUserId, toUserId, relatedMid, ctype, content, ext = {}, msg_config = {}, online_only = False):
     adminToken = lanying_config.get_lanying_admin_token(appId)
     apiEndpoint = lanying_config.get_lanying_api_endpoint(appId)
     message_antispam = lanying_config.get_message_antispam(appId)
     if adminToken:
-        logging.info(f"Send message oper, from={fromUserId} to={toUserId} ctype={ctype}, content={content}, ext:{ext}, online_only:{online_only}")
+        logging.info(f"Send message oper, from={fromUserId} to={toUserId} ctype={ctype}, content={content}, ext:{ext}, msg_config:{msg_config}, online_only:{online_only}")
+        msg_config['antispam_prompt'] = message_antispam
         sendResponse = requests.post(apiEndpoint + '/message/send',
                                     headers={'app_id': appId, 'access-token': adminToken},
                                     json={'type':1,
@@ -580,7 +581,7 @@ def sendMessageOper(appId, fromUserId, toUserId, relatedMid, ctype, content, ext
                                           'content_type':ctype,
                                           'content': content,
                                           'ext': json.dumps(ext, ensure_ascii=False) if ext else '',
-                                          'config': json.dumps({'antispam_prompt':message_antispam}, ensure_ascii=False),
+                                          'config': json.dumps(msg_config, ensure_ascii=False),
                                           'related_mid':relatedMid,
                                           'online_only': online_only})
         logging.info(sendResponse)
