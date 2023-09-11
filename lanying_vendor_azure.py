@@ -6,6 +6,24 @@ import json
 def model_configs():
     return [
         {
+            "model": 'gpt-4-32k',
+            "type": "chat",
+            "is_prefix": True,
+            "quota": 40,
+            "token_limit": 32000,
+            'order': 4,
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4-32k/chat/completions?api-version=2023-07-01-preview'
+        },
+        {
+            "model": 'gpt-4',
+            "type": "chat",
+            "is_prefix": True,
+            "quota": 20,
+            "token_limit": 8000,
+            'order': 3,
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2023-07-01-preview'
+        },
+        {
             "model": 'gpt-35-turbo-16k',
             "type": "chat",
             "is_prefix": True,
