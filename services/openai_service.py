@@ -639,8 +639,13 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             reply_ext['ai']['finish'] = True
             lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, oper_msg_config, False)
         else:
-            reply_ext['ai']['stream'] = False
-            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+            if is_stream:
+                reply_ext['ai']['seq'] += 1
+                reply_ext['ai']['finish'] = True
+                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+            else:
+                reply_ext['ai']['stream'] = False
+                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
 def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info):

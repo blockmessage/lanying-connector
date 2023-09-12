@@ -61,7 +61,8 @@ def service_post_messages(app_id):
                             if content == "1" and last_msg_id_str:
                                 redis.hset(key, 'watch_msg_id', last_msg_id_str)
                                 key = subscribe_key(user_id, int(last_msg_id_str))
-                                reply = wait_reply_msg(key, reply_expire_time, False)
+                                lock_value = redis.hincrby(key, 'lock', 1)
+                                reply = wait_reply_msg(key, reply_expire_time, False, lock_value)
                             else:
                                 redis.set(last_msg_id_key, msg_id)
                                 ext = {
@@ -73,14 +74,16 @@ def service_post_messages(app_id):
                                     }
                                 }
                                 lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content, ext)
-                                reply = wait_reply_msg(key, reply_expire_time, False)
+                                lock_value = redis.hincrby(key, 'lock', 1)
+                                reply = wait_reply_msg(key, reply_expire_time, False, lock_value)
                         else:
                             retry_count = redis.hincrby(key, "retry_count", 1)
                             redis.expire(key, 600)
                             watch_msg_id_str = lanying_redis.redis_hget(redis, key, 'watch_msg_id')
                             if watch_msg_id_str:
                                 key = subscribe_key(user_id, int(watch_msg_id_str))
-                            reply = wait_reply_msg(key, reply_expire_time, retry_count >=3)
+                            lock_value = redis.hincrby(key, 'lock', 1)
+                            reply = wait_reply_msg(key, reply_expire_time, retry_count >=3, lock_value)
                         if len(reply) > 0:
                             reply = f"""<xml>
                                     <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
@@ -105,41 +108,57 @@ def service_post_messages(app_id):
 def subscribe_key(user_id, msg_id):
     return f"wechat_official_account:subscribe:{user_id}:{msg_id}"
 
-def wait_reply_msg(key, expire_time, is_last):
+def wait_reply_msg(key, expire_time, is_last, lock_value):
     redis = lanying_redis.get_redis_connection()
     now = time.time()
     info = {}
     tip = '...（消息超长，回复1继续接收）'
     while now < expire_time:
         info = lanying_redis.redis_hgetall(redis, key)
+        if int(info.get('lock', '0')) != lock_value:
+            break
         now = time.time()
-        if now > expire_time:
+        if now > expire_time + 0.2:
             break
         message = info.get('message', '')
         start = int(info.get('start', '0'))
-        if 'finish' in info and info['finish'] == '1':
+        if int(info.get('finish', '0')) > 0:
             message_len = len(message)
             if message_len > start + official_account_max_message_size:
-                send_len = official_account_max_message_size - len(tip) - 2
+                send_len = official_account_max_message_size - len(tip)
                 redis.hset(key, 'start', start+send_len)
-                reply = message[start:start+send_len] + '\n\n' + tip
-                logging.info(f"reply wechat unfinish message | {reply}")
+                reply = message[start:start+send_len] + tip
+                logging.info(f"reply wechat finish part message | {reply}")
                 return reply
-            elif message_len >= start:
-                redis.hset(key, 'start', start+official_account_max_message_size)
-                reply = message[start:start+official_account_max_message_size]
-                logging.info(f"reply wechat last message | {reply}")
+            elif message_len > start:
+                redis.hset(key, 'start', message_len)
+                reply = message[start:message_len]
+                logging.info(f"reply wechat finish last part message | {reply}")
                 return reply
             else:
                 reply = '没有更多消息'
                 logging.info(f"reply wechat nomore message | {reply}")
                 return reply
+        else:
+            message_len = len(message)
+            if message_len > start + official_account_max_message_size:
+                send_len = official_account_max_message_size - len(tip)
+                redis.hset(key, 'start', start+send_len)
+                reply = message[start:start+send_len] + tip
+                logging.info(f"reply wechat unfinish part message | {reply}")
+                return reply
         now = time.time()
         time.sleep(min(max(0,expire_time-now), 500))
         now = time.time()
     if is_last:
-        logging.info(f"reply wechat getmore message | {tip}")
-        return tip
+        message = info.get('message', '')
+        message_len = len(message)
+        start = int(info.get('start', '0'))
+        send_len = min(official_account_max_message_size - len(tip), max(0, message_len - start))
+        redis.hset(key, 'start', start+send_len)
+        reply = message[start:start+send_len] + tip
+        logging.info(f"reply wechat getmore message | {reply}")
+        return reply
     else:
         time.sleep(6)
         return 'wait'
@@ -148,24 +167,37 @@ def handle_chat_message(config, message):
     checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
         return ''
+    msg_type = checkres['msg_type']
+    json_ext = checkres['json_ext']
+    verify_type = checkres['verify_type']
     app_id = message['appId']
     to_user_id = message['to']['uid']
-    verify_type = config.get('type', 'verified')
     logging.info(f"{service} | handle_chat_message do for user_id, app_id={app_id}, to_user_id:{to_user_id}, verify_type:{verify_type}")
     if verify_type == 'unverified':
         redis = lanying_redis.get_redis_connection()
         wechat_msg_id = 0
         try:
-            ext_json = json.loads(message['ext'])
-            wechat_msg_id = int(ext_json['ai']['feedback']['wechat_msg_id'])
+            wechat_msg_id = int(json_ext['ai']['feedback']['wechat_msg_id'])
         except Exception as e:
             pass
         if wechat_msg_id > 0:
             key = subscribe_key(to_user_id, wechat_msg_id)
-            redis.hmset(key, {
-                'finish':"1",
-                "message": message['content']
-            })
+            sub_info = lanying_redis.redis_hgetall(redis, key)
+            ai_info = json_ext.get('ai',{})
+            old_seq = int(sub_info.get('seq', '0'))
+            seq = int(ai_info.get('seq', '0'))
+            if seq > old_seq:
+                message_content = sub_info.get('message','')
+                if msg_type == 'CHAT' or msg_type == 'APPEND':
+                    message_content += message['content']
+                elif msg_type == 'REPLACE':
+                    message_content = message['content']
+                    message_antispam = lanying_config.get_message_antispam(app_id)
+                    if message_content == message_antispam:
+                        redis.hset(key, "start", 0)
+                redis.hset(key, "message", message_content)
+                if ai_info.get('finish', False) == True:
+                    redis.hset(key, 'finish', 1)
     else:
         wechat_username = get_wechat_username(app_id, to_user_id)
         if wechat_username:
@@ -177,7 +209,8 @@ def check_message_need_send(config, message):
     to_user_id = int(message['to']['uid'])
     type = message['type']
     my_user_id = config['lanying_user_id']
-    if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and (type == 'CHAT' or type == 'REPLACE'):
+    verify_type = config.get('type', 'verified')
+    if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and (type == 'CHAT' or type == 'REPLACE' or type == 'APPEND'):
         ext = message.get('ext', '')
         try:
             json_ext = json.loads(ext)
@@ -187,14 +220,21 @@ def check_message_need_send(config, message):
             is_stream = (json_ext['ai']['stream'] == True)
         except Exception as e:
             is_stream = False
-        if type != 'REPLACE' and is_stream:
-            logging.info(f"skip chat and stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
-            return {'result':'error', 'msg':''}
-        if type == 'REPLACE' and not is_stream:
-            logging.info(f"skip REPLACE and not stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
-            return {'result':'error', 'msg':''}
+        if is_stream:
+            if verify_type == 'unverified':
+                pass
+            else:
+                if type == 'REPLACE':
+                    pass
+                else:
+                    logging.info(f"skip chat and stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
+                    return {'result':'error', 'msg':''}
+        else:
+            if type == 'REPLACE' or type == 'APPEND':
+                logging.info(f"skip EDIT and not stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
+                return {'result':'error', 'msg':''}
         logging.info(f'check_message_need_send: lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},result:ok')
-        return {'result':'ok'}
+        return {'result':'ok', "is_stream": is_stream, "verify_type":verify_type, "json_ext":json_ext, "msg_type": type}
     logging.info(f'skip other user msg: lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id}, type:{type}')
     return {'result':'error', 'msg':''}
 
