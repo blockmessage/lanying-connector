@@ -62,7 +62,7 @@ def service_post_messages(app_id):
                                 redis.hset(key, 'watch_msg_id', last_msg_id_str)
                                 key = subscribe_key(user_id, int(last_msg_id_str))
                                 lock_value = redis.hincrby(key, 'lock', 1)
-                                reply = wait_reply_msg(key, reply_expire_time, False, lock_value)
+                                reply = wait_reply_msg(app_id, key, reply_expire_time, False, lock_value)
                             else:
                                 redis.set(last_msg_id_key, msg_id)
                                 ext = {
@@ -75,7 +75,7 @@ def service_post_messages(app_id):
                                 }
                                 lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content, ext)
                                 lock_value = redis.hincrby(key, 'lock', 1)
-                                reply = wait_reply_msg(key, reply_expire_time, False, lock_value)
+                                reply = wait_reply_msg(app_id, key, reply_expire_time, False, lock_value)
                         else:
                             retry_count = redis.hincrby(key, "retry_count", 1)
                             redis.expire(key, 600)
@@ -83,7 +83,7 @@ def service_post_messages(app_id):
                             if watch_msg_id_str:
                                 key = subscribe_key(user_id, int(watch_msg_id_str))
                             lock_value = redis.hincrby(key, 'lock', 1)
-                            reply = wait_reply_msg(key, reply_expire_time, retry_count >=3, lock_value)
+                            reply = wait_reply_msg(app_id, key, reply_expire_time, retry_count >=3, lock_value)
                         if len(reply) > 0:
                             reply = f"""<xml>
                                     <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
@@ -108,7 +108,7 @@ def service_post_messages(app_id):
 def subscribe_key(user_id, msg_id):
     return f"wechat_official_account:subscribe:{user_id}:{msg_id}"
 
-def wait_reply_msg(key, expire_time, is_last, lock_value):
+def wait_reply_msg(app_id, key, expire_time, is_last, lock_value):
     redis = lanying_redis.get_redis_connection()
     now = time.time()
     info = {}
@@ -155,9 +155,15 @@ def wait_reply_msg(key, expire_time, is_last, lock_value):
         message_len = len(message)
         start = int(info.get('start', '0'))
         send_len = min(official_account_max_message_size - len(tip), max(0, message_len - start))
-        redis.hset(key, 'start', start+send_len)
-        reply = message[start:start+send_len] + tip
-        logging.info(f"reply wechat getmore message | {reply}")
+        if send_len > 0:
+            redis.hset(key, 'start', start+send_len)
+            reply = message[start:start+send_len] + tip
+            logging.info(f"reply wechat getmore message | {reply}")
+        else:
+            reply = lanying_config.get_message_404(app_id)
+            logging.info(f"reply wechat 404 message | {reply}")
+            redis.hset(key, 'start', start+len(reply))
+            redis.hset(key, 'finish', 1)
         return reply
     else:
         time.sleep(6)
@@ -170,6 +176,7 @@ def handle_chat_message(config, message):
     msg_type = checkres['msg_type']
     json_ext = checkres['json_ext']
     verify_type = checkres['verify_type']
+    is_stream = checkres['is_stream']
     app_id = message['appId']
     to_user_id = message['to']['uid']
     logging.info(f"{service} | handle_chat_message do for user_id, app_id={app_id}, to_user_id:{to_user_id}, verify_type:{verify_type}")
@@ -184,19 +191,27 @@ def handle_chat_message(config, message):
             key = subscribe_key(to_user_id, wechat_msg_id)
             sub_info = lanying_redis.redis_hgetall(redis, key)
             ai_info = json_ext.get('ai',{})
-            old_seq = int(sub_info.get('seq', '0'))
-            seq = int(ai_info.get('seq', '0'))
-            if seq > old_seq:
+            if is_stream:
+                old_seq = int(sub_info.get('seq', '0'))
+                seq = int(ai_info.get('seq', '0'))
+                if seq > old_seq:
+                    message_content = sub_info.get('message','')
+                    if msg_type == 'CHAT' or msg_type == 'APPEND':
+                        message_content += message['content']
+                    elif msg_type == 'REPLACE':
+                        message_content = message['content']
+                        message_antispam = lanying_config.get_message_antispam(app_id)
+                        if message_content == message_antispam:
+                            redis.hset(key, "start", 0)
+                    redis.hset(key, "message", message_content)
+                    if ai_info.get('finish', False) == True:
+                        redis.hset(key, 'finish', 1)
+            else:
                 message_content = sub_info.get('message','')
-                if msg_type == 'CHAT' or msg_type == 'APPEND':
-                    message_content += message['content']
-                elif msg_type == 'REPLACE':
+                if msg_type == 'CHAT':
                     message_content = message['content']
                     message_antispam = lanying_config.get_message_antispam(app_id)
-                    if message_content == message_antispam:
-                        redis.hset(key, "start", 0)
-                redis.hset(key, "message", message_content)
-                if ai_info.get('finish', False) == True:
+                    redis.hset(key, "message", message_content)
                     redis.hset(key, 'finish', 1)
     else:
         wechat_username = get_wechat_username(app_id, to_user_id)

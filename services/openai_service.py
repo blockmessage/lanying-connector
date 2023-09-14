@@ -223,6 +223,34 @@ def check_message_user_id(config, msg):
     return {'result':'error', 'msg':''}
 
 def handle_chat_message(config, msg, retry_times = 3):
+    try:
+        reply = handle_chat_message_try(config, msg, retry_times)
+    except Exception as e:
+        app_id = msg['appId']
+        reply = lanying_config.get_message_404(app_id)
+    if len(reply) > 0:
+        lcExt = {}
+        try:
+            ext = json.loads(config['ext'])
+            if 'ai' in ext:
+                lcExt = ext['ai']
+            elif 'lanying_connector' in ext:
+                lcExt = ext['lanying_connector']
+        except Exception as e:
+            pass
+        fromUserId = config['from_user_id']
+        toUserId = config['to_user_id']
+        reply_ext = {
+            'ai': {
+                'stream': False
+            }
+        }
+        if 'feedback' in lcExt:
+            reply_ext['ai']['feedback'] = lcExt['feedback']
+        lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+    return ''
+
+def handle_chat_message_try(config, msg, retry_times):
     checkres = check_message_user_id(config, msg)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -578,7 +606,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if retry_times > 0:
             if 'preset_welcome' in command:
                 lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, command['preset_welcome'])
-            return handle_chat_message(config, msg, retry_times - 1)
+            return handle_chat_message_try(config, msg, retry_times - 1)
         else:
             return ''
     if reference:
