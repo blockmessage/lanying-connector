@@ -453,21 +453,36 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
             return (is_finish, ret)
     return (True, [])
 
-def get_preset_embedding_infos(app_id, preset_name):
-    redis = lanying_redis.get_redis_stack_connection()
-    key = get_preset_name_key(app_id)
-    bind_infos = redis_hgetall(redis, key)
-    embedding_infos = []
-    for now_embedding_name, now_preset_name in bind_infos.items():
-        if now_preset_name == preset_name:
-            embedding_info = get_embedding_name_info(app_id, now_embedding_name)
-            if embedding_info:
-                embedding_info["embedding_name"] = now_embedding_name
-                embedding_info["embedding_uuid"] = embedding_info["embedding_uuid"]
-                embedding_info["embedding_max_tokens"] = int(embedding_info.get("embedding_max_tokens","2048"))
-                embedding_info["embedding_max_blocks"] = int(embedding_info.get("embedding_max_blocks", "5"))
-                embedding_infos.append(embedding_info)
-    return embedding_infos
+def get_preset_embedding_infos(embeddings, app_id, preset_name):
+    if embeddings is None:
+        redis = lanying_redis.get_redis_stack_connection()
+        key = get_preset_name_key(app_id)
+        bind_infos = redis_hgetall(redis, key)
+        embedding_infos = []
+        for now_embedding_name, now_preset_name in bind_infos.items():
+            if now_preset_name == preset_name:
+                embedding_info = get_embedding_name_info(app_id, now_embedding_name)
+                if embedding_info:
+                    embedding_info["embedding_name"] = now_embedding_name
+                    embedding_info["embedding_uuid"] = embedding_info["embedding_uuid"]
+                    embedding_info["embedding_max_tokens"] = int(embedding_info.get("embedding_max_tokens","2048"))
+                    embedding_info["embedding_max_blocks"] = int(embedding_info.get("embedding_max_blocks", "5"))
+                    embedding_infos.append(embedding_info)
+        return embedding_infos
+    else:
+        embedding_uuids = embeddings.get(preset_name, [])
+        embedding_infos = []
+        for embedding_uuid in embedding_uuids:
+            embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+            if embedding_uuid_info:
+                embedding_info = get_embedding_name_info(app_id, embedding_uuid_info["embedding_name"])
+                if embedding_info:
+                    embedding_info["embedding_name"] = embedding_uuid_info["embedding_name"]
+                    embedding_info["embedding_uuid"] = embedding_info["embedding_uuid"]
+                    embedding_info["embedding_max_tokens"] = int(embedding_info.get("embedding_max_tokens","2048"))
+                    embedding_info["embedding_max_blocks"] = int(embedding_info.get("embedding_max_blocks", "5"))
+                    embedding_infos.append(embedding_info)
+        return embedding_infos
 
 def get_embedding_index(app_id, embedding_name):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)

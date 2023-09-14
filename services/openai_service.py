@@ -226,6 +226,8 @@ def handle_chat_message(config, msg, retry_times = 3):
     try:
         reply = handle_chat_message_try(config, msg, retry_times)
     except Exception as e:
+        logging.error("fail to handle_chat_message:")
+        logging.exception(e)
         app_id = msg['appId']
         reply = lanying_config.get_message_404(app_id)
     if len(reply) > 0:
@@ -393,7 +395,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         del_preset_name(redis, fromUserId, toUserId)
         del_embedding_info(redis, fromUserId, toUserId)
         return 'prompt is reset'
-    preset_embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    preset_embedding_infos = lanying_embedding.get_preset_embedding_infos(config.get('embeddings'), app_id, preset_name)
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
@@ -1386,7 +1388,7 @@ def bluevector_info(msg, config):
 
 def bluevector_info_by_preset(msg, config, preset_name):
     app_id = msg['appId']
-    embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    embedding_infos = lanying_embedding.get_preset_embedding_infos(config.get('embeddings'), app_id, preset_name)
     if len(embedding_infos) == 0:
         return "当前预设未绑定知识库"
     result = ["当前预设绑定的知识库为："]
@@ -1419,7 +1421,7 @@ def search_on_doc_by_default_preset(msg, config, doc_id, new_content):
 
 def search_on_doc_by_preset(msg, config, preset_name, doc_id, new_content):
     app_id = msg['appId']
-    embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    embedding_infos = lanying_embedding.get_preset_embedding_infos(config.get('embeddings'), app_id, preset_name)
     result = "not_bind"
     for embedding_info in embedding_infos:
         embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
@@ -1441,7 +1443,7 @@ def search_on_fulldoc_by_default_preset(msg, config, doc_id, new_content):
 
 def search_on_fulldoc_by_preset(msg, config, preset_name, doc_id, new_content):
     app_id = msg['appId']
-    embedding_infos = lanying_embedding.get_preset_embedding_infos(app_id, preset_name)
+    embedding_infos = lanying_embedding.get_preset_embedding_infos(config.get('embeddings'), app_id, preset_name)
     result = "not_bind"
     for embedding_info in embedding_infos:
         embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
