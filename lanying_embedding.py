@@ -658,6 +658,7 @@ def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_
 def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     logging.info(f"start process_csv: embedding_uuid={embedding_uuid}, filename={filename}")
     df = pd.read_csv(filename)
+    df = df.fillna('')
     size = len(df)
     logging.info(f"embeddings: size={size}")
     total_blocks = 0
@@ -667,19 +668,19 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     if 'text' in columns or ('question' in columns and 'answer' in columns):
         for i, row in df.iterrows():
             if 'question' in row and 'answer' in row:
-                block_tokens, block_blocks = process_question(config, row['question'], row['answer'], row.get('reference', ''))
+                block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''))
                 total_tokens += block_tokens
                 total_blocks += len(block_blocks)
                 update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
                 insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
             elif 'text' in row and 'function' in row:
-                block_tokens, block_blocks = process_function(config, row['text'], row['function'])
+                block_tokens, block_blocks = process_function(config, str(row['text']), str(row['function']))
                 total_tokens += block_tokens
                 total_blocks += len(block_blocks)
                 update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
                 insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
             elif 'text' in row:
-                block_tokens, block_blocks = process_block(config, row['text'])
+                block_tokens, block_blocks = process_block(config, str(row['text']))
                 total_tokens += block_tokens
                 total_blocks += len(block_blocks)
                 update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
@@ -705,6 +706,7 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
     total_tokens = 0
     for sheet_name in xl_file.sheet_names:
         df = pd.read_excel(filename, sheet_name=sheet_name)
+        df = df.fillna('')
         size = len(df)
         logging.info(f"embeddings: size={size}, sheet_name={sheet_name}")
         redis = lanying_redis.get_redis_stack_connection()
@@ -712,19 +714,19 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
         if 'text' in columns or ('question' in columns and 'answer' in columns):
             for i, row in df.iterrows():
                 if 'question' in row and 'answer' in row:
-                    block_tokens, block_blocks = process_question(config, row['question'], row['answer'], row.get('reference', ''))
+                    block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''))
                     total_tokens += block_tokens
                     total_blocks += len(block_blocks)
                     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
                     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
                 elif 'text' in row and 'function' in row:
-                    block_tokens, block_blocks = process_function(config, row['text'], row['function'])
+                    block_tokens, block_blocks = process_function(config, str(row['text']), str(row['function']))
                     total_tokens += block_tokens
                     total_blocks += len(block_blocks)
                     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
                     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
                 elif 'text' in row:
-                    block_tokens, block_blocks = process_block(config, row['text'])
+                    block_tokens, block_blocks = process_block(config, str(row['text']))
                     total_tokens += block_tokens
                     total_blocks += len(block_blocks)
                     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
