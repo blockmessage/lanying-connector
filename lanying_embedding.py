@@ -21,6 +21,7 @@ import json
 import pdfplumber
 import lanying_config
 import lanying_pgvector
+from urllib.parse import urlparse
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -1193,9 +1194,16 @@ def increase_task_field(embedding_uuid, task_id, field, value):
     redis = lanying_redis.get_redis_stack_connection()
     return redis.hincrby(get_embedding_task_info_key(embedding_uuid, task_id), field, value)
 
-def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size, ext, type, source, vendor):
+def create_doc_info(app_id, embedding_uuid, filename, object_name, doc_id, file_size, ext, type, source, vendor, opts):
     redis = lanying_redis.get_redis_stack_connection()
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
+    lanying_link = ''
+    if opts.get('generate_lanying_links', False) == True:
+        if type in ['url', 'site'] and filename.startswith("http") and is_in_lanying_link_white_list(filename):
+            link_res = generate_lanying_links(app_id, filename)
+            if link_res['result'] == 'ok':
+                lanying_link = link_res['link']
+    logging.info(f"create_doc_info | app_id:{app_id}, embedding_uuid:{embedding_uuid}, filename:{filename}, doc_id:{doc_id}, type:{type}, lanying_link:{lanying_link}, opts:{opts}")
     redis.hmset(info_key, {"filename":filename,
                            "object_name":object_name,
                            "time": int(time.time()),
@@ -1204,7 +1212,34 @@ def create_doc_info(embedding_uuid, filename, object_name, doc_id, file_size, ex
                            "type": type,
                            "source": source,
                            "vendor": vendor,
+                           "lanying_link": lanying_link,
                            "status": "wait"})
+
+def generate_lanying_links(app_id, long_link):
+    authorization = os.getenv("LANYING_CONNECTOR_LANYING_LINK_API_KEY")
+    if authorization:
+        url = "https://lanying.link/api/generate_prefix_url"
+        headers = {
+            'authorization': authorization
+        }
+        body = {
+            'prefix': 'doc/',
+            'long_link': long_link,
+            'app_id': app_id,
+            'uid': 0
+        }
+        try:
+            response = requests.post(url, headers= headers, json = body)
+            response_json = response.json()
+            if response_json.get('code') == 200:
+                return {'result': 'ok', 'link' : response_json.get('data')}
+            else:
+                return {'result': 'error', 'reason':'bad_status_code'}
+        except Exception as e:
+            return {'result': 'error', 'reason':'exception'}
+    else:
+        return {'result': 'error', 'reason': 'no_authorization'}
+
 def update_doc_field(embedding_uuid, doc_id, field, value):
     redis = lanying_redis.get_redis_stack_connection()
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
@@ -1486,3 +1521,11 @@ def set_embedding_default_db_type(app_id, default_db_type):
     redis = lanying_redis.get_redis_stack_connection()
     key = f"lanying_connector:embedding:default_db_type"
     redis.hset(key, app_id, default_db_type)
+
+def is_in_lanying_link_white_list(url):
+    redis = lanying_redis.get_redis_stack_connection()
+    parse_url= urlparse(url.strip(' '))
+    domain = parse_url.netloc
+    if len(domain) > 0:
+        return redis.sismember("lanying_connector:lanying_link:whitelist", domain)
+    return False

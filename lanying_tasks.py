@@ -27,7 +27,7 @@ embedding_doc_dir = os.getenv("EMBEDDING_DOC_DIR", "embedding-doc")
 os.makedirs(download_dir, exist_ok=True)
 
 @normal_queue.task
-def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file', limit=-1):
+def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file', limit=-1, opts = {}):
     storage_limit = lanying_embedding.get_app_config_int(app_id, "lanying_connector.storage_limit")
     storage_payg = lanying_embedding.get_app_config_int(app_id, "lanying_connector.storage_payg")
     logging.info(f"limit info:storage_limit:{storage_limit}, storage_payg:{storage_payg}")
@@ -52,7 +52,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             lanying_embedding.update_trace_field(trace_id, "status", "error")
             lanying_embedding.update_trace_field(trace_id, "message", "download embedding file error")
             doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
-            lanying_embedding.create_doc_info(embedding_uuid, url if type == 'url' else origin_filename, '', doc_id, 0, ext, type, url, vendor)
+            lanying_embedding.create_doc_info(app_id, embedding_uuid, url if type == 'url' else origin_filename, '', doc_id, 0, ext, type, url, vendor,opts)
             lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "download_failed")
@@ -76,7 +76,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                         sub_file_size = sub_file_info.file_size
                         doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
                         object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{sub_ext}")
-                        lanying_embedding.create_doc_info(embedding_uuid, right_filename, object_name, doc_id, sub_file_size, sub_ext, type, url, vendor)
+                        lanying_embedding.create_doc_info(app_id, embedding_uuid, right_filename, object_name, doc_id, sub_file_size, sub_ext, type, url, vendor,opts)
                         lanying_embedding.add_trace_doc_id(trace_id, doc_id)
                         with zip_ref.open(sub_filename) as sub_file_ref:
                             upload_result = lanying_file_storage.put_object(object_name, sub_file_ref, sub_file_size)
@@ -93,7 +93,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                             sub_file_size = sub_file_info.file_size
                             logging.info(f"add_embedding_file | skip process sub file: sub_filename:{sub_filename}, right_filename:{right_filename}")
                             doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
-                            lanying_embedding.create_doc_info(embedding_uuid, right_filename, '', doc_id, sub_file_size, sub_ext, type, url, vendor)
+                            lanying_embedding.create_doc_info(app_id, embedding_uuid, right_filename, '', doc_id, sub_file_size, sub_ext, type, url, vendor,opts)
                             lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
                             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
                             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "bad_ext")
@@ -102,7 +102,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             file_size = file_stat.st_size
             doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
             object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
-            lanying_embedding.create_doc_info(embedding_uuid, url if type == 'url' else origin_filename, object_name, doc_id, file_size, ext, type, url, vendor)
+            lanying_embedding.create_doc_info(app_id, embedding_uuid, url if type == 'url' else origin_filename, object_name, doc_id, file_size, ext, type, url, vendor,opts)
             lanying_embedding.add_trace_doc_id(trace_id, doc_id)
             upload_result = lanying_file_storage.upload(object_name, temp_filename)
             if upload_result["result"] == "error":
@@ -132,7 +132,7 @@ def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, do
                     logging.info(f"load_site found url: app_id={app_id}, embedding_uuid={embedding_uuid},url:{source}, len:{len(page_bytes)}")
                     doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
                     object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
-                    lanying_embedding.create_doc_info(embedding_uuid, source, object_name, doc_id, len(page_bytes), ext, type, url, vendor)
+                    lanying_embedding.create_doc_info(app_id, embedding_uuid, source, object_name, doc_id, len(page_bytes), ext, type, url, vendor,{})
                     lanying_embedding.add_trace_doc_id(trace_id, doc_id)
                     upload_result = lanying_file_storage.put_object(object_name, io.BytesIO(page_bytes), len(page_bytes))
                     if upload_result["result"] == "error":
@@ -169,6 +169,8 @@ def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
             urls = []
             ttl = 20
             is_finish = True
+            generate_lanying_links = task_info.get('generate_lanying_links', 'False') == 'True'
+            opts = {'generate_lanying_links': generate_lanying_links}
             for url,_ in lanying_embedding.get_task_details_iterator(embedding_uuid, task_id):
                 ttl -= 1
                 urls.append(url)
@@ -179,7 +181,7 @@ def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
                     lanying_embedding.update_trace_field(trace_id, "status", "error")
                     lanying_embedding.update_trace_field(trace_id, "message", "download embedding file error")
                     doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
-                    lanying_embedding.create_doc_info(embedding_uuid, url, '', doc_id, 0, ext, type, task_url, vendor)
+                    lanying_embedding.create_doc_info(app_id, embedding_uuid, url, '', doc_id, 0, ext, type, task_url, vendor, opts)
                     lanying_embedding.update_doc_field(embedding_uuid,doc_id, "task_id", task_id)
                     lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
                     lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
@@ -191,7 +193,7 @@ def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
                 file_size = file_stat.st_size
                 doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
                 object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
-                lanying_embedding.create_doc_info(embedding_uuid, url, object_name, doc_id, file_size, ext, type, url, vendor)
+                lanying_embedding.create_doc_info(app_id, embedding_uuid, url, object_name, doc_id, file_size, ext, type, url, vendor, opts)
                 lanying_embedding.update_doc_field(embedding_uuid,doc_id, "task_id", task_id)
                 lanying_embedding.add_trace_doc_id(trace_id, doc_id)
                 upload_result = lanying_file_storage.upload(object_name, temp_filename)
@@ -215,7 +217,7 @@ def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
 
 
 @slow_queue.task
-def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters):
+def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters, opts={}):
     task_info = lanying_embedding.get_task(embedding_uuid, task_id)
     if task_info is None:
         lanying_url_loader.clean_task(site_task_id)
@@ -258,7 +260,7 @@ def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls
         if ttl < 0:
             break
     if not is_finish:
-        prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters])
+        prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters, opts])
     else:
         lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "finish")
 

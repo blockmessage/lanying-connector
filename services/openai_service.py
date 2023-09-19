@@ -568,10 +568,16 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     reply = response['reply']
     command = None
     try:
-        command = json.loads(reply)['lanying-connector']
+        command = json.loads(reply)['ai']
         pass
     except Exception as e:
         pass
+    if command is None:
+        try:
+            command = json.loads(reply)['lanying-connector']
+            pass
+        except Exception as e:
+            pass
     if command:
         if is_debug:
             lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}")
@@ -625,7 +631,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     if len(doc_reference) > 0:
                         link = doc_reference
                     else:
-                        link = doc_info.get('filename', '')
+                        link = doc_info.get('lanying_link', '')
+                        if link == '':
+                            link = doc_info.get('filename', '')
                     if link not in links:
                         links.append(link)
                         doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link})
@@ -645,7 +653,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     if len(doc_reference) > 0:
                         link = doc_reference
                     else:
-                        link = doc_info.get('filename', '')
+                        link = doc_info.get('lanying_link', '')
+                        if link == '':
+                            link = doc_info.get('filename', '')
                     if link not in links:
                         links.append(link)
                         doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', link)
@@ -1463,7 +1473,7 @@ def search_on_fulldoc_by_preset(msg, config, preset_name, doc_id, new_content):
 def search_by_preset(msg, config, preset_name, new_content):
     return {'result':'continue', 'command_ext':{'preset_name':preset_name, "new_content":new_content}}
 
-def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_depth, filters, urls):
+def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_depth, filters, urls, generate_lanying_links):
     config = lanying_config.get_lanying_connector(app_id)
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
@@ -1471,15 +1481,19 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
     if embedding_info:
         trace_id = lanying_embedding.create_trace_id()
+        opts = {
+            'generate_lanying_links': generate_lanying_links == True
+        }
         if type == 'site':
             embedding_uuid = embedding_info['embedding_uuid']
             task_id = lanying_embedding.create_task(embedding_uuid, type, urls)
             lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
             site_task_id = lanying_url_loader.create_task(urls)
             lanying_embedding.update_task_field(embedding_uuid, task_id, "site_task_id", site_task_id)
-            prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, urls, 0, limit, task_id, max_depth, filters])
+            lanying_embedding.update_task_field(embedding_uuid, task_id, "generate_lanying_links", str(generate_lanying_links == True))
+            prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, urls, 0, limit, task_id, max_depth, filters, opts])
         else:
-            result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit])
+            result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit, opts])
             logging.info(f"add_doc_to_embedding | result={result}")
 
 def continue_embedding_task(app_id, embedding_name, task_id):

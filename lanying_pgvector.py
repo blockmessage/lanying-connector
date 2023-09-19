@@ -28,7 +28,11 @@ if sql_pool_host:
         user=sql_pool_user,
         password=sql_pool_password,
         host=sql_pool_host,
-        port=sql_pool_port
+        port=sql_pool_port,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5
     )
     with get_connection() as conn:
         cursor = conn.cursor()
