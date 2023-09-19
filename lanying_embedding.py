@@ -781,13 +781,27 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             text_hash = sha256(embedding_text+function)
             if db_type == "pgvector":
                 db_table_name = config['db_table_name']
-                with lanying_pgvector.get_connection() as conn:
-                    cursor = conn.cursor()
-                    insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-                    cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
-                    conn.commit()
-                    cursor.close()
-                    lanying_pgvector.put_connection(conn)
+                def insert_fun():
+                    with lanying_pgvector.get_connection() as conn:
+                        cursor = conn.cursor()
+                        insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                        cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
+                        conn.commit()
+                        cursor.close()
+                        lanying_pgvector.put_connection(conn)
+                retry_time = 30
+                for i in range(retry_time):
+                    try:
+                        insert_fun()
+                        break
+                    except Exception as e:
+                        logging.exception(e)
+                        if i == retry_time -1:
+                            logging.info(f"insert embedding fail at last retry:{i}")
+                            raise e
+                        else:
+                            logging.info(f"insert embedding fail, schedule retry:{i}")
+                        time.sleep(2)
             else:
                 redis.hmset(key, {"text":text,
                                 "question": question,
