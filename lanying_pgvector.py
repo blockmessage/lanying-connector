@@ -1,16 +1,37 @@
 import psycopg2
 from psycopg2 import pool
 import os
+import logging
+import time
 
 connection_pool = None
 
 def get_connection():
     if connection_pool:
-        return connection_pool.getconn()
+        retry_times = 30
+        for i in range(retry_times):
+            conn = connection_pool.getconn()
+            if is_connection_valid(conn):
+                return conn
+            else:
+                logging.info(f"get_connection | get bad connection: {i}/{retry_times}")
+                connection_pool.putconn(conn, close=True)
+                if i == retry_times-1:
+                    raise Exception('fail to get pgvector connection')
+                time.sleep(0.1)
 
 def put_connection(conn):
     if connection_pool:
         return connection_pool.putconn(conn)
+
+def is_connection_valid(conn):
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            return result and result[0] == 1
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        return False
 
 sql_pool_host = os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')
 if sql_pool_host:
