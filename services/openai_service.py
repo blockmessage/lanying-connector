@@ -881,7 +881,6 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
     history_msg_count_max = ensure_even(presetExt.get('history_msg_count_max', history_msg_count_max))
     history_msg_size_max = presetExt.get('history_msg_size_max', history_msg_size_max)
     completionTokens = preset.get('max_tokens', 1024)
-    uidHistoryList = []
     model = preset['model']
     token_limit = model_token_limit(model_config)
     messagesSize = calcMessagesTokens(messages, model, vendor)
@@ -890,18 +889,12 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
         return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
-    if redis:
-        for historyStr in getHistoryList(redis, historyListKey):
-            history = json.loads(historyStr)
-            if history['time'] < now - expireSeconds:
-                removeHistory(redis, historyListKey, historyStr)
-            uidHistoryList.append(history)
     res = []
     history_bytes = 0
     history_count = 0
-    for history in reversed(uidHistoryList):
-        if 'list' in history:
-            nowHistoryList = history['list']
+    for history in reversed_history_generator(historyListKey):
+        if isinstance(history, list):
+            nowHistoryList = history
         else:
             userMessage = {'role':'user', 'content': history['user']}
             assistantMessage = {'role':'assistant', 'content': history['assistant']}
@@ -931,6 +924,54 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
             break
     logging.info(f"history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
     return {'result':'ok', 'data': reversed(res)}
+
+def reversed_history_generator(historyListKey):
+    redis = lanying_redis.get_redis_connection()
+    now = int(time.time())
+    history_list = []
+    for historyStr in getHistoryList(redis, historyListKey):
+        history = json.loads(historyStr)
+        if history['time'] < now - expireSeconds:
+            removeHistory(redis, historyListKey, historyStr)
+        history_list.append(history)
+    last_history = None
+    for history in reversed(history_list):
+        if 'list' in history:
+            yield history['list']
+        elif last_history is None:
+            type = history.get('type', 'both')
+            if type == 'ask':
+                logging.info(f"found a ask only history:{historyListKey}")
+                history['assistant'] = 'OK'
+            last_history = history
+        else:
+            type = history.get('type', 'both')
+            last_type = last_history.get('type', 'both')
+            if last_type == 'reply':
+                history['user'] =  merge_history_content(history['user'], last_history['user'])
+                history['assistant'] =  merge_history_content(history['assistant'], last_history['assistant'])
+                last_history = history
+            elif last_type == 'ask' or last_type == 'both':
+                if type == 'ask':
+                    history['user'] =  merge_history_content(history['user'], last_history['user'])
+                    history['assistant'] =  merge_history_content(history['assistant'], last_history['assistant'])
+                    history['type'] = last_type
+                    last_history = history
+                else:
+                    yield last_history
+                    last_history = history
+    if last_history:
+        last_type = last_history.get('type', 'both')
+        if last_type == 'ask' or last_type == 'both':
+            yield last_history
+
+def merge_history_content(a, b):
+    if a == '':
+        return b
+    elif b == '':
+        return a
+    else:
+        return a + '\n' + b
 
 def model_token_limit(model_config):
     return model_config['token_limit']
@@ -1770,8 +1811,8 @@ def maybe_add_history(config, msg):
         human_user_id = msg['to']['uid']
         content = msg.get('content', '')
         historyListKey = historyListChatGPTKey(human_user_id, ai_user_id)
-        history['user'] = content
-        history['assistant'] = ''
+        history['user'] = ''
+        history['assistant'] = content
         history['uid'] = human_user_id
         history['type'] = 'reply'
         addHistory(redis, historyListKey, history)
