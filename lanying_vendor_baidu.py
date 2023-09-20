@@ -6,7 +6,8 @@ import lanying_redis
 import hashlib
 
 ACCESS_TOKEN_REFRESH_TIME = 86400
-SYSTEM_MESSAGE_DEFAULT = '好的'
+ASSISTANT_MESSAGE_DEFAULT = '好的'
+USER_MESSAGE_DEFAULT = '继续'
 
 def model_configs():
     return [
@@ -242,10 +243,10 @@ def format_preset(prepare_info, preset):
                         if len(content) > 0:
                             if role == "system":
                                 messages.append({'role':'user', 'content':content})
-                                messages.append({'role':'assistant', 'content':SYSTEM_MESSAGE_DEFAULT})
+                                messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
                             elif role == "user":
                                 if len(messages) > 0 and messages[-1]['role'] == 'user':
-                                    messages.append({'role':'assistant', 'content':SYSTEM_MESSAGE_DEFAULT})
+                                    messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
                                 messages.append({'role':'user', 'content':content})
                             elif role == 'assistant':
                                 if len(messages) > 0 and messages[-1]['role'] == 'user':

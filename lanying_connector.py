@@ -499,17 +499,10 @@ def handle_lanying_messages(data):
         newConfig['ext'] = message['ext']
         newConfig['app_id'] = message['appId']
         newConfig['msg_id'] = message['msgId']
-        responseText = service_module.handle_chat_message(newConfig, message)
-        logging.info(f"handle_lanying_messages | service={service}, appId={appId}, responseText:{responseText}")
-        if len(responseText) > 0:
-            sendMessageAsync(appId, toUserId, fromUserId, responseText)
+        service_module.handle_chat_message(newConfig, message)
         addMsgSentCnt(1)
     except Exception as e:
         logging.exception(e)
-        if service == 'openai':
-            message_404 = lanying_config.get_message_404(appId)
-            sendMessageAsync(appId, toUserId, fromUserId, message_404)
-            addMsgSentCnt(1)
 
 def sendMessageAsync(appId, fromUserId, toUserId, content, ext = {}):
     executor.submit(sendMessageAsyncInternal, (appId, fromUserId, toUserId, content, ext))

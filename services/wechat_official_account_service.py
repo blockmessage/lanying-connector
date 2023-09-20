@@ -172,7 +172,7 @@ def wait_reply_msg(app_id, key, expire_time, is_last, lock_value):
 def handle_chat_message(config, message):
     checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
-        return ''
+        return
     msg_type = checkres['msg_type']
     json_ext = checkres['json_ext']
     verify_type = checkres['verify_type']
@@ -217,7 +217,6 @@ def handle_chat_message(config, message):
         wechat_username = get_wechat_username(app_id, to_user_id)
         if wechat_username:
             send_wechat_message(config, app_id, message, wechat_username)
-    return ''
 
 def check_message_need_send(config, message):
     from_user_id = int(message['from']['uid'])
