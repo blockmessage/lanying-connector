@@ -45,6 +45,8 @@ def create_app():
 app = create_app()
 import wechat_official_account_service
 app.register_blueprint(wechat_official_account_service.bp)
+import openai_service
+app.register_blueprint(openai_service.bp)
 
 @app.route("/", methods=["GET"])
 def index():

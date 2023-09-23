@@ -69,12 +69,14 @@ def chat(prepare_info, preset):
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        # logging.info(f"stream got line:{line_str}|")
+                        #logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
                                 if 'usage' in data:
                                     yield {'usage': data['usage']}
+                                elif 'function_call' in data['choices'][0]['messages'][0]:
+                                    yield {'function_call': data['choices'][0]['messages'][0]['function_call'], 'arguments_merge_type': 'replace'}
                                 else:
                                     text = data['choices'][0]['messages'][0]['text']
                                     yield {'content': text}

@@ -336,7 +336,7 @@ def get_wechat_access_token_internal(app_id, wechat_app_id, wechat_app_secret):
         logging.info(f"get_wechat_access_token_internal success | appid={app_id}")
         return {'result':'ok', 'access_token': data['access_token'], 'expires_in': data['expires_in']}
     else:
-        logging.info(f"get_wechat_access_token_internal failed | appid={app_id}")
+        logging.info(f"get_wechat_access_token_internal failed | appid={app_id}, bad_data:{data}")
         return {'result': 'error'}
 
 def wechat_user_key(app_id, username):

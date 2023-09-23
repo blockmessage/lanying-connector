@@ -30,7 +30,7 @@ def model_configs():
             "quota": 2,
             "token_limit": 16000,
             'order': 2,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-03-15-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-07-01-preview'
         },
         {
             "model": 'gpt-35-turbo',
@@ -39,7 +39,7 @@ def model_configs():
             "quota": 1,
             "token_limit": 4000,
             'order': 1,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-03-15-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-07-01-preview'
         },
         {
             "model": 'text-embedding-ada-002',
@@ -180,7 +180,7 @@ def encoding_for_model(model):
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
-    support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
+    support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream", "functions"]
     ret = dict()
     for key in support_fields:
         if key in preset:

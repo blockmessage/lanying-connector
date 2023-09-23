@@ -122,6 +122,14 @@ def get_lanying_connector_rate_limit(appId):
         return get_config("global", 'lanying_connector.rate_limit', 30)
     return int(os.getenv('LANYING_RATE_LIMIT', "30"))
 
+def get_lanying_connector_function_num_limit(appId):
+    if mode == 'etcd':
+        function_num = get_config(appId, 'lanying_connector.function_num', None)
+        if function_num and function_num >= 0:
+            return function_num
+        return get_config("global", 'lanying_connector.function_num', 0)
+    return int(os.getenv('LANYING_CONNECTOR_AI_PLUGIN_FUNCTION_NUM_LIMIT', "10"))
+
 def get_lanying_connector_deduct_failed(appId):
     if mode == 'etcd':
         return get_config(appId, 'lanying_connector.deduct_failed', False)

@@ -19,6 +19,12 @@ import lanying_command
 import lanying_url_loader
 import lanying_vendor
 import lanying_utils
+from flask import Blueprint, request, make_response
+import lanying_ai_plugin
+
+service = 'openai_service'
+bp = Blueprint(service, __name__)
+
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
@@ -135,7 +141,7 @@ def handle_request(request):
                         yield line_str + '\n'
                 finally:
                     reply = ''.join(contents)
-                    response_json = stream_lines_to_response(preset, reply, vendor, {})
+                    response_json = stream_lines_to_response(preset, reply, vendor, {}, "", "")
                     add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
         else:
@@ -378,6 +384,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     reference = presetExt.get('reference')
     reference_list = []
     messages = preset.get('messages',[])
+    functions = []
     now = int(time.time())
     history = {'time':now}
     fromUserId = config['from_user_id']
@@ -408,12 +415,15 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         del_embedding_info(redis, fromUserId, toUserId)
         return 'prompt is reset'
     preset_embedding_infos = lanying_embedding.get_preset_embedding_infos(config.get('embeddings'), app_id, preset_name)
+    for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings(app_id, preset_name):
+        preset_embedding_infos.append(now_embedding_info)
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
         question_merge = presetExt.get('question_merge', True)
         question_answers = []
         question_answer_with_distance = ""
+        functions_with_distance = ""
         is_use_old_embeddings = False
         embedding_names = []
         for preset_embedding_info in preset_embedding_infos:
@@ -468,6 +478,14 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         question_answers.append(answer_info)
                         if is_debug:
                             question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
+                elif hasattr(doc, 'function') and doc.function != "":
+                    function_info = json.loads(doc.function)
+                    if is_debug:
+                        functions_with_distance += f"[distance:{now_distance}, function_name:{function_info.get('name','')}"
+                    function_name = function_info.get('name', '')
+                    function_info["name"]  = f"class{len(functions)}_{function_name}"
+                    function_info["doc_id"] = doc.doc_id
+                    functions.append(function_info)
                 elif embedding_content_type == 'summary':
                     context = context + doc.summary + "\n\n"
                     if is_debug:
@@ -498,7 +516,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 if is_use_old_embeddings:
                     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai'}})
                 else:
-                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{question_answer_with_distance}\n",{'ai':{'role': 'ai'}})
+                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{question_answer_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai'}})
     history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
     if history_result['result'] == 'error':
         return history_result['message']
@@ -508,8 +526,13 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         messages.append(userHistory)
     messages.append({"role": "user", "content": content})
     preset['messages'] = messages
+    if len(functions) > 0:
+        preset['functions'] = functions
+    else:
+        if 'function' in preset:
+            del preset['function']
     preset_message_lines = "\n".join([f"{message.get('role','')}:{message.get('content','')}" for message in messages])
-    logging.info(f"==========final preset messages============\n{preset_message_lines}")
+    logging.info(f"==========final preset messages/functions============\n{preset_message_lines}\n{functions}")
     if 'force_stream' in lcExt and lcExt['force_stream'] == True:
         logging.info("force use stream")
         preset['stream'] = True
@@ -527,53 +550,73 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         }
     if 'feedback' in lcExt:
         reply_ext['ai']['feedback'] = lcExt['feedback']
-    is_stream = ('reply_generator' in response)
-    if is_stream:
-        reply_generator = response.get('reply_generator')
-        reply = response['reply']
-        stream_interval = max(1, presetExt.get('stream_interval', 3))
-        stream_collect_count = presetExt.get('stream_collect_count', 10)
-        content_collect = []
-        content_count = 0
-        collect_start_time = time.time()
-        reply_ext['ai']['stream'] = True
-        reply_ext['ai']['stream_interval'] = stream_interval
-        reply_ext['ai']['seq'] = 0
-        reply_ext['ai']['finish'] = False
-        stream_usage = {}
-        for delta in reply_generator:
-            delta_content = delta.get('content', '')
-            if 'usage' in delta:
-                stream_usage = delta['usage']
-            content_count += len(delta_content)
-            content_collect.append(delta_content)
-            collect_now = time.time()
-            delta_time = collect_now - collect_start_time
-            if delta_time >= stream_interval and content_count >= stream_collect_count:
-                message_to_send = ''.join(content_collect)
-                if stream_msg_id > 0:
-                    reply_ext['ai']['seq'] += 1
-                    lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
-                else:
-                    try:
+    function_call_times = 5
+    is_stream = False
+    while True:
+        is_stream = ('reply_generator' in response)
+        if is_stream:
+            reply_generator = response.get('reply_generator')
+            reply = response['reply']
+            stream_interval = max(1, presetExt.get('stream_interval', 3))
+            stream_collect_count = presetExt.get('stream_collect_count', 10)
+            content_collect = []
+            content_count = 0
+            collect_start_time = time.time()
+            reply_ext['ai']['stream'] = True
+            reply_ext['ai']['stream_interval'] = stream_interval
+            reply_ext['ai']['seq'] = 0
+            reply_ext['ai']['finish'] = False
+            stream_usage = {}
+            stream_function_name = ""
+            stream_function_args = ""
+            for delta in reply_generator:
+                # logging.info(f"KKK:delta:{delta}")
+                delta_content = delta.get('content', '')
+                if not delta_content:
+                    delta_content = ''
+                if 'usage' in delta:
+                    stream_usage = delta['usage']
+                if "function_call" in delta:
+                    if "name" in delta["function_call"]:
+                        stream_function_name = delta["function_call"]["name"]
+                    if "arguments" in delta["function_call"]:
+                        if delta.get('arguments_merge_type', 'append') == 'replace':
+                            stream_function_args = delta["function_call"]["arguments"]
+                        else:
+                            stream_function_args += delta["function_call"]["arguments"]
+                content_count += len(delta_content)
+                content_collect.append(delta_content)
+                collect_now = time.time()
+                delta_time = collect_now - collect_start_time
+                if delta_time >= stream_interval and content_count >= stream_collect_count:
+                    message_to_send = ''.join(content_collect)
+                    if stream_msg_id > 0:
                         reply_ext['ai']['seq'] += 1
-                        stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
-                    except Exception as e:
-                        pass
-                reply += message_to_send
-                content_count = 0
-                content_collect = []
-                collect_start_time = collect_now
-        reply += ''.join(content_collect)
-        stream_reponse = stream_lines_to_response(preset, reply, vendor, stream_usage)
-        response['reply'] = reply
-        response['usage'] = stream_reponse['usage']
-    add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
-    function_call_times = 3
-    while function_call_times > 0:
+                        lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
+                    else:
+                        try:
+                            reply_ext['ai']['seq'] += 1
+                            stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
+                        except Exception as e:
+                            pass
+                    reply += message_to_send
+                    content_count = 0
+                    content_collect = []
+                    collect_start_time = collect_now
+            reply += ''.join(content_collect)
+            stream_reponse = stream_lines_to_response(preset, reply, vendor, stream_usage, stream_function_name, stream_function_args)
+            response['reply'] = reply
+            response['usage'] = stream_reponse['usage']
+            if 'function_call' in stream_reponse:
+                response['function_call'] = stream_reponse['function_call']
+        add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
         function_call = response.get('function_call')
-        if function_call:
-            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call}",{'ai':{'role': 'ai'}})
+        if function_call and function_call_times > 0:
+            function_call_debug = copy.deepcopy(function_call)
+            if 'name' in function_call_debug:
+                function_name_debug = function_call_debug['name']
+                function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
+            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
             response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info)
             function_call_times -= 1
         else:
@@ -709,6 +752,8 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
     for function in functions:
         if function['name'] == function_name:
             function_config = function
+    doc_id = function_config.get('doc_id', '')
+    function_config = lanying_ai_plugin.fill_function_info(app_id, function_config, doc_id)
     if 'callback' in function_config:
         callback = function_config['callback']
         method = callback.get('method', 'get')
@@ -840,7 +885,8 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
             max_tokens = embedding_max_tokens
         if max_blocks < embedding_max_blocks:
             max_blocks = embedding_max_blocks
-        docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc)
+        doc_ids = preset_embedding_info.get('doc_ids', [])
+        docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc, doc_ids)
         idx = 0
         for doc in docs:
             if hasattr(doc, 'text_hash'):
@@ -1027,7 +1073,11 @@ def calcMessagesTokens(messages, model, vendor):
         for message in messages:
             num_tokens += 4
             for key, value in message.items():
-                num_tokens += len(encoding.encode(value, disallowed_special=()))
+                if isinstance(value, dict):
+                    for k,v in value.items():
+                        num_tokens += len(encoding.encode(v, disallowed_special=()))
+                else:
+                    num_tokens += len(encoding.encode(value, disallowed_special=()))
                 if key == "name":
                     num_tokens += -1
         num_tokens += 2
@@ -1782,7 +1832,7 @@ def user_default_embedding_name_key(app_id, user_id):
 def list_models():
     return lanying_vendor.list_models()
 
-def stream_lines_to_response(preset, reply, vendor, usage):
+def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name, stream_function_args):
     if 'total_tokens' in usage:
         total_tokens = usage['total_tokens']
         prompt_tokens = usage.get('prompt_tokens', 0)
@@ -1799,6 +1849,11 @@ def stream_lines_to_response(preset, reply, vendor, usage):
             'total_tokens' : total_tokens
         }
     }
+    if stream_function_name != "":
+        response["function_call"] = {
+            "name": stream_function_name,
+            "arguments": stream_function_args
+        }
     logging.info(f"stream_lines_to_response | response:{response}")
     return response
 
@@ -1841,3 +1896,167 @@ def need_add_history(config, msg):
     except Exception as e:
         pass
     return False
+
+@bp.route("/service/openai/create_ai_plugin", methods=["POST"])
+def create_ai_plugin():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_name = str(data['plugin_name'])
+    result = lanying_ai_plugin.create_ai_plugin(app_id, plugin_name)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/list_ai_plugins", methods=["POST"])
+def list_ai_plugins():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_ai_plugin.list_ai_plugins(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/list_ai_functions", methods=["POST"])
+def list_ai_functions():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_id = str(data['plugin_id'])
+    start = int(data.get('start', 0))
+    end = int(data.get('end', 20))
+    result = lanying_ai_plugin.list_ai_functions(app_id, plugin_id, start, end)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/add_ai_function_to_ai_plugin", methods=["POST"])
+def add_ai_function_to_ai_plugin():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_id = str(data['plugin_id'])
+    name = str(data['name'])
+    description = str(data['description'])
+    parameters = dict(data['parameters'])
+    callback = dict(data['callback'])
+    result = lanying_ai_plugin.add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, callback)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/delete_ai_function_from_ai_plugin", methods=["POST"])
+def delete_ai_function_from_ai_plugin():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_id = str(data['plugin_id'])
+    function_id = str(data['function_id'])
+    result = lanying_ai_plugin.delete_ai_function_from_ai_plugin(app_id, plugin_id, function_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/configure_ai_plugin", methods=["POST"])
+def configure_ai_plugin():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_id = str(data['plugin_id'])
+    name = str(data['name'])
+    headers = dict(data.get('headers',{}))
+    endpoint = str(data.get('endpoint', ''))
+    result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, headers, endpoint)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/configure_ai_function", methods=["POST"])
+def configure_ai_function():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_id = str(data['plugin_id'])
+    function_id = str(data['function_id'])
+    name = str(data['name'])
+    description = str(data['description'])
+    parameters = dict(data['parameters'])
+    callback = dict(data['callback'])
+    result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,callback)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/bind_ai_plugin", methods=["POST"])
+def bind_ai_plugin():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    type = str(data['type'])
+    name = str(data['name'])
+    value_list = list(data['list'])
+    result = lanying_ai_plugin.bind_ai_plugin(app_id, type, name, value_list)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/get_ai_plugin_bind_relation", methods=["POST"])
+def get_ai_plugin_bind_relation():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_ai_plugin.get_ai_plugin_bind_relation(app_id)
+    resp = make_response({'code':200, 'data':result})
+    return resp
+
+def check_access_token_valid():
+    headerToken = request.headers.get('access-token', "")
+    accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
+    if accessToken and accessToken == headerToken:
+        return True
+    else:
+        return False
