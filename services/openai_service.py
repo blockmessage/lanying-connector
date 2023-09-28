@@ -349,6 +349,9 @@ def handle_chat_message_try(config, msg, retry_times):
     if 'ext' in preset:
         presetExt = copy.deepcopy(preset['ext'])
         del preset['ext']
+    is_debug = 'debug' in presetExt and presetExt['debug'] == True
+    if is_debug:
+        lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 当前预设为: {preset_name}",{'ai':{'role': 'ai'}})
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
     vendor = config.get('vendor', 'openai')
     if 'vendor' in preset:
