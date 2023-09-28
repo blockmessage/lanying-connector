@@ -757,13 +757,13 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             function_config = function
     doc_id = function_config.get('doc_id', '')
     function_config = lanying_ai_plugin.fill_function_info(app_id, function_config, doc_id)
-    if 'callback' in function_config:
-        callback = function_config['callback']
-        method = callback.get('method', 'get')
-        url = fill_function_args(function_args, callback.get('url', ''))
-        params = fill_function_args(function_args, callback.get('params', {}))
-        headers = fill_function_args(function_args, callback.get('headers', {}))
-        body = fill_function_args(function_args, callback.get('body', {}))
+    if 'function_call' in function_config:
+        lanying_function_call = function_config['function_call']
+        method = lanying_function_call.get('method', 'get')
+        url = fill_function_args(function_args, lanying_function_call.get('url', ''))
+        params = fill_function_args(function_args, lanying_function_call.get('params', {}))
+        headers = fill_function_args(function_args, lanying_function_call.get('headers', {}))
+        body = fill_function_args(function_args, lanying_function_call.get('body', {}))
         if lanying_utils.is_valid_public_url(url):
             logging.info(f"start request function callback | app_id:{app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
             if method == 'get':
@@ -801,10 +801,18 @@ def fill_function_args(function_args, obj):
             ret.append(new_item)
         return ret
     elif isinstance(obj, dict):
-        ret = {}
-        for k,v in obj.items():
-            ret[k] = fill_function_args(function_args, v)
-        return ret
+        if ('type' in obj and obj['type'] == 'variable' and 'value' in obj):
+            variable_name = obj['value']
+            if variable_name in function_args:
+                return function_args[variable_name]
+            else:
+                logging.info(f"fill_function_args | variable not found: {variable_name}")
+                return ''
+        else:
+            ret = {}
+            for k,v in obj.items():
+                ret[k] = fill_function_args(function_args, v)
+            return ret
     else:
         return obj
 
@@ -1961,8 +1969,8 @@ def add_ai_function_to_ai_plugin():
     name = str(data['name'])
     description = str(data['description'])
     parameters = dict(data['parameters'])
-    callback = dict(data['callback'])
-    result = lanying_ai_plugin.add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, callback)
+    function_call = dict(data['function_call'])
+    result = lanying_ai_plugin.add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2018,8 +2026,8 @@ def configure_ai_function():
     name = str(data['name'])
     description = str(data['description'])
     parameters = dict(data['parameters'])
-    callback = dict(data['callback'])
-    result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,callback)
+    function_call = dict(data['function_call'])
+    result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

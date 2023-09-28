@@ -909,7 +909,7 @@ def process_question(config, question, answer, reference):
 def process_function(config, text, function):
     try:
         function_obj = json.loads(function)
-        if "name" in function_obj and "description" in function_obj and "parameters" in function_obj and 'callback' in function_obj:
+        if "name" in function_obj and "description" in function_obj and "parameters" in function_obj and 'function_call' in function_obj:
             text_token_cnt = num_of_tokens(text)
             function_token_cnt = num_of_tokens(function)
             token_limit = embedding_model_token_limit()

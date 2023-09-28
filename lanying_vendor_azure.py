@@ -189,7 +189,7 @@ def format_preset(preset):
                 for function in preset['functions']:
                     function_obj = {}
                     for k,v in function.items():
-                        if k != "callback":
+                        if k != "function_call":
                             function_obj[k] = v
                     functions.append(function_obj)
                 ret[key] = functions

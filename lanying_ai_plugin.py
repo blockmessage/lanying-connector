@@ -60,9 +60,9 @@ def list_ai_functions(app_id, plugin_id, start, end):
         info = get_ai_function(app_id, function_id)
         if info:
             dto = {}
-            for key in ["function_id", "plugin_id", "create_time", "name", "description", "parameters", "callback"]:
+            for key in ["function_id", "plugin_id", "create_time", "name", "description", "parameters", "function_call"]:
                 if key in info:
-                    if key in ["parameters", "callback"]:
+                    if key in ["parameters", "function_call"]:
                         dto[key] = json.loads(info[key])
                     else:
                         dto[key] = info[key]
@@ -85,7 +85,7 @@ def get_ai_function(app_id, function_id):
         return info
     return None
 
-def add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, callback):
+def add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call):
     plugin = get_ai_plugin(app_id, plugin_id)
     if not plugin:
         return {'result': 'error', 'message': 'ai plugin not exist'}
@@ -106,13 +106,13 @@ def add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameter
         'name': name,
         'description': description,
         'parameters': json.dumps(parameters, ensure_ascii=False),
-        'callback': json.dumps(callback, ensure_ascii=False)
+        'function_call': json.dumps(function_call, ensure_ascii=False)
     }
     function_info = {
         'name': name,
         'description': description,
         'parameters': parameters,
-        'callback': callback
+        'function_call': function_call
     }
     function = json.dumps(function_info, ensure_ascii=False)
     text = description
@@ -156,7 +156,7 @@ def configure_ai_plugin(app_id, plugin_id, name, headers, endpoint):
     })
     return {'result':'ok', 'data':{'success': True}}
 
-def configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,callback):
+def configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call):
     ai_plugin_info = get_ai_plugin(app_id, plugin_id)
     if not ai_plugin_info:
         return {'result':'error', 'message': 'ai plugin not exist'}
@@ -168,7 +168,7 @@ def configure_ai_function(app_id, plugin_id, function_id, name, description, par
         'name': name,
         'description': description,
         'parameters': json.dumps(parameters, ensure_ascii=False),
-        'callback': json.dumps(callback, ensure_ascii=False)
+        'function_call': json.dumps(function_call, ensure_ascii=False)
     })
     return {'result':'ok', 'data':{'success': True}}
 
@@ -322,17 +322,17 @@ def fill_function_info(app_id, function_info, doc_id):
         return function_info
     headers_str = plugin_info.get('headers', '{}')
     headers = json.loads(headers_str)
-    callback = function_info.get('callback', {})
-    callback_headers = callback.get('headers', {})
+    function_call = function_info.get('function_call', {})
+    function_call_headers = function_call.get('headers', {})
     endpoint = plugin_info.get('endpoint', '')
     if len(headers) > 0:
         for k,v in headers:
-            callback_headers[k] = v
-        callback['headers'] = callback_headers
+            function_call_headers[k] = v
+        function_call['headers'] = function_call_headers
     if len(endpoint) > 0:
-        callback_url = callback.get('url', '')
-        old_urlparse = urlparse(callback_url)
+        function_call_url = function_call.get('url', '')
+        old_urlparse = urlparse(function_call_url)
         new_urlparse = urlparse(endpoint)
         new_url = urlunparse(old_urlparse._replace(netloc=new_urlparse.netloc,scheme=new_urlparse.scheme))
-        callback["url"] = new_url
-    function_info["callback"] = callback
+        function_call["url"] = new_url
+    function_info["function_call"] = function_call
