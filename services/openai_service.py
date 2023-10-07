@@ -555,6 +555,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         reply_ext['ai']['feedback'] = lcExt['feedback']
     function_call_times = 5
     is_stream = False
+    stream_msg_last_send_time = 0
     while True:
         is_stream = ('reply_generator' in response)
         if is_stream:
@@ -606,6 +607,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     content_count = 0
                     content_collect = []
                     collect_start_time = collect_now
+                    stream_msg_last_send_time = collect_now
             reply += ''.join(content_collect)
             stream_reponse = stream_lines_to_response(preset, reply, vendor, stream_usage, stream_function_name, stream_function_args)
             response['reply'] = reply
@@ -736,6 +738,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if stream_msg_id > 0:
             reply_ext['ai']['seq'] += 1
             reply_ext['ai']['finish'] = True
+            now = time.time()
+            send_delay = stream_msg_last_send_time + 1 - now
+            if send_delay > 0:
+                logging.info(f"Delay Send replace msg |  stream_msg_delay_send_time: {stream_msg_last_send_time}, now:{now}, send_delay: {send_delay}")
+                time.sleep(send_delay)
             lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, oper_msg_config, False)
         else:
             if is_stream:
