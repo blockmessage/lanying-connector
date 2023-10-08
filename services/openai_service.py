@@ -2071,6 +2071,36 @@ def get_ai_plugin_bind_relation():
     resp = make_response({'code':200, 'data':result})
     return resp
 
+@bp.route("/service/openai/get_ai_plugin_embedding", methods=["POST"])
+def get_ai_plugin_embedding():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_ai_plugin.get_ai_plugin_embedding(app_id)
+    resp = make_response({'code':200, 'data':result})
+    return resp
+
+@bp.route("/service/openai/configure_ai_plugin_embedding", methods=["POST"])
+def configure_ai_plugin_embedding():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    embedding_max_tokens = int(data['embedding_max_tokens'])
+    embedding_max_blocks = int(data['embedding_max_blocks'])
+    vendor = str(data['vendor'])
+    result = lanying_ai_plugin.configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
     accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')

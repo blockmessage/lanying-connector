@@ -319,19 +319,24 @@ def list_embeddings(app_id):
     embedding_names = redis_lrange(redis, list_key, 0, -1)
     result = []
     for embedding_name in embedding_names:
-        embedding_info = get_embedding_name_info(app_id, embedding_name)
+        embedding_info = get_embedding_info_with_details(app_id, embedding_name)
         if embedding_info:
-            embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
-            embedding_uuid = embedding_info["embedding_uuid"]
-            embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-            for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size", "vendor"]:
-                if key in embedding_uuid_info:
-                    embedding_info[key] = embedding_uuid_info[key]
-            if "embedding_content" not in embedding_info:
-                embedding_info["embedding_content"] = "请严格按照下面的知识回答我之后的所有问题:"
             result.append(embedding_info)
     return result
 
+def get_embedding_info_with_details(app_id, embedding_name):
+    embedding_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_info:
+        embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
+        embedding_uuid = embedding_info["embedding_uuid"]
+        embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+        for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size", "vendor"]:
+            if key in embedding_uuid_info:
+                embedding_info[key] = embedding_uuid_info[key]
+        if "embedding_content" not in embedding_info:
+            embedding_info["embedding_content"] = "请严格按照下面的知识回答我之后的所有问题:"
+        return embedding_info
+    
 def list_embedding_names(app_id):
     redis = lanying_redis.get_redis_stack_connection()
     list_key = get_embedding_names_key(app_id)

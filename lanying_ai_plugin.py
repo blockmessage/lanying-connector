@@ -7,7 +7,39 @@ from urllib.parse import urlparse
 from urllib.parse import urlunparse
 import lanying_config
 import random
-import lanying_tasks
+
+def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor):
+    embedding_name = maybe_create_function_embedding(app_id)
+    admin_user_ids = []
+    preset_name = ''
+    embedding_content = ''
+    new_embedding_name = ''
+    max_block_size = 500
+    overlapping_size = 0
+    old_embedding_info = get_ai_plugin_embedding(app_id)
+    lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor)
+    new_embedding_info = get_ai_plugin_embedding(app_id)
+    if old_embedding_info.get('vendor', 'openai') != new_embedding_info.get('vendor', 'openai'):
+        redis = lanying_redis.get_redis_connection()
+        list_key = get_ai_plugin_ids_key(app_id)
+        plugin_ids = lanying_redis.redis_lrange(redis, list_key, 0, -1)
+        from lanying_tasks import process_function_embeddings
+        for plugin_id in plugin_ids:
+            function_list_key = get_ai_function_ids_key(app_id, plugin_id)
+            function_ids = lanying_redis.redis_lrange(redis, function_list_key, 0, -1)
+            if len(function_ids) > 0:
+                process_function_embeddings.apply_async(args = [app_id, plugin_id, function_ids])
+    return {'result': 'ok', 'data':{'success': True}}
+
+def get_ai_plugin_embedding(app_id):
+    embedding_name = maybe_create_function_embedding(app_id)
+    details = lanying_embedding.get_embedding_info_with_details(app_id, embedding_name)
+    ret = {}
+    if details:
+        for key in [ "embedding_max_tokens", "embedding_max_blocks",  "vendor"]:
+            if key in details:
+                ret[key] = details[key]
+    return ret
 
 def create_ai_plugin(app_id, plugin_name):
     logging.info(f"start create ai plugin: app_id:{app_id}, plugin_name:{plugin_name}")
