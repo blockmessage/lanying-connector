@@ -484,7 +484,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 elif hasattr(doc, 'function') and doc.function != "":
                     function_info = json.loads(doc.function)
                     if is_debug:
-                        functions_with_distance += f"[distance:{now_distance}, function_name:{function_info.get('name','')}"
+                        functions_with_distance += f"[distance:{now_distance}, function_name:{function_info.get('name','')}]\n\n"
                     function_name = function_info.get('name', '')
                     function_info["name"]  = f"class{len(functions)}_{function_name}"
                     function_info["doc_id"] = doc.doc_id

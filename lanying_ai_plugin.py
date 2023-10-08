@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from urllib.parse import urlunparse
 import lanying_config
 import random
+import lanying_tasks
 
 def create_ai_plugin(app_id, plugin_name):
     logging.info(f"start create ai plugin: app_id:{app_id}, plugin_name:{plugin_name}")
@@ -108,24 +109,42 @@ def add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameter
         'parameters': json.dumps(parameters, ensure_ascii=False),
         'function_call': json.dumps(function_call, ensure_ascii=False)
     }
+    redis = lanying_redis.get_redis_connection()
+    increase_ai_function_count(app_id, 1)
+    redis.hmset(get_ai_function_key(app_id, function_id), ai_function_info)
+    redis.rpush(get_ai_function_ids_key(app_id, plugin_id), function_id)
+    from lanying_tasks import process_function_embeddings
+    process_function_embeddings.apply_async(args = [app_id, plugin_id, [function_id]])
+    return {'result':'ok', 'data':{'function_id': function_id}}
+
+def process_function_embedding(app_id, plugin_id, function_id):
+    ai_plugin_info = get_ai_plugin(app_id, plugin_id)
+    if not ai_plugin_info:
+        return {'result':'error', 'message': 'ai plugin not exist'}
+    ai_function_info = get_ai_function(app_id, function_id)
+    if not ai_function_info:
+        return {'result':'error', 'message': 'ai function not exist'}
+    redis_stack = lanying_redis.get_redis_stack_connection()
+    embedding_uuid = ai_plugin_info["embedding_uuid"]
+    doc_id = ai_plugin_info["doc_id"]
+    embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
+    name = ai_function_info['name']
+    embedding_name = ai_plugin_info["embedding_name"]
+    description = ai_function_info['description']
+    block_id = ai_function_info['block_id']
     function_info = {
         'name': name,
         'description': description,
-        'parameters': parameters,
-        'function_call': function_call
+        'parameters': safe_json_loads(ai_function_info['parameters']),
+        'function_call': safe_json_loads(ai_function_info.get('function_call','{}'))
     }
     function = json.dumps(function_info, ensure_ascii=False)
     text = description
     token_cnt = lanying_embedding.num_of_tokens(function)
     blocks = [(token_cnt, "function", text, function, block_id)]
-    embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
-    redis = lanying_redis.get_redis_connection()
-    redis_stack = lanying_redis.get_redis_stack_connection()
+    lanying_embedding.delete_embedding_block(app_id, embedding_name, doc_id, block_id)
     lanying_embedding.insert_embeddings(embedding_uuid_info, app_id, embedding_uuid,"function", doc_id, blocks, redis_stack)
-    increase_ai_function_count(app_id, 1)
-    redis.hmset(get_ai_function_key(app_id, function_id), ai_function_info)
-    redis.rpush(get_ai_function_ids_key(app_id, plugin_id), function_id)
-    return {'result':'ok', 'data':{'function_id': function_id}}
+    
 
 def delete_ai_function_from_ai_plugin(app_id, plugin_id, function_id):
     plugin = get_ai_plugin(app_id, plugin_id)
@@ -170,6 +189,8 @@ def configure_ai_function(app_id, plugin_id, function_id, name, description, par
         'parameters': json.dumps(parameters, ensure_ascii=False),
         'function_call': json.dumps(function_call, ensure_ascii=False)
     })
+    from lanying_tasks import process_function_embeddings
+    process_function_embeddings.apply_async(args = [app_id, plugin_id, [function_id]])
     return {'result':'ok', 'data':{'success': True}}
 
 def bind_ai_plugin(app_id, type, name, list):
@@ -336,3 +357,9 @@ def fill_function_info(app_id, function_info, doc_id):
         new_url = urlunparse(old_urlparse._replace(netloc=new_urlparse.netloc,scheme=new_urlparse.scheme))
         function_call["url"] = new_url
     function_info["function_call"] = function_call
+
+def safe_json_loads(str):
+    try:
+        return json.loads(str)
+    except Exception as e:
+        return {}

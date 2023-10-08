@@ -15,6 +15,7 @@ import zipfile
 import lanying_url_loader
 import io
 import json
+import lanying_ai_plugin
 
 normal_queue = Celery('normal_queue',
              backend=lanying_redis.get_task_redis_server(),
@@ -414,6 +415,11 @@ def re_run_doc_to_embedding_by_doc_ids(trace_id, app_id, embedding_uuid, doc_ids
 @normal_queue.task
 def delete_doc_data(app_id, embedding_name, doc_id, embedding_index, last_total, db_type, db_table_name):
     lanying_embedding.search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total, db_type, db_table_name)
+
+@normal_queue.task
+def process_function_embeddings(app_id, plugin_id, function_ids):
+    for function_id in function_ids:
+        lanying_ai_plugin.process_function_embedding(app_id, plugin_id, function_id)
 
 def task_error(message):
     logging.error(message)
