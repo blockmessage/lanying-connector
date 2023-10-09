@@ -21,6 +21,8 @@ import lanying_vendor
 import lanying_utils
 from flask import Blueprint, request, make_response
 import lanying_ai_plugin
+import random
+import lanying_file_storage
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -2101,6 +2103,77 @@ def configure_ai_plugin_embedding():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/openai/plugin_export", methods=["POST"])
+def plugin_export():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_id = str(data['plugin_id'])
+    result = lanying_ai_plugin.plugin_export(app_id, plugin_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/plugin_import", methods=["POST"])
+def plugin_import():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    public_id = str(data.get('public_id', ''))
+    url = str(data.get('url', ''))
+    if len(public_id) > 0:
+        result = plugin_import_by_public_id(app_id, public_id)
+    elif len(url) > 0:
+        result = plugin_import_by_url(app_id, url)
+    else:
+        result = {'result': 'error', 'message':'need args: url or public_id'}
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/list_public_plugins", methods=["POST"])
+def list_public_plugins():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    result = lanying_ai_plugin.list_public_plugins()
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+def plugin_import_by_public_id(app_id, public_id):
+    plugin_info = lanying_ai_plugin.get_public_plugin(public_id)
+    if not plugin_info:
+        return {'result':'error', 'message': 'plugin not exist'}
+    plugin_config = json.loads(plugin_info['config'])
+    return lanying_ai_plugin.plugin_import(app_id, plugin_config)
+
+def plugin_import_by_url(app_id, url):
+    config = lanying_config.get_lanying_connector(app_id)
+    headers = {'app_id': app_id,
+            'access-token': config['lanying_admin_token'],
+            'user_id': config['lanying_user_id']}
+    filename = f"/tmp/plugin-import-{int(time.time())}-{random.randint(1,100000000)}"
+    lanying_file_storage.download_url(url, headers, filename)
+    with open(filename, 'r', encoding='utf-8') as f:
+        content = f.read()
+        plugin_config = json.loads(content)
+        return lanying_ai_plugin.plugin_import(app_id, plugin_config)
+    
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
     accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')

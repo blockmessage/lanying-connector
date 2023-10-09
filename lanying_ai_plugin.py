@@ -25,8 +25,7 @@ def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_bl
         plugin_ids = lanying_redis.redis_lrange(redis, list_key, 0, -1)
         from lanying_tasks import process_function_embeddings
         for plugin_id in plugin_ids:
-            function_list_key = get_ai_function_ids_key(app_id, plugin_id)
-            function_ids = lanying_redis.redis_lrange(redis, function_list_key, 0, -1)
+            function_ids = list_ai_function_ids(app_id, plugin_id)
             if len(function_ids) > 0:
                 process_function_embeddings.apply_async(args = [app_id, plugin_id, function_ids])
     return {'result': 'ok', 'data':{'success': True}}
@@ -101,6 +100,11 @@ def list_ai_functions(app_id, plugin_id, start, end):
                         dto[key] = info[key]
             result.append(dto)
     return {'result':'ok', 'data':{'list': result, 'total': total}}
+
+def list_ai_function_ids(app_id, plugin_id):
+    redis = lanying_redis.get_redis_connection()
+    list_key = get_ai_function_ids_key(app_id, plugin_id)
+    return lanying_redis.redis_lrange(redis, list_key, 0, -1)
 
 def get_ai_plugin(app_id, plugin_id):
     redis = lanying_redis.get_redis_connection()
@@ -395,3 +399,107 @@ def safe_json_loads(str):
         return json.loads(str)
     except Exception as e:
         return {}
+
+def plugin_export(app_id, plugin_id):
+    plugin_info = get_ai_plugin(app_id, plugin_id)
+    if not plugin_info:
+        return {'result':'error', 'message': 'plugin not exist'}
+    function_ids = list_ai_function_ids(app_id, plugin_id)
+    function_dtos = []
+    for function_id in function_ids:
+        function_info = get_ai_function(app_id, function_id)
+        if function_info:
+            function_dto = {
+                'type': 'ai_function',
+                'name': function_info['name'],
+                'description': function_info['description'],
+                'parameters': safe_json_loads(function_info['parameters']),
+                'function_call': safe_json_loads(function_info['function_call'])
+            }
+            function_dtos.append(function_dto)
+    plugin_dto = {
+        'type': 'ai_plugin',
+        'version': 1,
+        "name": plugin_info['name'],
+        "headers": safe_json_loads(plugin_info.get('headers', '{}')),
+        "body": safe_json_loads(plugin_info.get('body', '{}')),
+        "params": safe_json_loads(plugin_info.get('params', '{}')),
+        "envs": safe_json_loads(plugin_info.get('envs', '{}')),
+        "endpoint": plugin_info['endpoint'],
+        "functions": function_dtos
+    }
+    filename = f"{plugin_info['name']}-plugin.json"
+    content = json.dumps(plugin_dto, ensure_ascii=False, indent=2)
+    return {'result': 'ok', 'data':{'file':{'name':filename, 'content':content}}}
+
+def plugin_import(app_id, plugin_config):
+    if plugin_config['type'] != 'ai_plugin' or plugin_config['version'] != 1:
+        {'result': 'error', 'message': 'bad ai plugin config format'}
+    plugin_name = plugin_config['name']
+    plugin_create_result = create_ai_plugin(app_id, plugin_name)
+    if plugin_create_result['result'] == 'error':
+        return plugin_create_result
+    plugin_id = plugin_create_result['data']['id']
+    for function_info in plugin_config.get('functions', []):
+        try:
+            function_name = function_info['name']
+            description = function_info['description']
+            parameters = function_info['parameters']
+            function_call = function_call['parameters']
+            add_ai_function_to_ai_plugin(app_id, plugin_id, function_name, description, parameters, function_call)
+        except Exception as e:
+            pass
+    return {'result': 'ok', 'data':{'success':True}}
+
+def plugin_publish(app_id, plugin_id, name, description, order):
+    export_result = plugin_export(app_id, plugin_id)
+    if export_result['result'] == 'error':
+        return export_result
+    plugin_config = json.loads(export_result['data']['content'])
+    redis = lanying_redis.get_redis_connection()
+    public_id = str(redis.incrby(plugin_public_info_id_generator_key(), 1))
+    info_key = plugin_public_info_key(public_id)
+    redis.hmset(info_key, {
+        'public_id': public_id,
+        'name': name,
+        'description': description,
+        'order': order,
+        'config': json.dumps(plugin_config, ensure_ascii=False)
+    })
+    list_key = plugin_publish_id_list_key()
+    redis.rpush(list_key, public_id)
+    return {'result':'ok', 'data':{'success':True, 'public_id':public_id}}
+
+def list_public_plugins():
+    redis = lanying_redis.get_redis_connection()
+    list_key = plugin_publish_id_list_key()
+    public_ids = lanying_redis.redis_lrange(redis, list_key, 0, -1)
+    plugin_infos = []
+    for public_id in public_ids:
+        public_plugin_info = get_public_plugin(public_id)
+        if public_plugin_info:
+            plugin_info = {
+                'public_id': public_id,
+                'name': public_plugin_info['name'],
+                'description': public_plugin_info['description'],
+                'order': public_plugin_info['order']
+            }
+            plugin_infos.append(plugin_info)
+    return {'result':'ok', 'data':{'list':plugin_infos}}
+
+def get_public_plugin(public_id):
+    redis = lanying_redis.get_redis_connection()
+    info_key = plugin_public_info_key(public_id)
+    info = lanying_redis.redis_hgetall(redis, info_key)
+    if 'name' in info:
+        return info
+    return None
+    
+def plugin_publish_id_list_key():
+    return f"lanying-connector:public-plugin:list"
+
+def plugin_public_info_key(public_id):
+    return f"lanying-connector:public-plugin:info:{public_id}"
+
+def plugin_public_info_id_generator_key():
+    return f"lanying-connector:public-plugin:info_id_generator"
