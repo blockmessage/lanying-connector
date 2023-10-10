@@ -2014,8 +2014,9 @@ def configure_ai_plugin():
     plugin_id = str(data['plugin_id'])
     name = str(data['name'])
     headers = dict(data.get('headers',{}))
+    envs = dict(data.get('envs',{}))
     endpoint = str(data.get('endpoint', ''))
-    result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, headers, endpoint)
+    result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2127,14 +2128,15 @@ def plugin_import():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
+    type = str(data['type'])
     public_id = str(data.get('public_id', ''))
     url = str(data.get('url', ''))
-    if len(public_id) > 0:
+    if type == 'public_id' and len(public_id) > 0:
         result = plugin_import_by_public_id(app_id, public_id)
-    elif len(url) > 0:
+    elif type == 'file' and len(url) > 0:
         result = plugin_import_by_url(app_id, url)
     else:
-        result = {'result': 'error', 'message':'need args: url or public_id'}
+        result = {'result': 'error', 'message':'need args: type, url or public_id'}
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

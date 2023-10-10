@@ -73,12 +73,14 @@ def list_ai_plugins(app_id):
         info = get_ai_plugin(app_id, plugin_id)
         if info:
             dto = {}
-            for key in ["name", "plugin_id", "create_time", "headers", "endpoint"]:
+            for key in ["name", "plugin_id", "create_time", "endpoint", "envs", "headers"]:
                 if key in info:
-                    if key in ["headers"]:
+                    if key in ["envs", "headers"]:
                         dto[key] = json.loads(info[key])
                     else:
                         dto[key] = info[key]
+                elif key in ["envs", "headers"]:
+                    dto[key] = {}
             result.append(dto)
     return {'result':'ok', 'data':{'list': result}}
 
@@ -168,11 +170,13 @@ def process_function_embedding(app_id, plugin_id, function_id):
     embedding_name = ai_plugin_info["embedding_name"]
     description = ai_function_info['description']
     block_id = ai_function_info['block_id']
+    parameters = safe_json_loads(ai_function_info.get('parameters', '{}'))
+    function_call = safe_json_loads(ai_function_info.get('function_call','{}'))
     function_info = {
         'name': name,
         'description': description,
-        'parameters': safe_json_loads(ai_function_info['parameters']),
-        'function_call': safe_json_loads(ai_function_info.get('function_call','{}'))
+        'parameters': parameters,
+        'function_call': function_call
     }
     function = json.dumps(function_info, ensure_ascii=False)
     text = description
@@ -180,7 +184,29 @@ def process_function_embedding(app_id, plugin_id, function_id):
     blocks = [(token_cnt, "function", text, function, block_id)]
     lanying_embedding.delete_embedding_block(app_id, embedding_name, doc_id, block_id)
     lanying_embedding.insert_embeddings(embedding_uuid_info, app_id, embedding_uuid,"function", doc_id, blocks, redis_stack)
-    
+
+def fill_parameters_to_function_call(function_call, parameters):
+    method = function_call.get('method', 'get')
+    params = function_call.get('params', {})
+    headers = function_call.get('headers', {})
+    body = function_call.get('body', {})
+    logging.info(f"processing function: start, function_call:{function_call}, parameters:{parameters}")
+    for property,_ in parameters.get('properties',{}).items():
+        if property not in headers and property not in params and property not in body:
+            if method == 'get':
+                params[property] = {
+                    "type": "variable",
+                    "value": property
+                }
+            else:
+                body[property] = {
+                    "type": "variable",
+                    "value": property
+                }
+    function_call['params'] = params
+    function_call['body'] = body
+    logging.info(f"processing function: finish, function_call:{function_call}")
+    return function_call
 
 def delete_ai_function_from_ai_plugin(app_id, plugin_id, function_id):
     plugin = get_ai_plugin(app_id, plugin_id)
@@ -199,7 +225,7 @@ def delete_ai_function_from_ai_plugin(app_id, plugin_id, function_id):
     increase_ai_function_count(app_id, -1)
     return {'result':'ok', 'data':{'success': True}}
 
-def configure_ai_plugin(app_id, plugin_id, name, headers, endpoint):
+def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs):
     ai_plugin_info = get_ai_plugin(app_id, plugin_id)
     if not ai_plugin_info:
         return {'result':'error', 'message': 'ai plugin not exist'}
@@ -207,6 +233,7 @@ def configure_ai_plugin(app_id, plugin_id, name, headers, endpoint):
     redis.hmset(get_ai_plugin_key(app_id, plugin_id), {
         'name': name,
         'headers': json.dumps(headers, ensure_ascii=False),
+        'envs': json.dumps(envs, ensure_ascii=False),
         'endpoint': endpoint
     })
     return {'result':'ok', 'data':{'success': True}}
@@ -377,28 +404,60 @@ def fill_function_info(app_id, function_info, doc_id):
     plugin_info = get_ai_plugin(app_id, plugin_id)
     if not plugin_info:
         return function_info
-    headers_str = plugin_info.get('headers', '{}')
-    headers = json.loads(headers_str)
+    headers = safe_json_loads(plugin_info.get('headers', '{}'))
+    envs = safe_json_loads(plugin_info.get('envs', '{}'))
     function_call = function_info.get('function_call', {})
+    parameters = function_info.get('parameters', {})
+    function_call = fill_parameters_to_function_call(function_call, parameters)
     function_call_headers = function_call.get('headers', {})
+    function_call_params = function_call.get('params', {})
+    function_call_body = function_call.get('body', {})
     endpoint = plugin_info.get('endpoint', '')
     if len(headers) > 0:
         for k,v in headers:
             function_call_headers[k] = v
-        function_call['headers'] = function_call_headers
     if len(endpoint) > 0:
         function_call_url = function_call.get('url', '')
         old_urlparse = urlparse(function_call_url)
-        new_urlparse = urlparse(endpoint)
-        new_url = urlunparse(old_urlparse._replace(netloc=new_urlparse.netloc,scheme=new_urlparse.scheme))
-        function_call["url"] = new_url
+        if len(old_urlparse.netloc) == 0:
+            new_urlparse = urlparse(endpoint)
+            new_url = urlunparse(old_urlparse._replace(netloc=new_urlparse.netloc,scheme=new_urlparse.scheme))
+            function_call["url"] = new_url
+    function_call['headers'] = fill_function_envs(envs, function_call_headers)
+    function_call['params'] = fill_function_envs(envs, function_call_params)
+    function_call['body'] = fill_function_envs(envs, function_call_body)
     function_info["function_call"] = function_call
+    logging.info(f"function_info:{function_info}")
+    return function_info
 
-def safe_json_loads(str):
+def fill_function_envs(envs, obj):
+    if isinstance(obj, list):
+        ret = []
+        for item in obj:
+            new_item = fill_function_envs(envs, item)
+            ret.append(new_item)
+        return ret
+    elif isinstance(obj, dict):
+        if ('type' in obj and obj['type'] == 'env' and 'value' in obj):
+            env_name = obj['value']
+            if env_name in envs:
+                return envs[env_name].get('value', '')
+            else:
+                logging.info(f"fill_function_envs | env not found: {env_name}")
+                return ''
+        else:
+            ret = {}
+            for k,v in obj.items():
+                ret[k] = fill_function_envs(envs, v)
+            return ret
+    else:
+        return obj
+
+def safe_json_loads(str, default={}):
     try:
         return json.loads(str)
     except Exception as e:
-        return {}
+        return default
 
 def plugin_export(app_id, plugin_id):
     plugin_info = get_ai_plugin(app_id, plugin_id)
@@ -422,8 +481,6 @@ def plugin_export(app_id, plugin_id):
         'version': 1,
         "name": plugin_info['name'],
         "headers": safe_json_loads(plugin_info.get('headers', '{}')),
-        "body": safe_json_loads(plugin_info.get('body', '{}')),
-        "params": safe_json_loads(plugin_info.get('params', '{}')),
         "envs": safe_json_loads(plugin_info.get('envs', '{}')),
         "endpoint": plugin_info['endpoint'],
         "functions": function_dtos
@@ -440,14 +497,20 @@ def plugin_import(app_id, plugin_config):
     if plugin_create_result['result'] == 'error':
         return plugin_create_result
     plugin_id = plugin_create_result['data']['id']
+    endpoint = plugin_config.get('endpoint','')
+    plugin_envs = plugin_config.get('envs', {})
+    plugin_headers = plugin_config.get('headers', {})
+    configure_ai_plugin(app_id, plugin_id, plugin_name, endpoint, plugin_headers, plugin_envs)
     for function_info in plugin_config.get('functions', []):
         try:
             function_name = function_info['name']
             description = function_info['description']
             parameters = function_info['parameters']
-            function_call = function_call['parameters']
+            function_call = function_info['function_call']
             add_ai_function_to_ai_plugin(app_id, plugin_id, function_name, description, parameters, function_call)
         except Exception as e:
+            logging.info(f"fail to add_ai_function_to_ai_plugin:app_id:{app_id}, plugin_id:{plugin_id}, function_info:{function_info}")
+            logging.exception(e)
             pass
     return {'result': 'ok', 'data':{'success':True}}
 
@@ -455,7 +518,7 @@ def plugin_publish(app_id, plugin_id, name, description, order):
     export_result = plugin_export(app_id, plugin_id)
     if export_result['result'] == 'error':
         return export_result
-    plugin_config = json.loads(export_result['data']['content'])
+    plugin_config = json.loads(export_result['data']['file']['content'])
     redis = lanying_redis.get_redis_connection()
     public_id = str(redis.incrby(plugin_public_info_id_generator_key(), 1))
     info_key = plugin_public_info_key(public_id)
