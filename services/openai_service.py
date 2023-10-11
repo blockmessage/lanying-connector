@@ -766,13 +766,13 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             function_config = function
     doc_id = function_config.get('doc_id', '')
     system_envs = {
-        'lanying_connector_system_env_admin_token': {
+        'admin_token': {
             'value': config.get('lanying_admin_token','')
         },
-        'lanying_connector_system_env_app_id': {
+        'app_id': {
             'value': app_id
         },
-        'lanying_connector_system_env_current_user_id': {
+        'current_user_id': {
             'value': config.get('from_user_id','0')
         }
     }

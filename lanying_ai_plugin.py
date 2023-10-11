@@ -410,8 +410,6 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
         return function_info
     headers = safe_json_loads(plugin_info.get('headers', '{}'))
     envs = safe_json_loads(plugin_info.get('envs', '{}'))
-    for k,v in system_envs.items():
-       envs[k] = v
     function_call = function_info.get('function_call', {})
     parameters = function_info.get('parameters', {})
     function_call = fill_parameters_to_function_call(function_call, parameters)
@@ -429,9 +427,9 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
             new_urlparse = urlparse(endpoint)
             new_url = urlunparse(old_urlparse._replace(netloc=new_urlparse.netloc,scheme=new_urlparse.scheme))
             function_call["url"] = new_url
-    function_call['headers'] = fill_function_envs(envs, function_call_headers)
-    function_call['params'] = fill_function_envs(envs, function_call_params)
-    function_call['body'] = fill_function_envs(envs, function_call_body)
+    function_call['headers'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_headers))
+    function_call['params'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_params))
+    function_call['body'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_body))
     function_info["function_call"] = function_call
     logging.info(f"function_info:{function_info}")
     return function_info
@@ -455,6 +453,29 @@ def fill_function_envs(envs, obj):
             ret = {}
             for k,v in obj.items():
                 ret[k] = fill_function_envs(envs, v)
+            return ret
+    else:
+        return obj
+
+def fill_function_sys_envs(envs, obj):
+    if isinstance(obj, list):
+        ret = []
+        for item in obj:
+            new_item = fill_function_sys_envs(envs, item)
+            ret.append(new_item)
+        return ret
+    elif isinstance(obj, dict):
+        if ('type' in obj and obj['type'] == 'system_env' and 'value' in obj):
+            env_name = obj['value']
+            if env_name in envs:
+                return envs[env_name].get('value', '')
+            else:
+                logging.info(f"fill_function_sys_envs | env not found: {env_name}")
+                return ''
+        else:
+            ret = {}
+            for k,v in obj.items():
+                ret[k] = fill_function_sys_envs(envs, v)
             return ret
     else:
         return obj
