@@ -765,7 +765,18 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         if function['name'] == function_name:
             function_config = function
     doc_id = function_config.get('doc_id', '')
-    function_config = lanying_ai_plugin.fill_function_info(app_id, function_config, doc_id)
+    system_envs = {
+        'lanying_connector_system_env_admin_token': {
+            'value': config.get('lanying_admin_token','')
+        },
+        'lanying_connector_system_env_app_id': {
+            'value': app_id
+        },
+        'lanying_connector_system_env_current_user_id': {
+            'value': config.get('from_user_id','0')
+        }
+    }
+    function_config = lanying_ai_plugin.fill_function_info(app_id, function_config, doc_id, system_envs)
     if 'function_call' in function_config:
         lanying_function_call = function_config['function_call']
         method = lanying_function_call.get('method', 'get')
@@ -801,7 +812,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
 def fill_function_args(function_args, obj):
     if isinstance(obj, str):
         for k,v in function_args.items():
-            obj = obj.replace("{" + k + "}", v)
+            obj = obj.replace("{" + k + "}", str(v))
         return obj
     elif isinstance(obj, list):
         ret = []

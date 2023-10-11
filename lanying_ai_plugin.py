@@ -50,6 +50,7 @@ def create_ai_plugin(app_id, plugin_name):
     redis = lanying_redis.get_redis_connection()
     plugin_id = generate_ai_plugin_id()
     lanying_embedding.create_doc_info(app_id, embedding_uuid, f'dummy_filename_{plugin_id}', f'dummy_object_name_{plugin_id}', doc_id, 0, '.plugin', 'plugin', f'dummy_url_{plugin_id}', "openai",{})
+    set_doc_id_to_plugin_id(app_id, doc_id, plugin_id)
     redis.hmset(get_ai_plugin_key(app_id, plugin_id), {
         "app_id": app_id,
         "name": plugin_name,
@@ -395,17 +396,22 @@ def get_plugin_id_by_doc_id(app_id, doc_id):
 def doc_id_to_plugin_id_key(app_id):
     return f"lanying_connector:doc_id_to_plugin_id:{app_id}"
 
-def fill_function_info(app_id, function_info, doc_id):
+def fill_function_info(app_id, function_info, doc_id, system_envs):
     if doc_id == '':
+        logging.info("fill_function_info: empty doc_id")
         return function_info
     plugin_id = get_plugin_id_by_doc_id(app_id, doc_id)
     if not plugin_id:
+        logging.info("fill_function_info: fail to get plugin_id")
         return function_info
     plugin_info = get_ai_plugin(app_id, plugin_id)
     if not plugin_info:
+        logging.info("fill_function_info: fail to get plugin_info")
         return function_info
     headers = safe_json_loads(plugin_info.get('headers', '{}'))
     envs = safe_json_loads(plugin_info.get('envs', '{}'))
+    for k,v in system_envs.items():
+       envs[k] = v
     function_call = function_info.get('function_call', {})
     parameters = function_info.get('parameters', {})
     function_call = fill_parameters_to_function_call(function_call, parameters)
@@ -485,7 +491,7 @@ def plugin_export(app_id, plugin_id):
         "endpoint": plugin_info['endpoint'],
         "functions": function_dtos
     }
-    filename = f"{plugin_info['name']}-plugin.json"
+    filename = f"lanying-ai-plugin-{plugin_id}.json"
     content = json.dumps(plugin_dto, ensure_ascii=False, indent=2)
     return {'result': 'ok', 'data':{'file':{'name':filename, 'content':content}}}
 
