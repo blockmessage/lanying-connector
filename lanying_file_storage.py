@@ -4,6 +4,7 @@ import logging
 import requests
 from langchain.document_loaders import WebBaseLoader
 import re
+import lanying_url_loader
 
 server = os.getenv("FILE_STORAGE_SERVER", "localhost:9000")
 accesskey = os.getenv("FILE_STORAGE_ACCESS_KEY")
@@ -52,8 +53,11 @@ def download(object_name, filename):
 
 def download_url(url, headers, filename):
     try:
-        headers['Range'] = 'bytes=0-'
-        response = requests.get(url, headers=headers, stream=True)
+        if len(headers) == 0:
+            response = lanying_url_loader.load_url_content(url)
+        else:
+            headers['Range'] = 'bytes=0-'
+            response = requests.get(url, headers=headers, stream=True)
         if response.status_code == 206:
             file_size = int(response.headers.get('Content-Length', "0"))
             if file_size > max_upload_file_size:

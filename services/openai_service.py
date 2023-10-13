@@ -575,41 +575,45 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             stream_usage = {}
             stream_function_name = ""
             stream_function_args = ""
-            for delta in reply_generator:
-                # logging.info(f"KKK:delta:{delta}")
-                delta_content = delta.get('content', '')
-                if not delta_content:
-                    delta_content = ''
-                if 'usage' in delta:
-                    stream_usage = delta['usage']
-                if "function_call" in delta:
-                    if "name" in delta["function_call"]:
-                        stream_function_name = delta["function_call"]["name"]
-                    if "arguments" in delta["function_call"]:
-                        if delta.get('arguments_merge_type', 'append') == 'replace':
-                            stream_function_args = delta["function_call"]["arguments"]
-                        else:
-                            stream_function_args += delta["function_call"]["arguments"]
-                content_count += len(delta_content)
-                content_collect.append(delta_content)
-                collect_now = time.time()
-                delta_time = collect_now - collect_start_time
-                if delta_time >= stream_interval and content_count >= stream_collect_count:
-                    message_to_send = ''.join(content_collect)
-                    if stream_msg_id > 0:
-                        reply_ext['ai']['seq'] += 1
-                        lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
-                    else:
-                        try:
+            try:
+                for delta in reply_generator:
+                    # logging.info(f"KKK:delta:{delta}")
+                    delta_content = delta.get('content', '')
+                    if not delta_content:
+                        delta_content = ''
+                    if 'usage' in delta:
+                        stream_usage = delta['usage']
+                    if "function_call" in delta:
+                        if "name" in delta["function_call"]:
+                            stream_function_name = delta["function_call"]["name"]
+                        if "arguments" in delta["function_call"]:
+                            if delta.get('arguments_merge_type', 'append') == 'replace':
+                                stream_function_args = delta["function_call"]["arguments"]
+                            else:
+                                stream_function_args += delta["function_call"]["arguments"]
+                    content_count += len(delta_content)
+                    content_collect.append(delta_content)
+                    collect_now = time.time()
+                    delta_time = collect_now - collect_start_time
+                    if delta_time >= stream_interval and content_count >= stream_collect_count:
+                        message_to_send = ''.join(content_collect)
+                        if stream_msg_id > 0:
                             reply_ext['ai']['seq'] += 1
-                            stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
-                        except Exception as e:
-                            pass
-                    reply += message_to_send
-                    content_count = 0
-                    content_collect = []
-                    collect_start_time = collect_now
-                    stream_msg_last_send_time = collect_now
+                            lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
+                        else:
+                            try:
+                                reply_ext['ai']['seq'] += 1
+                                stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
+                            except Exception as e:
+                                pass
+                        reply += message_to_send
+                        content_count = 0
+                        content_collect = []
+                        collect_start_time = collect_now
+                        stream_msg_last_send_time = collect_now
+            except Exception as e:
+                logging.info("stream got error")
+                logging.exception(e)
             reply += ''.join(content_collect)
             stream_reponse = stream_lines_to_response(preset, reply, vendor, stream_usage, stream_function_name, stream_function_args)
             response['reply'] = reply

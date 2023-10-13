@@ -271,6 +271,20 @@ def send_wechat_message(config, app_id, message, to_username):
         result = response.json()
         logging.info(f"send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
 
+def get_menu(app_id):
+    config = lanying_config.get_service_config(app_id, service)
+    access_token = get_wechat_access_token(config, app_id)
+    server, headers = get_proxy_info()
+    url = f'{server}/cgi-bin/get_current_selfmenu_info?access_token={access_token}'
+    return requests.get(url, headers=headers)
+
+def set_menu(app_id, menu):
+    config = lanying_config.get_service_config(app_id, service)
+    access_token = get_wechat_access_token(config, app_id)
+    server, headers = get_proxy_info()
+    url = f'{server}/cgi-bin/menu/create?access_token={access_token}'
+    return requests.post(url, data=json.dumps(menu, ensure_ascii=False).encode('utf-8'), headers=headers)
+
 def check_token(app_id):
     config = lanying_config.get_service_config(app_id, service)
     if config:
