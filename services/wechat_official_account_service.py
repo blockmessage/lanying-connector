@@ -271,20 +271,6 @@ def send_wechat_message(config, app_id, message, to_username):
         result = response.json()
         logging.info(f"send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
 
-def get_menu(app_id):
-    config = lanying_config.get_service_config(app_id, service)
-    access_token = get_wechat_access_token(config, app_id)
-    server, headers = get_proxy_info()
-    url = f'{server}/cgi-bin/get_current_selfmenu_info?access_token={access_token}'
-    return requests.get(url, headers=headers)
-
-def set_menu(app_id, menu):
-    config = lanying_config.get_service_config(app_id, service)
-    access_token = get_wechat_access_token(config, app_id)
-    server, headers = get_proxy_info()
-    url = f'{server}/cgi-bin/menu/create?access_token={access_token}'
-    return requests.post(url, data=json.dumps(menu, ensure_ascii=False).encode('utf-8'), headers=headers)
-
 def check_token(app_id):
     config = lanying_config.get_service_config(app_id, service)
     if config:
@@ -397,3 +383,63 @@ def get_proxy_info():
         server = "https://api.weixin.qq.com"
         headers = {}
         return (server, headers)
+
+def check_access_token_valid():
+    headerToken = request.headers.get('access-token', "")
+    accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
+    if accessToken and accessToken == headerToken:
+        return True
+    else:
+        return False
+
+@bp.route("/service/wechat_official_account/get_wechat_menu", methods=["POST"])
+def get_wechat_menu():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = get_menu(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/wechat_official_account/set_wechat_menu", methods=["POST"])
+def set_wechat_menu():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    menu = dict(data['menu'])
+    result = set_menu(app_id, menu)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+def get_menu(app_id):
+    config = lanying_config.get_service_config(app_id, service)
+    access_token = get_wechat_access_token(config, app_id)
+    server, headers = get_proxy_info()
+    url = f'{server}/cgi-bin/get_current_selfmenu_info?access_token={access_token}'
+    result = json.loads(requests.get(url, headers=headers).content)
+    if 'errmsg' in result and result['errmsg'] != "ok":
+        return {'result': 'error', 'message':result['errmsg']}
+    return {'result': 'ok', 'data': result}
+
+def set_menu(app_id, menu):
+    config = lanying_config.get_service_config(app_id, service)
+    access_token = get_wechat_access_token(config, app_id)
+    server, headers = get_proxy_info()
+    url = f'{server}/cgi-bin/menu/create?access_token={access_token}'
+    response = requests.post(url, data=json.dumps(menu, ensure_ascii=False).encode('utf-8'), headers=headers)
+    result = json.loads(response.content)
+    if 'errmsg' in result and result['errmsg'] != "ok":
+        return {'result': 'error', 'message':result['errmsg']}
+    return {'result': 'ok', 'data': result} 
