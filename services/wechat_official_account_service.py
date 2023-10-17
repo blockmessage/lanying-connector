@@ -431,7 +431,7 @@ def get_menu(app_id):
     result = json.loads(requests.get(url, headers=headers).content)
     if 'errmsg' in result and result['errmsg'] != "ok":
         return {'result': 'error', 'message':result['errmsg']}
-    return {'result': 'ok', 'data': result}
+    return {'result': 'ok', 'data': format_menu(result)}
 
 def set_menu(app_id, menu):
     config = lanying_config.get_service_config(app_id, service)
@@ -443,3 +443,20 @@ def set_menu(app_id, menu):
     if 'errmsg' in result and result['errmsg'] != "ok":
         return {'result': 'error', 'message':result['errmsg']}
     return {'result': 'ok', 'data': result} 
+
+def format_menu(obj):
+    if isinstance(obj, dict):
+        ret = {}
+        for k,v in obj.items():
+            if k == 'sub_button' and isinstance(v, dict) and 'list' in v:
+                ret[k] = format_menu(v['list'])
+            else:
+                ret[k] = format_menu(v)
+        return ret
+    elif isinstance(obj, list):
+        ret = []
+        for item in obj:
+            ret.append(format_menu(item))
+        return ret
+    else:
+        return obj
