@@ -629,7 +629,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             if 'name' in function_call_debug:
                 function_name_debug = function_call_debug['name']
                 function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
-            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
+            if is_debug:
+                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
             response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info)
             function_call_times -= 1
         else:

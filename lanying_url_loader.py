@@ -99,7 +99,7 @@ def load_url_content(url):
         for site in scroll_site_list:
             if site in url:
                 return load_url_content_with_scroll(url)
-        splash_site_list = ['tgo.infoq.cn', 'www.ceair.com']
+        splash_site_list = ['tgo.infoq.cn', 'www.ceair.com', "mafengwo.cn"]
         for site in splash_site_list:
             if site in url:
                 return load_url_content_with_splash(url)
