@@ -49,7 +49,7 @@ def create_ai_plugin(app_id, plugin_name):
     doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
     redis = lanying_redis.get_redis_connection()
     plugin_id = generate_ai_plugin_id()
-    lanying_embedding.create_doc_info(app_id, embedding_uuid, f'dummy_filename_{plugin_id}', f'dummy_object_name_{plugin_id}', doc_id, 0, '.plugin', 'plugin', f'dummy_url_{plugin_id}', "openai",{})
+    lanying_embedding.create_doc_info(app_id, embedding_uuid, f'ai_plugin_{plugin_id}', f'dummy_object_name_{plugin_id}', doc_id, 0, '.plugin', 'plugin', f'dummy_url_{plugin_id}', "openai",{})
     set_doc_id_to_plugin_id(app_id, doc_id, plugin_id)
     redis.hmset(get_ai_plugin_key(app_id, plugin_id), {
         "app_id": app_id,

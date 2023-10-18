@@ -404,7 +404,7 @@ def get_wechat_menu():
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
-        resp = make_response({'code':200, 'data':result["data"]})
+        resp = make_response({'code':200, 'data':remove_menu_unsupport_types(result["data"])})
     return resp
 
 @bp.route("/service/wechat_official_account/set_wechat_menu", methods=["POST"])
@@ -423,6 +423,21 @@ def set_wechat_menu():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/wechat_official_account/list_wechat_menu_history", methods=["POST"])
+def list_wechat_menu_history():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = list_menu_history(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 def get_menu(app_id):
     config = lanying_config.get_service_config(app_id, service)
     access_token = get_wechat_access_token(config, app_id)
@@ -434,6 +449,8 @@ def get_menu(app_id):
     return {'result': 'ok', 'data': format_menu(result)}
 
 def set_menu(app_id, menu):
+    old_menu = get_menu(app_id)
+    menu = remove_menu_unsupport_types(menu)
     config = lanying_config.get_service_config(app_id, service)
     access_token = get_wechat_access_token(config, app_id)
     server, headers = get_proxy_info()
@@ -442,6 +459,7 @@ def set_menu(app_id, menu):
     result = json.loads(response.content)
     if 'errmsg' in result and result['errmsg'] != "ok":
         return {'result': 'error', 'message':result['errmsg']}
+    save_menu_history(app_id, old_menu, menu)
     return {'result': 'ok', 'data': result} 
 
 def format_menu(obj):
@@ -460,3 +478,56 @@ def format_menu(obj):
         return ret
     else:
         return obj
+
+def remove_menu_unsupport_types(obj):
+    if isinstance(obj, dict):
+        if 'type' in obj and not is_menu_type_allowed(obj['type']):
+            return None
+        ret = {}
+        for k,v in obj.items():
+            ret[k] = remove_menu_unsupport_types(v)
+        return ret
+    elif isinstance(obj, list):
+        ret = []
+        for item in obj:
+            new_item = remove_menu_unsupport_types(item)
+            if new_item is not None:
+                ret.append(new_item)
+        return ret
+    else:
+        return obj
+
+def is_menu_type_allowed(type):
+    return type in ["miniprogram", "click", "view", "scancode_push", "scancode_waitmsg", "pic_sysphoto", "pic_photo_or_album", "pic_weixin", "location_select", "media_id","article_id", "article_view_limited"]
+
+def save_menu_history(app_id, old_menu, menu):
+    try:
+        redis = lanying_redis.get_redis_connection()
+        now = int(time.time())
+        info = {'selfmenu_info': menu, 'create_time': now}
+        info_json = json.dumps(info, ensure_ascii=False)
+        list_key = menu_history_list_key(app_id)
+        list_count = redis.rpush(list_key, info_json)
+        if list_count == 1:
+            logging.info(f"old wechat menu:{app_id}:{old_menu}")
+            if old_menu['result'] == 'ok':
+                old_info = old_menu['data']
+                old_info['create_time'] = now - 1
+                redis.lpush(list_key, json.dumps(old_menu['data'], ensure_ascii=False))
+        elif list_count > 20:
+            value_to_delete = redis.lindex(list_key, 10)
+            redis.lrem(list_key, 1, value_to_delete)
+    except Exception as e:
+        logging.exception(e)
+
+def list_menu_history(app_id):
+    redis = lanying_redis.get_redis_connection()
+    list_key = menu_history_list_key(app_id)
+    history_list = lanying_redis.redis_lrange(redis, list_key, 0, -1)
+    ret = []
+    for history in history_list:
+        ret.append(json.loads(history))
+    return {'result': 'ok', 'data': {'list': ret}}
+
+def menu_history_list_key(app_id):
+    return f"lanying-connector:menu_history_list:{app_id}"
