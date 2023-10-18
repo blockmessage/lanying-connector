@@ -148,7 +148,7 @@ def wait_reply_msg(app_id, key, expire_time, is_last, lock_value):
                 logging.info(f"reply wechat unfinish part message | {reply}")
                 return reply
         now = time.time()
-        time.sleep(min(max(0,expire_time-now), 500))
+        time.sleep(min(max(0,expire_time-now), 200))
         now = time.time()
     if is_last:
         message = info.get('message', '')

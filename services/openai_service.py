@@ -538,7 +538,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             del preset['function']
     preset_message_lines = "\n".join([f"{message.get('role','')}:{message.get('content','')}" for message in messages])
     logging.info(f"==========final preset messages/functions============\n{preset_message_lines}\n{functions}")
-    if 'force_stream' in lcExt and lcExt['force_stream'] == True:
+    is_force_stream = ('force_stream' in lcExt and lcExt['force_stream'] == True)
+    if is_force_stream:
         logging.info("force use stream")
         preset['stream'] = True
     oper_msg_config = {
@@ -563,7 +564,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if is_stream:
             reply_generator = response.get('reply_generator')
             reply = response['reply']
-            stream_interval = max(1, presetExt.get('stream_interval', 3))
+            stream_interval_default = 1 if is_force_stream else 3
+            stream_interval = max(1, presetExt.get('stream_interval', stream_interval_default))
             stream_collect_count = presetExt.get('stream_collect_count', 10)
             content_collect = []
             content_count = 0
