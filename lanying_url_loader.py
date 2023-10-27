@@ -1,5 +1,5 @@
 from typing import Iterator
-from urllib.parse import urlparse
+from urllib.parse import urlparse,urlunparse
 import requests
 import logging
 from langchain.docstore.document import Document
@@ -9,6 +9,7 @@ import lanying_redis
 from urllib.parse import urljoin
 import json
 import os
+import time
 
 # this file is edit from source of langchain.document_loaders.recursive_url_loader
 
@@ -99,10 +100,14 @@ def load_url_content(url):
         for site in scroll_site_list:
             if site in url:
                 return load_url_content_with_scroll(url)
-        splash_site_list = ['tgo.infoq.cn', 'www.ceair.com', "mafengwo.cn"]
+        splash_site_list = ["mafengwo.cn"]
         for site in splash_site_list:
             if site in url:
                 return load_url_content_with_splash(url)
+        splash_click_site_list = ['tgo.infoq.cn', 'www.ceair.com']
+        for site in splash_click_site_list:
+            if site in url:
+                return load_url_content_with_click(url)
         return requests.get(url,timeout=(20.0, 60.0))
     else:
         return requests.get(url,timeout=(20.0, 60.0))
@@ -158,7 +163,9 @@ end
             'timeout': 290
         }
         try:
-            return requests.get(splash_url + '/execute', params=params, timeout=(20.0, 300.0))
+            response = requests.get(splash_url + '/execute', params=params, timeout=(20.0, 300.0))
+            response.url = format_url(url)
+            return response
         except Exception as e:
             logging.info("fail to load by splash: fallback to requests")
             logging.exception(e)
@@ -166,72 +173,153 @@ end
     else:
         return requests.get(url,timeout=(20.0, 60.0))
 
-
 def load_url_content_with_click(url):
     engine = os.getenv("URL_LOAD_ENGINE", "requests")
     if engine == "splash":
         splash_url = os.getenv("SPLASH_URL")
         scroll_js = """
 
-
 function main(splash, args)
-  -- 打开要测试的网页
-  assert(splash:go(args.url))
+  splash.images_enabled = false
+  -- 设置浏览器视口大小
+  splash:set_viewport_size(1920, 1080)
 
-  -- 等待页面加载完成
-  assert(splash:wait(2))
 
-  -- 获取页面的HTML
-  local html = splash:html()
+  -- 设置autoload参数，以确保页面完全加载
+  assert(splash:autoload([[
+    window.jump_urls = []
+    window.logs = []
+    
+    window.addLinks = function(url){
+        var link = document.createElement("a");
+        link.href = url;
+        document.body.appendChild(link);
+    }
+    var originalOpen = window.open;
+    // 重写 window.open 方法
+    window.open = function(url, target, features) {
+        // 在这里你可以进行自定义的操作，例如记录或拦截
+        console.log("Intercepted window.open call:");
+        console.log("URL: " + url);
+        console.log("Target: " + target);
+        console.log("Features: " + features);
+        window.jump_urls.push(url);
+        window.addLinks(url);
+        
+        // 调用原始的 window.open 方法
+        //return originalOpen.apply(this, arguments);
+    };
+    
+    window.addEventListener("beforeunload", function(e) {
+        // 在这里你可以进行自定义的操作，例如记录或拦截
+        console.log("Intercepted window.location modification:");
+        console.log("New URL: " + window.location.href);
+        window.jump_urls.push(window.location.href);
+        window.addLinks(window.location.href);
+        // 如果要拦截修改，你可以取消事件
+        e.preventDefault();
+        e.returnValue = ''; 
+    });
+    
+    var originalAddEventListener = EventTarget.prototype.addEventListener;
 
-  -- 创建一个表来存储不重复的URL
-  local unique_urls = {}
+    // 重写 addEventListener 方法
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+        if (true || this instanceof Element){
+            window.logs.push({'type':type, 'html':this.outerHTML})
+        }
+        // 在这里添加你的自定义逻辑
+        if (this instanceof Element && type == 'click') {
+            // 仅在目标是 DOM 元素时添加 CSS 类
+            this.classList.add('lanying-url-load-node-has-event');
+        }
 
-  -- 获取页面中的所有元素
-  local elements = splash:select_all("*")
+        // 调用原始的 addEventListener 方法
+        return originalAddEventListener.call(this, type, listener, options);
+    };
+    
+    window.click_one_element = function(){
+        window.logs = []
+        var element = document.querySelector('.lanying-url-load-node-has-event:not(.lanying-url-load-node-finish-event)');
+        if (element){
+            element.classList.add('lanying-url-load-node-finish-event');
+            var mouseEnterEvent = new Event('mouseenter', {
+                bubbles: true,  // 允许事件冒泡
+                cancelable: true  // 允许事件取消
+            });
+            // 触发 "mouseenter" 事件
+            element.dispatchEvent(mouseEnterEvent);
+            element.click();
+            window.logs.push(element.outerHTML)
+            return true;
+        }else{
+            return false;
+        }
+    }
 
-  -- 遍历每个元素并模拟点击
-  for i, element in ipairs(elements) do
-    local bounds = element:bounds()
+  ]]))
 
-    if bounds.width > 0 and bounds.height > 0 then
-      local clicked = splash:mouse_click(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
-      splash:wait(2)  -- 等待页面加载完成
+    -- 访问目标页面
+    assert(splash:go(args.url))
+    -- 等待页面加载完成
+    assert(splash:wait(2))
 
-      if clicked then
-        -- 获取新的URL
-        local new_url = splash:evaljs("window.location.href")
-        -- 添加新URL到表中
-        table.insert(unique_urls, new_url)
-        -- 返回到原始页面
-        splash:go(args.url)
-        splash:wait(2)
-      end
+    local changed = true
+    local cnt = 0
+    local maxCount = 2000
+    while changed and cnt < maxCount do
+        changed = splash:evaljs("window.click_one_element()")
+        cnt = cnt + 1
+        print(cnt)
+        print(changed)
+        print(splash:evaljs("JSON.stringify(window.logs)"))
+        splash:wait(0.01)
     end
+    splash:wait(3)
+    local js_script = [[
+        var html = document.documentElement.innerHTML;
+
+        // 匹配所有的data URI（包括图像、背景图像和字体）
+        var regexBase64 = /data:(([^'"\(]*\/[^'"\)]*|[a-zA-Z]+\/[a-zA-Z\+]*);base64,([a-zA-Z0-9+\/]+={0,2}))/g;
+
+        // 用空字符串替换匹配到的Base64编码
+        html = html.replace(regexBase64, '');
+
+        // 更新页面内容
+        document.documentElement.innerHTML = html;
+
+    ]]
+
+    -- 在当前页面执行 JavaScript 脚本
+    splash:runjs(js_script)
+
+    print("FINAL_URL:" .. splash:url())
+
+    -- 获取修改后的 HTML
+    return splash:html()
   end
-
-  -- 返回收集到的不重复URL
-  return {
-    html = html,
-    unique_urls = unique_urls
-  }
-end
-
-
 
 """
         params = {
             'url': url,
             'lua_source': scroll_js,
             'wait': 2,
-            'timeout': 290
+            'timeout': 85,
+            'images': 0
         }
-        try:
-            return requests.get(splash_url + '/execute', params=params, timeout=(20.0, 300.0))
-        except Exception as e:
-            logging.info("fail to load by splash: fallback to requests")
-            logging.exception(e)
-            return requests.get(url,timeout=(20.0, 60.0))
+        max_retry_times = 10
+        for i in range(max_retry_times):
+            try:
+                response = requests.get(splash_url + '/execute', params=params, timeout=(20.0, 90.0))
+                response.url = format_url(url)
+                return response
+            except Exception as e:
+                if i < max_retry_times-1:
+                    logging.info(f"fail to load by splash: start retry: {i}/{max_retry_times}")
+                    time.sleep(1)
+                else:
+                    logging.info("fail to load by splash: abort retry")
+                    raise e
     else:
         return requests.get(url,timeout=(20.0, 60.0))
 
@@ -263,3 +351,9 @@ def to_json(dict):
     return json.dumps(dict, ensure_ascii=False)
 def from_json(text):
     return json.loads(text)
+
+def format_url(url):
+    parse = urlparse(url)
+    if parse.path == '':
+        parse = parse._replace(path='/')
+    return urlunparse(parse)

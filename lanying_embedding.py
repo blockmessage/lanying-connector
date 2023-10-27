@@ -369,6 +369,29 @@ def search_in_redis(app_id, embedding_name, doc_id, embedding, max_tokens, max_b
         query = query.sort_by("vector_score")
     return redis.ft(embedding_index).search(query, query_params={"vector": np.array(embedding).tobytes()})
 
+def show_blocks(app_id, embedding_name, doc_id, count):
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info:
+        embedding_uuid = embedding_name_info['embedding_uuid']
+        embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+        db_table_name = embedding_uuid_info['db_table_name']
+        with lanying_pgvector.get_connection() as conn:
+            cursor = conn.cursor()
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id FROM {db_table_name} where doc_id = %s ORDER BY block_id LIMIT %s;"
+            args =  [doc_id, count]
+            cursor.execute(query, args)
+            rows = cursor.fetchall()
+            cursor.close()
+            lanying_pgvector.put_connection(conn)
+            names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id']
+            ret = []
+            for row in rows:
+                data = {}
+                for index,name in enumerate(names):
+                    data[name] = row[index]
+                ret.append(data)
+            return ret
+
 def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids):
     page_size = int(page_size)
     db_table_name = embedding_uuid_info['db_table_name']
