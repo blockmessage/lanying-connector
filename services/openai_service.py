@@ -2042,6 +2042,22 @@ def configure_ai_plugin():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/openai/delete_ai_plugin", methods=["POST"])
+def delete_ai_plugin():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    plugin_id = str(data['plugin_id'])
+    result = lanying_ai_plugin.delete_ai_plugin(app_id, plugin_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/openai/configure_ai_function", methods=["POST"])
 def configure_ai_function():
     if not check_access_token_valid():

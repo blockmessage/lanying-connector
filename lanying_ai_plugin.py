@@ -240,6 +240,19 @@ def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params
     })
     return {'result':'ok', 'data':{'success': True}}
 
+def delete_ai_plugin(app_id, plugin_id):
+    ai_plugin_info = get_ai_plugin(app_id, plugin_id)
+    if not ai_plugin_info:
+        return {'result':'error', 'message': 'ai plugin not exist'}
+    function_ids = list_ai_function_ids(app_id, plugin_id)
+    if len(function_ids) > 0:
+        return {'result':'error', 'message': 'delete ai function first'}
+    bind_ai_plugin(app_id, 'preset_name_list', plugin_id, [])
+    redis = lanying_redis.get_redis_connection()
+    redis.delete(get_ai_plugin_key(app_id, plugin_id))
+    redis.lrem(get_ai_plugin_ids_key(app_id), 1, plugin_id)
+    return {'result': 'ok', 'data':{'success': True}}
+
 def configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call):
     ai_plugin_info = get_ai_plugin(app_id, plugin_id)
     if not ai_plugin_info:
