@@ -74,13 +74,13 @@ def list_ai_plugins(app_id):
         info = get_ai_plugin(app_id, plugin_id)
         if info:
             dto = {}
-            for key in ["name", "plugin_id", "create_time", "endpoint", "envs", "headers"]:
+            for key in ["name", "plugin_id", "create_time", "endpoint", "envs", "headers", "params"]:
                 if key in info:
-                    if key in ["envs", "headers"]:
+                    if key in ["envs", "headers", "params"]:
                         dto[key] = json.loads(info[key])
                     else:
                         dto[key] = info[key]
-                elif key in ["envs", "headers"]:
+                elif key in ["envs", "headers", "params"]:
                     dto[key] = {}
             result.append(dto)
     return {'result':'ok', 'data':{'list': result}}
@@ -226,7 +226,7 @@ def delete_ai_function_from_ai_plugin(app_id, plugin_id, function_id):
     increase_ai_function_count(app_id, -1)
     return {'result':'ok', 'data':{'success': True}}
 
-def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs):
+def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params):
     ai_plugin_info = get_ai_plugin(app_id, plugin_id)
     if not ai_plugin_info:
         return {'result':'error', 'message': 'ai plugin not exist'}
@@ -234,6 +234,7 @@ def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs):
     redis.hmset(get_ai_plugin_key(app_id, plugin_id), {
         'name': name,
         'headers': json.dumps(headers, ensure_ascii=False),
+        'params': json.dumps(params, ensure_ascii=False),
         'envs': json.dumps(envs, ensure_ascii=False),
         'endpoint': endpoint
     })
@@ -409,6 +410,7 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
         logging.info("fill_function_info: fail to get plugin_info")
         return function_info
     headers = safe_json_loads(plugin_info.get('headers', '{}'))
+    params = safe_json_loads(plugin_info.get('params', '{}'))
     envs = safe_json_loads(plugin_info.get('envs', '{}'))
     function_call = function_info.get('function_call', {})
     parameters = function_info.get('parameters', {})
@@ -420,6 +422,9 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
     if len(headers) > 0:
         for k,v in headers:
             function_call_headers[k] = v
+    if len(params) > 0:
+        for k,v in params:
+            function_call_params[k] = v
     if len(endpoint) > 0:
         function_call_url = function_call.get('url', '')
         old_urlparse = urlparse(function_call_url)
@@ -508,6 +513,7 @@ def plugin_export(app_id, plugin_id):
         'version': 1,
         "name": plugin_info['name'],
         "headers": safe_json_loads(plugin_info.get('headers', '{}')),
+        "params": safe_json_loads(plugin_info.get('params', '{}')),
         "envs": safe_json_loads(plugin_info.get('envs', '{}')),
         "endpoint": plugin_info['endpoint'],
         "functions": function_dtos
@@ -527,7 +533,8 @@ def plugin_import(app_id, plugin_config):
     endpoint = plugin_config.get('endpoint','')
     plugin_envs = plugin_config.get('envs', {})
     plugin_headers = plugin_config.get('headers', {})
-    configure_ai_plugin(app_id, plugin_id, plugin_name, endpoint, plugin_headers, plugin_envs)
+    plugin_params = plugin_config.get('params', {})
+    configure_ai_plugin(app_id, plugin_id, plugin_name, endpoint, plugin_headers, plugin_envs, plugin_params)
     for function_info in plugin_config.get('functions', []):
         try:
             function_name = function_info['name']
@@ -584,7 +591,7 @@ def get_public_plugin(public_id):
     if 'name' in info:
         return info
     return None
-    
+
 def plugin_publish_id_list_key():
     return f"lanying-connector:public-plugin:list"
 

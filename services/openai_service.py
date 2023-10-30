@@ -2032,9 +2032,10 @@ def configure_ai_plugin():
     plugin_id = str(data['plugin_id'])
     name = str(data['name'])
     headers = dict(data.get('headers',{}))
+    params = dict(data.get('params',{}))
     envs = dict(data.get('envs',{}))
     endpoint = str(data.get('endpoint', ''))
-    result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs)
+    result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
