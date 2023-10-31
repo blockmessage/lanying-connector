@@ -100,15 +100,7 @@ def load_url_content(url):
         for site in scroll_site_list:
             if site in url:
                 return load_url_content_with_scroll(url)
-        splash_site_list = ["mafengwo.cn"]
-        for site in splash_site_list:
-            if site in url:
-                return load_url_content_with_splash(url)
-        splash_click_site_list = ['tgo.infoq.cn', 'www.ceair.com']
-        for site in splash_click_site_list:
-            if site in url:
-                return load_url_content_with_click(url)
-        return requests.get(url,timeout=(20.0, 60.0))
+        return load_url_content_with_click(url)
     else:
         return requests.get(url,timeout=(20.0, 60.0))
 
