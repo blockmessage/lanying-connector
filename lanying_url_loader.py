@@ -104,11 +104,7 @@ def load_url_content(url):
         for site in splash_click_site_list:
             if site in url:
                 return load_url_content_with_click(url)
-        splash_site_list = ["mafengwo.cn", "nxin.com"]
-        for site in splash_site_list:
-            if site in url:
-                return load_url_content_with_splash(url)
-        return requests.get(url,timeout=(20.0, 60.0))
+        return load_url_content_with_splash(url)
     else:
         return requests.get(url,timeout=(20.0, 60.0))
 
@@ -132,7 +128,9 @@ document.documentElement.innerHTML = html;
         'js_source': js_source
     }
     try:
-        return requests.get(splash_url + '/render.html', params=params, timeout=(20.0, 60.0))
+        response = requests.get(splash_url + '/render.html', params=params, timeout=(20.0, 60.0))
+        response.url = format_url(url)
+        return response
     except Exception as e:
         logging.info("fail to load by splash: fallback to requests")
         logging.exception(e)
