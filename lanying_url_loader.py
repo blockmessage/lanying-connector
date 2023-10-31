@@ -104,15 +104,32 @@ def load_url_content(url):
         for site in splash_click_site_list:
             if site in url:
                 return load_url_content_with_click(url)
-        return load_url_content_with_splash(url)
+        splash_site_list = ["mafengwo.cn", "nxin.com"]
+        for site in splash_site_list:
+            if site in url:
+                return load_url_content_with_splash(url)
+        return requests.get(url,timeout=(20.0, 60.0))
     else:
         return requests.get(url,timeout=(20.0, 60.0))
 
 def load_url_content_with_splash(url):
     splash_url = os.getenv("SPLASH_URL")
+    js_source = """
+var html = document.documentElement.innerHTML;
+
+// 匹配所有的data URI（包括图像、背景图像和字体）
+var regexBase64 = /data:(([^'"\(]*\/[^'"\)]*|[a-zA-Z]+\/[a-zA-Z\+]*);base64,([a-zA-Z0-9+\/]+={0,2}))/g;
+
+// 用空字符串替换匹配到的Base64编码
+html = html.replace(regexBase64, '');
+
+// 更新页面内容
+document.documentElement.innerHTML = html;
+    """
     params = {
         'url': url,
         'wait': 5,
+        'js_source': js_source
     }
     try:
         return requests.get(splash_url + '/render.html', params=params, timeout=(20.0, 60.0))
