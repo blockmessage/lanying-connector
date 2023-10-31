@@ -605,6 +605,174 @@ def get_public_plugin(public_id):
         return info
     return None
 
+def swagger_json_to_plugin(filename):
+    with open(filename, 'r') as f:
+        config = json.load(f)
+        definitions = config.get('definitions',{})
+        function_infos = []
+        for path,path_info in config.get('paths',{}).items():
+            for method, request in path_info.items():
+                deprecated = request.get('deprecated', False)
+                if not deprecated:
+                    tags = request.get('tags', [])
+                    summary = request.get('summary')
+                    operationId = request.get('operationId')
+                    # if operationId not in ['usernameUsingPUT']:
+                    #     continue
+                    if summary and operationId:
+                        tags.append(summary)
+                        description = "-".join(tags)
+                        parameters = request.get('parameters',{})
+                        properties = {}
+                        required = []
+                        for parameter in parameters:
+                            parameter_name = parameter.get('name', '')
+                            parameter_required = parameter.get('required', False)
+                            property_info = make_property_info(definitions, parameter)
+                            if property_info:
+                                properties[parameter_name] = property_info
+                                if parameter_required:
+                                    required.append(parameter_name)
+                            else:
+                                print(f"skip for none property_info:{parameter}")
+                        function_info = {
+                            'type': 'ai_function',
+                            'name': operationId,
+                            'description': description
+                        }
+                        if len(properties) > 0:
+                            function_info['parameters'] = {
+                                'type': 'object',
+                                'properties': properties
+                            }
+                            if len(required) > 0:
+                                function_info['parameters']['required'] = required
+                        function_call_headers = {}
+                        function_call_params = {}
+                        function_call_body = {}
+                        for parameter in parameters:
+                            parameter_name = parameter.get('name', '')
+                            location = parameter.get('in')
+                            if location == 'query':
+                                function_call_params[parameter_name] = {
+                                    "type": "variable",
+                                    "value": parameter_name
+                                }
+                            elif location == 'header':
+                                function_call_headers[parameter_name] = {
+                                    "type": "variable",
+                                    "value": parameter_name
+                                }
+                            elif location == 'body':
+                                function_call_body[parameter_name] = {
+                                    "type": "variable",
+                                    "value": parameter_name
+                                }
+                            else:
+                                print(f"skip unknown location:{parameter}")
+                        function_call = {
+                            'method': method,
+                            'url': path,
+                            'headers': function_call_headers,
+                            'params': function_call_params,
+                            'body': function_call_body
+                        }
+                        function_info['function_call'] = function_call
+                        function_infos.append(function_info)
+        for function_info in function_infos:
+            print(f"==========================\n{json.dumps(function_info,indent=4, ensure_ascii=False)}")
+
+def make_property_info(definitions, swagger_property_info):
+    property_type = swagger_property_info.get('type')
+    property_description = swagger_property_info.get('description','')
+    schema = swagger_property_info.get('schema')
+    ref = swagger_property_info.get('$ref')
+    definition_prefix = '#/definitions/'
+    if property_type:
+        if property_type == 'string':
+            ret = {
+                'type': property_type,
+                'description': property_description
+            }
+            if 'enum' in swagger_property_info:
+                enum_list = []
+                for enum in swagger_property_info.get('enum',[]):
+                    enum_list.extend(enum.split('|'))
+                ret['enum'] = enum_list
+            if 'default' in swagger_property_info:
+                ret['default'] = swagger_property_info['default']
+            return ret
+        elif property_type == 'boolean':
+            ret = {
+                'type': property_type,
+                'description': property_description
+            }
+            if 'default' in swagger_property_info:
+                ret['default'] = swagger_property_info['default']
+            return ret
+        elif property_type == 'integer' or property_type == 'number':
+            ret = {
+                'type': 'number',
+                'description': property_description
+            }
+            if 'default' in swagger_property_info:
+                ret['default'] = swagger_property_info['default']
+            return ret
+        elif property_type == 'array':
+            property_items = swagger_property_info.get('items')
+            item_info = make_property_info(definitions, property_items)
+            if item_info:
+                return {
+                    'type': 'array',
+                    'description': property_description,
+                    'items': item_info
+                }
+            else:
+                print(f"skip none array item_info:{swagger_property_info}")
+        elif property_type == 'object':
+            return {
+                'type': property_type,
+                'description': property_description
+            }
+        else:
+            print(f"skip unhandled property_type:{swagger_property_info}")
+    elif schema:
+        return make_property_info(definitions, schema)
+    elif ref and ref.startswith(definition_prefix):
+        definition_key = ref[len(definition_prefix):]
+        if definition_key in definitions:
+            definition = definitions.get(definition_key)
+            definition_type = definition.get('type')
+            description = definition.get('description','')
+            if definition_type:
+                if definition_type == 'object':
+                    definition_properties = definition.get('properties', {})
+                    definition_required = definition.get('required',[])
+                    properties = {}
+                    required = []
+                    for definition_name, definition_info in definition_properties.items():
+                        definition_property_info = make_property_info(definitions, definition_info)
+                        if definition_property_info:
+                            properties[definition_name] = definition_property_info
+                            if definition_name in definition_required:
+                                required.append(definition_name)
+                    ret = {
+                        'type': 'object',
+                        'description': description,
+                        'properties': properties
+                    }
+                    if len(required) > 0:
+                        ret['required'] = required
+                    return ret
+                else:
+                    print(f"skip for bad type:{definition}")
+            else:
+                print(f"skip for no type definition: {definition}")
+        else:
+            print(f"skip for undefined definition: {definition_key}")
+    else:
+        print(f'skip for unknown property:{swagger_property_info}')
+
 def plugin_publish_id_list_key():
     return f"lanying-connector:public-plugin:list"
 
