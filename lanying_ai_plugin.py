@@ -447,10 +447,18 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
             function_call["url"] = new_url
     function_call['headers'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_headers))
     function_call['params'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_params))
-    function_call['body'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_body))
+    function_call['body'] = maybe_format_function_call_body(parameters, fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_body)))
     function_info["function_call"] = function_call
     logging.info(f"function_info:{function_info}")
     return function_info
+
+def maybe_format_function_call_body(parameters, function_call_body):
+    if len(function_call_body) == 1 and parameters.get("type") == "object":
+        key = list(function_call_body.keys())[0]
+        if parameters.get('properties', {}).get(key,{}).get('type') == 'object':
+            logging.info(f"format_function_call_body from {function_call_body} to {function_call_body[key]}")
+            return function_call_body[key]
+    return function_call_body
 
 def fill_function_envs(envs, obj):
     if isinstance(obj, list):
@@ -466,7 +474,7 @@ def fill_function_envs(envs, obj):
                 return envs[env_name].get('value', '')
             else:
                 logging.info(f"fill_function_envs | env not found: {env_name}")
-                return ''
+                return None
         else:
             ret = {}
             for k,v in obj.items():
@@ -489,7 +497,7 @@ def fill_function_sys_envs(envs, obj):
                 return envs[env_name].get('value', '')
             else:
                 logging.info(f"fill_function_sys_envs | env not found: {env_name}")
-                return ''
+                return None
         else:
             ret = {}
             for k,v in obj.items():
@@ -535,7 +543,16 @@ def plugin_export(app_id, plugin_id):
     content = json.dumps(plugin_dto, ensure_ascii=False, indent=2)
     return {'result': 'ok', 'data':{'file':{'name':filename, 'content':content}}}
 
-def plugin_import(app_id, plugin_config):
+def plugin_import(app_id, config):
+    if 'swagger' in config:
+        return plugin_import_from_swagger(app_id, config)
+    return plugin_import_from_config(app_id, config)
+
+def plugin_import_from_swagger(app_id, swagger_config):
+    plugin_config = swagger_json_to_plugin(swagger_config)
+    return plugin_import_from_config(app_id, plugin_config)
+
+def plugin_import_from_config(app_id, plugin_config):
     if plugin_config['type'] != 'ai_plugin' or plugin_config['version'] != 1:
         {'result': 'error', 'message': 'bad ai plugin config format'}
     plugin_name = plugin_config['name']
@@ -605,82 +622,120 @@ def get_public_plugin(public_id):
         return info
     return None
 
-def swagger_json_to_plugin(filename):
-    with open(filename, 'r') as f:
+def swagger_file_to_plugin(filename):
+    with open(filename,'r') as f:
         config = json.load(f)
-        definitions = config.get('definitions',{})
-        function_infos = []
-        for path,path_info in config.get('paths',{}).items():
-            for method, request in path_info.items():
-                deprecated = request.get('deprecated', False)
-                if not deprecated:
-                    tags = request.get('tags', [])
-                    summary = request.get('summary')
-                    operationId = request.get('operationId')
-                    # if operationId not in ['usernameUsingPUT']:
-                    #     continue
-                    if summary and operationId:
-                        tags.append(summary)
-                        description = "-".join(tags)
-                        parameters = request.get('parameters',{})
-                        properties = {}
-                        required = []
-                        for parameter in parameters:
-                            parameter_name = parameter.get('name', '')
-                            parameter_required = parameter.get('required', False)
-                            property_info = make_property_info(definitions, parameter)
-                            if property_info:
-                                properties[parameter_name] = property_info
-                                if parameter_required:
-                                    required.append(parameter_name)
-                            else:
-                                print(f"skip for none property_info:{parameter}")
-                        function_info = {
-                            'type': 'ai_function',
-                            'name': operationId,
-                            'description': description
+        return swagger_json_to_plugin(config)
+
+def swagger_json_to_plugin(config):
+    definitions = config.get('definitions',{})
+    endpoint = 'https://' + config.get('host','') + config.get('basePath')
+    plugin_name = config.get('info',{}).get('title', f'plugin_{int(time.time())}')
+    function_infos = []
+    for path,path_info in config.get('paths',{}).items():
+        for method, request in path_info.items():
+            if method == 'put' and 'post' in path_info:
+                if json_same(request, path_info['post'], ['operationId']):
+                    continue
+            deprecated = request.get('deprecated', False)
+            if not deprecated:
+                tags = request.get('tags', [])
+                summary = request.get('summary')
+                operationId = request.get('operationId')
+                # if operationId not in ['usernameUsingPUT']:
+                #     continue
+                if summary and operationId:
+                    tags_info = "_".join(tags)
+                    if len(tags_info) > 0:
+                        description = tags_info + "-" + summary
+                    else:
+                        description = summary
+                    parameters = request.get('parameters',{})
+                    properties = {}
+                    required = []
+                    for parameter in parameters:
+                        parameter_name = parameter.get('name', '')
+                        parameter_required = parameter.get('required', False)
+                        property_info = make_property_info(definitions, parameter)
+                        if property_info:
+                            properties[parameter_name] = property_info
+                            if parameter_required:
+                                required.append(parameter_name)
+                        else:
+                            print(f"skip for none property_info:{parameter}")
+                    function_info = {
+                        'type': 'ai_function',
+                        'name': operationId,
+                        'description': description
+                    }
+                    if len(properties) > 0:
+                        function_info['parameters'] = {
+                            'type': 'object',
+                            'properties': properties
                         }
-                        if len(properties) > 0:
-                            function_info['parameters'] = {
-                                'type': 'object',
-                                'properties': properties
+                        if len(required) > 0:
+                            function_info['parameters']['required'] = required
+                    function_call_headers = {}
+                    function_call_params = {}
+                    function_call_body = {}
+                    for parameter in parameters:
+                        parameter_name = parameter.get('name', '')
+                        location = parameter.get('in')
+                        if location == 'query':
+                            function_call_params[parameter_name] = {
+                                "type": "variable",
+                                "value": parameter_name
                             }
-                            if len(required) > 0:
-                                function_info['parameters']['required'] = required
-                        function_call_headers = {}
-                        function_call_params = {}
-                        function_call_body = {}
-                        for parameter in parameters:
-                            parameter_name = parameter.get('name', '')
-                            location = parameter.get('in')
-                            if location == 'query':
-                                function_call_params[parameter_name] = {
-                                    "type": "variable",
-                                    "value": parameter_name
-                                }
-                            elif location == 'header':
-                                function_call_headers[parameter_name] = {
-                                    "type": "variable",
-                                    "value": parameter_name
-                                }
-                            elif location == 'body':
+                        elif location == 'header':
+                            function_call_headers[parameter_name] = {
+                                "type": "variable",
+                                "value": parameter_name
+                            }
+                        elif location == 'body':
+                            if 'schema' in parameter:
                                 function_call_body[parameter_name] = {
                                     "type": "variable",
                                     "value": parameter_name
                                 }
                             else:
-                                print(f"skip unknown location:{parameter}")
-                        function_call = {
-                            'method': method,
-                            'url': path,
-                            'headers': function_call_headers,
-                            'params': function_call_params,
-                            'body': function_call_body
-                        }
-                        function_info['function_call'] = function_call
-                        function_infos.append(function_info)
-        for function_info in function_infos:
-            print(f"==========================\n{json.dumps(function_info,indent=4, ensure_ascii=False)}")
+                                function_call_body[parameter_name] = {
+                                    "type": "variable",
+                                    "value": parameter_name
+                                }
+                        else:
+                            print(f"skip unknown location:{parameter}")
+                    function_call = {
+                        'method': method,
+                        'url': path,
+                        'headers': function_call_headers,
+                        'params': function_call_params,
+                        'body': function_call_body
+                    }
+                    function_info['function_call'] = function_call
+                    function_infos.append(function_info)
+    for function_info in function_infos:
+        print(f"==========================\n{json.dumps(function_info,indent=4, ensure_ascii=False)}")
+    return {
+        "type": "ai_plugin",
+        "version": 1,
+        "name": plugin_name,
+        "headers": {},
+        "body": {},
+        "envs": {},
+        "endpoint": endpoint,
+        "functions": function_infos
+    }
+
+def json_same(a, b, excludes):
+    a2 = {}
+    b2 = {}
+    for k,v in a.items():
+        if k not in excludes:
+            a2[k] = v
+    for k,v in b.items():
+        if k not in excludes:
+            b2[k] = v
+    return json.dumps(a2) == json.dumps(b2)
 
 def make_property_info(definitions, swagger_property_info):
     property_type = swagger_property_info.get('type')
