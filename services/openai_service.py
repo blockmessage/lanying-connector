@@ -789,8 +789,8 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         lanying_function_call = function_config['function_call']
         method = lanying_function_call.get('method', 'get')
         url = fill_function_args(function_args, lanying_function_call.get('url', ''))
-        params = fill_function_args(function_args, lanying_function_call.get('params', {}))
-        headers = fill_function_args(function_args, lanying_function_call.get('headers', {}))
+        params = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('params', {})))
+        headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
         body = fill_function_args(function_args, lanying_function_call.get('body', {}))
         if lanying_utils.is_valid_public_url(url):
             logging.info(f"start request function callback | app_id:{app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
@@ -820,6 +820,15 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
             return response
     raise Exception('bad_preset_function')
+
+def ensure_value_is_string(obj):
+    ret = {}
+    for k,v in obj.items():
+        if isinstance(v,bool):
+            ret[k] = str(v).lower()
+        else:
+            ret[k] = str(v)
+    return ret
 
 def fill_function_args(function_args, obj):
     if isinstance(obj, str):
