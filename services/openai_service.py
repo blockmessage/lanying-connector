@@ -490,6 +490,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     function_name = function_info.get('name', '')
                     function_info["name"]  = f"class{len(functions)}_{function_name}"
                     function_info["doc_id"] = doc.doc_id
+                    function_info = lanying_ai_plugin.remove_function_parameters_without_function_call_reference(app_id, function_info, doc.doc_id)
                     functions.append(function_info)
                 elif embedding_content_type == 'summary':
                     context = context + doc.summary + "\n\n"

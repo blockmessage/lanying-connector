@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from urllib.parse import urlunparse
 import lanying_config
 import random
+import copy
 
 def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor):
     embedding_name = maybe_create_function_embedding(app_id)
@@ -410,6 +411,37 @@ def get_plugin_id_by_doc_id(app_id, doc_id):
 def doc_id_to_plugin_id_key(app_id):
     return f"lanying_connector:doc_id_to_plugin_id:{app_id}"
 
+def remove_function_parameters_without_function_call_reference(app_id, function_info, doc_id):
+    if doc_id == '':
+        logging.info("fill_function_info: empty doc_id")
+        return function_info
+    plugin_id = get_plugin_id_by_doc_id(app_id, doc_id)
+    if not plugin_id:
+        logging.info("fill_function_info: fail to get plugin_id")
+        return function_info
+    plugin_info = get_ai_plugin(app_id, plugin_id)
+    if not plugin_info:
+        logging.info("fill_function_info: fail to get plugin_info")
+        return function_info
+    headers = safe_json_loads(plugin_info.get('headers', '{}'))
+    params = safe_json_loads(plugin_info.get('params', '{}'))
+    function_call = copy.deepcopy(function_info.get('function_call', {}))
+    parameters = function_info.get('parameters', {})
+    function_call = fill_parameters_to_function_call(function_call, parameters)
+    function_call_headers = function_call.get('headers', {})
+    function_call_params = function_call.get('params', {})
+    if len(headers) > 0:
+        for k,v in headers.items():
+            function_call_headers[k] = v
+    if len(params) > 0:
+        for k,v in params.items():
+            function_call_params[k] = v
+    function_call['headers'] = function_call_headers
+    function_call['params'] = function_call_params
+    parameters = remove_parameters_without_function_call_reference(parameters, function_call)
+    function_info["parameters"] = parameters
+    return function_info
+
 def fill_function_info(app_id, function_info, doc_id, system_envs):
     if doc_id == '':
         logging.info("fill_function_info: empty doc_id")
@@ -451,6 +483,44 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
     function_info["function_call"] = function_call
     logging.info(f"function_info:{function_info}")
     return function_info
+
+def remove_parameters_without_function_call_reference(parameters, function_call):
+    if parameters.get('type') != 'object':
+        return parameters
+    properties = parameters.get('properties', {})
+    required = parameters.get('required', [])
+    new_properties = {}
+    new_required = []
+    for parameter,parameter_value in properties.items():
+        if is_parameter_reference_by_function_call(parameter, function_call):
+            new_properties[parameter] = parameter_value
+            if parameter in required:
+                new_required.append(parameter)
+        else:
+            logging.info(f"remove without reference parameter:{parameter}")
+    parameters['properties'] = new_properties
+    parameters['required'] = new_required
+    if len(new_required) == 0:
+        del parameters['required']
+    return parameters
+
+def is_parameter_reference_by_function_call(parameter, obj):
+    if isinstance(obj, str):
+        if "{" + parameter + "}" in obj:
+            return True
+    elif isinstance(obj, list):
+        for item in obj:
+            if is_parameter_reference_by_function_call(parameter, item):
+                return True
+    elif isinstance(obj, dict):
+        if ('type' in obj and obj['type'] == 'variable' and 'value' in obj):
+            if parameter == obj['value']:
+                return True
+        else:
+            for k,v in obj.items():
+                if is_parameter_reference_by_function_call(parameter, v):
+                    return True
+    return False
 
 def maybe_format_function_call_body(parameters, function_call_body):
     if len(function_call_body) == 1 and parameters.get("type") == "object":
