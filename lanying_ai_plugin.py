@@ -433,10 +433,10 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
     function_call_body = function_call.get('body', {})
     endpoint = plugin_info.get('endpoint', '')
     if len(headers) > 0:
-        for k,v in headers:
+        for k,v in headers.items():
             function_call_headers[k] = v
     if len(params) > 0:
-        for k,v in params:
+        for k,v in params.items():
             function_call_params[k] = v
     if len(endpoint) > 0:
         function_call_url = function_call.get('url', '')

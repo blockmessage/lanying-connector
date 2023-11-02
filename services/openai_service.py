@@ -631,7 +631,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
             if is_debug:
                 lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
-            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info)
+            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug)
             function_call_times -= 1
         else:
             break
@@ -763,7 +763,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
-def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info):
+def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug):
     function_name = function_call.get('name')
     function_args = json.loads(function_call.get('arguments', '{}'))
     functions = preset.get('functions', [])
@@ -799,6 +799,10 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                 function_response = requests.post(url, params=params, headers=headers, json = body, timeout = (20.0, 40.0))
             function_content = function_response.text
             logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
+            if is_debug:
+                fromUserId = config['from_user_id']
+                toUserId = config['to_user_id']
+                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
             function_message = {
                 "role": "function",
                 "name": function_name,
