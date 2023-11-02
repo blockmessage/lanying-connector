@@ -472,11 +472,15 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
             function_call_params[k] = v
     if len(endpoint) > 0:
         function_call_url = function_call.get('url', '')
-        old_urlparse = urlparse(function_call_url)
-        if len(old_urlparse.netloc) == 0:
-            new_urlparse = urlparse(endpoint)
-            new_url = urlunparse(old_urlparse._replace(netloc=new_urlparse.netloc,scheme=new_urlparse.scheme))
-            function_call["url"] = new_url
+        function_urlparse = urlparse(function_call_url)
+        if len(function_urlparse.netloc) == 0:
+            plugin_urlparse = urlparse(endpoint)
+            if plugin_urlparse.path in ['', '/']:
+                merged_path = function_urlparse.path
+            else:
+                merged_path = plugin_urlparse.path + function_urlparse.path
+            merged_url = urlunparse(function_urlparse._replace(netloc=plugin_urlparse.netloc,scheme=plugin_urlparse.scheme, path=merged_path))
+            function_call["url"] = merged_url
     function_call['headers'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_headers))
     function_call['params'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_params))
     function_call['body'] = maybe_format_function_call_body(parameters, fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_body)))
