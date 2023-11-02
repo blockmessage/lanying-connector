@@ -870,6 +870,7 @@ def append_message(preset, model_config, message):
         message['content'] = message['content'][:trunc_size]
     messages.append(message)
     token_cnt = 0
+    token_cnt += calcFunctionsTokens(preset.get('functions',[]), model, vendor)
     for msg in messages:
         token_cnt += calcMessageTokens(msg, model, vendor)
     while token_cnt + completionTokens > token_limit:
@@ -1134,6 +1135,16 @@ def calcMessagesTokens(messages, model, vendor):
                     num_tokens += -1
         num_tokens += 2
         return num_tokens
+    except Exception as e:
+        logging.exception(e)
+        return MaxTotalTokens
+
+def calcFunctionsTokens(messages, model, vendor):
+    if len(messages) == 0:
+        return 0
+    try:
+        encoding = lanying_vendor.encoding_for_model(vendor, model)
+        return len(encoding.encode(json.dumps(messages,ensure_ascii=False), disallowed_special=()))
     except Exception as e:
         logging.exception(e)
         return MaxTotalTokens
@@ -1890,7 +1901,7 @@ def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name,
         prompt_tokens = usage.get('prompt_tokens', 0)
         completion_tokens = usage.get('completion_tokens', total_tokens - prompt_tokens)
     else:
-        prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor)
+        prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor) + calcFunctionsTokens(preset.get('functions',[]), preset['model'], vendor)
         completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
         total_tokens = prompt_tokens + completion_tokens
     response = {
