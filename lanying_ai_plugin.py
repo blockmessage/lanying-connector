@@ -736,7 +736,7 @@ def swagger_json_to_plugin(config):
                             if parameter_required:
                                 required.append(parameter_name)
                         else:
-                            print(f"skip for none property_info:{parameter}")
+                            logging.info(f"skip for none property_info:{parameter}")
                     function_info = {
                         'type': 'ai_function',
                         'name': operationId,
@@ -777,7 +777,7 @@ def swagger_json_to_plugin(config):
                                     "value": parameter_name
                                 }
                         else:
-                            print(f"skip unknown location:{parameter}")
+                            logging.info(f"skip unknown location:{parameter}")
                     function_call = {
                         'method': method,
                         'url': path,
@@ -787,8 +787,6 @@ def swagger_json_to_plugin(config):
                     }
                     function_info['function_call'] = function_call
                     function_infos.append(function_info)
-    for function_info in function_infos:
-        print(f"==========================\n{json.dumps(function_info,indent=4, ensure_ascii=False)}")
     return {
         "type": "ai_plugin",
         "version": 1,
@@ -857,14 +855,14 @@ def make_property_info(definitions, swagger_property_info):
                     'items': item_info
                 }
             else:
-                print(f"skip none array item_info:{swagger_property_info}")
+                logging.info(f"skip none array item_info:{swagger_property_info}")
         elif property_type == 'object':
             return {
                 'type': property_type,
                 'description': property_description
             }
         else:
-            print(f"skip unhandled property_type:{swagger_property_info}")
+            logging.info(f"skip unhandled property_type:{swagger_property_info}")
     elif schema:
         return make_property_info(definitions, schema)
     elif ref and ref.startswith(definition_prefix):
@@ -894,13 +892,13 @@ def make_property_info(definitions, swagger_property_info):
                         ret['required'] = required
                     return ret
                 else:
-                    print(f"skip for bad type:{definition}")
+                    logging.info(f"skip for bad type:{definition}")
             else:
-                print(f"skip for no type definition: {definition}")
+                logging.info(f"skip for no type definition: {definition}")
         else:
-            print(f"skip for undefined definition: {definition_key}")
+            logging.info(f"skip for undefined definition: {definition_key}")
     else:
-        print(f'skip for unknown property:{swagger_property_info}')
+        logging.info(f'skip for unknown property:{swagger_property_info}')
 
 def plugin_publish_id_list_key():
     return f"lanying-connector:public-plugin:list"
