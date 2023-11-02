@@ -617,18 +617,28 @@ def plugin_export(app_id, plugin_id):
     content = json.dumps(plugin_dto, ensure_ascii=False, indent=2)
     return {'result': 'ok', 'data':{'file':{'name':filename, 'content':content}}}
 
-def plugin_import(app_id, config):
-    if 'swagger' in config:
+def plugin_import(type, app_id, config):
+    if type == 'file':
+        return plugin_import_from_config(app_id, config)
+    elif type == 'swagger':
         return plugin_import_from_swagger(app_id, config)
-    return plugin_import_from_config(app_id, config)
+    return {'result':'error', 'messge':'bad import type'}
 
 def plugin_import_from_swagger(app_id, swagger_config):
+    function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
+    if function_num_limit <= 10:
+        return {'result':"error", 'message': 'current package do not support swagger'}
     plugin_config = swagger_json_to_plugin(swagger_config)
     return plugin_import_from_config(app_id, plugin_config)
 
 def plugin_import_from_config(app_id, plugin_config):
     if plugin_config['type'] != 'ai_plugin' or plugin_config['version'] != 1:
         {'result': 'error', 'message': 'bad ai plugin config format'}
+    function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
+    function_num = get_ai_function_count(app_id)
+    function_num_to_add = len(plugin_config.get('functions', []))
+    if function_num + function_num_to_add > function_num_limit:
+        return {'result': 'error', 'message': 'ai function num limit exceed'}
     plugin_name = plugin_config['name']
     plugin_create_result = create_ai_plugin(app_id, plugin_name)
     if plugin_create_result['result'] == 'error':

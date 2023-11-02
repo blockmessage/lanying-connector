@@ -2183,7 +2183,9 @@ def plugin_import():
     if type == 'public_id' and len(public_id) > 0:
         result = plugin_import_by_public_id(app_id, public_id)
     elif type == 'file' and len(url) > 0:
-        result = plugin_import_by_url(app_id, url)
+        result = plugin_import_by_url(type, app_id, url)
+    elif type == 'swagger' and len(url) > 0:
+        result = plugin_import_by_url(type, app_id, url)
     else:
         result = {'result': 'error', 'message':'need args: type, url or public_id'}
     if result['result'] == 'error':
@@ -2213,7 +2215,7 @@ def plugin_import_by_public_id(app_id, public_id):
     plugin_config = json.loads(plugin_info['config'])
     return lanying_ai_plugin.plugin_import(app_id, plugin_config)
 
-def plugin_import_by_url(app_id, url):
+def plugin_import_by_url(type, app_id, url):
     config = lanying_config.get_lanying_connector(app_id)
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
@@ -2223,7 +2225,7 @@ def plugin_import_by_url(app_id, url):
     with open(filename, 'r', encoding='utf-8') as f:
         content = f.read()
         plugin_config = json.loads(content)
-        return lanying_ai_plugin.plugin_import(app_id, plugin_config)
+        return lanying_ai_plugin.plugin_import(type, app_id, plugin_config)
     
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
