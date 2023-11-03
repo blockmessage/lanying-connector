@@ -326,6 +326,7 @@ def get_preset_function_embeddings(app_id, preset_name):
     function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
     function_num = get_ai_function_count(app_id)
     if function_num > function_num_limit:
+        logging.info(f"function num is more than limit: app_id:{app_id}, function_num:{function_num}, function_num_limit:{function_num_limit}")
         return []
     relation = get_ai_plugin_bind_relation(app_id)
     plugin_ids = relation.get(preset_name, [])

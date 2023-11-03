@@ -65,7 +65,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
         "status": "ok",
         "admin_user_ids": ",".join([str(admin_user_id) for admin_user_id in admin_user_ids]),
         "preset_name":preset_name,
-        "embedding_max_tokens":2048,
+        "embedding_max_tokens":8192 if type == 'function' else 2048,
         "embedding_max_blocks":5,
         "embedding_content": "请严格按照下面的知识回答我之后的所有问题:"
     })
@@ -411,13 +411,13 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
         else:
             query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score FROM {db_table_name} where doc_id = %s ORDER BY embedding <=> %s LIMIT %s;"
             args = [embedding_str, doc_id, embedding_str, page_size]
-        logging.info(f"query:{query},args:{args}")
+        # logging.info(f"query:{query},args:{args}")
         cursor.execute(f"SET ivfflat.probes = {db_ivfflat_probes};")
         cursor.execute(query, args)
         rows = cursor.fetchall()
         cursor.close()
         lanying_pgvector.put_connection(conn)
-        logging.info(f"rows:{rows}")
+        # logging.info(f"rows:{rows}")
         class MyDocument:
             pass
         results = MyDocument()
@@ -426,13 +426,10 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
         for row in rows:
             doc = MyDocument()
             for index,name in enumerate(names):
-                logging.info(f"index:{index}, name:{name}, value:{row[index]}")
                 doc.__dict__[name] = row[index]
-            logging.info(f"doc:{doc}")
+            logging.info(f"doc: block_id:{doc.block_id}, num_of_tokens:{doc.num_of_tokens}, text:\n{doc.text}, function:\n{doc.function}")
             docs.append(doc)
         setattr(results, 'docs', docs)
-        logging.info(f"results:{results}")
-        logging.info(f"docs:{docs}")
         return results
 
 def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids):
@@ -472,6 +469,7 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
             if len(docs) < page_size:
                 logging.info(f"search_embeddings finish for no more doc: doc_count:{len(docs)}, page_size:{page_size}")
                 is_finish = True
+            max_continue_cnt = 5
             for doc in docs:
                 text_hash = doc.text_hash if hasattr(doc, 'text_hash') else sha256(doc.text)
                 if text_hash in text_hashes:
@@ -479,10 +477,17 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
                 text_hashes.add(text_hash)
                 now_tokens += int(doc.num_of_tokens)
                 blocks_num += 1
-                logging.info(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
+                logging.info(f"search_embeddings count token: max_tokens:{max_tokens}, now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
                 if now_tokens > max_tokens:
-                    is_finish = True
-                    break
+                    if max_continue_cnt > 0:
+                        max_continue_cnt -= 1
+                        now_tokens -= int(doc.num_of_tokens)
+                        is_finish = True
+                        logging.info(f"search_embeddings num_of_token too large so skip: num_of_tokens:{int(doc.num_of_tokens)}, max_continue_cnt:{max_continue_cnt}")
+                        continue
+                    else:
+                        is_finish = True
+                        break
                 if blocks_num > max_blocks:
                     is_finish = True
                     break

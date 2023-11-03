@@ -934,10 +934,8 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
             embedding_max_blocks = max(100, embedding_max_blocks)
         if embedding_max_tokens > embedding_token_limit:
             embedding_max_tokens = embedding_token_limit
-        if max_tokens < embedding_max_tokens:
-            max_tokens = embedding_max_tokens
-        if max_blocks < embedding_max_blocks:
-            max_blocks = embedding_max_blocks
+        max_tokens += embedding_max_tokens
+        max_blocks += embedding_max_blocks
         doc_ids = preset_embedding_info.get('doc_ids', [])
         docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc, doc_ids)
         idx = 0
@@ -961,12 +959,21 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
     ret = []
     now_tokens = 0
     blocks_num = 0
-    for _,doc in sorted_list:
+    if max_tokens > embedding_token_limit:
+        max_tokens = embedding_token_limit
+    max_continue_cnt = 5
+    for sort_key,doc in sorted_list:
         now_tokens += int(doc.num_of_tokens) + 8
         blocks_num += 1
-        logging.info(f"search_embeddings count token: now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},blocks_num:{blocks_num}")
+        logging.info(f"search_embeddings count token: sort_key:{sort_key}, max_tokens:{max_tokens}, now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},max_blocks:{max_blocks},blocks_num:{blocks_num}")
         if now_tokens > max_tokens:
-            break
+            if max_continue_cnt > 0:
+                max_continue_cnt -= 1
+                now_tokens -= int(doc.num_of_tokens) + 8
+                logging.info(f"search_embeddings num_of_token too large so skip: num_of_tokens:{int(doc.num_of_tokens)}, max_continue_cnt:{max_continue_cnt}")
+                continue
+            else:
+                break
         if blocks_num > max_blocks:
             break
         ret.append(doc)
