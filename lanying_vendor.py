@@ -44,6 +44,16 @@ def get_chat_model_config(vendor, model):
                     return newConfig
     return None
 
+
+def get_embedding_model(vendor):
+    module = get_module(vendor)
+    if module:
+        model_configs = module.model_configs()
+        for config in model_configs:
+            if config['type'] == "embedding":
+                return config.get('model')
+    return None
+
 def get_embedding_model_config(vendor, model):
     module = get_module(vendor)
     if module:

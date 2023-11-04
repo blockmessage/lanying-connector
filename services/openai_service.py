@@ -870,7 +870,7 @@ def append_message(preset, model_config, message):
         message['content'] = message['content'][:trunc_size]
     messages.append(message)
     token_cnt = 0
-    token_cnt += calcFunctionsTokens(preset.get('functions',[]), model, vendor)
+    token_cnt += lanying_embedding.calc_functions_tokens(preset.get('functions',[]), model, vendor)
     for msg in messages:
         token_cnt += calcMessageTokens(msg, model, vendor)
     while token_cnt + completionTokens > token_limit:
@@ -898,6 +898,7 @@ def append_message(preset, model_config, message):
                 token_cnt -= calcMessageTokens(messages[0], model, vendor)
                 del messages[0]
             else:
+                logging.info(f"fail to limit message size: rest messages:{messages}")
                 raise Exception('fail to limit message size')
     preset['messages'] = messages
     return preset
@@ -961,16 +962,16 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
     blocks_num = 0
     if max_tokens > embedding_token_limit:
         max_tokens = embedding_token_limit
-    max_continue_cnt = 5
+    max_continue_cnt = 2 * len(preset_embedding_infos)
     for sort_key,doc in sorted_list:
         now_tokens += int(doc.num_of_tokens) + 8
         blocks_num += 1
-        logging.info(f"search_embeddings count token: sort_key:{sort_key}, max_tokens:{max_tokens}, now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},max_blocks:{max_blocks},blocks_num:{blocks_num}")
+        logging.info(f"multi_embedding_search count token: sort_key:{sort_key}, max_tokens:{max_tokens}, now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},max_blocks:{max_blocks},blocks_num:{blocks_num}")
         if now_tokens > max_tokens:
             if max_continue_cnt > 0:
                 max_continue_cnt -= 1
                 now_tokens -= int(doc.num_of_tokens) + 8
-                logging.info(f"search_embeddings num_of_token too large so skip: num_of_tokens:{int(doc.num_of_tokens)}, max_continue_cnt:{max_continue_cnt}")
+                logging.info(f"multi_embedding_search num_of_token too large so skip: num_of_tokens:{int(doc.num_of_tokens)}, max_continue_cnt:{max_continue_cnt}")
                 continue
             else:
                 break
@@ -1142,16 +1143,6 @@ def calcMessagesTokens(messages, model, vendor):
                     num_tokens += -1
         num_tokens += 2
         return num_tokens
-    except Exception as e:
-        logging.exception(e)
-        return MaxTotalTokens
-
-def calcFunctionsTokens(messages, model, vendor):
-    if len(messages) == 0:
-        return 0
-    try:
-        encoding = lanying_vendor.encoding_for_model(vendor, model)
-        return len(encoding.encode(json.dumps(messages,ensure_ascii=False), disallowed_special=()))
     except Exception as e:
         logging.exception(e)
         return MaxTotalTokens
@@ -1908,7 +1899,7 @@ def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name,
         prompt_tokens = usage.get('prompt_tokens', 0)
         completion_tokens = usage.get('completion_tokens', total_tokens - prompt_tokens)
     else:
-        prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor) + calcFunctionsTokens(preset.get('functions',[]), preset['model'], vendor)
+        prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(preset.get('functions',[]), preset['model'], vendor)
         completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
         total_tokens = prompt_tokens + completion_tokens
     response = {

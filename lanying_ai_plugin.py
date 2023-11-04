@@ -8,6 +8,7 @@ from urllib.parse import urlunparse
 import lanying_config
 import random
 import copy
+import lanying_vendor
 
 def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor):
     embedding_name = maybe_create_function_embedding(app_id)
@@ -164,6 +165,9 @@ def process_function_embedding(app_id, plugin_id, function_id):
     ai_function_info = get_ai_function(app_id, function_id)
     if not ai_function_info:
         return {'result':'error', 'message': 'ai function not exist'}
+    embedding_info = get_ai_plugin_embedding(app_id)
+    vendor = embedding_info.get('vendor', 'openai')
+    model = lanying_vendor.get_embedding_model(vendor)
     redis_stack = lanying_redis.get_redis_stack_connection()
     embedding_uuid = ai_plugin_info["embedding_uuid"]
     doc_id = ai_plugin_info["doc_id"]
@@ -182,7 +186,7 @@ def process_function_embedding(app_id, plugin_id, function_id):
     }
     function = json.dumps(function_info, ensure_ascii=False)
     text = description
-    token_cnt = lanying_embedding.num_of_tokens(function)
+    token_cnt = lanying_embedding.calc_function_tokens(function, model, vendor)
     blocks = [(token_cnt, "function", text, function, block_id)]
     lanying_embedding.delete_embedding_block(app_id, embedding_name, doc_id, block_id)
     lanying_embedding.insert_embeddings(embedding_uuid_info, app_id, embedding_uuid,"function", doc_id, blocks, redis_stack)
