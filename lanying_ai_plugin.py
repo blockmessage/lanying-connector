@@ -187,6 +187,7 @@ def process_function_embedding(app_id, plugin_id, function_id):
     function = json.dumps(function_info, ensure_ascii=False)
     text = description
     token_cnt = lanying_embedding.calc_function_tokens(function, model, vendor)
+    logging.info(f"calc function tokens | token_cnt:{token_cnt}, function:{function}")
     blocks = [(token_cnt, "function", text, function, block_id)]
     lanying_embedding.delete_embedding_block(app_id, embedding_name, doc_id, block_id)
     lanying_embedding.insert_embeddings(embedding_uuid_info, app_id, embedding_uuid,"function", doc_id, blocks, redis_stack)

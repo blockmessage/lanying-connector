@@ -22,7 +22,7 @@ import pdfplumber
 import lanying_config
 import lanying_pgvector
 from urllib.parse import urlparse
-import lanying_vendor
+from openai_token_counter import openai_token_counter
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -1628,15 +1628,9 @@ def calc_functions_tokens(functions, model, vendor):
     if len(functions) == 0:
         return 0
     try:
-        encoding = lanying_vendor.encoding_for_model(vendor, model)
-        func_infos = []
-        for function in functions:
-            func_info = {}
-            for k, v in function.items():
-                if k in ['name','description','parameters']:
-                    func_info[k] = v
-            func_infos.append(func_info)
-        return len(encoding.encode(json.dumps(func_infos,ensure_ascii=False), disallowed_special=()))
+        if vendor in ['openai', 'azure']:
+            return openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
+        return openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
     except Exception as e:
         logging.exception(e)
         MaxTotalTokens = 4000
