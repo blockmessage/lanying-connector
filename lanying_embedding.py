@@ -940,25 +940,25 @@ def process_question(config, question, answer, reference):
         logging.info(f"process_question | skip too large question answer: question_token_cnt:{question_token_cnt}, answer_token_cnt:{answer_token_cnt}")
         return (0, [])
 
-def process_function(config, text, function):
-    try:
-        function_obj = json.loads(function)
-        if "name" in function_obj and "description" in function_obj and "parameters" in function_obj and 'function_call' in function_obj:
-            text_token_cnt = num_of_tokens(text)
-            function_token_cnt = num_of_tokens(function)
-            token_limit = embedding_model_token_limit()
-            token_cnt = function_token_cnt
-            if text_token_cnt == 0:
-                return (0,[])
-            if text_token_cnt <= token_limit:
-                return (token_cnt, [(token_cnt, "function", text, function)])
-            else:
-                logging.info(f"process_function | skip too large function: text_token_cnt:{text_token_cnt}, function_token_cnt:{function_token_cnt}")
-                return (0, [])
-    except Exception as e:
-        logging.exception(e)
-        logging.info(f"fail to process_function | text:{text}, function:{function}")
-    return {0, []}
+# def process_function(config, text, function):
+#     try:
+#         function_obj = json.loads(function)
+#         if "name" in function_obj and "description" in function_obj and "parameters" in function_obj and 'function_call' in function_obj:
+#             text_token_cnt = num_of_tokens(text)
+#             function_token_cnt = num_of_tokens(function)
+#             token_limit = embedding_model_token_limit()
+#             token_cnt = function_token_cnt
+#             if text_token_cnt == 0:
+#                 return (0,[])
+#             if text_token_cnt <= token_limit:
+#                 return (token_cnt, [(token_cnt, "function", text, function)])
+#             else:
+#                 logging.info(f"process_function | skip too large function: text_token_cnt:{text_token_cnt}, function_token_cnt:{function_token_cnt}")
+#                 return (0, [])
+#     except Exception as e:
+#         logging.exception(e)
+#         logging.info(f"fail to process_function | text:{text}, function:{function}")
+#     return {0, []}
 
 def embedding_model_token_limit():
     return 8000
@@ -1627,14 +1627,13 @@ def get_preset_names(app_id):
 def calc_functions_tokens(functions, model, vendor):
     if len(functions) == 0:
         return 0
-    try:
-        if vendor in ['openai', 'azure']:
-            return openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
-        return openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
-    except Exception as e:
-        logging.exception(e)
-        MaxTotalTokens = 4000
-        return MaxTotalTokens
+    logging.info(f"calc function tokens | model:{model}, vendor:{model}, functions:{functions}")
+    if vendor == 'openai':
+        token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
+    else:
+        token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
+    logging.info(f"token_cnt:{token_cnt}")
+    return token_cnt
 
 def calc_function_tokens(function, model, vendor):
     return calc_functions_tokens([function], model, vendor)
