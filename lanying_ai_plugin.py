@@ -637,12 +637,14 @@ def plugin_import_from_swagger(app_id, swagger_config):
     function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
     if function_num_limit <= 10:
         return {'result':"error", 'message': 'current package do not support swagger'}
+    if 'swagger' not in swagger_config:
+        return {'result': 'error', 'message': 'bad swagger file'}
     plugin_config = swagger_json_to_plugin(swagger_config)
     return plugin_import_from_config(app_id, plugin_config)
 
 def plugin_import_from_config(app_id, plugin_config):
-    if plugin_config['type'] != 'ai_plugin' or plugin_config['version'] != 1:
-        {'result': 'error', 'message': 'bad ai plugin config format'}
+    if plugin_config.get('type') != 'ai_plugin' or plugin_config.get('version') != 1:
+        return {'result': 'error', 'message': 'bad ai plugin config format'}
     function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
     function_num = get_ai_function_count(app_id)
     function_num_to_add = len(plugin_config.get('functions', []))
