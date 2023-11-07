@@ -536,11 +536,11 @@ def is_parameter_reference_by_function_call(parameter, obj):
     return False
 
 def maybe_format_function_call_body(parameters, function_call_body):
-    if len(function_call_body) == 1 and parameters.get("type") == "object":
-        key = list(function_call_body.keys())[0]
-        if parameters.get('properties', {}).get(key,{}).get('type') == 'object':
-            logging.info(f"format_function_call_body from {function_call_body} to {function_call_body[key]}")
-            return function_call_body[key]
+    # if len(function_call_body) == 1 and parameters.get("type") == "object":
+    #     key = list(function_call_body.keys())[0]
+    #     if parameters.get('properties', {}).get(key,{}).get('type') == 'object':
+    #         logging.info(f"format_function_call_body from {function_call_body} to {function_call_body[key]}")
+    #         return function_call_body[key]
     return function_call_body
 
 def fill_function_envs(envs, obj):
@@ -735,8 +735,8 @@ def swagger_json_to_plugin(config):
                 tags = request.get('tags', [])
                 summary = request.get('summary')
                 operationId = request.get('operationId')
-                # if operationId not in ['usernameUsingPUT']:
-                #     continue
+                # if operationId not in ['sendMessageUsingPOST']:
+                #      continue
                 if summary and operationId:
                     tags_info = "_".join(tags)
                     if len(tags_info) > 0:
@@ -805,6 +805,7 @@ def swagger_json_to_plugin(config):
                         'body': function_call_body
                     }
                     function_info['function_call'] = function_call
+                    function_info = maybe_expand_request_body(function_info)
                     function_infos.append(function_info)
     return {
         "type": "ai_plugin",
@@ -816,6 +817,43 @@ def swagger_json_to_plugin(config):
         "endpoint": endpoint,
         "functions": function_infos
     }
+
+def maybe_expand_request_body(function_info):
+    function_call = function_info.get('function_call', {})
+    parameters = function_info.get('parameters', {})
+    function_name = function_info.get('name', '')
+    function_call_body = function_call.get('body', {})
+    if len(function_call_body) == 1 and parameters.get("type") == "object":
+        key = list(function_call_body.keys())[0]
+        body_parameter = parameters.get('properties', {}).get(key,{})
+        if body_parameter.get('type') == 'object':
+            # logging.info(f"maybe_expand_request_body expand | function_name:{function_name}, function_call_body: {function_call_body}")
+            function_call_new_body = {}
+            parameters_properties = parameters.get('properties',{})
+            parameters_required = parameters.get('required',[])
+            del parameters_properties[key]
+            if key in parameters_required:
+                parameters_required.remove(key)
+            body_required = body_parameter.get('required',[])
+            for property,property_value in body_parameter.get('properties',{}).items():
+                function_call_new_body[property] = {
+                    "type": "variable",
+                    "value": property
+                }
+                if property in parameters_properties:
+                    logging.warning(f"found body property in header or params | function_name:{function_name}, property:{property}")
+                parameters_properties[property] = property_value
+                if property in body_required and property not in parameters_required:
+                    parameters_required.append(property)
+            function_info['parameters']['properties'] = parameters_properties
+            function_info['parameters']['required'] = parameters_required
+            if len(function_info['parameters']['required']) == 0:
+                del function_info['parameters']['required']
+            function_info['function_call']['body'] = function_call_new_body
+            # logging.info(f"============================\n{json.dumps(function_info, ensure_ascii=False, indent=4)}")
+            return function_info
+    # logging.info(f"============================\n{json.dumps(function_info, ensure_ascii=False, indent=4)}")
+    return function_info
 
 def json_same(a, b, excludes):
     a2 = {}
