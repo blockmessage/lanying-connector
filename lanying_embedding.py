@@ -1627,13 +1627,19 @@ def get_preset_names(app_id):
 def calc_functions_tokens(functions, model, vendor):
     if len(functions) == 0:
         return 0
-    logging.info(f"calc function tokens | model:{model}, vendor:{model}, functions:{functions}")
-    if vendor == 'openai':
-        token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
-    else:
-        token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
-    logging.info(f"token_cnt:{token_cnt}")
-    return token_cnt
+    try:
+        logging.info(f"calc function tokens | model:{model}, vendor:{model}, functions:{functions}")
+        if vendor == 'openai':
+            token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
+        else:
+            token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
+        logging.info(f"token_cnt:{token_cnt}")
+        return token_cnt
+    except Exception as e:
+        logging.exception(e)
+        token_cnt = len(json.dumps(functions, ensure_ascii=False))
+        logging.info(f"fallback token_cnt:{token_cnt}")
+        return token_cnt
 
 def calc_function_tokens(function, model, vendor):
     return calc_functions_tokens([function], model, vendor)
