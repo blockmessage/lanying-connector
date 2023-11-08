@@ -727,10 +727,14 @@ def swagger_json_to_plugin(config):
     endpoint = 'https://' + config.get('host','') + config.get('basePath')
     plugin_name = config.get('info',{}).get('title', f'plugin_{int(time.time())}')
     function_infos = []
+    function_names = set()
     for path,path_info in config.get('paths',{}).items():
         for method, request in path_info.items():
             if method == 'put' and 'post' in path_info:
-                if json_same(request, path_info['post'], ['operationId']):
+                if request_is_same(request, path_info['post'], ['operationId', 'consumes']):
+                    continue
+            if method == 'delete' and 'post' in path_info:
+                if request_is_same(request, path_info['post'], ['operationId', 'consumes']):
                     continue
             deprecated = request.get('deprecated', False)
             if not deprecated:
@@ -758,9 +762,16 @@ def swagger_json_to_plugin(config):
                                 required.append(parameter_name)
                         else:
                             logging.info(f"skip for none property_info:{parameter}")
+                    function_name = operationId.replace('Using'+method.upper(), '')
+                    if function_name in function_names:
+                        function_name = operationId.replace('Using'+method.upper(), "_" + method.upper())
+                        if function_name in function_names:
+                            function_name = operationId
+                    logging.info(f"function_name | old:{operationId}, new:{function_name}")
+                    function_names.add(function_name)
                     function_info = {
                         'type': 'ai_function',
-                        'name': operationId,
+                        'name': function_name,
                         'description': description
                     }
                     if len(properties) > 0:
@@ -857,15 +868,33 @@ def maybe_expand_request_body(function_info):
     # logging.info(f"============================\n{json.dumps(function_info, ensure_ascii=False, indent=4)}")
     return function_info
 
-def json_same(a, b, excludes):
+def request_is_same(a, b, excludes):
     a2 = {}
     b2 = {}
     for k,v in a.items():
         if k not in excludes:
-            a2[k] = v
+            if k == 'responses':
+                new_responses = {}
+                withkeys = ["200"]
+                for withkey in withkeys:
+                    if withkey in v:
+                        new_responses[withkey] = v[withkey]
+                a2[k] = new_responses
+            else:
+                a2[k] = v
     for k,v in b.items():
         if k not in excludes:
-            b2[k] = v
+            if k == 'responses':
+                new_responses = {}
+                withkeys = ["200"]
+                for withkey in withkeys:
+                    if withkey in v:
+                        new_responses[withkey] = v[withkey]
+                b2[k] = new_responses
+            else:
+                b2[k] = v
+    # if json.dumps(a2) != json.dumps(b2):
+    #     logging.info(f"request_is_same:\n{json.dumps(a2)}\n{json.dumps(b2)}")
     return json.dumps(a2) == json.dumps(b2)
 
 def make_property_info(definitions, swagger_property_info):
