@@ -12,8 +12,16 @@ def model_configs():
             "is_prefix": True,
             "quota": 40,
             "token_limit": 32000,
-            'order': 4,
+            'order': 6,
             'hidden': True
+        },
+        {
+            "model": 'gpt-4-1106-preview',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 10,
+            "token_limit": 128000,
+            'order': 5
         },
         {
             "model": 'gpt-4',
@@ -21,6 +29,14 @@ def model_configs():
             "is_prefix": True,
             "quota": 20,
             "token_limit": 8000,
+            'order': 4
+        },
+        {
+            "model": 'gpt-3.5-turbo-1106',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1,
+            "token_limit": 16000,
             'order': 3
         },
         {
