@@ -907,6 +907,7 @@ def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 
 
 def process_block(config, block):
     block = remove_space_line(block)
+    block = block.replace('\0','')
     chunks = []
     total_tokens = 0
     max_block_size = get_max_token_count(config)
