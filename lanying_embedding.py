@@ -598,6 +598,14 @@ def get_embedding_uuid_info(embedding_uuid):
         return info
     return None
 
+def get_app_embedding_uuid_info(app_id, embedding_uuid):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_uuid_key(embedding_uuid)
+    info = redis_hgetall(redis, key)
+    if "app_id" in info and info['app_id'] == app_id:
+        return info
+    return None
+
 def update_embedding_uuid_info(embedding_uuid, field, value):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_embedding_uuid_key(embedding_uuid)

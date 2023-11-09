@@ -23,6 +23,7 @@ from flask import Blueprint, request, make_response
 import lanying_ai_plugin
 import random
 import lanying_file_storage
+import lanying_chatbot
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -2215,6 +2216,98 @@ def list_public_plugins():
         resp = make_response({'code':400, 'message':result['message']})
     else:
         resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/create_chatbot", methods=["POST"])
+def create_chatbot():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    name = str(data['name'])
+    user_id = int(data['user_id'])
+    lanying_link = str(data['lanying_link'])
+    preset = dict(data['preset'])
+    history_msg_count_max = int(data['history_msg_count_max'])
+    history_msg_count_min = int(data['history_msg_count_min'])
+    history_msg_size_max = int(data['history_msg_size_max'])
+    message_per_month_per_user = int(data['message_per_month_per_user'])
+    result = lanying_chatbot.create_chatbot(app_id, name, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/configure_chatbot", methods=["POST"])
+def configure_chatbot():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    chatbot_id = str(data['chatbot_id'])
+    name = str(data['name'])
+    user_id = int(data['user_id'])
+    lanying_link = str(data['lanying_link'])
+    preset = dict(data['preset'])
+    history_msg_count_max = int(data['history_msg_count_max'])
+    history_msg_count_min = int(data['history_msg_count_min'])
+    history_msg_size_max = int(data['history_msg_size_max'])
+    message_per_month_per_user = int(data['message_per_month_per_user'])
+    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/list_chatbots", methods=["POST"])
+def list_chatbots():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_chatbot.list_chatbots(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/bind_embedding", methods=["POST"])
+def bind_embedding():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    type = str(data['type'])
+    name = str(data['name'])
+    value_list = list(data['list'])
+    result = lanying_chatbot.bind_embedding(app_id, type, name, value_list)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/get_embedding_bind_relation", methods=["POST"])
+def get_embedding_bind_relation():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_chatbot.get_embedding_bind_relation(app_id)
+    resp = make_response({'code':200, 'data':result})
     return resp
 
 def plugin_import_by_public_id(app_id, public_id):
