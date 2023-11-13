@@ -80,13 +80,13 @@ def trace_finish(request):
     embedding_name = data.get('embedding_name', '')
     notify_user = lanying_embedding.get_trace_field(trace_id, "notify_user")
     if notify_user:
+        notify_from = int(lanying_embedding.get_trace_field(trace_id, "notify_from"))
         lanying_embedding.delete_trace_field(trace_id, "notify_user")
         user_id = int(notify_user)
-        lanying_user_id = config['lanying_user_id']
         if status == "success":
-            lanying_connector.sendMessageAsync(app_id, lanying_user_id, user_id, f"文章（ID：{doc_id}）已加入知识库 {embedding_name}，有用的知识又增加了，谢谢您 ♪(･ω･)ﾉ",{'ai':{'role': 'ai'}})
+            lanying_connector.sendMessageAsync(app_id, notify_from, user_id, f"文章（ID：{doc_id}）已加入知识库 {embedding_name}，有用的知识又增加了，谢谢您 ♪(･ω･)ﾉ",{'ai':{'role': 'ai'}})
         else:
-            lanying_connector.sendMessageAsync(app_id, lanying_user_id, user_id, f"文章（ID：{doc_id}）加入知识库 {embedding_name}失败：{message}",{'ai':{'role': 'ai'}})
+            lanying_connector.sendMessageAsync(app_id, notify_from, user_id, f"文章（ID：{doc_id}）加入知识库 {embedding_name}失败：{message}",{'ai':{'role': 'ai'}})
 
 def handle_request(request):
     text = request.get_data(as_text=True)
@@ -222,12 +222,12 @@ def check_embedding_authorization(request):
     return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
 
 def check_message_need_reply(config, msg):
-    fromUserId = msg['from']['uid']
-    toUserId = msg['to']['uid']
+    fromUserId = str(msg['from']['uid'])
+    toUserId = str(msg['to']['uid'])
+    app_id = msg['appId']
     type = msg['type']
-    myUserId = config['lanying_user_id']
-    logging.info(f'lanying_user_id:{myUserId}')
-    if myUserId != None and toUserId == myUserId and fromUserId != myUserId and type == 'CHAT':
+    is_chatbot = is_chatbot_user_id(app_id, toUserId, config)
+    if is_chatbot and fromUserId != toUserId and type == 'CHAT':
         try:
             ext = json.loads(msg['ext'])
             if ext.get('ai',{}).get('role', 'none') == 'ai':
@@ -269,11 +269,15 @@ def handle_chat_message(config, msg):
         lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
 
 def handle_chat_message_try(config, msg, retry_times):
+    app_id = msg['appId']
     checkres = check_message_need_reply(config, msg)
     if checkres['result'] == 'error':
         return checkres['msg']
     reply_message_read_ack(config)
-    preset = copy.deepcopy(config['preset'])
+    fromUserId = config['from_user_id']
+    toUserId = config['to_user_id']
+    preset = copy.deepcopy(config.get('preset',{}))
+    is_chatbot_mode = lanying_chatbot.is_chatbot_mode(app_id)
     checkres = check_message_deduct_failed(msg['appId'], config)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -299,13 +303,22 @@ def handle_chat_message_try(config, msg, retry_times):
         return handle_chat_file(msg, config)
     else:
         return ''
+    if is_chatbot_mode:
+        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, toUserId)
+        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot:
+            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
+                if key in chatbot:
+                    config[key] = int(chatbot[key])
+            preset = json.loads(chatbot['preset'])
+        else:
+            logging.warning(f"cannot get chatbot info: app_id={app_id}, user_id:{toUserId}, chatbot_id:{chatbot_id}")
+            return ''
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
         return checkres['msg']
     lcExt = {}
     presetExt = {}
-    fromUserId = config['from_user_id']
-    toUserId = config['to_user_id']
     redis = lanying_redis.get_redis_connection()
     try:
         ext = json.loads(config['ext'])
@@ -320,18 +333,34 @@ def handle_chat_message_try(config, msg, retry_times):
         try:
             if "preset_name" in command_ext:
                 if command_ext['preset_name'] != "default":
-                    preset = preset['presets'][command_ext['preset_name']]
-                preset_name = command_ext['preset_name']
-                logging.info(f"using preset_name from command:{preset_name}")
+                    if is_chatbot_mode:
+                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], command_ext['preset_name'])
+                        if sub_chatbot:
+                            chatbot = sub_chatbot
+                            preset = json.loads(sub_chatbot['preset'])
+                            preset_name = command_ext['preset_name']
+                            logging.info(f"using preset_name from command:{preset_name}")
+                    else:
+                        preset = preset['presets'][command_ext['preset_name']]
+                        preset_name = command_ext['preset_name']
+                        logging.info(f"using preset_name from command:{preset_name}")
         except Exception as e:
             logging.exception(e)
     if preset_name == "":
         try:
             if 'preset_name' in lcExt:
                 if lcExt['preset_name'] != "default":
-                    preset = preset['presets'][lcExt['preset_name']]
-                preset_name = lcExt['preset_name']
-                logging.info(f"using preset_name from lc_ext:{preset_name}")
+                    if is_chatbot_mode:
+                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lcExt['preset_name'])
+                        if sub_chatbot:
+                            chatbot = sub_chatbot
+                            preset = json.loads(sub_chatbot['preset'])
+                            preset_name = lcExt['preset_name']
+                            logging.info(f"using preset_name from lc_ext:{preset_name}")
+                    else:
+                        preset = preset['presets'][lcExt['preset_name']]
+                        preset_name = lcExt['preset_name']
+                        logging.info(f"using preset_name from lc_ext:{preset_name}")
         except Exception as e:
             logging.exception(e)
     if preset_name == "":
@@ -340,9 +369,17 @@ def handle_chat_message_try(config, msg, retry_times):
         if lastChoosePresetName:
             try:
                 if lastChoosePresetName != "default":
-                    preset = preset['presets'][lastChoosePresetName]
-                preset_name = lastChoosePresetName
-                logging.info(f"using preset_name from last_choose_preset:{preset_name}")
+                    if is_chatbot_mode:
+                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lastChoosePresetName)
+                        if sub_chatbot:
+                            chatbot = sub_chatbot
+                            preset = json.loads(sub_chatbot['preset'])
+                            preset_name = lastChoosePresetName
+                            logging.info(f"using preset_name from last_choose_preset:{preset_name}")
+                    else:
+                        preset = preset['presets'][lastChoosePresetName]
+                        preset_name = lastChoosePresetName
+                        logging.info(f"using preset_name from last_choose_preset:{preset_name}")
             except Exception as e:
                 logging.exception(e)
     if preset_name == "":
@@ -1498,6 +1535,7 @@ def bluevector_mode(msg, config, embedding_name):
 
 def bluevector_add(msg, config, embedding_name, file_uuid):
     from_user_id = int(msg['from']['uid'])
+    to_user_id = int(msg['to']['uid'])
     app_id = msg['appId']
     result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
     if result['result'] == 'error':
@@ -1510,9 +1548,10 @@ def bluevector_add(msg, config, embedding_name, file_uuid):
         dname = attachment['dName']
         headers = {'app_id': app_id,
                 'access-token': config['lanying_admin_token'],
-                'user_id': config['lanying_user_id']}
+                'user_id': to_user_id}
         trace_id = lanying_embedding.create_trace_id()
         lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
+        lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
         add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
         return f'添加成功，请等待系统处理。'
     else:
@@ -1576,9 +1615,10 @@ def bluevector_info_by_preset(msg, config, preset_name):
 
 def bluevector_help(msg, config):
     from_user_id = int(msg['from']['uid'])
+    to_user_id = int(msg['to']['uid'])
     app_id = msg['appId']
     if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
-        return lanying_command.pretty_help(app_id)
+        return lanying_command.pretty_help(app_id, to_user_id)
     else:
         return f"无法执行此命令，用户（ID：{from_user_id}）不是企业知识库管理员。"
 
@@ -1587,7 +1627,8 @@ def bluevector_error(msg, config):
 
 def help(msg, config):
     app_id = msg['appId']
-    return lanying_command.pretty_help(app_id)
+    to_user_id = int(msg['to']['uid'])
+    return lanying_command.pretty_help(app_id, to_user_id)
 
 def search_on_doc_by_default_preset(msg, config, doc_id, new_content):
     return search_on_doc_by_preset(msg, config, "default", doc_id, new_content)
@@ -1638,9 +1679,13 @@ def search_by_preset(msg, config, preset_name, new_content):
 
 def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_depth, filters, urls, generate_lanying_links):
     config = lanying_config.get_lanying_connector(app_id)
+    if lanying_chatbot.is_chatbot_mode(app_id):
+        user_id = lanying_chatbot.get_default_user_id(app_id)
+    else:
+        user_id = config['lanying_user_id']
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
-            'user_id': config['lanying_user_id']}
+            'user_id': user_id}
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
     if embedding_info:
         trace_id = lanying_embedding.create_trace_id()
@@ -1729,9 +1774,6 @@ def get_attachment(from_user_id, file_id):
     redis = lanying_redis.get_redis_connection()
     return redis.get(f"lanying-connnector:last_attachment:{from_user_id}:{file_id}")
 
-def add_embedding_to_file():
-    pass
-
 def check_upload_embedding(msg, config, ext, app_id):
     from_user_id = int(msg['from']['uid'])
     if lanying_embedding.is_app_embedding_admin_user(app_id, from_user_id):
@@ -1794,6 +1836,7 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
 
 def handle_chat_file(msg, config):
     from_user_id = int(msg['from']['uid'])
+    to_user_id = int(msg['to']['uid'])
     app_id = msg['appId']
     attachment_str = msg['attachment']
     attachment = json.loads(attachment_str)
@@ -1816,9 +1859,10 @@ def handle_chat_file(msg, config):
         dname = attachment['dName']
         headers = {'app_id': app_id,
                 'access-token': config['lanying_admin_token'],
-                'user_id': config['lanying_user_id']}
+                'user_id': to_user_id}
         trace_id = lanying_embedding.create_trace_id()
         lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
+        lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
         add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
         return f'添加到知识库({embedding_name})成功，请等待系统处理。'
     else:
@@ -1830,9 +1874,10 @@ def handle_chat_file(msg, config):
             dname = attachment['dName']
             headers = {'app_id': app_id,
                     'access-token': config['lanying_admin_token'],
-                    'user_id': config['lanying_user_id']}
+                    'user_id': to_user_id}
             trace_id = lanying_embedding.create_trace_id()
             lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
+            lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
             add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
             return f'添加到知识库({embedding_name})成功，请等待系统处理。'
         else:
@@ -1841,6 +1886,7 @@ def handle_chat_file(msg, config):
 
 def handle_chat_links(msg, config):
     from_user_id = int(msg['from']['uid'])
+    to_user_id = int(msg['to']['uid'])
     app_id = msg['appId']
     content = msg['content']
     fields = re.split("[ \r\n]{1,}", content)
@@ -1866,6 +1912,7 @@ def handle_chat_links(msg, config):
             headers = {}
             trace_id = lanying_embedding.create_trace_id()
             lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
+            lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
             add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
         return f'添加到知识库({embedding_name})成功，请等待系统处理。'
     else:
@@ -1875,6 +1922,7 @@ def handle_chat_links(msg, config):
                 headers = {}
                 trace_id = lanying_embedding.create_trace_id()
                 lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
+                lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
                 add_embedding_file.apply_async(args = [trace_id, app_id, default_embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
             return f'添加到知识库({default_embedding_name})成功，请等待系统处理。'
         else:
@@ -1937,12 +1985,12 @@ def maybe_add_history(config, msg):
 
 def need_add_history(config, msg):
     try:
-        fromUserId = msg['from']['uid']
-        toUserId = msg['to']['uid']
+        fromUserId = str(msg['from']['uid'])
+        toUserId = str(msg['to']['uid'])
         type = msg['type']
-        myUserId = config['lanying_user_id']
-        logging.info(f'lanying_user_id:{myUserId}')
-        if myUserId != None and toUserId != myUserId and fromUserId == myUserId and type == 'CHAT':
+        app_id = msg['appId']
+        is_chatbot = is_chatbot_user_id(app_id, fromUserId, config)
+        if is_chatbot and toUserId != fromUserId  and type == 'CHAT':
             ext = msg.get('ext','')
             try:
                 ext_json = json.loads(ext)
@@ -2227,6 +2275,7 @@ def create_chatbot():
     data = json.loads(text)
     app_id = str(data['app_id'])
     name = str(data['name'])
+    desc = str(data['desc'])
     user_id = int(data['user_id'])
     lanying_link = str(data['lanying_link'])
     preset = dict(data['preset'])
@@ -2234,7 +2283,8 @@ def create_chatbot():
     history_msg_count_min = int(data['history_msg_count_min'])
     history_msg_size_max = int(data['history_msg_size_max'])
     message_per_month_per_user = int(data['message_per_month_per_user'])
-    result = lanying_chatbot.create_chatbot(app_id, name, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user)
+    chatbot_ids = data.get('chatbot_ids', [])
+    result = lanying_chatbot.create_chatbot(app_id, name, desc, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2251,6 +2301,7 @@ def configure_chatbot():
     app_id = str(data['app_id'])
     chatbot_id = str(data['chatbot_id'])
     name = str(data['name'])
+    desc = str(data['desc'])
     user_id = int(data['user_id'])
     lanying_link = str(data['lanying_link'])
     preset = dict(data['preset'])
@@ -2258,11 +2309,49 @@ def configure_chatbot():
     history_msg_count_min = int(data['history_msg_count_min'])
     history_msg_size_max = int(data['history_msg_size_max'])
     message_per_month_per_user = int(data['message_per_month_per_user'])
-    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user)
+    chatbot_ids = data.get('chatbot_ids', [])
+    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, desc, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
         resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/is_chatbot_mode", methods=["POST"])
+def is_chatbot_mode():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_chatbot.is_chatbot_mode(app_id)
+    resp = make_response({'code':200, 'data': result})
+    return resp
+
+@bp.route("/service/openai/set_chatbot_mode", methods=["POST"])
+def set_chatbot_mode():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    mode = bool(data['mode'])
+    result = lanying_chatbot.set_chatbot_mode(app_id, mode)
+    resp = make_response({'code':200, 'data': result})
+    return resp
+
+@bp.route("/service/openai/get_default_user_id", methods=["POST"])
+def get_default_user_id():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_chatbot.get_default_user_id(app_id)
+    resp = make_response({'code':200, 'data': result})
     return resp
 
 @bp.route("/service/openai/list_chatbots", methods=["POST"])
@@ -2319,9 +2408,13 @@ def plugin_import_by_public_id(app_id, public_id):
 
 def plugin_import_by_url(type, app_id, url):
     config = lanying_config.get_lanying_connector(app_id)
+    if lanying_chatbot.is_chatbot_mode(app_id):
+        user_id = lanying_chatbot.get_default_user_id(app_id)
+    else:
+        user_id = config['lanying_user_id']
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
-            'user_id': config['lanying_user_id']}
+            'user_id': user_id}
     filename = f"/tmp/plugin-import-{int(time.time())}-{random.randint(1,100000000)}"
     lanying_file_storage.download_url(url, headers, filename)
     with open(filename, 'r', encoding='utf-8') as f:
@@ -2336,3 +2429,13 @@ def check_access_token_valid():
         return True
     else:
         return False
+
+def is_chatbot_user_id(app_id, user_id, config):
+    if lanying_chatbot.is_chatbot_mode(app_id):
+        if lanying_chatbot.get_user_chatbot_id(app_id, user_id):
+            return True
+    else:
+        myUserId = config.get('lanying_user_id')
+        logging.info(f'lanying_user_id:{myUserId}')
+        return myUserId != None and user_id == str(myUserId)
+    return False
