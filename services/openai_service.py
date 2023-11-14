@@ -2317,6 +2317,22 @@ def configure_chatbot():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/openai/get_chatbot", methods=["POST"])
+def get_chatbot():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    chatbot_id = str(data['chatbot_id'])
+    result = lanying_chatbot.get_chatbot_dto(app_id, chatbot_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/openai/is_chatbot_mode", methods=["POST"])
 def is_chatbot_mode():
     if not check_access_token_valid():

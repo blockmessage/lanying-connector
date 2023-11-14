@@ -152,6 +152,21 @@ def list_chatbots(app_id):
             result.append(dto)
     return {'result':'ok', 'data':{'list': result}}
 
+def get_chatbot_dto(app_id, chatbot_id):
+    chatbot = get_chatbot(app_id, chatbot_id)
+    if chatbot:
+        dto = {}
+        for key,value in chatbot.items():
+            if key in ["create_time", "user_id", "history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
+                dto[key] = int(value)
+            elif key in ["preset"]:
+                dto[key] = json.loads(value)
+            else:
+                dto[key] = value
+        return {'result':'ok', 'data':dto}
+    else:
+        return {'result':'error', 'message': 'chatbot not exist'}
+
 def get_chatbot_ids(app_id):
     redis = lanying_redis.get_redis_connection()
     list_key = get_chatbot_ids_key(app_id)
