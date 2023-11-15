@@ -32,6 +32,25 @@ def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_m
     set_name_chatbot_id(app_id, name, chatbot_id)
     return {'result':'ok', 'data':{'id':chatbot_id}}
 
+def delete_chatbot(app_id, chatbot_id):
+    chatbot_info = get_chatbot(app_id, chatbot_id)
+    if chatbot_info is None:
+        return {'result': 'error', 'message': 'chatbot not exist'}
+    redis = lanying_redis.get_redis_connection()
+    user_id = chatbot_info.get('user_id')
+    name = chatbot_info.get('name')
+    del_user_chatbot_id(app_id, user_id)
+    del_name_chatbot_id(app_id, name)
+    redis.lrem(get_chatbot_ids_key(app_id), 1, chatbot_id)
+    return {'result':'ok', 'data':{}}
+
+def delete_chatbots(app_id):
+    chatbots = list_chatbots(app_id)
+    for chatbot in chatbots:
+        chatbot_id = chatbot.get('chatbot_id')
+        delete_chatbot(app_id, chatbot_id)
+    return {'result':'ok', 'data':{}}
+
 def configure_chatbot(app_id, chatbot_id, name, desc, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
     logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
@@ -135,6 +154,9 @@ def set_chatbot_mode(app_id, mode):
 def chatbot_mode_key(app_id):
     return f"lanying-connector:chatbot-mode:{app_id}"
 
+def list_chatbots_dto(app_id):
+    return {'result':'ok', 'data':{'list': list_chatbots(app_id)}}
+
 def list_chatbots(app_id):
     chatbot_ids = get_chatbot_ids(app_id)
     result = []
@@ -150,7 +172,7 @@ def list_chatbots(app_id):
                 else:
                     dto[key] = value
             result.append(dto)
-    return {'result':'ok', 'data':{'list': result}}
+    return result
 
 def get_chatbot_dto(app_id, chatbot_id):
     chatbot = get_chatbot(app_id, chatbot_id)

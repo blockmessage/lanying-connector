@@ -2378,7 +2378,7 @@ def list_chatbots():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
-    result = lanying_chatbot.list_chatbots(app_id)
+    result = lanying_chatbot.list_chatbots_dto(app_id)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
