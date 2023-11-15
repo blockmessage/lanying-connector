@@ -58,7 +58,7 @@ def configure_chatbot(app_id, chatbot_id, name, desc, user_id, lanying_link, pre
         return {'result':'error', 'message': 'chatbot not exist'}
     old_user_id = chatbot_info.get('user_id')
     old_name = chatbot_info.get('name')
-    if old_user_id != str(user_id):
+    if old_user_id != user_id:
         if get_user_chatbot_id(app_id, user_id):
             return {'result':'error', 'message': 'user id already bind another chatbot'}
     if old_name != name:
@@ -163,29 +163,13 @@ def list_chatbots(app_id):
     for chatbot_id in chatbot_ids:
         info = get_chatbot(app_id, chatbot_id)
         if info:
-            dto = {}
-            for key,value in info.items():
-                if key in ["create_time", "user_id", "history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
-                    dto[key] = int(value)
-                elif key in ["preset"]:
-                    dto[key] = json.loads(value)
-                else:
-                    dto[key] = value
-            result.append(dto)
+            result.append(info)
     return result
 
 def get_chatbot_dto(app_id, chatbot_id):
     chatbot = get_chatbot(app_id, chatbot_id)
     if chatbot:
-        dto = {}
-        for key,value in chatbot.items():
-            if key in ["create_time", "user_id", "history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
-                dto[key] = int(value)
-            elif key in ["preset"]:
-                dto[key] = json.loads(value)
-            else:
-                dto[key] = value
-        return {'result':'ok', 'data':dto}
+        return {'result':'ok', 'data':chatbot}
     else:
         return {'result':'error', 'message': 'chatbot not exist'}
 
@@ -253,7 +237,15 @@ def get_chatbot(app_id, chatbot_id):
     key = get_chatbot_key(app_id, chatbot_id)
     info = lanying_redis.redis_hgetall(redis, key)
     if "create_time" in info:
-        return info
+        dto = {}
+        for key,value in info.items():
+            if key in ["create_time", "user_id", "history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
+                dto[key] = int(value)
+            elif key in ["preset","chatbot_ids"]:
+                dto[key] = json.loads(value)
+            else:
+                dto[key] = value
+        return dto
     return None
 
 def generate_chatbot_id():

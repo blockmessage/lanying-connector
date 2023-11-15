@@ -309,7 +309,7 @@ def handle_chat_message_try(config, msg, retry_times):
         if chatbot:
             for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
                 if key in chatbot:
-                    config[key] = int(chatbot[key])
+                    config[key] = chatbot[key]
             preset = json.loads(chatbot['preset'])
         else:
             logging.warning(f"cannot get chatbot info: app_id={app_id}, user_id:{toUserId}, chatbot_id:{chatbot_id}")

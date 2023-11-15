@@ -74,15 +74,17 @@ def calc_preset_infos(app_id, user_id):
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
             default_desc = chatbot.get('desc', '')
+            sep=''
             if default_desc != '':
                 sep = " "
             preset_infos.append(("default", f"{default_desc}{sep}默认预设，也可使用别名 /bluebird 或 /bb 代替"))
             chatbot_ids = chatbot.get('chatbot_ids',[])
             for sub_chatbot_id in chatbot_ids:
                 sub_chatbot = lanying_chatbot.get_chatbot(app_id, sub_chatbot_id)
-                name = sub_chatbot['name']
-                desc = sub_chatbot.get('desc', '暂无说明')
-                preset_infos.append((name, desc))
+                if sub_chatbot:
+                    name = sub_chatbot['name']
+                    desc = sub_chatbot.get('desc', '暂无说明')
+                    preset_infos.append((name, desc))
         return preset_infos
     else:
         preset_infos = []
