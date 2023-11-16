@@ -310,7 +310,7 @@ def handle_chat_message_try(config, msg, retry_times):
             for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
-            preset = json.loads(chatbot['preset'])
+            preset = chatbot['preset']
         else:
             logging.warning(f"cannot get chatbot info: app_id={app_id}, user_id:{toUserId}, chatbot_id:{chatbot_id}")
             return ''
@@ -337,7 +337,7 @@ def handle_chat_message_try(config, msg, retry_times):
                         sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], command_ext['preset_name'])
                         if sub_chatbot:
                             chatbot = sub_chatbot
-                            preset = json.loads(sub_chatbot['preset'])
+                            preset = sub_chatbot['preset']
                             preset_name = command_ext['preset_name']
                             logging.info(f"using preset_name from command:{preset_name}")
                     else:
@@ -354,7 +354,7 @@ def handle_chat_message_try(config, msg, retry_times):
                         sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lcExt['preset_name'])
                         if sub_chatbot:
                             chatbot = sub_chatbot
-                            preset = json.loads(sub_chatbot['preset'])
+                            preset = sub_chatbot['preset']
                             preset_name = lcExt['preset_name']
                             logging.info(f"using preset_name from lc_ext:{preset_name}")
                     else:
