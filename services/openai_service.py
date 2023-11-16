@@ -383,7 +383,10 @@ def handle_chat_message_try(config, msg, retry_times):
             except Exception as e:
                 logging.exception(e)
     if preset_name == "":
-        preset_name = "default"
+        if is_chatbot_mode:
+            preset_name = chatbot['name']
+        else:
+            preset_name = "default"
     if 'presets' in preset:
         del preset['presets']
     if 'ext' in preset:
