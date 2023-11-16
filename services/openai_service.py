@@ -1002,14 +1002,17 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
         max_tokens = embedding_token_limit
     max_continue_cnt = 2 * len(preset_embedding_infos)
     for sort_key,doc in sorted_list:
-        now_tokens += int(doc.num_of_tokens) + 8
+        doc_tokens = int(doc.num_of_tokens) + 8
+        if hasattr(doc, 'function') and doc.function != "":
+            doc_tokens += 20
+        now_tokens += doc_tokens
         blocks_num += 1
         logging.info(f"multi_embedding_search count token: sort_key:{sort_key}, max_tokens:{max_tokens}, now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},max_blocks:{max_blocks},blocks_num:{blocks_num}")
         if now_tokens > max_tokens:
             if max_continue_cnt > 0:
                 max_continue_cnt -= 1
-                now_tokens -= int(doc.num_of_tokens) + 8
-                logging.info(f"multi_embedding_search num_of_token too large so skip: num_of_tokens:{int(doc.num_of_tokens)}, max_continue_cnt:{max_continue_cnt}")
+                now_tokens -= doc_tokens
+                logging.info(f"multi_embedding_search num_of_token too large so skip: num_of_tokens:{doc_tokens}, max_continue_cnt:{max_continue_cnt}")
                 continue
             else:
                 break
