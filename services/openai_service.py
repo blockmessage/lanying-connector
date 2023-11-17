@@ -1554,7 +1554,7 @@ def bluevector_add(msg, config, embedding_name, file_uuid):
         dname = attachment['dName']
         headers = {'app_id': app_id,
                 'access-token': config['lanying_admin_token'],
-                'user_id': to_user_id}
+                'user_id': str(to_user_id)}
         trace_id = lanying_embedding.create_trace_id()
         lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
         lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
@@ -1691,7 +1691,7 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
         user_id = config['lanying_user_id']
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
-            'user_id': user_id}
+            'user_id': str(user_id)}
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
     if embedding_info:
         trace_id = lanying_embedding.create_trace_id()
@@ -1865,7 +1865,7 @@ def handle_chat_file(msg, config):
         dname = attachment['dName']
         headers = {'app_id': app_id,
                 'access-token': config['lanying_admin_token'],
-                'user_id': to_user_id}
+                'user_id': str(to_user_id)}
         trace_id = lanying_embedding.create_trace_id()
         lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
         lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
@@ -1880,7 +1880,7 @@ def handle_chat_file(msg, config):
             dname = attachment['dName']
             headers = {'app_id': app_id,
                     'access-token': config['lanying_admin_token'],
-                    'user_id': to_user_id}
+                    'user_id': str(to_user_id)}
             trace_id = lanying_embedding.create_trace_id()
             lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
             lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
