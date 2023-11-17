@@ -77,7 +77,7 @@ def configure_chatbot(app_id, chatbot_id, name, desc, user_id, lanying_link, pre
         "message_per_month_per_user": message_per_month_per_user,
         "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False)
     })
-    if old_user_id != str(user_id):
+    if old_user_id != user_id:
         if old_user_id:
             del_user_chatbot_id(app_id, old_user_id)
         set_user_chatbot_id(app_id, user_id, chatbot_id)
