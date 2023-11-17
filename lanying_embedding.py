@@ -23,6 +23,7 @@ import lanying_config
 import lanying_pgvector
 from urllib.parse import urlparse
 from openai_token_counter import openai_token_counter
+import lanying_chatbot
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -595,6 +596,14 @@ def get_embedding_uuid_info(embedding_uuid):
     key = get_embedding_uuid_key(embedding_uuid)
     info = redis_hgetall(redis, key)
     if "index" in info:
+        return info
+    return None
+
+def get_app_embedding_uuid_info(app_id, embedding_uuid):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_embedding_uuid_key(embedding_uuid)
+    info = redis_hgetall(redis, key)
+    if "app_id" in info and info['app_id'] == app_id:
         return info
     return None
 
@@ -1614,16 +1623,19 @@ def is_in_lanying_link_white_list(url):
     return False
 
 def get_preset_names(app_id):
-    preset_names = ["default"]
-    config = lanying_config.get_lanying_connector(app_id)
-    if "preset" in config and "presets" in config["preset"]:
-        try:
-            for k in config["preset"]["presets"].keys():
-                preset_names.append(k)
-        except Exception as e:
-            logging.exception(e)
-            pass
-    return preset_names
+    if lanying_chatbot.is_chatbot_mode(app_id):
+        return lanying_chatbot.get_chatbot_names(app_id)
+    else:
+        preset_names = ["default"]
+        config = lanying_config.get_lanying_connector(app_id)
+        if "preset" in config and "presets" in config["preset"]:
+            try:
+                for k in config["preset"]["presets"].keys():
+                    preset_names.append(k)
+            except Exception as e:
+                logging.exception(e)
+                pass
+        return preset_names
 
 def calc_functions_tokens(functions, model, vendor):
     if len(functions) == 0:

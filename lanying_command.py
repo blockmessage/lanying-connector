@@ -1,6 +1,7 @@
 import re
 import lanying_config
 import logging
+import lanying_chatbot
 
 def find_command(content, app_id):
     if len(content) == 0 or content[0] != "/":
@@ -52,38 +53,60 @@ def check_rule(rule, fields, index, app_id):
     raise Exception({"not_match", rule, fields, index})
 
 def calc_preset_names(app_id):
-    preset_names = ["default"]
-    config = lanying_config.get_lanying_connector(app_id)
-    if "preset" in config and "presets" in config["preset"]:
-        try:
-            for k in config["preset"]["presets"].keys():
-                preset_names.append(k)
-        except Exception as e:
-            logging.exception(e)
-            pass
-    return preset_names
+    if lanying_chatbot.is_chatbot_mode(app_id):
+        return lanying_chatbot.get_chatbot_names(app_id)
+    else:
+        preset_names = ["default"]
+        config = lanying_config.get_lanying_connector(app_id)
+        if "preset" in config and "presets" in config["preset"]:
+            try:
+                for k in config["preset"]["presets"].keys():
+                    preset_names.append(k)
+            except Exception as e:
+                logging.exception(e)
+                pass
+        return preset_names
 
-def calc_preset_infos(app_id):
-    preset_infos = []
-    config = lanying_config.get_lanying_connector(app_id)
-    default_desc = ""
-    sep = ""
-    if "preset" in config:
-        ext = config["preset"].get('ext', {})
-        default_desc = ext.get('preset_desc', '')
-    if default_desc != '':
-        sep = " "
-    preset_infos.append(("default", f"{default_desc}{sep}默认预设，也可使用别名 /bluebird 或 /bb 代替"))
-    if "preset" in config and "presets" in config["preset"]:
-        try:
-            for k in config["preset"]["presets"].keys():
-                preset = config["preset"]["presets"][k]
-                ext = preset.get('ext',{})
-                preset_infos.append((k, ext.get('preset_desc', '暂无说明')))
-        except Exception as e:
-            logging.exception(e)
-            pass
-    return preset_infos
+def calc_preset_infos(app_id, user_id):
+    if lanying_chatbot.is_chatbot_mode(app_id):
+        preset_infos = []
+        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, user_id)
+        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot:
+            default_desc = chatbot.get('desc', '')
+            sep=''
+            if default_desc != '':
+                sep = " "
+            preset_infos.append(("default", f"{default_desc}{sep}默认预设，也可使用别名 /bluebird 或 /bb 代替"))
+            chatbot_ids = chatbot.get('chatbot_ids',[])
+            for sub_chatbot_id in chatbot_ids:
+                sub_chatbot = lanying_chatbot.get_chatbot(app_id, sub_chatbot_id)
+                if sub_chatbot:
+                    name = sub_chatbot['name']
+                    desc = sub_chatbot.get('desc', '暂无说明')
+                    preset_infos.append((name, desc))
+        return preset_infos
+    else:
+        preset_infos = []
+        config = lanying_config.get_lanying_connector(app_id)
+        default_desc = ""
+        sep = ""
+        if "preset" in config:
+            ext = config["preset"].get('ext', {})
+            default_desc = ext.get('preset_desc', '')
+        if default_desc != '':
+            sep = " "
+        preset_infos.append(("default", f"{default_desc}{sep}默认预设，也可使用别名 /bluebird 或 /bb 代替"))
+        if "preset" in config and "presets" in config["preset"]:
+            try:
+                for k in config["preset"]["presets"].keys():
+                    preset = config["preset"]["presets"][k]
+                    ext = preset.get('ext',{})
+                    preset_infos.append((k, ext.get('preset_desc', '暂无说明')))
+            except Exception as e:
+                logging.exception(e)
+                pass
+        return preset_infos
 
 # def help(app_id, role):
 #     result = ['可以用命令如下:']
@@ -108,7 +131,7 @@ def calc_preset_infos(app_id):
 #                 result.append(f"{index}. {desc}")
 #     return "\n".join(result)
 
-def pretty_help(app_id):
+def pretty_help(app_id, user_id):
     return f"""用法：/command [OPTION] [ARGS]
 说明：使用命令操作企业知识库或限定参考知识范围。
 
@@ -133,13 +156,13 @@ def pretty_help(app_id):
 即 /bluevector [OPTION] [ARGS] 相当于执行 /default bluevector [OPTION] [ARGS]
 
 当前可用预设如下：
-{pretty_help_preset_info(app_id)}
+{pretty_help_preset_info(app_id, user_id)}
 
 通过 /help 或者 /+空格 查看本说明。"""
 
-def pretty_help_preset_info(app_id):
+def pretty_help_preset_info(app_id, user_id):
     lines = []
-    for name,desc in calc_preset_infos(app_id):
+    for name,desc in calc_preset_infos(app_id, user_id):
         lines.append(f"/{name}：{desc}")
     return "\n".join(lines)
 
