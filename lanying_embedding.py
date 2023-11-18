@@ -24,6 +24,8 @@ import lanying_pgvector
 from urllib.parse import urlparse
 from openai_token_counter import openai_token_counter
 import lanying_chatbot
+import lanying_config
+import lanying_ai_capsule
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -527,6 +529,28 @@ def get_preset_embedding_infos(embeddings, app_id, preset_name):
                     embedding_info["embedding_max_blocks"] = int(embedding_info.get("embedding_max_blocks", "5"))
                     embedding_infos.append(embedding_info)
         return embedding_infos
+
+def get_preset_embedding_infos_by_publish_capsule_id(capsule_id):
+    capsule = lanying_ai_capsule.get_publish_capsule(capsule_id)
+    if capsule:
+        capsule_app_id = capsule['app_id']
+        capsule_chatbot_id = capsule['chatbot_id']
+        chatbot = lanying_chatbot.get_chatbot(capsule_app_id, capsule_chatbot_id)
+        if chatbot:
+            config = lanying_config.get_lanying_connector(capsule_app_id)
+            return get_preset_embedding_infos(config.get('embeddings'), capsule_app_id, chatbot['name'])
+    return []
+
+def get_preset_embedding_infos_by_capsule_id(capsule_id):
+    capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if capsule:
+        capsule_app_id = capsule['app_id']
+        capsule_chatbot_id = capsule['chatbot_id']
+        chatbot = lanying_chatbot.get_chatbot(capsule_app_id, capsule_chatbot_id)
+        if chatbot:
+            config = lanying_config.get_lanying_connector(capsule_app_id)
+            return get_preset_embedding_infos(config.get('embeddings'), capsule_app_id, chatbot['name'])
+    return []
 
 def get_embedding_index(app_id, embedding_name):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)

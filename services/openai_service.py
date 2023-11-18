@@ -24,6 +24,7 @@ import lanying_ai_plugin
 import random
 import lanying_file_storage
 import lanying_chatbot
+import lanying_ai_capsule
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -307,7 +308,7 @@ def handle_chat_message_try(config, msg, retry_times):
         chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, toUserId)
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
-            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
+            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
             preset = chatbot['preset']
@@ -463,6 +464,18 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     preset_embedding_infos = lanying_embedding.get_preset_embedding_infos(config.get('embeddings'), app_id, preset_name)
     for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings(app_id, preset_name):
         preset_embedding_infos.append(now_embedding_info)
+    if 'linked_publish_capsule_id' in config:
+        linked_publish_capsule_id = config['linked_publish_capsule_id']
+        for now_embedding_info in lanying_embedding.get_preset_embedding_infos_by_publish_capsule_id(linked_publish_capsule_id):
+            preset_embedding_infos.append(now_embedding_info)
+        for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings_by_publish_capsule_id(linked_publish_capsule_id):
+            preset_embedding_infos.append(now_embedding_info)
+    if 'linked_capsule_id' in config:
+        linked_capsule_id = config['linked_capsule_id']
+        for now_embedding_info in lanying_embedding.get_preset_embedding_infos_by_capsule_id(linked_capsule_id):
+            preset_embedding_infos.append(now_embedding_info)
+        for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings_by_capsule_id(linked_capsule_id):
+            preset_embedding_infos.append(now_embedding_info)
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
@@ -1269,8 +1282,35 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
                 new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
                 if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+            try:
+                maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
+            except Exception as e:
+                logging.exception(e)
         else:
             logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+
+def maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type):
+    if 'linked_publish_capsule_id' in config:
+        linked_publish_capsule_id = config['linked_publish_capsule_id']
+        capsule = lanying_ai_capsule.get_publish_capsule(linked_publish_capsule_id)
+        if capsule:
+            statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_key_type)
+    if 'linked_capsule_id' in config:
+        linked_capsule_id = config['linked_capsule_id']
+        capsule = lanying_ai_capsule.get_capsule(linked_capsule_id)
+        if capsule:
+            statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_key_type)
+
+def statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_key_type):
+    now = datetime.now()
+    capsule_app_id = capsule['app_id']
+    capsule_id = capsule['capsule_id']
+    everymonth_key = statistic_capsule_key(capsule_app_id, now)
+    redis = lanying_redis.get_redis_connection()
+    redis.hincrbyfloat(everymonth_key, f"{capsule_id}:{product_id}:{openai_key_type}:{now.strftime('%d')}", message_count_quota)
+
+def statistic_capsule_key(app_id, now):
+    return f"lanying:connector:statistics:capsule:everymonth:{app_id}:{now.strftime('%Y-%m')}"
 
 def add_quota(redis, key, field, quota):
     if isinstance(quota, int):
@@ -2419,6 +2459,124 @@ def get_embedding_bind_relation():
     app_id = str(data['app_id'])
     result = lanying_chatbot.get_embedding_bind_relation(app_id)
     resp = make_response({'code':200, 'data':result})
+    return resp
+
+@bp.route("/service/openai/set_capsule", methods=["POST"])
+def set_capsule():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    chatbot_id = str(data['chatbot_id'])
+    name = str(data['name'])
+    desc = str(data['desc'])
+    link = str(data['link'])
+    password = str(data['password'])
+    result = lanying_ai_capsule.set_capsule(app_id, chatbot_id, name, desc, link, password)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/list_capsules", methods=["POST"])
+def list_capsules():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_ai_capsule.list_capsules(app_id)
+    resp = make_response({'code':200, 'data':{'list': result}})
+    return resp
+
+@bp.route("/service/openai/check_create_chatbot_from_capsule", methods=["POST"])
+def check_create_chatbot_from_capsule():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    capsule_id = str(data['capsule_id'])
+    password = str(data['password'])
+    result = lanying_chatbot.check_create_chatbot_from_capsule(app_id, capsule_id, password)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/create_chatbot_from_capsule", methods=["POST"])
+def create_chatbot_from_capsule():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    capsule_id = str(data['capsule_id'])
+    password = str(data['password'])
+    user_id = int(data['user_id'])
+    lanying_link = str(data['lanying_link'])
+    result = lanying_chatbot.create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_link)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/check_create_chatbot_from_publish_capsule", methods=["POST"])
+def check_create_chatbot_from_publish_capsule():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    capsule_id = str(data['capsule_id'])
+    result = lanying_chatbot.check_create_chatbot_from_publish_capsule(app_id, capsule_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/create_chatbot_from_publish_capsule", methods=["POST"])
+def create_chatbot_from_publish_capsule():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    capsule_id = str(data['capsule_id'])
+    user_id = int(data['user_id'])
+    lanying_link = str(data['lanying_link'])
+    result = lanying_chatbot.create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_link)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/list_publish_capsules", methods=["POST"])
+def list_publish_capsules():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    page_num = int(data['page_num'])
+    page_size = int(data['page_size'])
+    result = lanying_ai_capsule.list_publish_capsules(page_num, page_size)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
 def plugin_import_by_public_id(app_id, public_id):

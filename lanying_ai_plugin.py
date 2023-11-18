@@ -9,6 +9,8 @@ import lanying_config
 import random
 import copy
 import lanying_vendor
+import lanying_ai_capsule
+from lanying_chatbot import get_chatbot
 
 def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor):
     embedding_name = maybe_create_function_embedding(app_id)
@@ -326,10 +328,10 @@ def set_ai_plugin_bind_relation(app_id, relation):
     redis = lanying_redis.get_redis_connection()
     redis.set(key, json.dumps(relation, ensure_ascii=False))
 
-def get_preset_function_embeddings(app_id, preset_name):
+def get_preset_function_embeddings(app_id, preset_name, check_function_num_limit = True):
     function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
     function_num = get_ai_function_count(app_id)
-    if function_num > function_num_limit:
+    if check_function_num_limit and function_num > function_num_limit:
         logging.info(f"function num is more than limit: app_id:{app_id}, function_num:{function_num}, function_num_limit:{function_num_limit}")
         return []
     relation = get_ai_plugin_bind_relation(app_id)
@@ -350,6 +352,26 @@ def get_preset_function_embeddings(app_id, preset_name):
     embedding_info["embedding_max_blocks"] = int(embedding_info.get("embedding_max_blocks", "5"))
     embedding_info["doc_ids"] = doc_ids
     return [embedding_info]
+
+def get_preset_function_embeddings_by_publish_capsule_id(capsule_id):
+    capsule = lanying_ai_capsule.get_publish_capsule(capsule_id)
+    if capsule:
+        capsule_app_id = capsule['app_id']
+        capsule_chatbot_id = capsule['chatbot_id']
+        chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+        if chatbot:
+            return get_preset_function_embeddings(capsule_app_id, chatbot['name'], False)
+    return []
+
+def get_preset_function_embeddings_by_capsule_id(capsule_id):
+    capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if capsule:
+        capsule_app_id = capsule['app_id']
+        capsule_chatbot_id = capsule['chatbot_id']
+        chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+        if chatbot:
+            return get_preset_function_embeddings(capsule_app_id, chatbot['name'], False)
+    return []
 
 def ai_plugin_bind_relation_key(app_id):
     return f"lanying_connector:ai_plugin_bind_relation:{app_id}"

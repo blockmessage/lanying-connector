@@ -2,6 +2,7 @@ import logging
 import lanying_redis
 import time
 import json
+import lanying_ai_capsule
 
 def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
@@ -11,6 +12,7 @@ def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_m
     if get_name_chatbot_id(app_id, name):
         return {'result':'error', 'message': 'name already exist'}
     chatbot_id = generate_chatbot_id()
+    capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "chatbot_id": chatbot_id,
@@ -25,12 +27,87 @@ def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_m
         "history_msg_count_min": history_msg_count_min,
         "history_msg_size_max": history_msg_size_max,
         "message_per_month_per_user": message_per_month_per_user,
-        "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False)
+        "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False),
+        "capsule_id": capsule_id
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
     set_name_chatbot_id(app_id, name, chatbot_id)
     return {'result':'ok', 'data':{'id':chatbot_id}}
+
+def check_create_chatbot_from_capsule(app_id, capsule_id, password):
+    capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if capsule is None:
+        return {'result': 'error', 'message': 'capsule not exist'}
+    if capsule['status'] != 'normal':
+        return {'result': 'error', 'message': 'capsule status not normal'}
+    if capsule['password'] != '' and capsule['password'] != password:
+        return {'result': 'error', 'message': 'capsule password not right'}
+    capsule_app_id = capsule['app_id']
+    capsule_chatbot_id = capsule['chatbot_id']
+    capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+    if capsule_chatbot is None:
+        return {'result': 'error', 'message': 'capsule chatbot not exist'}
+    return {'result': 'ok', 'data': {'success': True}}
+
+def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_link):
+    capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if capsule is None:
+        return {'result': 'error', 'message': 'capsule not exist'}
+    if capsule['status'] != 'normal':
+        return {'result': 'error', 'message': 'capsule status not normal'}
+    if capsule['password'] != '' and capsule['password'] != password:
+        return {'result': 'error', 'message': 'capsule password not right'}
+    capsule_app_id = capsule['app_id']
+    capsule_chatbot_id = capsule['chatbot_id']
+    capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+    if capsule_chatbot is None:
+        return {'result': 'error', 'message': 'capsule chatbot not exist'}
+    name = capsule_chatbot['name']
+    if get_name_chatbot_id(app_id, name):
+        name = f"{name}_{int(time.time())}"
+    create_result = create_chatbot(app_id, name, capsule_chatbot['desc'],  user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
+    if create_result['result'] != 'ok':
+        return create_result
+    new_chatbot_id = create_result['data']['id']
+    set_chatbot_field(app_id, new_chatbot_id, "linked_capsule_id", capsule_id)
+    lanying_ai_capsule.add_capsule_app_id(capsule_id, app_id, new_chatbot_id)
+    return create_result
+
+def check_create_chatbot_from_publish_capsule(app_id, capsule_id):
+    capsule = lanying_ai_capsule.get_publish_capsule(capsule_id)
+    if capsule is None:
+        return {'result': 'error', 'message': 'capsule not exist'}
+    capsule_app_id = capsule['app_id']
+    capsule_chatbot_id = capsule['chatbot_id']
+    capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+    if capsule_chatbot is None:
+        return {'result': 'error', 'message': 'capsule chatbot not exist'}
+    return {'result': 'ok', 'data': {'success': True}}
+
+def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_link):
+    capsule = lanying_ai_capsule.get_publish_capsule(capsule_id)
+    if capsule is None:
+        return {'result': 'error', 'message': 'capsule not exist'}
+    capsule_app_id = capsule['app_id']
+    capsule_chatbot_id = capsule['chatbot_id']
+    capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+    if capsule_chatbot is None:
+        return {'result': 'error', 'message': 'capsule chatbot not exist'}
+    name = capsule_chatbot['name']
+    if get_name_chatbot_id(app_id, name):
+        name = f"{name}_{int(time.time())}"
+    create_result = create_chatbot(app_id, name, capsule_chatbot['desc'],  user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
+    if create_result['result'] != 'ok':
+        return create_result
+    new_chatbot_id = create_result['data']['id']
+    set_chatbot_field(app_id, new_chatbot_id, "linked_publish_capsule_id", capsule_id)
+    lanying_ai_capsule.add_capsule_app_id(capsule_id, app_id, new_chatbot_id)
+    return create_result
+
+def set_chatbot_field(app_id, chatbot_id, field, value):
+    redis = lanying_redis.get_redis_connection()
+    redis.hmset(get_chatbot_key(app_id, chatbot_id), field, value)
 
 def delete_chatbot(app_id, chatbot_id):
     chatbot_info = get_chatbot(app_id, chatbot_id)
@@ -245,6 +322,10 @@ def get_chatbot(app_id, chatbot_id):
                 dto[key] = json.loads(value)
             else:
                 dto[key] = value
+        if "capsule_id" not in info:
+            capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
+            redis.hsetnx(get_chatbot_key(app_id, chatbot_id), "capsule_id", capsule_id)
+            dto["capsule_id"] = capsule_id
         return dto
     return None
 

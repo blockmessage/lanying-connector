@@ -37,6 +37,9 @@ def get_slow_task_redis_server():
 def redis_lrange(redis, key, start, end):
     return [bytes.decode('utf-8') for bytes in redis.lrange(key, start, end)]
 
+def redis_zrange(redis, key, start, end):
+    return [bytes.decode('utf-8') for bytes in redis.zrange(key, start, end)]
+
 def redis_hkeys(redis, key):
     return [bytes.decode('utf-8') for bytes in redis.hkeys(key)]
 
