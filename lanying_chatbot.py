@@ -107,7 +107,7 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
 
 def set_chatbot_field(app_id, chatbot_id, field, value):
     redis = lanying_redis.get_redis_connection()
-    redis.hmset(get_chatbot_key(app_id, chatbot_id), field, value)
+    redis.hset(get_chatbot_key(app_id, chatbot_id), field, value)
 
 def delete_chatbot(app_id, chatbot_id):
     chatbot_info = get_chatbot(app_id, chatbot_id)

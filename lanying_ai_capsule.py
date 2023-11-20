@@ -10,6 +10,10 @@ def share_capsule(app_id, chatbot_id, name, desc, link, password):
     chatbot = get_chatbot(app_id, chatbot_id)
     if chatbot is None:
         return {'result':'error', 'message':'chatbot not exist'}
+    if ('linked_capsule_id' in chatbot and len(chatbot['linked_capsule_id']) > 0):
+        return {'result': 'error', 'message': 'import chatbot cannot share'}
+    if ('linked_publish_capsule_id' in chatbot and len(chatbot['linked_publish_capsule_id']) > 0):
+        return {'result': 'error', 'message': 'import chatbot cannot share'}
     redis = lanying_redis.get_redis_connection()
     capsule_id = chatbot['capsule_id']
     old_capsule = get_capsule(capsule_id)
