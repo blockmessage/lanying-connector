@@ -3,6 +3,7 @@ import lanying_redis
 import time
 import json
 import lanying_ai_capsule
+from datetime import datetime
 
 def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
@@ -65,7 +66,8 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     name = capsule_chatbot['name']
     if get_name_chatbot_id(app_id, name):
-        name = f"{name}_{int(time.time())}"
+        timestr = datetime.now().strftime('%Y%m%d%H%M%S')
+        name = f"{name}_{timestr}"
     create_result = create_chatbot(app_id, name, capsule_chatbot['desc'],  user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
     if create_result['result'] != 'ok':
         return create_result
@@ -96,7 +98,8 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     name = capsule_chatbot['name']
     if get_name_chatbot_id(app_id, name):
-        name = f"{name}_{int(time.time())}"
+        timestr = datetime.now().strftime('%Y%m%d%H%M%S')
+        name = f"{name}_{timestr}"
     create_result = create_chatbot(app_id, name, capsule_chatbot['desc'],  user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
     if create_result['result'] != 'ok':
         return create_result
