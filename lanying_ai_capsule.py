@@ -2,9 +2,9 @@ import logging
 import time
 import random
 import lanying_redis
-from lanying_chatbot import get_chatbot
 
-def set_capsule(app_id, chatbot_id, name, desc, link, password):
+def share_capsule(app_id, chatbot_id, name, desc, link, password):
+    from lanying_chatbot import get_chatbot
     logging.info(f"start set capsule: app_id:{app_id}, chatbot_id:{chatbot_id}, type:{type}, name:{name}, desc:{desc}, link:{link}")
     now = int(time.time())
     chatbot = get_chatbot(app_id, chatbot_id)
@@ -40,6 +40,7 @@ def capsule_app_ids_key(capsule_id):
     return f"lanying_connector:capsule_app_ids:{capsule_id}"
 
 def publish_capsule(app_id, chatbot_id, type, name, desc, order):
+    from lanying_chatbot import get_chatbot
     logging.info(f"start publish capsule | app_id:{app_id}, chatbot_id:{chatbot_id}, type:{type}, name:{name}, desc:{desc}, order:{order}")
     now = int(time.time())
     chatbot = get_chatbot(app_id, chatbot_id)
@@ -97,7 +98,7 @@ def get_publish_capsule_ids_key():
 def get_publish_capsule_key(capsule_id):
     return f"lanying_connector:publish_capsule:{capsule_id}"
 
-def list_capsules(app_id):
+def list_app_capsules(app_id):
     redis = lanying_redis.get_redis_connection()
     capsule_ids = lanying_redis.redis_hkeys(redis, get_capsule_ids(app_id))
     rets = []

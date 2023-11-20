@@ -2461,8 +2461,8 @@ def get_embedding_bind_relation():
     resp = make_response({'code':200, 'data':result})
     return resp
 
-@bp.route("/service/openai/set_capsule", methods=["POST"])
-def set_capsule():
+@bp.route("/service/openai/share_capsule", methods=["POST"])
+def share_capsule():
     if not check_access_token_valid():
         resp = make_response({'code':401, 'message':'bad authorization'})
         return resp
@@ -2474,22 +2474,22 @@ def set_capsule():
     desc = str(data['desc'])
     link = str(data['link'])
     password = str(data['password'])
-    result = lanying_ai_capsule.set_capsule(app_id, chatbot_id, name, desc, link, password)
+    result = lanying_ai_capsule.share_capsule(app_id, chatbot_id, name, desc, link, password)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
-@bp.route("/service/openai/list_capsules", methods=["POST"])
-def list_capsules():
+@bp.route("/service/openai/list_app_capsules", methods=["POST"])
+def list_app_capsules():
     if not check_access_token_valid():
         resp = make_response({'code':401, 'message':'bad authorization'})
         return resp
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
-    result = lanying_ai_capsule.list_capsules(app_id)
+    result = lanying_ai_capsule.list_app_capsules(app_id)
     resp = make_response({'code':200, 'data':{'list': result}})
     return resp
 
