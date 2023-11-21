@@ -544,6 +544,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     function_name = function_info.get('name', '')
                     function_info["name"]  = f"class{len(functions)}_{function_name}"
                     function_info["doc_id"] = doc.doc_id
+                    function_info["owner_app_id"] = doc.owner_app_id;
                     function_info = lanying_ai_plugin.remove_function_parameters_without_function_call_reference(app_id, function_info, doc.doc_id)
                     functions.append(function_info)
                 elif embedding_content_type == 'summary':
@@ -827,6 +828,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         if function['name'] == function_name:
             function_config = function
     doc_id = function_config.get('doc_id', '')
+    owner_app_id = function_config.get('owner_app_id', app_id)
     system_envs = {
         'admin_token': {
             'value': config.get('lanying_admin_token','')
@@ -838,7 +840,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             'value': config.get('from_user_id','0')
         }
     }
-    function_config = lanying_ai_plugin.fill_function_info(app_id, function_config, doc_id, system_envs)
+    function_config = lanying_ai_plugin.fill_function_info(owner_app_id, function_config, doc_id, system_envs)
     if 'function_call' in function_config:
         lanying_function_call = function_config['function_call']
         method = lanying_function_call.get('method', 'get')
@@ -847,7 +849,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
         body = fill_function_args(function_args, lanying_function_call.get('body', {}))
         if lanying_utils.is_valid_public_url(url):
-            logging.info(f"start request function callback | app_id:{app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
+            logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
             if method == 'get':
                 function_response = requests.get(url, params=params, headers=headers, timeout = (20.0, 40.0))
             else:
@@ -992,7 +994,11 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
         max_tokens += embedding_max_tokens
         max_blocks += embedding_max_blocks
         doc_ids = preset_embedding_info.get('doc_ids', [])
-        docs = lanying_embedding.search_embeddings(app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc, doc_ids)
+        embedding_owner_app_id = app_id
+        if 'app_id' in preset_embedding_info and len(preset_embedding_info['app_id']) > 0:
+            embedding_owner_app_id = preset_embedding_info['app_id']
+        check_storage_limit = (embedding_owner_app_id == app_id) # TODO: refine
+        docs = lanying_embedding.search_embeddings(embedding_owner_app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc, doc_ids, check_storage_limit)
         idx = 0
         for doc in docs:
             if hasattr(doc, 'text_hash'):
@@ -1005,6 +1011,7 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
             text_hashes.add(text_hash)
             idx = idx+1
             vector_store = float(doc.vector_score if hasattr(doc, 'vector_score') else "0.0")
+            doc.__dict__['owner_app_id'] = embedding_owner_app_id
             if is_fulldoc:
                 seq_id = lanying_embedding.parse_segment_id_int_value(doc)
                 list.append(((seq_id,idx, preset_idx),doc))

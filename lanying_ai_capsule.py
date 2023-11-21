@@ -75,7 +75,7 @@ def get_publish_capsule(capsule_id):
         dto = {}
         for key,value in info.items():
             if key in ["create_time", "order"]:
-                dto[key] = int(value)
+                dto[key] = float(value)
             else:
                 dto[key] = value
         return dto

@@ -346,13 +346,13 @@ def list_embedding_names(app_id):
     list_key = get_embedding_names_key(app_id)
     return redis_lrange(redis, list_key, 0, -1)
 
-def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, doc_ids):
+def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, doc_ids, check_storage_limit = True):
     if max_blocks > 100:
         max_blocks = 100
     result = []
     for extra_block_num in [10, 100, 500, 2000, 5000]:
         page_size = max_blocks+extra_block_num
-        is_finish,result = search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids)
+        is_finish,result = search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids, check_storage_limit)
         if is_finish:
             break
         logging.info(f"search_embeddings not finish: app_id:{app_id}, page_size:{page_size}, extra_block_num:{extra_block_num}")
@@ -436,11 +436,12 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
         setattr(results, 'docs', docs)
         return results
 
-def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids):
-    result = check_storage_size(app_id)
-    if result['result'] == 'error':
-        logging.info(f"search_embeddings | skip search for exceed storage limit app, app_id:{app_id}, embedding_name:{embedding_name}")
-        return (True, [])
+def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids, check_storage_limit):
+    if check_storage_limit:
+        result = check_storage_size(app_id)
+        if result['result'] == 'error':
+            logging.info(f"search_embeddings | skip search for exceed storage limit app, app_id:{app_id}, embedding_name:{embedding_name}")
+            return (True, [])
     logging.info(f"search_embeddings_internal | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}, max_tokens:{max_tokens}, max_blocks:{max_blocks}, is_fulldoc:{is_fulldoc}, page_size:{page_size}")
     redis = lanying_redis.get_redis_stack_connection()
     if redis:
