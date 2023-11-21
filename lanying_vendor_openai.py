@@ -3,6 +3,8 @@ import openai
 import tiktoken
 import os
 import types
+from openai.error import APIError
+import time
 
 def model_configs():
     return [
@@ -85,8 +87,26 @@ def chat(prepare_info, preset):
     final_preset = format_preset(preset)
     headers = maybe_add_proxy_headers(prepare_info)
     logging.info(f"vendor openai chat request: {final_preset}")
-    response = openai.ChatCompletion.create(**final_preset, headers = headers)
-    logging.info(f"vendor openai chat response: {response}")
+    retry_times = 3
+    response = None
+    task_id = time.time()
+    for i in range(retry_times):
+        logging.info(f"start try task_id:{task_id}, {i}/{retry_times}")
+        try:
+            response = openai.ChatCompletion.create(**final_preset, headers = headers)
+            break
+        except APIError as e:
+            if "504 Gateway Time-out" in e.message:
+                if i == retry_times - 1:
+                    logging.info(f"chat complete stop retry: task_id:{task_id}, {i}/{retry_times}")
+                    raise e
+                else:
+                    logging.info(f"chat complete got exception: task_id:{task_id}, {i}/{retry_times}")
+                    logging.exception(e)
+                    time.sleep(2)
+            else:
+                raise e
+    logging.info(f"vendor openai chat response: task_id:{task_id}, {response}")
     if isinstance(response, types.GeneratorType):
         def generator():
             for chunk in response:
