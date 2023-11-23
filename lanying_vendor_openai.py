@@ -96,16 +96,17 @@ def chat(prepare_info, preset):
             response = openai.ChatCompletion.create(**final_preset, headers = headers)
             break
         except APIError as e:
-            if "504 Gateway Time-out" in e.message:
-                if i == retry_times - 1:
-                    logging.info(f"chat complete stop retry: task_id:{task_id}, {i}/{retry_times}")
-                    raise e
-                else:
-                    logging.info(f"chat complete got exception: task_id:{task_id}, {i}/{retry_times}")
-                    logging.exception(e)
-                    time.sleep(2)
-            else:
+            if i == retry_times - 1:
+                logging.info(f"chat complete stop retry: task_id:{task_id}, {i}/{retry_times}")
                 raise e
+            else:
+                logging.info(f"chat complete got exception: task_id:{task_id}, {i}/{retry_times}")
+                logging.exception(e)
+                try:
+                    logging.info(dir(e))
+                except Exception as ee:
+                    pass
+                time.sleep(2)
     logging.info(f"vendor openai chat response: task_id:{task_id}, {response}")
     if isinstance(response, types.GeneratorType):
         def generator():
