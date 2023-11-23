@@ -1314,10 +1314,17 @@ def statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_k
     capsule_id = capsule['capsule_id']
     everymonth_key = statistic_capsule_key(capsule_app_id, now)
     redis = lanying_redis.get_redis_connection()
-    redis.hincrbyfloat(everymonth_key, f"{capsule_id}:{product_id}:{openai_key_type}:{now.strftime('%d')}", message_count_quota)
+    field = json.dumps({
+        'capsule_id': capsule_id,
+        'product_id': product_id,
+        'openai_key_type': openai_key_type,
+        'day': now.strftime('%Y-%m-%d'),
+        'app_id': app_id
+    })
+    redis.hincrbyfloat(everymonth_key, field, message_count_quota)
 
 def statistic_capsule_key(app_id, now):
-    return f"lanying:connector:statistics:capsule:everymonth:{app_id}:{now.strftime('%Y-%m')}"
+    return f"lanying:connector:statistics:capsule:everymonth:v2:{app_id}:{now.strftime('%Y-%m')}"
 
 def add_quota(redis, key, field, quota):
     if isinstance(quota, int):
@@ -2431,12 +2438,48 @@ def list_chatbots():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
-    result = lanying_chatbot.list_chatbots_dto(app_id)
-    if result['result'] == 'error':
-        resp = make_response({'code':400, 'message':result['message']})
-    else:
-        resp = make_response({'code':200, 'data':result["data"]})
+    chatbots = lanying_chatbot.list_chatbots(app_id)
+    dtos = []
+    for chatbot in chatbots:
+        linked_embedding_names = []
+        linked_plugin_names = []
+        if 'linked_capsule_id' in chatbot:
+            capsule = lanying_ai_capsule.get_capsule(chatbot['linked_capsule_id'])
+            if capsule:
+                capsule_info = make_linked_capsule_info(capsule)
+                linked_embedding_names.extend(capsule_info['embedding_names'])
+                linked_plugin_names.extend(capsule_info['plugin_names'])
+        if 'linked_publish_capsule_id' in chatbot:
+            capsule = lanying_ai_capsule.get_publish_capsule(chatbot['linked_publish_capsule_id'])
+            if capsule:
+                capsule_info = make_linked_capsule_info(capsule)
+                linked_embedding_names.extend(capsule_info['embedding_names'])
+                linked_plugin_names.extend(capsule_info['plugin_names'])
+        chatbot['linked_embedding_names'] = linked_embedding_names
+        chatbot['linked_plugin_names'] = linked_plugin_names
+        dtos.append(chatbot)
+    resp = make_response({'code':200, 'data':{'list': dtos}})
     return resp
+
+def make_linked_capsule_info(capsule):
+    app_id = capsule['app_id']
+    chatbot = lanying_chatbot.get_chatbot(app_id, capsule['chatbot_id'])
+    embedding_names = []
+    plugin_names = []
+    if chatbot:
+        config = lanying_config.get_lanying_connector(app_id)
+        embedding_uuids = config.get('embeddings',{}).get(chatbot['name'], [])
+        for embedding_uuid in embedding_uuids:
+            embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
+            if embedding_uuid_info:
+                embedding_names.append(embedding_uuid_info['embedding_name'])
+        plugin_relation = lanying_ai_plugin.get_ai_plugin_bind_relation(app_id)
+        plugin_ids = plugin_relation.get(chatbot['name'],[])
+        for plugin_id in plugin_ids:
+            plugin = lanying_ai_plugin.get_ai_plugin(app_id, plugin_id)
+            if plugin:
+                plugin_names.append(plugin['name'])
+    return {'embedding_names': embedding_names, "plugin_names": plugin_names}
 
 @bp.route("/service/openai/bind_embedding", methods=["POST"])
 def bind_embedding():
@@ -2580,10 +2623,9 @@ def list_publish_capsules():
     page_num = int(data['page_num'])
     page_size = int(data['page_size'])
     result = lanying_ai_capsule.list_publish_capsules(page_num, page_size)
-    if result['result'] == 'error':
-        resp = make_response({'code':400, 'message':result['message']})
-    else:
-        resp = make_response({'code':200, 'data':result["data"]})
+    capsules = result['list']
+    total = result['total']
+    resp = make_response({'code':200, 'data':{'list':capsules, 'total': total}})
     return resp
 
 def plugin_import_by_public_id(app_id, public_id):

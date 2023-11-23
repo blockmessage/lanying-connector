@@ -2,6 +2,7 @@ import logging
 import time
 import random
 import lanying_redis
+import lanying_utils
 
 def share_capsule(app_id, chatbot_id, name, desc, link, password):
     from lanying_chatbot import get_chatbot
@@ -43,14 +44,20 @@ def add_capsule_app_id(capsule_id, app_id, chatbot_id):
 def capsule_app_ids_key(capsule_id):
     return f"lanying_connector:capsule_app_ids:{capsule_id}"
 
-def publish_capsule(app_id, chatbot_id, type, name, desc, order):
+def publish_capsule(capsule_id, type, name, desc, order, is_share_link):
+    logging.info(f"start publish capsule | capsule_id:{capsule_id}, type:{type}, name:{name}, desc:{desc}, order:{order}, is_share_link:{is_share_link}")
+    capsule = get_capsule(capsule_id)
+    if capsule is None:
+        return {'result': 'error', 'message': 'capsule not exist'}
+    app_id = capsule['app_id']
+    chatbot_id = capsule['chatbot_id']
     from lanying_chatbot import get_chatbot
-    logging.info(f"start publish capsule | app_id:{app_id}, chatbot_id:{chatbot_id}, type:{type}, name:{name}, desc:{desc}, order:{order}")
     now = int(time.time())
     chatbot = get_chatbot(app_id, chatbot_id)
     if chatbot is None:
         return {'result':'error', 'message':'chatbot not exist'}
-    capsule_id = chatbot['capsule_id']
+    if capsule_id != chatbot['capsule_id']:
+        return {'result':'error', 'message': 'capsule_id not match'}
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_publish_capsule_key(capsule_id), {
         "app_id": app_id,
@@ -60,12 +67,19 @@ def publish_capsule(app_id, chatbot_id, type, name, desc, order):
         "name": name,
         "desc": desc,
         "order": order,
-        "capsule_id": capsule_id
+        "capsule_id": capsule_id,
+        "is_share_link": lanying_utils.bool_to_str(is_share_link)
     })
     redis.zadd(get_publish_capsule_ids_key(), {
         capsule_id: order
     })
     return {'result':'ok', 'data':{'success':True}}
+
+def delete_publish_capsule(capsule_id):
+    capsule = get_publish_capsule(capsule_id)
+    if capsule:
+        redis = lanying_redis.get_redis_connection()
+        redis.zrem(get_publish_capsule_ids_key(), capsule_id)
 
 def get_publish_capsule(capsule_id):
     redis = lanying_redis.get_redis_connection()
@@ -74,10 +88,16 @@ def get_publish_capsule(capsule_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            if key in ["create_time", "order"]:
+            if key in ["create_time"]:
+                dto[key] = int(value)
+            elif key in ["order"]:
                 dto[key] = float(value)
+            elif key in ["is_share_link"]:
+                dto[key] = lanying_utils.str_to_bool(value)
             else:
                 dto[key] = value
+        if 'is_share_link' not in dto:
+            dto['is_share_link'] = False
         return dto
     return None
     
@@ -87,14 +107,19 @@ def list_publish_capsules(page_num, page_size):
     total = redis.zcard(ids_key)
     capsule_ids = lanying_redis.redis_zrange(redis, ids_key, page_num * page_size, page_num * page_size + page_size)
     dtos = []
+    from lanying_chatbot import get_chatbot
     for capsule_id in capsule_ids:
         capsule = get_publish_capsule(capsule_id)
         if capsule:
-            dto = {}
-            for key in ["capsule_id","create_time", "type", "name", "desc"]:
-                dto[key] = capsule[key]
-            dtos.append(dto)
-    return {'result':'ok', 'data':{'list':dtos, 'total':total}}
+            chatbot = get_chatbot(capsule['app_id'], capsule['chatbot_id'])
+            if chatbot:
+                if capsule['is_share_link']:
+                    capsule['share_link'] = chatbot['lanying_link']
+            share_capsule = get_capsule(capsule_id)
+            if share_capsule:
+                capsule['link'] = share_capsule['link']
+            dtos.append(capsule)
+    return {'list':dtos, 'total':total}
 
 def get_publish_capsule_ids_key():
     return f"lanying_connector:publish_capsule_ids"

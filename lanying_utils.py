@@ -2,6 +2,7 @@ import socket
 import ipaddress
 from urllib.parse import urlparse
 import logging
+import json
 
 def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
@@ -38,3 +39,13 @@ def get_ip_addresses(domain):
         return [ip[4][0] for ip in ip_addresses]
     except socket.gaierror:
         return []
+
+def bool_to_str(value):
+    if value == True:
+        return 'true'
+    return 'false'
+
+def str_to_bool(value):
+    if value == "True" or value == "true":
+        return True
+    return False

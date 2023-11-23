@@ -234,9 +234,6 @@ def set_chatbot_mode(app_id, mode):
 def chatbot_mode_key(app_id):
     return f"lanying-connector:chatbot-mode:{app_id}"
 
-def list_chatbots_dto(app_id):
-    return {'result':'ok', 'data':{'list': list_chatbots(app_id)}}
-
 def list_chatbots(app_id):
     chatbot_ids = get_chatbot_ids(app_id)
     result = []
