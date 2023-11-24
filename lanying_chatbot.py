@@ -40,7 +40,11 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
     try:
         lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, '')
     except Exception as e:
-        pass
+        logging.exception(e)
+    try:
+        lanying_im_api.set_user_avatar(app_id, user_id, avatar)
+    except Exception as e:
+        logging.exception(e)
     return {'result':'ok', 'data':{'id':chatbot_id}}
 
 def check_create_chatbot_from_capsule(app_id, capsule_id, password):
@@ -68,7 +72,7 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
         return {'result': 'error', 'message': 'capsule password not right'}
     capsule_app_id = capsule['app_id']
     capsule_chatbot_id = capsule['chatbot_id']
-    capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+    capsule_chatbot = get_chatbot_with_profile(capsule_app_id, capsule_chatbot_id)
     if capsule_chatbot is None:
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     name = capsule_chatbot['name']
@@ -76,7 +80,7 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
     if get_name_chatbot_id(app_id, name):
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
-    avatar = ''
+    avatar =''
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
     if create_result['result'] != 'ok':
         return create_result
@@ -102,7 +106,7 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
         return {'result': 'error', 'message': 'capsule not exist'}
     capsule_app_id = capsule['app_id']
     capsule_chatbot_id = capsule['chatbot_id']
-    capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
+    capsule_chatbot = get_chatbot_with_profile(capsule_app_id, capsule_chatbot_id)
     if capsule_chatbot is None:
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     name = capsule_chatbot['name']
@@ -181,6 +185,13 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         try:
             lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, '')
         except Exception as e:
+            logging.exception(e)
+            pass
+    if avatar != chatbot_info.get('avatar', ''):
+        try:
+            lanying_im_api.set_user_avatar(app_id, user_id, avatar)
+        except Exception as e:
+            logging.exception(e)
             pass
     return {'result':'ok', 'data':{'success': True}}
 
@@ -256,13 +267,13 @@ def list_chatbots(app_id):
     chatbot_ids = get_chatbot_ids(app_id)
     result = []
     for chatbot_id in chatbot_ids:
-        info = get_chatbot(app_id, chatbot_id)
+        info = get_chatbot_with_profile(app_id, chatbot_id)
         if info:
             result.append(info)
     return result
 
 def get_chatbot_dto(app_id, chatbot_id):
-    chatbot = get_chatbot(app_id, chatbot_id)
+    chatbot = get_chatbot_with_profile(app_id, chatbot_id)
     if chatbot:
         return {'result':'ok', 'data':chatbot}
     else:
@@ -346,6 +357,29 @@ def get_chatbot(app_id, chatbot_id):
             dto["capsule_id"] = capsule_id
         return dto
     return None
+
+def get_chatbot_with_profile(app_id, chatbot_id):
+    chatbot = get_chatbot(app_id, chatbot_id)
+    if chatbot:
+        app_id = chatbot['app_id']
+        user_id = chatbot['user_id']
+        try:
+            result = lanying_im_api.get_user_profile(app_id, user_id)
+            if result.get('code') ==  200:
+                chatbot['nickname'] = result['data'].get('nickname', '')
+                chatbot['avatar'] = result['data'].get('avatar', '')
+                chatbot['desc'] = result['data'].get('description', '')
+                if len(chatbot['avatar']) > 0:
+                    try:
+                        avatar_download_url = lanying_im_api.get_avatar_real_download_url(app_id,user_id, chatbot['avatar'])
+                        chatbot['avatar_download_url'] = avatar_download_url
+                    except Exception as e:
+                        chatbot['avatar_download_url'] = ''
+                else:
+                    chatbot['avatar_download_url'] = ''
+        except Exception as e:
+            pass
+    return chatbot
 
 def generate_chatbot_id():
     redis = lanying_redis.get_redis_connection()
