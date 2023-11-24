@@ -25,6 +25,7 @@ import random
 import lanying_file_storage
 import lanying_chatbot
 import lanying_ai_capsule
+import lanying_im_api
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -2436,6 +2437,25 @@ def configure_chatbot():
         resp = make_response({'code':400, 'message':result['message']})
     else:
         resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/get_chatbot_avatar_upload_url", methods=["POST"])
+def get_chatbot_avatar_upload_url():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    user_id = int(data['user_id'])
+    result = lanying_im_api.get_user_avatar_upload_url(app_id, user_id)
+    if result.get('code') != 200:
+        resp = make_response({'code':result['code'], 'message':result['message']})
+    else:
+        data = result["data"]
+        real_download_url = lanying_im_api.get_avatar_real_download_url(app_id, user_id, data['download_url'])
+        data['real_download_url'] = real_download_url
+        resp = make_response({'code':200, 'data':data})
     return resp
 
 @bp.route("/service/openai/get_chatbot", methods=["POST"])

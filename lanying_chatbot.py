@@ -366,7 +366,7 @@ def get_chatbot_with_profile(app_id, chatbot_id):
         try:
             result = lanying_im_api.get_user_profile(app_id, user_id)
             if result.get('code') ==  200:
-                chatbot['nickname'] = result['data'].get('nickname', '')
+                chatbot['nickname'] = result['data'].get('nick_name', '')
                 chatbot['avatar'] = result['data'].get('avatar', '')
                 chatbot['desc'] = result['data'].get('description', '')
                 if len(chatbot['avatar']) > 0:

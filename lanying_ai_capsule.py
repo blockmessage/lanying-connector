@@ -107,14 +107,17 @@ def list_publish_capsules(page_num, page_size):
     total = redis.zcard(ids_key)
     capsule_ids = lanying_redis.redis_zrange(redis, ids_key, page_num * page_size, page_num * page_size + page_size)
     dtos = []
-    from lanying_chatbot import get_chatbot
+    from lanying_chatbot import get_chatbot_with_profile
     for capsule_id in capsule_ids:
         capsule = get_publish_capsule(capsule_id)
         if capsule:
-            chatbot = get_chatbot(capsule['app_id'], capsule['chatbot_id'])
+            chatbot = get_chatbot_with_profile(capsule['app_id'], capsule['chatbot_id'])
             if chatbot:
                 if capsule['is_share_link']:
                     capsule['share_link'] = chatbot['lanying_link']
+                capsule['name'] = chatbot.get('nickname', '')
+                capsule['desc'] = chatbot.get('desc', '')
+                capsule['avatar_download_url'] = chatbot.get('avatar_download_url', '')
             share_capsule = get_capsule(capsule_id)
             if share_capsule:
                 capsule['link'] = share_capsule['link']
