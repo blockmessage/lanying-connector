@@ -4,8 +4,9 @@ import time
 import json
 import lanying_ai_capsule
 from datetime import datetime
+import lanying_im_api
 
-def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
+def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -20,7 +21,9 @@ def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_m
         "create_time": now,
         "app_id": app_id,
         "name": name,
+        "nickname": nickname,
         "desc": desc,
+        "avatar": avatar,
         "user_id": user_id,
         "lanying_link": lanying_link,
         "preset": json.dumps(preset, ensure_ascii=False),
@@ -34,6 +37,10 @@ def create_chatbot(app_id, name, desc,  user_id, lanying_link, preset, history_m
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
     set_name_chatbot_id(app_id, name, chatbot_id)
+    try:
+        lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, '')
+    except Exception as e:
+        pass
     return {'result':'ok', 'data':{'id':chatbot_id}}
 
 def check_create_chatbot_from_capsule(app_id, capsule_id, password):
@@ -65,10 +72,12 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
     if capsule_chatbot is None:
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     name = capsule_chatbot['name']
+    nickname = capsule_chatbot.get('nickname',name)
     if get_name_chatbot_id(app_id, name):
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
-    create_result = create_chatbot(app_id, name, capsule_chatbot['desc'],  user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
+    avatar = ''
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -97,10 +106,12 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
     if capsule_chatbot is None:
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     name = capsule_chatbot['name']
+    nickname = capsule_chatbot.get('nickname',name)
     if get_name_chatbot_id(app_id, name):
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
-    create_result = create_chatbot(app_id, name, capsule_chatbot['desc'],  user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
+    avatar = ''
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -131,7 +142,7 @@ def delete_chatbots(app_id):
         delete_chatbot(app_id, chatbot_id)
     return {'result':'ok', 'data':{}}
 
-def configure_chatbot(app_id, chatbot_id, name, desc, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
+def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
     logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -148,6 +159,8 @@ def configure_chatbot(app_id, chatbot_id, name, desc, user_id, lanying_link, pre
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "name": name,
         "desc": desc,
+        "nickname": nickname,
+        "avatar": avatar,
         "user_id": user_id,
         "lanying_link": lanying_link,
         "preset": json.dumps(preset, ensure_ascii=False),
@@ -164,6 +177,11 @@ def configure_chatbot(app_id, chatbot_id, name, desc, user_id, lanying_link, pre
     if old_name != name:
         del_name_chatbot_id(app_id, old_name)
         set_name_chatbot_id(app_id, name, chatbot_id)
+    if desc != chatbot_info.get('desc', '') or nickname != chatbot_info.get('nickname', ''):
+        try:
+            lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, '')
+        except Exception as e:
+            pass
     return {'result':'ok', 'data':{'success': True}}
 
 def get_default_user_id(app_id):
