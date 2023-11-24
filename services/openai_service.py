@@ -754,15 +754,26 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
                 if doc_info:
                     seq += 1
+                    doc_metadata = {}
+                    try:
+                        doc_metadata = json.loads(doc_info.get('metadata','{}'))
+                    except Exception as e:
+                        pass
                     if len(doc_reference) > 0:
                         link = doc_reference
                     else:
-                        link = doc_info.get('lanying_link', '')
+                        link = ''
+                        if 'link' in doc_metadata:
+                            metadata_link = doc_metadata['link']
+                            if isinstance(metadata_link, str) and len(metadata_link) > 0:
+                                link = metadata_link
+                        if link == '':
+                            link = doc_info.get('lanying_link', '')
                         if link == '':
                             link = doc_info.get('filename', '')
                     if link not in links:
                         links.append(link)
-                        doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link})
+                        doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link, 'metadata': doc_metadata})
             reply_ext['reference'] = doc_desc_list
         if location == 'body' or location == "both":
             doc_format = reference.get('style', '{seq}.{doc_id}.{link}')
@@ -776,15 +787,33 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
                 if doc_info:
                     seq += 1
+                    doc_metadata = {}
+                    try:
+                        doc_metadata = json.loads(doc_info.get('metadata','{}'))
+                    except Exception as e:
+                        pass
                     if len(doc_reference) > 0:
                         link = doc_reference
                     else:
-                        link = doc_info.get('lanying_link', '')
+                        link = ''
+                        if 'link' in doc_metadata:
+                            metadata_link = doc_metadata['link']
+                            if isinstance(metadata_link, str) and len(metadata_link) > 0:
+                                link = metadata_link
+                        if link == '':
+                            link = doc_info.get('lanying_link', '')
                         if link == '':
                             link = doc_info.get('filename', '')
                     if link not in links:
                         links.append(link)
                         doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', link)
+                        for k,v in doc_metadata.items():
+                            var_name = '{'+str(k)+'}'
+                            if var_name in doc_desc:
+                                try:
+                                    doc_desc = doc_desc.replace(var_name, str(v))
+                                except Exception as e:
+                                    pass
                         doc_desc_list.append(doc_desc)
             if len(doc_desc_list) > 0:
                 reply = reply + "\n" + prefix + seperator.join(doc_desc_list)
@@ -1639,6 +1668,34 @@ def bluevector_delete(msg, config, embedding_name, doc_id):
 
 def bluevector_delete_with_preset(msg, config, preset_name, embedding_name, doc_id):
     return bluevector_delete(msg, config, embedding_name, doc_id)
+
+def bluevector_get_metadata(msg, config, embedding_name, doc_id):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+    if result['result'] == 'error':
+        return result['message']
+    logging.info(f"receive doc metadata get command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}")
+    result = lanying_embedding.get_doc_metadata(app_id, embedding_name, doc_id)
+    if result['result'] == 'error':
+        return f'文档metadata获取失败：{result["message"]}'
+    metadata = result['data']
+    return f'文档metadata为：\n{json.dumps(metadata, ensure_ascii=False)}'
+
+def bluevector_set_metadata(msg, config, embedding_name, doc_id, field, value):
+    from_user_id = int(msg['from']['uid'])
+    app_id = msg['appId']
+    result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
+    if result['result'] == 'error':
+        return result['message']
+    logging.info(f"receive doc metadata set command: app_id:{app_id}, from_user_id:{from_user_id}, doc_id:{doc_id}, field:{field}, value:{value}")
+    result = lanying_embedding.get_doc_metadata(app_id, embedding_name, doc_id)
+    if result['result'] == 'error':
+        return f'文档metadata设置失败：{result["message"]}'
+    metadata = result['data']
+    metadata[field] = value
+    lanying_embedding.set_doc_metadata(app_id, embedding_name, doc_id, metadata)
+    return f'文档metadata设置成功'
 
 def bluevector_status(msg, config, embedding_name):
     from_user_id = int(msg['from']['uid'])
@@ -2630,6 +2687,38 @@ def list_publish_capsules():
     capsules = result['list']
     total = result['total']
     resp = make_response({'code':200, 'data':{'list':capsules, 'total': total}})
+    return resp
+
+@bp.route("/service/openai/get_doc_metadata", methods=["POST"])
+def get_doc_metadata():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    embedding_name = str(data['embedding_name'])
+    doc_id = str(data['doc_id'])
+    result = lanying_embedding.get_doc_metadata(app_id, embedding_name, doc_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/set_doc_metadata", methods=["POST"])
+def set_doc_metadata():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    embedding_name = str(data['embedding_name'])
+    doc_id = str(data['doc_id'])
+    metadata = dict(data['metadata'])
+    lanying_embedding.set_doc_metadata(app_id, embedding_name, doc_id, metadata)
+    resp = make_response({'code':200, 'data':{'success':True}})
     return resp
 
 def plugin_import_by_public_id(app_id, public_id):

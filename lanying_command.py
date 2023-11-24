@@ -143,6 +143,8 @@ def pretty_help(app_id, user_id):
 5. 限定AI指令参考范围为文档: /on doc <DOC_ID> <AI_MESSAGE> 
 6. 限定AI指令参考文档全文: /on fulldoc <DOC_ID> <AI_MESSAGE> 
 7. 设置默认知识库： /bluevector mode auto <KNOWLEDGE_BASE_NAME>
+8. 查询文档metadata: /bluevector metadata get <KNOWLEDGE_BASE_NAME> <DOC_ID>
+9. 设置文档metadata: /bluevector metadata set <KNOWLEDGE_BASE_NAME> <DOC_ID> <FIELD> <VALUE>
 
 发送消息可以指定AI预设：
 用法：/preset <AI_MESSAGE>
@@ -204,6 +206,30 @@ def all_commands():
                 {"type": "string_exact", "value": "add"},
                 {"type": "string", "value": "string"},
                 {"type": "string", "value": "string"}
+            ]
+        },
+        {
+            "name": "bluevector_get_metadata",
+            "desc": "查询文档metadata:\n/bluevector metadata get <KNOWLEDGE_BASE_NAME> <DOC_ID>",
+            "rules": [
+                {"type": "string_exact", "value": "bluevector"},
+                {"type": "string_exact", "value": "metadata"},
+                {"type": "string_exact", "value": "get"},
+                {"type": "string", "value": "string"},
+                {"type": "string", "value": "string"}
+            ]
+        },
+        {
+            "name": "bluevector_set_metadata",
+            "desc": "设置文档metadata:\n/bluevector metadata set <KNOWLEDGE_BASE_NAME> <DOC_ID> <FIELD> <VALUE>",
+            "rules": [
+                {"type": "string_exact", "value": "bluevector"},
+                {"type": "string_exact", "value": "metadata"},
+                {"type": "string_exact", "value": "set"},
+                {"type": "string", "value": "string"},
+                {"type": "string", "value": "string"},
+                {"type": "string", "value": "string"},
+                {"type": "string_rest"}
             ]
         },
         {

@@ -1436,6 +1436,29 @@ def get_doc(embedding_uuid, doc_id):
         return info
     return None
 
+def get_doc_metadata(app_id, embedding_name, doc_id):
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
+        return {'result': 'error', 'message': 'embedding name not exist'}
+    embedding_uuid = embedding_name_info['embedding_uuid']
+    doc_info = get_doc(embedding_uuid, doc_id)
+    if doc_info is None:
+        return {'result': 'error', 'message': 'doc_id not exist'}
+    metadata = {}
+    try:
+        metadata = json.loads(doc_info.get('metadata', '{}'))
+    except Exception as e:
+        pass
+    return {'result': 'ok', 'data': metadata}
+
+def set_doc_metadata(app_id, embedding_name, doc_id, metadata):
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info:
+        embedding_uuid = embedding_name_info['embedding_uuid']
+        doc_info = get_doc(embedding_uuid, doc_id)
+        if doc_info:
+            update_doc_field(embedding_uuid, doc_id, "metadata", json.dumps(metadata, ensure_ascii=False))
+
 def check_storage_size(app_id):
     redis = lanying_redis.get_redis_stack_connection()
     storage_limit = get_app_config_int(app_id, "lanying_connector.storage_limit")
