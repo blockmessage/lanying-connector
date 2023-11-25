@@ -2404,7 +2404,8 @@ def create_chatbot():
     history_msg_size_max = int(data['history_msg_size_max'])
     message_per_month_per_user = int(data['message_per_month_per_user'])
     chatbot_ids = data.get('chatbot_ids', [])
-    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids)
+    welcome_message = str(data.get('welcome_message','嘿，你好'))
+    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2432,7 +2433,8 @@ def configure_chatbot():
     history_msg_size_max = int(data['history_msg_size_max'])
     message_per_month_per_user = int(data['message_per_month_per_user'])
     chatbot_ids = data.get('chatbot_ids', [])
-    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids)
+    welcome_message = str(data.get('welcome_message',''))
+    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids,welcome_message)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

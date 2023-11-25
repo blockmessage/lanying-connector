@@ -49,3 +49,9 @@ def str_to_bool(value):
     if value == "True" or value == "true":
         return True
     return False
+
+def safe_json_loads(str, default={}):
+    try:
+        return json.loads(str)
+    except Exception as e:
+        return default

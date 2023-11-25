@@ -5,8 +5,9 @@ import json
 import lanying_ai_capsule
 from datetime import datetime
 import lanying_im_api
+import lanying_utils
 
-def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
+def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -34,13 +35,17 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "history_msg_size_max": history_msg_size_max,
         "message_per_month_per_user": message_per_month_per_user,
         "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False),
-        "capsule_id": capsule_id
+        "capsule_id": capsule_id,
+        'welcome_message': welcome_message
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
     set_name_chatbot_id(app_id, name, chatbot_id)
     try:
-        lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, '')
+        private_info = ''
+        if len(welcome_message) > 0:
+            private_info = json.dumps({"welcome_message":welcome_message},ensure_ascii=False)
+        lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info)
     except Exception as e:
         logging.exception(e)
     try:
@@ -83,7 +88,8 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
     avatar = capsule_chatbot.get('avatar','')
-    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
+    welcome_message = capsule_chatbot.get('welcome_message','')
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -124,7 +130,8 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
     avatar = capsule_chatbot.get('avatar','')
-    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
+    welcome_message = capsule_chatbot.get('welcome_message','')
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -155,7 +162,7 @@ def delete_chatbots(app_id):
         delete_chatbot(app_id, chatbot_id)
     return {'result':'ok', 'data':{}}
 
-def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids):
+def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message):
     logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -181,7 +188,8 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         "history_msg_count_min": history_msg_count_min,
         "history_msg_size_max": history_msg_size_max,
         "message_per_month_per_user": message_per_month_per_user,
-        "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False)
+        "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False),
+        'welcome_message': welcome_message
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -190,9 +198,20 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
     if old_name != name:
         del_name_chatbot_id(app_id, old_name)
         set_name_chatbot_id(app_id, name, chatbot_id)
-    if desc != chatbot_info.get('desc', '') or nickname != chatbot_info.get('nickname', ''):
+    if desc != chatbot_info.get('desc', '') or nickname != chatbot_info.get('nickname', '') or welcome_message !=  chatbot_info.get('welcome_message', ''):
         try:
-            lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, '')
+            private_info = {}
+            if welcome_message !=  chatbot_info.get('welcome_message', ''):
+                try:
+                    profile = lanying_im_api.get_user_profile(app_id, user_id)
+                    private_info = lanying_utils.safe_json_loads(profile.get('private_info', '{}'))
+                except Exception as ee:
+                    logging.exception(ee)
+                private_info['welcome_message'] = welcome_message
+                private_info_str =  json.dumps(private_info, ensure_ascii=False)
+            else:
+                private_info_str =  ''
+            lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info_str)
         except Exception as e:
             logging.exception(e)
             pass
@@ -389,6 +408,19 @@ def get_chatbot_with_profile(app_id, chatbot_id):
         except Exception as e:
             pass
     return chatbot
+
+def get_chatbot_profile(app_id, user_id):
+    try:
+        result = lanying_im_api.get_user_profile(app_id, user_id)
+        if result.get('code') ==  200:
+            return {
+                'nickname': result['data'].get('nick_name', ''),
+                'avatar':result['data'].get('avatar', ''),
+                'desc' : result['data'].get('description', ''),
+                'private_info': result['data'].get('private_info', '')
+            }
+    except Exception as e:
+        return {}
 
 def generate_chatbot_id():
     redis = lanying_redis.get_redis_connection()
