@@ -15,6 +15,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         return {'result':'error', 'message': 'name already exist'}
     chatbot_id = generate_chatbot_id()
     capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
+    if nickname == '':
+        nickname = name
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "chatbot_id": chatbot_id,
@@ -110,7 +112,14 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
     if capsule_chatbot is None:
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     name = capsule_chatbot['name']
-    nickname = capsule_chatbot.get('nickname',name)
+    nickname = capsule_chatbot.get('nickname', '')
+    if nickname == '':
+        nickname = capsule.get('name', '')
+    if nickname == '':
+        nickname = name
+    desc = capsule_chatbot.get('desc', '')
+    if desc == '':
+        desc = capsule.get('desc', '')
     if get_name_chatbot_id(app_id, name):
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"

@@ -115,8 +115,10 @@ def list_publish_capsules(page_num, page_size):
             if chatbot:
                 if capsule['is_share_link']:
                     capsule['share_link'] = chatbot['lanying_link']
-                capsule['name'] = chatbot.get('nickname', '')
-                capsule['desc'] = chatbot.get('desc', '')
+                if len(chatbot.get('nickname', '')) > 0:
+                    capsule['name'] = chatbot.get('nickname', '')
+                if len(chatbot.get('desc', ''))> 0:
+                    capsule['desc'] = chatbot.get('desc', '')
                 capsule['avatar_download_url'] = chatbot.get('avatar_download_url', '')
             share_capsule = get_capsule(capsule_id)
             if share_capsule:
