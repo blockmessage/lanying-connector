@@ -80,7 +80,7 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
     if get_name_chatbot_id(app_id, name):
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
-    avatar =''
+    avatar = capsule_chatbot.get('avatar','')
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
     if create_result['result'] != 'ok':
         return create_result
@@ -114,7 +114,7 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
     if get_name_chatbot_id(app_id, name):
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
-    avatar = ''
+    avatar = capsule_chatbot.get('avatar','')
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [])
     if create_result['result'] != 'ok':
         return create_result
