@@ -2764,7 +2764,7 @@ def plugin_import_by_url(type, app_id, url):
         user_id = config['lanying_user_id']
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
-            'user_id': user_id}
+            'user_id': str(user_id)}
     filename = f"/tmp/plugin-import-{int(time.time())}-{random.randint(1,100000000)}"
     lanying_file_storage.download_url(url, headers, filename)
     with open(filename, 'r', encoding='utf-8') as f:
