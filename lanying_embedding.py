@@ -1436,6 +1436,15 @@ def get_doc(embedding_uuid, doc_id):
         return info
     return None
 
+def get_embedding_name_by_doc_id(app_id, doc_id):
+    fields = doc_id.split('-')
+    if len(fields) == 2:
+        embedding_uuid = fields[0]
+        embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+        if embedding_uuid_info and embedding_uuid_info['app_id'] == app_id:
+            return embedding_uuid_info['embedding_name']
+    return None
+
 def get_doc_metadata(app_id, embedding_name, doc_id):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:

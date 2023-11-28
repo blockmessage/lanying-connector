@@ -1670,9 +1670,12 @@ def bluevector_delete(msg, config, embedding_name, doc_id):
 def bluevector_delete_with_preset(msg, config, preset_name, embedding_name, doc_id):
     return bluevector_delete(msg, config, embedding_name, doc_id)
 
-def bluevector_get_metadata(msg, config, embedding_name, doc_id):
+def bluevector_get_metadata(msg, config, doc_id):
     from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
+    embedding_name = lanying_embedding.get_embedding_name_by_doc_id(app_id, doc_id)
+    if embedding_name is None:
+        return '文档不存在'
     result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
     if result['result'] == 'error':
         return result['message']
@@ -1683,9 +1686,12 @@ def bluevector_get_metadata(msg, config, embedding_name, doc_id):
     metadata = result['data']
     return f'文档metadata为：\n{json.dumps(metadata, ensure_ascii=False)}'
 
-def bluevector_set_metadata(msg, config, embedding_name, doc_id, field, value):
+def bluevector_set_metadata(msg, config, doc_id, field, value):
     from_user_id = int(msg['from']['uid'])
     app_id = msg['appId']
+    embedding_name = lanying_embedding.get_embedding_name_by_doc_id(app_id, doc_id)
+    if embedding_name is None:
+        return '文档不存在'
     result = check_can_manage_embedding(app_id, embedding_name, from_user_id)
     if result['result'] == 'error':
         return result['message']

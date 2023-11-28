@@ -137,17 +137,17 @@ def pretty_help(app_id, user_id):
 
 可用命令如下:
 1. 查询当前预设绑定的知识库信息：/bluevector info
-2. 查看知识库状态及详情: /bluevector status <KNOWLEDGE_BASE_NAME> 
-3. 添加文件到知识库: /bluevector add <KNOWLEDGE_BASE_NAME> <FILE_ID> 
-4. 从知识库中删除文档: /bluevector delete <KNOWLEDGE_BASE_NAME> <DOC_ID> 
-5. 限定AI指令参考范围为文档: /on doc <DOC_ID> <AI_MESSAGE> 
-6. 限定AI指令参考文档全文: /on fulldoc <DOC_ID> <AI_MESSAGE> 
-7. 设置默认知识库： /bluevector mode auto <KNOWLEDGE_BASE_NAME>
-8. 查询文档metadata: /bluevector metadata get <KNOWLEDGE_BASE_NAME> <DOC_ID>
-9. 设置文档metadata: /bluevector metadata set <KNOWLEDGE_BASE_NAME> <DOC_ID> <FIELD> <VALUE>
+2. 查看知识库状态及详情: /bluevector status [KNOWLEDGE_BASE_NAME] 
+3. 添加文件到知识库: /bluevector add [KNOWLEDGE_BASE_NAME] [FILE_ID] 
+4. 从知识库中删除文档: /bluevector delete [KNOWLEDGE_BASE_NAME] [DOC_ID] 
+5. 限定AI指令参考范围为文档: /on doc [DOC_ID] [AI_MESSAGE]
+6. 限定AI指令参考文档全文: /on fulldoc [DOC_ID] [AI_MESSAGE] 
+7. 设置默认知识库： /bluevector mode auto [KNOWLEDGE_BASE_NAME]
+8. 查询文档metadata: /bluevector metadata get [DOC_ID]
+9. 设置文档metadata: /bluevector metadata set [DOC_ID] [FIELD] [VALUE]
 
 发送消息可以指定AI预设：
-用法：/preset <AI_MESSAGE>
+用法：/preset [AI_MESSAGE]
 说明：指示AI将会根据特定预设来回答问题。
 
 命令也支持指定预设：
@@ -215,7 +215,6 @@ def all_commands():
                 {"type": "string_exact", "value": "bluevector"},
                 {"type": "string_exact", "value": "metadata"},
                 {"type": "string_exact", "value": "get"},
-                {"type": "string", "value": "string"},
                 {"type": "string", "value": "string"}
             ]
         },
@@ -226,7 +225,6 @@ def all_commands():
                 {"type": "string_exact", "value": "bluevector"},
                 {"type": "string_exact", "value": "metadata"},
                 {"type": "string_exact", "value": "set"},
-                {"type": "string", "value": "string"},
                 {"type": "string", "value": "string"},
                 {"type": "string", "value": "string"},
                 {"type": "string_rest"}
