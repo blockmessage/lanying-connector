@@ -815,6 +815,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                                     doc_desc = doc_desc.replace(var_name, str(v))
                                 except Exception as e:
                                     pass
+                        doc_desc = re.sub(r'\{[a-zA-Z0-9\-_]+\}', '', doc_desc)
                         doc_desc_list.append(doc_desc)
             if len(doc_desc_list) > 0:
                 reply = reply + "\n" + prefix + seperator.join(doc_desc_list)
