@@ -1698,12 +1698,10 @@ def calc_functions_tokens(functions, model, vendor):
     if len(functions) == 0:
         return 0
     try:
-        logging.info(f"calc function tokens | model:{model}, vendor:{model}, functions:{functions}")
         if vendor == 'openai':
             token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
         else:
             token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
-        logging.info(f"token_cnt:{token_cnt}")
         return token_cnt
     except Exception as e:
         logging.exception(e)
