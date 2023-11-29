@@ -232,13 +232,17 @@ def check_message_need_send(config, message):
             json_ext = {}
         try:
             is_stream = (json_ext['ai']['stream'] == True)
+            is_finish = (json_ext['ai']['finish'] == True)
         except Exception as e:
             is_stream = False
+            is_finish = False
         if is_stream:
             if verify_type == 'unverified':
                 pass
             else:
                 if type == 'REPLACE':
+                    pass
+                elif type == 'CHAT' and is_finish:
                     pass
                 else:
                     logging.info(f"skip chat and stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
