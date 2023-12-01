@@ -11,6 +11,8 @@ import json
 import lanying_message
 import os
 import time
+import lanying_im_api
+import lanying_utils
 
 official_account_max_message_size = 600
 service = 'wechat_official_account'
@@ -39,71 +41,104 @@ def service_post_messages(app_id):
             xml = ET.fromstring(xml_data)
             msg_type = xml.find('MsgType').text
             if msg_type == 'text':
-                to_user_name = xml.find('ToUserName').text
-                from_user_name = xml.find('FromUserName').text
-                create_time = xml.find('CreateTime').text
-                content = xml.find('Content').text
-                msg_id = int(xml.find('MsgId').text)
-                verify_type = config.get('type', 'verified')
-                logging.info(f"got wechat message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},msg_type:{msg_type},content:{content},msg_id:{msg_id}, verify_type:{verify_type}")
-                user_id = get_or_register_user(app_id, from_user_name)
-                if user_id:
-                    if verify_type == 'unverified':
-                        reply_expire_time = start_time + int(os.getenv("WECHAT_OFFICIAL_ACCOUNT_REPLY_EXPIRE_TIME", "3"))
-                        last_msg_id_key = f"wechat_official_account:last_msg_id:{user_id}"
-                        key = subscribe_key(user_id, msg_id)
-                        redis = lanying_redis.get_redis_connection()
-                        keys = [key]
-                        if redis.exists(*keys) == 0:
-                            redis.hincrby(key, "retry_count", 1)
-                            redis.expire(key, 600)
-                            last_msg_id_str = lanying_redis.redis_get(redis, last_msg_id_key)
-                            if content == "1" and last_msg_id_str:
-                                redis.hset(key, 'watch_msg_id', last_msg_id_str)
-                                key = subscribe_key(user_id, int(last_msg_id_str))
-                                lock_value = redis.hincrby(key, 'lock', 1)
-                                reply = wait_reply_msg(app_id, key, reply_expire_time, False, lock_value)
-                            else:
-                                redis.set(last_msg_id_key, msg_id)
-                                ext = {
-                                    'ai':{
-                                        'feedback':{
-                                            'wechat_msg_id':msg_id
-                                        },
-                                        'force_stream': True
-                                    }
-                                }
-                                lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content, ext)
-                                lock_value = redis.hincrby(key, 'lock', 1)
-                                reply = wait_reply_msg(app_id, key, reply_expire_time, False, lock_value)
-                        else:
-                            retry_count = redis.hincrby(key, "retry_count", 1)
-                            redis.expire(key, 600)
-                            watch_msg_id_str = lanying_redis.redis_hget(redis, key, 'watch_msg_id')
-                            if watch_msg_id_str:
-                                key = subscribe_key(user_id, int(watch_msg_id_str))
-                            lock_value = redis.hincrby(key, 'lock', 1)
-                            reply = wait_reply_msg(app_id, key, reply_expire_time, retry_count >=3, lock_value)
-                        if len(reply) > 0:
-                            reply = f"""<xml>
-                                    <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
-                                    <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
-                                    <CreateTime>{int(time.time())}</CreateTime>
-                                    <MsgType><![CDATA[text]]></MsgType>
-                                    <Content><![CDATA[{reply}]]></Content>
-                                    </xml>
-                                    """
-                    else:
-                        lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content)
-                        reply = 'success'
-                else:
-                    logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
+                reply = handle_wechat_msg_text(xml, config, app_id, start_time)
+            elif msg_type == 'event':
+                reply = handle_wechat_msg_event(xml, config, app_id, start_time)
             else:
                 reply = 'success'
         else:
             logging.info(f"config not found:{app_id}, {service}")
     resp = make_response(reply)
     return resp
+
+def handle_wechat_msg_text(xml, config, app_id, start_time):
+    reply = 'failed'
+    to_user_name = xml.find('ToUserName').text
+    from_user_name = xml.find('FromUserName').text
+    create_time = xml.find('CreateTime').text
+    content = xml.find('Content').text
+    msg_id = int(xml.find('MsgId').text)
+    verify_type = config.get('type', 'verified')
+    logging.info(f"got wechat text message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},content:{content},msg_id:{msg_id}, verify_type:{verify_type}")
+    user_id = get_or_register_user(app_id, from_user_name)
+    if user_id:
+        if verify_type == 'unverified':
+            reply_expire_time = start_time + int(os.getenv("WECHAT_OFFICIAL_ACCOUNT_REPLY_EXPIRE_TIME", "3"))
+            last_msg_id_key = f"wechat_official_account:last_msg_id:{user_id}"
+            key = subscribe_key(user_id, msg_id)
+            redis = lanying_redis.get_redis_connection()
+            keys = [key]
+            if redis.exists(*keys) == 0:
+                redis.hincrby(key, "retry_count", 1)
+                redis.expire(key, 600)
+                last_msg_id_str = lanying_redis.redis_get(redis, last_msg_id_key)
+                if content == "1" and last_msg_id_str:
+                    redis.hset(key, 'watch_msg_id', last_msg_id_str)
+                    key = subscribe_key(user_id, int(last_msg_id_str))
+                    lock_value = redis.hincrby(key, 'lock', 1)
+                    reply = wait_reply_msg(app_id, key, reply_expire_time, False, lock_value)
+                else:
+                    redis.set(last_msg_id_key, msg_id)
+                    ext = {
+                        'ai':{
+                            'feedback':{
+                                'wechat_msg_id':msg_id
+                            },
+                            'force_stream': True
+                        }
+                    }
+                    lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content, ext)
+                    lock_value = redis.hincrby(key, 'lock', 1)
+                    reply = wait_reply_msg(app_id, key, reply_expire_time, False, lock_value)
+            else:
+                retry_count = redis.hincrby(key, "retry_count", 1)
+                redis.expire(key, 600)
+                watch_msg_id_str = lanying_redis.redis_hget(redis, key, 'watch_msg_id')
+                if watch_msg_id_str:
+                    key = subscribe_key(user_id, int(watch_msg_id_str))
+                lock_value = redis.hincrby(key, 'lock', 1)
+                reply = wait_reply_msg(app_id, key, reply_expire_time, retry_count >=3, lock_value)
+            if len(reply) > 0:
+                return f"""<xml>
+                        <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                        <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                        <CreateTime>{int(time.time())}</CreateTime>
+                        <MsgType><![CDATA[text]]></MsgType>
+                        <Content><![CDATA[{reply}]]></Content>
+                        </xml>
+                        """
+        else:
+            lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content)
+            reply = 'success'
+    else:
+        logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
+    return reply
+
+def handle_wechat_msg_event(xml, config, app_id, start_time):
+    to_user_name = xml.find('ToUserName').text
+    from_user_name = xml.find('FromUserName').text
+    create_time = xml.find('CreateTime').text
+    event = xml.find('Event').text
+    logging.info(f"got wechat event message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time}, event:{event}")
+    if event == 'subscribe':
+        welcome_message = ''
+        try:
+            profile = lanying_im_api.get_user_profile_with_token(app_id, config['lanying_user_id'], config['lanying_admin_token'])
+            private_info = lanying_utils.safe_json_loads(profile['data'].get('private_info', '{}'))
+            welcome_message = private_info.get('welcome_message', '')
+        except Exception as e:
+            logging.exception(e)
+        if len(welcome_message) > 0:
+            logging.info(f"reply welcome msg | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name}, msg:{welcome_message}")
+            return f"""<xml>
+                    <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                    <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                    <CreateTime>{int(time.time())}</CreateTime>
+                    <MsgType><![CDATA[text]]></MsgType>
+                    <Content><![CDATA[{welcome_message}]]></Content>
+                    </xml>
+                    """
+    return 'success'
 
 def subscribe_key(user_id, msg_id):
     return f"wechat_official_account:subscribe:{user_id}:{msg_id}"

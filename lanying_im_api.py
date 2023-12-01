@@ -6,13 +6,17 @@ def get_user_profile(app_id, user_id):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         adminToken = config['lanying_admin_token']
-        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
-        response = requests.get(apiEndpoint + '/user/profile',
-                                    headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(user_id)},
-                                    params={})
-        result = response.json()
-        logging.info(f"get user profile, app_id={app_id} user_id={user_id}, result:{result}")
-        return result
+        return get_user_profile_with_token(app_id, user_id, adminToken)
+
+def get_user_profile_with_token(app_id, user_id, adminToken):
+    apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    response = requests.get(apiEndpoint + '/user/profile',
+                                headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(user_id)},
+                                params={})
+    result = response.json()
+    logging.info(f"get user profile, app_id={app_id} user_id={user_id}, result:{result}")
+    return result
+
 
 def set_user_profile(app_id, user_id, description, nick_name, private_info):
     config = lanying_config.get_lanying_connector(app_id)
