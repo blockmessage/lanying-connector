@@ -37,6 +37,36 @@ def share_capsule(app_id, chatbot_id, name, desc, link, password):
     redis.hset(get_capsule_ids(app_id), capsule_id, chatbot_id)
     return {'result':'ok', 'data':{'capsule_id':capsule_id}}
 
+def get_share_text(app_id, chatbot_id):
+    from lanying_chatbot import get_chatbot
+    logging.info(f"get_share_text: app_id:{app_id}, chatbot_id:{chatbot_id}")
+    chatbot = get_chatbot(app_id, chatbot_id)
+    if chatbot is None:
+        return ''
+    capsule_id = chatbot['capsule_id']
+    capsule = get_capsule(capsule_id)
+    if capsule:
+        if capsule["status"] != "normal":
+            return ''
+        if capsule["app_id"] != app_id or capsule["chatbot_id"] != chatbot_id:
+            return ''
+        share_text = "使用以下蓝莺GPT胶囊，创建同款聊天机器人，免受配额限制：\n\n"
+        share_text += f"胶囊ID：{capsule_id}\n"
+        password = capsule['password']
+        if len(password) > 0:
+            return ''
+        desc = capsule['desc']
+        if len(desc) == 0:
+            desc = '(未设置)'
+        share_text += f"简介：{desc}\n"
+        link = capsule['link']
+        if len(link) == 0:
+            link = '(未设置)'
+        share_text += f"联系我：{link}\n\n"
+        share_text += "登录蓝莺IM控制台 https://console.lanyingim.com\n选择APP→点击AI智能→开通智能消息→创建Chatbot→导入GPT胶囊\n\n构建新一代智能聊天APP，使用蓝莺IM专业SDK！"
+        return share_text
+    return ''
+
 def add_capsule_app_id(capsule_id, app_id, chatbot_id):
     redis = lanying_redis.get_redis_connection()
     redis.hset(capsule_app_ids_key(capsule_id), chatbot_id, app_id)

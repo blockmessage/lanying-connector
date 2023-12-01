@@ -55,7 +55,7 @@ def handle_embedding_request(request):
     data = json.loads(request_text)
     vendor = data.get('vendor')
     text = data.get('text')
-    limit_res = check_message_limit(app_id, config, vendor)
+    limit_res = check_message_limit(app_id, config, vendor, False)
     if limit_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
@@ -120,7 +120,7 @@ def handle_request(request):
     if model_res['result'] == 'error':
         logging.info(f"check_model_allow deny: app_id={app_id}, msg={model_res['msg']}")
         return model_res
-    limit_res = check_message_limit(app_id, config, vendor)
+    limit_res = check_message_limit(app_id, config, vendor, False)
     if limit_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
@@ -248,27 +248,34 @@ def handle_chat_message(config, msg):
         logging.exception(e)
         app_id = msg['appId']
         reply = lanying_config.get_message_404(app_id)
-    if len(reply) > 0:
-        lcExt = {}
-        try:
-            ext = json.loads(config['ext'])
-            if 'ai' in ext:
-                lcExt = ext['ai']
-            elif 'lanying_connector' in ext:
-                lcExt = ext['lanying_connector']
-        except Exception as e:
-            pass
-        fromUserId = config['from_user_id']
-        toUserId = config['to_user_id']
-        reply_ext = {
-            'ai': {
-                'stream': False,
-                'role': 'ai'
+    if isinstance(reply, list):
+        reply_list = reply
+    else:
+        reply_list = [reply]
+    for now_reply in reply_list:
+        if len(now_reply) > 0:
+            lcExt = {}
+            try:
+                ext = json.loads(config['ext'])
+                if 'ai' in ext:
+                    lcExt = ext['ai']
+                elif 'lanying_connector' in ext:
+                    lcExt = ext['lanying_connector']
+            except Exception as e:
+                pass
+            fromUserId = config['from_user_id']
+            toUserId = config['to_user_id']
+            reply_ext = {
+                'ai': {
+                    'stream': False,
+                    'role': 'ai'
+                }
             }
-        }
-        if 'feedback' in lcExt:
-            reply_ext['ai']['feedback'] = lcExt['feedback']
-        lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+            if 'feedback' in lcExt:
+                reply_ext['ai']['feedback'] = lcExt['feedback']
+            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, now_reply, reply_ext)
+            if len(reply_list) > 0:
+                time.sleep(0.5)
 
 def handle_chat_message_try(config, msg, retry_times):
     app_id = msg['appId']
@@ -309,7 +316,7 @@ def handle_chat_message_try(config, msg, retry_times):
         chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, toUserId)
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
-            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id"]:
+            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
             preset = chatbot['preset']
@@ -410,7 +417,7 @@ def handle_chat_message_try(config, msg, retry_times):
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
     model = preset['model']
-    check_res = check_message_limit(app_id, config, vendor)
+    check_res = check_message_limit(app_id, config, vendor, True)
     if check_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={check_res['msg']}")
         return check_res['msg']
@@ -1370,7 +1377,7 @@ def add_quota(redis, key, field, quota):
         else:
             return redis.hincrby(key, field, 0)
 
-def check_message_limit(app_id, config, vendor):
+def check_message_limit(app_id, config, vendor, is_chat):
     message_per_month = config.get('message_per_month', 0)
     product_id = config.get('product_id', 0)
     if product_id == 0:
@@ -1391,6 +1398,23 @@ def check_message_limit(app_id, config, vendor):
                     return {'result':'ok', 'openai_key_type':'self'}
                 else:
                     return {'result':'ok', 'openai_key_type':'share'}
+            elif is_chat:
+                msgs = []
+                error_msg = lanying_config.get_message_no_quota(app_id)
+                msgs.append(error_msg)
+                quota_exceed_reply_type = config.get('quota_exceed_reply_type', 'capsule')
+                if quota_exceed_reply_type == 'msg':
+                    quota_exceed_reply_msg = config.get('quota_exceed_reply_msg', '')
+                    if quota_exceed_reply_msg != '':
+                        msgs.append(quota_exceed_reply_msg)
+                elif quota_exceed_reply_type == 'capsule':
+                    share_text = lanying_ai_capsule.get_share_text(app_id, config.get('chatbot_id'))
+                    if share_text != '':
+                        msgs.append(share_text)
+                if len(msgs) == 1:
+                    return {'result':'error', 'code':'no_quota', 'msg': msgs[0]}
+                else:
+                    return {'result':'error', 'code':'no_quota', 'msg': msgs}
             else:
                 return {'result':'error', 'code':'no_quota', 'msg': lanying_config.get_message_no_quota(app_id)}
     else:
@@ -1407,7 +1431,23 @@ def check_message_per_month_per_user(msg, config):
             key = f"lanying:connector:message_per_month_per_user:{app_id}:{from_user_id}:{now.year}:{now.month}"
             value = redis.incrby(key, 1)
             if value > limit:
-                return {'result':'error', 'msg': lanying_config.get_message_reach_user_message_limit(app_id)}
+                msgs = []
+                error_msg = lanying_config.get_message_reach_user_message_limit(app_id)
+                msgs.append(error_msg)
+                quota_exceed_reply_type = config.get('quota_exceed_reply_type', 'capsule')
+                quota_exceed_reply_msg = config.get('quota_exceed_reply_msg', '')
+                logging.info(f"exceed message_per_month_per_user app_id:{app_id}, reply_type:{quota_exceed_reply_type}, reply_msg:{quota_exceed_reply_msg}")
+                if quota_exceed_reply_type == 'msg':
+                    if quota_exceed_reply_msg != '':
+                        msgs.append(quota_exceed_reply_msg)
+                elif quota_exceed_reply_type == 'capsule':
+                    share_text = lanying_ai_capsule.get_share_text(app_id, config.get('chatbot_id'))
+                    if share_text != '':
+                        msgs.append(share_text)
+                if len(msgs) == 1:
+                    return {'result':'error', 'msg': msgs[0]}
+                else:
+                    return {'result':'error', 'msg': msgs}
     return {'result':'ok'}
 
 def check_message_deduct_failed(app_id, config):
@@ -2412,7 +2452,9 @@ def create_chatbot():
     message_per_month_per_user = int(data['message_per_month_per_user'])
     chatbot_ids = data.get('chatbot_ids', [])
     welcome_message = str(data.get('welcome_message','嘿，你好'))
-    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message)
+    quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
+    quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
+    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2441,7 +2483,9 @@ def configure_chatbot():
     message_per_month_per_user = int(data['message_per_month_per_user'])
     chatbot_ids = data.get('chatbot_ids', [])
     welcome_message = str(data.get('welcome_message',''))
-    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids,welcome_message)
+    quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
+    quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
+    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

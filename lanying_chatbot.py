@@ -7,7 +7,7 @@ from datetime import datetime
 import lanying_im_api
 import lanying_utils
 
-def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message):
+def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -36,7 +36,9 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "message_per_month_per_user": message_per_month_per_user,
         "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False),
         "capsule_id": capsule_id,
-        'welcome_message': welcome_message
+        'welcome_message': welcome_message,
+        "quota_exceed_reply_type": quota_exceed_reply_type,
+        "quota_exceed_reply_msg": quota_exceed_reply_msg
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -89,7 +91,9 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
         name = f"{name}_{timestr}"
     avatar = capsule_chatbot.get('avatar','')
     welcome_message = capsule_chatbot.get('welcome_message','')
-    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message)
+    quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
+    quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -131,7 +135,9 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_lin
         name = f"{name}_{timestr}"
     avatar = capsule_chatbot.get('avatar','')
     welcome_message = capsule_chatbot.get('welcome_message','')
-    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message)
+    quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
+    quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -162,8 +168,8 @@ def delete_chatbots(app_id):
         delete_chatbot(app_id, chatbot_id)
     return {'result':'ok', 'data':{}}
 
-def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message):
-    logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
+def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg):
+    logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
         return {'result':'error', 'message': 'chatbot not exist'}
@@ -189,7 +195,9 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         "history_msg_size_max": history_msg_size_max,
         "message_per_month_per_user": message_per_month_per_user,
         "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False),
-        'welcome_message': welcome_message
+        'welcome_message': welcome_message,
+        "quota_exceed_reply_type": quota_exceed_reply_type,
+        "quota_exceed_reply_msg": quota_exceed_reply_msg
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -383,6 +391,10 @@ def get_chatbot(app_id, chatbot_id):
             capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
             redis.hsetnx(get_chatbot_key(app_id, chatbot_id), "capsule_id", capsule_id)
             dto["capsule_id"] = capsule_id
+        if 'quota_exceed_reply_type' not in dto:
+            dto['quota_exceed_reply_type'] = 'capsule'
+        if 'quota_exceed_reply_msg' not in dto:
+            dto['quota_exceed_reply_msg'] = ''
         return dto
     return None
 
