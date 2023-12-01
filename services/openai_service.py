@@ -761,7 +761,6 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
                 doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
                 if doc_info:
-                    seq += 1
                     doc_metadata = {}
                     try:
                         doc_metadata = json.loads(doc_info.get('metadata','{}'))
@@ -779,7 +778,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                             link = doc_info.get('lanying_link', '')
                         if link == '':
                             link = doc_info.get('filename', '')
-                    if link not in links:
+                    if link not in links and not is_link_need_ignore(link):
+                        seq += 1
                         links.append(link)
                         doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link, 'metadata': doc_metadata})
             reply_ext['reference'] = doc_desc_list
@@ -794,7 +794,6 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 embedding_uuid_from_doc_id = lanying_embedding.get_embedding_uuid_from_doc_id(doc_id)
                 doc_info = lanying_embedding.get_doc(embedding_uuid_from_doc_id, doc_id)
                 if doc_info:
-                    seq += 1
                     doc_metadata = {}
                     try:
                         doc_metadata = json.loads(doc_info.get('metadata','{}'))
@@ -812,7 +811,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                             link = doc_info.get('lanying_link', '')
                         if link == '':
                             link = doc_info.get('filename', '')
-                    if link not in links:
+                    if link not in links and not is_link_need_ignore(link):
+                        seq += 1
                         links.append(link)
                         doc_desc = doc_format.replace('{seq}', f"{seq}").replace('{doc_id}', doc_id).replace('{link}', link)
                         for k,v in doc_metadata.items():
@@ -856,6 +856,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 reply_ext['ai']['stream'] = False
                 lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
+
+def is_link_need_ignore(link):
+    if link.startswith("ai_plugin_") or link.startswith("dummy_filename_"):
+        return True
+    return False
 
 def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug):
     function_name = function_call.get('name')
