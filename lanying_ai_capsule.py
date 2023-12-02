@@ -3,6 +3,8 @@ import time
 import random
 import lanying_redis
 import lanying_utils
+from datetime import datetime
+import json
 
 def share_capsule(app_id, chatbot_id, name, desc, link, password):
     from lanying_chatbot import get_chatbot
@@ -225,3 +227,36 @@ def generate_capsule_id(app_id, chatbot_id):
 
 def capsule_id_generator():
     return "lanying-connector:capsule_id_generator"
+
+def get_quota_income_app_ids(year, month):
+    now = datetime(year, month, 1)
+    ids_key = statistic_capsule_app_ids_key(now)
+    redis = lanying_redis.get_redis_connection()
+    app_ids = lanying_redis.redis_hkeys(redis, ids_key)
+    return app_ids
+
+def get_app_capsule_quota_incomes(app_id, year, month):
+    now = datetime(year, month, 1)
+    key = statistic_capsule_key(app_id, now)
+    redis = lanying_redis.get_redis_connection()
+    kvs = lanying_redis.redis_hgetall(redis, key)
+    capsule_incomes = {}
+    for k,v in kvs.items():
+        try:
+            info = json.loads(k)
+            quota = float(v)
+            if info['product_id'] > 7001:
+                capsule_id = info['capsule_id']
+                if capsule_id in capsule_incomes:
+                    capsule_incomes[capsule_id] += quota
+                else:
+                    capsule_incomes[capsule_id] = quota
+        except Exception as e:
+            pass
+    return capsule_incomes
+
+def statistic_capsule_key(app_id, now):
+    return f"lanying:connector:statistics:capsule:everymonth:v2:{app_id}:{now.strftime('%Y-%m')}"
+
+def statistic_capsule_app_ids_key(now):
+    return f"lanying:connector:statistics:capsule_app_ids:everymonth:{now.strftime('%Y-%m')}"

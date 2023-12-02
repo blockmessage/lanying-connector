@@ -1355,7 +1355,8 @@ def statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_k
     now = datetime.now()
     capsule_app_id = capsule['app_id']
     capsule_id = capsule['capsule_id']
-    everymonth_key = statistic_capsule_key(capsule_app_id, now)
+    everymonth_key = lanying_ai_capsule.statistic_capsule_key(capsule_app_id, now)
+    app_ids_key = lanying_ai_capsule.statistic_capsule_app_ids_key(now)
     redis = lanying_redis.get_redis_connection()
     field = json.dumps({
         'capsule_id': capsule_id,
@@ -1365,9 +1366,7 @@ def statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_k
         'app_id': app_id
     })
     redis.hincrbyfloat(everymonth_key, field, message_count_quota)
-
-def statistic_capsule_key(app_id, now):
-    return f"lanying:connector:statistics:capsule:everymonth:v2:{app_id}:{now.strftime('%Y-%m')}"
+    redis.hincrby(app_ids_key, capsule_app_id, 1)
 
 def add_quota(redis, key, field, quota):
     if isinstance(quota, int):
@@ -2797,6 +2796,39 @@ def set_doc_metadata():
     metadata = dict(data['metadata'])
     lanying_embedding.set_doc_metadata(app_id, embedding_name, doc_id, metadata)
     resp = make_response({'code':200, 'data':{'success':True}})
+    return resp
+
+@bp.route("/service/openai/get_app_capsule_quota_incomes", methods=["POST"])
+def get_app_capsule_quota_incomes():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    year = int(data['year'])
+    month = int(data['month'])
+    incomes = lanying_ai_capsule.get_app_capsule_quota_incomes(app_id, year, month)
+    dtoList = []
+    for k,v in incomes.items():
+        dtoList.append({
+            'capsule_id': k,
+            'quota': v
+        })
+    resp = make_response({'code':200, 'data':{'list':dtoList}})
+    return resp
+
+@bp.route("/service/openai/get_quota_income_app_ids", methods=["POST"])
+def get_quota_income_app_ids():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    year = int(data['year'])
+    month = int(data['month'])
+    app_ids = lanying_ai_capsule.get_quota_income_app_ids(year, month)
+    resp = make_response({'code':200, 'data':{'list':app_ids}})
     return resp
 
 def plugin_import_by_public_id(app_id, public_id):
