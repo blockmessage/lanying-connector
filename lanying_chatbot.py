@@ -209,16 +209,13 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
     if desc != chatbot_info.get('desc', '') or nickname != chatbot_info.get('nickname', '') or welcome_message !=  chatbot_info.get('welcome_message', ''):
         try:
             private_info = {}
-            if welcome_message !=  chatbot_info.get('welcome_message', ''):
-                try:
-                    profile = lanying_im_api.get_user_profile(app_id, user_id)
-                    private_info = lanying_utils.safe_json_loads(profile["data"].get('private_info', '{}'))
-                except Exception as ee:
-                    logging.exception(ee)
-                private_info['welcome_message'] = welcome_message
-                private_info_str =  json.dumps(private_info, ensure_ascii=False)
-            else:
-                private_info_str =  ''
+            try:
+                profile = lanying_im_api.get_user_profile(app_id, user_id)
+                private_info = lanying_utils.safe_json_loads(profile["data"].get('private_info', '{}'))
+            except Exception as ee:
+                logging.exception(ee)
+            private_info['welcome_message'] = welcome_message
+            private_info_str =  json.dumps(private_info, ensure_ascii=False)
             lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info_str)
         except Exception as e:
             logging.exception(e)

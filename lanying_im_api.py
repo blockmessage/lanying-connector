@@ -34,11 +34,7 @@ def set_user_profile(app_id, user_id, description, nick_name, private_info):
             return None
         response = requests.post(apiEndpoint + '/user/profile',
                                     headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(user_id)},
-                                    json={
-                                        'description': description,
-                                        'nick_name': nick_name,
-                                        'private_info': private_info
-                                    })
+                                    json=body)
         result = response.json()
         logging.info(f"set user profile, app_id={app_id} user_id={user_id}, result:{result}")
         return result
