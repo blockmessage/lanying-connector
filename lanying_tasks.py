@@ -105,6 +105,8 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
             lanying_embedding.create_doc_info(app_id, embedding_uuid, url if type == 'url' else origin_filename, object_name, doc_id, file_size, ext, type, url, vendor,opts)
             lanying_embedding.add_trace_doc_id(trace_id, doc_id)
+            if 'metadata' in opts:
+                lanying_embedding.set_doc_metadata(app_id, embedding_name, doc_id, opts['metadata'])
             upload_result = lanying_file_storage.upload(object_name, temp_filename)
             if upload_result["result"] == "error":
                 lanying_embedding.update_trace_field(trace_id, "status", "error")

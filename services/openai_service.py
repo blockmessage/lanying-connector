@@ -2032,7 +2032,8 @@ def handle_chat_file(msg, config):
         trace_id = lanying_embedding.create_trace_id()
         lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
         lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
-        add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
+        metadata = parse_metadata(msg)
+        add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1, {'metadata': metadata}])
         return f'添加到知识库({embedding_name})成功，请等待系统处理。'
     else:
         default_embedding_name = get_user_default_embedding_name(app_id, from_user_id)
@@ -2047,11 +2048,25 @@ def handle_chat_file(msg, config):
             trace_id = lanying_embedding.create_trace_id()
             lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
             lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
-            add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1])
+            metadata = parse_metadata(msg)
+            add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1, {'metadata': metadata}])
             return f'添加到知识库({embedding_name})成功，请等待系统处理。'
         else:
             file_id = save_attachment(from_user_id, attachment_str)
             return f'上传文件成功， 文件ID:{file_id} 。\n您绑定了多个知识库{can_manage_embedding_names}, 可以设置默认知识库来自动添加文档到知识库,\n命令格式为：/bluevector mode auto <KNOWLEDGE_BASE_NAME>'
+
+def parse_metadata(msg):
+    metadata = {}
+    try:
+        ext = json.loads(msg["ext"])
+        for k,v in ext["ai"]["metadata"].items():
+            try:
+                metadata[str(k)] = str(v)
+            except Exception as ee:
+                pass
+    except Exception as e:
+        pass
+    return metadata
 
 def handle_chat_links(msg, config):
     from_user_id = int(msg['from']['uid'])
@@ -2082,7 +2097,8 @@ def handle_chat_links(msg, config):
             trace_id = lanying_embedding.create_trace_id()
             lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
             lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
-            add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
+            metadata = parse_metadata(msg)
+            add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1, {'metadata': metadata}])
         return f'添加到知识库({embedding_name})成功，请等待系统处理。'
     else:
         default_embedding_name = get_user_default_embedding_name(app_id, from_user_id)
@@ -2092,7 +2108,8 @@ def handle_chat_links(msg, config):
                 trace_id = lanying_embedding.create_trace_id()
                 lanying_embedding.update_trace_field(trace_id, "notify_user", from_user_id)
                 lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
-                add_embedding_file.apply_async(args = [trace_id, app_id, default_embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1])
+                metadata = parse_metadata(msg)
+                add_embedding_file.apply_async(args = [trace_id, app_id, default_embedding_name, url, headers, 'url.html', config['access_token'], 'url', -1,{'metadata': metadata}])
             return f'添加到知识库({default_embedding_name})成功，请等待系统处理。'
         else:
             return f"您绑定了多个知识库{can_manage_embedding_names}，请设置默认知识库名称， 命令格式为：/bluevector mode auto <KNOWLEDGE_BASE_NAME>"
