@@ -2573,6 +2573,20 @@ def set_chatbot_mode():
     resp = make_response({'code':200, 'data': result})
     return resp
 
+# @bp.route("/service/openai/set_chatbot_status", methods=["POST"])
+# def set_chatbot_status():
+#     if not check_access_token_valid():
+#         resp = make_response({'code':401, 'message':'bad authorization'})
+#         return resp
+#     text = request.get_data(as_text=True)
+#     data = json.loads(text)
+#     app_id = str(data['app_id'])
+#     chatbot_id = str(data['chatbot_id'])
+#     status = str(data['status'])
+#     lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "status", status)
+#     resp = make_response({'code':200, 'data': {'success':True}})
+#     return resp
+
 @bp.route("/service/openai/get_default_user_id", methods=["POST"])
 def get_default_user_id():
     if not check_access_token_valid():
@@ -2679,11 +2693,50 @@ def share_capsule():
     desc = str(data['desc'])
     link = str(data['link'])
     password = str(data['password'])
-    result = lanying_ai_capsule.share_capsule(app_id, chatbot_id, name, desc, link, password)
+    price_type = str(data.get('price_type', 'free'))
+    month_price = int(data.get('month_price', '0'))
+    year_price = int(data.get('year_price', '0'))
+    result = lanying_ai_capsule.share_capsule(app_id, chatbot_id, name, desc, link, password, price_type, month_price, year_price)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
         resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/get_capsule_info", methods=["POST"])
+def get_capsule_info():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    capsule_id = str(data['capsule_id'])
+    capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if capsule is None:
+        resp = make_response({'code':400, 'message':'capsule not exist'})
+    else:
+        if len(capsule['password']) > 0:
+            capsule['password'] = '******'
+        dto = {}
+        for k,v in capsule.items():
+            if k not in ["app_id", "chatbot_id"]:
+                dto[k] = v
+        resp = make_response({'code':200, 'data':dto})
+    return resp
+
+@bp.route("/service/openai/get_capsule_all_info", methods=["POST"])
+def get_capsule_all_info():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    capsule_id = str(data['capsule_id'])
+    capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if capsule is None:
+        resp = make_response({'code':400, 'message':'capsule not exist'})
+    else:
+        resp = make_response({'code':200, 'data':capsule})
     return resp
 
 @bp.route("/service/openai/list_app_capsules", methods=["POST"])
@@ -2708,7 +2761,10 @@ def check_create_chatbot_from_capsule():
     app_id = str(data['app_id'])
     capsule_id = str(data['capsule_id'])
     password = str(data['password'])
-    result = lanying_chatbot.check_create_chatbot_from_capsule(app_id, capsule_id, password)
+    price_type = str(data.get('price_type', 'free'))
+    cycle_type = str(data.get('cycle_type', 'month'))
+    price = int(data.get('price', '0'))
+    result = lanying_chatbot.check_create_chatbot_from_capsule(app_id, capsule_id, password, price_type, cycle_type, price)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2725,9 +2781,12 @@ def create_chatbot_from_capsule():
     app_id = str(data['app_id'])
     capsule_id = str(data['capsule_id'])
     password = str(data['password'])
+    price_type = str(data.get('price_type', 'free'))
+    cycle_type = str(data.get('cycle_type', 'month'))
+    price = int(data.get('price', '0'))
     user_id = int(data['user_id'])
     lanying_link = str(data['lanying_link'])
-    result = lanying_chatbot.create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_link)
+    result = lanying_chatbot.create_chatbot_from_capsule(app_id, capsule_id, password, price_type, cycle_type, price, user_id, lanying_link)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2743,7 +2802,10 @@ def check_create_chatbot_from_publish_capsule():
     data = json.loads(text)
     app_id = str(data['app_id'])
     capsule_id = str(data['capsule_id'])
-    result = lanying_chatbot.check_create_chatbot_from_publish_capsule(app_id, capsule_id)
+    price_type = str(data.get('price_type', 'free'))
+    cycle_type = str(data.get('cycle_type', 'month'))
+    price = int(data.get('price', '0'))
+    result = lanying_chatbot.check_create_chatbot_from_publish_capsule(app_id, capsule_id, price_type, cycle_type, price)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2759,9 +2821,12 @@ def create_chatbot_from_publish_capsule():
     data = json.loads(text)
     app_id = str(data['app_id'])
     capsule_id = str(data['capsule_id'])
+    price_type = str(data.get('price_type', 'free'))
+    cycle_type = str(data.get('cycle_type', 'month'))
+    price = int(data.get('price', '0'))
     user_id = int(data['user_id'])
     lanying_link = str(data['lanying_link'])
-    result = lanying_chatbot.create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_link)
+    result = lanying_chatbot.create_chatbot_from_publish_capsule(app_id, capsule_id, price_type, cycle_type, price, user_id, lanying_link)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

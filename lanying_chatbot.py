@@ -56,7 +56,20 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         logging.exception(e)
     return {'result':'ok', 'data':{'id':chatbot_id}}
 
-def check_create_chatbot_from_capsule(app_id, capsule_id, password):
+def check_capsule_price(price_type, cycle_type, price, capsule):
+    if cycle_type not in ["month", "year"]:
+        return {'result': 'error', 'message': 'cycle_type must be month or year'}
+    if price_type not in ["free", "paid"]:
+        return {'result': 'error', 'message': 'price_type must be free or paid'}
+    if price_type != capsule['price_type']:
+        return {'result': 'error', 'message': 'price_type changed'}
+    if cycle_type == 'month' and price != capsule['month_price']:
+        return {'result': 'error', 'message': 'month_price changed'}
+    if cycle_type == 'year' and price != capsule['year_price']:
+        return {'result': 'error', 'message': 'year_price changed'}
+    return {'result': 'ok'}
+
+def check_create_chatbot_from_capsule(app_id, capsule_id, password, price_type, cycle_type, price):
     capsule = lanying_ai_capsule.get_capsule(capsule_id)
     if capsule is None:
         return {'result': 'error', 'message': 'capsule not exist'}
@@ -64,6 +77,9 @@ def check_create_chatbot_from_capsule(app_id, capsule_id, password):
         return {'result': 'error', 'message': 'capsule status not normal'}
     if capsule['password'] != '' and capsule['password'] != password:
         return {'result': 'error', 'message': 'capsule password not right'}
+    check_res = check_capsule_price(price_type, cycle_type, price, capsule)
+    if check_res['result'] == 'error':
+        return check_res
     capsule_app_id = capsule['app_id']
     capsule_chatbot_id = capsule['chatbot_id']
     capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
@@ -71,7 +87,7 @@ def check_create_chatbot_from_capsule(app_id, capsule_id, password):
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     return {'result': 'ok', 'data': {'success': True}}
 
-def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_link):
+def create_chatbot_from_capsule(app_id, capsule_id, password, price_type, cycle_type, price, user_id, lanying_link):
     capsule = lanying_ai_capsule.get_capsule(capsule_id)
     if capsule is None:
         return {'result': 'error', 'message': 'capsule not exist'}
@@ -79,6 +95,9 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
         return {'result': 'error', 'message': 'capsule status not normal'}
     if capsule['password'] != '' and capsule['password'] != password:
         return {'result': 'error', 'message': 'capsule password not right'}
+    check_res = check_capsule_price(price_type, cycle_type, price, capsule)
+    if check_res['result'] == 'error':
+        return check_res
     capsule_app_id = capsule['app_id']
     capsule_chatbot_id = capsule['chatbot_id']
     capsule_chatbot = get_chatbot_with_profile(capsule_app_id, capsule_chatbot_id)
@@ -101,10 +120,16 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, user_id, lanying_l
     lanying_ai_capsule.add_capsule_app_id(capsule_id, app_id, new_chatbot_id)
     return create_result
 
-def check_create_chatbot_from_publish_capsule(app_id, capsule_id):
+def check_create_chatbot_from_publish_capsule(app_id, capsule_id, price_type, cycle_type, price):
     capsule = lanying_ai_capsule.get_publish_capsule(capsule_id)
     if capsule is None:
         return {'result': 'error', 'message': 'capsule not exist'}
+    origin_capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if origin_capsule is None:
+        return {'result': 'error', 'message': 'capsule not exist'}
+    check_res = check_capsule_price(price_type, cycle_type, price, origin_capsule)
+    if check_res['result'] == 'error':
+        return check_res
     capsule_app_id = capsule['app_id']
     capsule_chatbot_id = capsule['chatbot_id']
     capsule_chatbot = get_chatbot(capsule_app_id, capsule_chatbot_id)
@@ -112,10 +137,16 @@ def check_create_chatbot_from_publish_capsule(app_id, capsule_id):
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     return {'result': 'ok', 'data': {'success': True}}
 
-def create_chatbot_from_publish_capsule(app_id, capsule_id, user_id, lanying_link):
+def create_chatbot_from_publish_capsule(app_id, capsule_id, price_type, cycle_type, price, user_id, lanying_link):
     capsule = lanying_ai_capsule.get_publish_capsule(capsule_id)
     if capsule is None:
         return {'result': 'error', 'message': 'capsule not exist'}
+    origin_capsule = lanying_ai_capsule.get_capsule(capsule_id)
+    if origin_capsule is None:
+        return {'result': 'error', 'message': 'capsule not exist'}
+    check_res = check_capsule_price(price_type, cycle_type, price, origin_capsule)
+    if check_res['result'] == 'error':
+        return check_res
     capsule_app_id = capsule['app_id']
     capsule_chatbot_id = capsule['chatbot_id']
     capsule_chatbot = get_chatbot_with_profile(capsule_app_id, capsule_chatbot_id)

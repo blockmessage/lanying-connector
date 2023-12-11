@@ -90,7 +90,7 @@ def get_message_reach_user_message_limit(appId):
 
 def get_message_deduct_failed(appId):
     if mode == 'etcd':
-        return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_deduct_failed', "抱歉，当前应用的本月消息配额已经用完，请联系管理员或者下月重试。")
+        return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_deduct_failed', "抱歉，当前应用已欠费，请联系管理员或者稍后重试。")
     return os.getenv('LANYING_CONNECTOR_MESSAGE_DEDUCT_FAILED')
 
 def get_message_too_long(appId):
