@@ -6,18 +6,14 @@ import lanying_utils
 from datetime import datetime
 import json
 
-def share_capsule(app_id, chatbot_id, name, desc, link, password, price_type, month_price, year_price):
+def share_capsule(app_id, chatbot_id, name, desc, link, password, month_price, year_price):
     from lanying_chatbot import get_chatbot
-    logging.info(f"start set capsule: app_id:{app_id}, chatbot_id:{chatbot_id}, type:{type}, name:{name}, desc:{desc}, link:{link}, price_type:{price_type}, month_price:{month_price}, year_price:{year_price}")
+    logging.info(f"start set capsule: app_id:{app_id}, chatbot_id:{chatbot_id}, type:{type}, name:{name}, desc:{desc}, link:{link},  month_price:{month_price}, year_price:{year_price}")
     now = int(time.time())
     chatbot = get_chatbot(app_id, chatbot_id)
     if chatbot is None:
         return {'result':'error', 'message':'chatbot not exist'}
-    if price_type not in ["free", "paid"]:
-        return {'result': 'error', 'message': 'price_type must by free or paid'}
-    if price_type == 'free' and (month_price > 0 or year_price > 0):
-        return {'result': 'error', 'message': 'bad month_price or year_price'}
-    if price_type == 'paid' and (month_price <= 0 or year_price <= 0):
+    if month_price < 0 or year_price < 0:
         return {'result': 'error', 'message': 'bad month_price or year_price'}
     if ('linked_capsule_id' in chatbot and len(chatbot['linked_capsule_id']) > 0):
         return {'result': 'error', 'message': 'import chatbot cannot share'}
@@ -40,7 +36,6 @@ def share_capsule(app_id, chatbot_id, name, desc, link, password, price_type, mo
         "desc": desc,
         "link": link,
         "password": password,
-        "price_type": price_type,
         "month_price": month_price,
         "year_price": year_price,
         "status": "normal"
@@ -164,7 +159,6 @@ def list_publish_capsules(page_num, page_size):
             share_capsule = get_capsule(capsule_id)
             if share_capsule:
                 capsule['link'] = share_capsule['link']
-                capsule['price_type'] = share_capsule['price_type']
                 capsule['month_price'] = share_capsule['month_price']
                 capsule['year_price'] = share_capsule['year_price']
             dto = {}
@@ -201,8 +195,6 @@ def get_capsule(capsule_id):
                 dto[key] = int(value)
             else:
                 dto[key] = value
-        if 'price_type' not in dto:
-            dto['price_type'] = 'free'
         if 'month_price' not in dto:
             dto['month_price'] = 0
         if 'year_price' not in dto:
