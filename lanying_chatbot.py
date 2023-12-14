@@ -113,6 +113,8 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
         return create_result
     new_chatbot_id = create_result['data']['id']
     set_chatbot_field(app_id, new_chatbot_id, "linked_capsule_id", capsule_id)
+    set_chatbot_field(app_id, new_chatbot_id, "cycle_type", cycle_type)
+    set_chatbot_field(app_id, new_chatbot_id, "price", price)
     lanying_ai_capsule.add_capsule_app_id(capsule_id, app_id, new_chatbot_id)
     return create_result
 
@@ -169,6 +171,8 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
         return create_result
     new_chatbot_id = create_result['data']['id']
     set_chatbot_field(app_id, new_chatbot_id, "linked_publish_capsule_id", capsule_id)
+    set_chatbot_field(app_id, new_chatbot_id, "cycle_type", cycle_type)
+    set_chatbot_field(app_id, new_chatbot_id, "price", price)
     lanying_ai_capsule.add_capsule_app_id(capsule_id, app_id, new_chatbot_id)
     return create_result
 
@@ -254,6 +258,30 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
             logging.exception(e)
             pass
     return {'result':'ok', 'data':{'success': True}}
+
+def delete_chatbot(app_id, chatbot_id):
+    logging.info(f"start check delete chatbot: app_id={app_id}, chatbot_id={chatbot_id}")
+    chatbot_info = get_chatbot(app_id, chatbot_id)
+    if not chatbot_info:
+        return {'result':'error', 'message': 'chatbot not exist'}
+    capsule_id = chatbot_info['capsule_id']
+    capsule_info = lanying_ai_capsule.get_capsule(capsule_id)
+    if capsule_info:
+        return {'result': 'error', 'message': 'shared chatbot cannot be deleted'}
+    logging.info(f"start delete chatbot: app_id={app_id}, chatbot_id={chatbot_id}")
+    chatbot_name = chatbot_info['name']
+    chatbot_user_id = chatbot_info['user_id']
+    redis = lanying_redis.get_redis_connection()
+    redis.delete(get_chatbot_key(app_id, chatbot_id))
+    redis.lrem(get_chatbot_ids_key(app_id), 0, chatbot_id)
+    del_user_chatbot_id(app_id, chatbot_user_id)
+    del_name_chatbot_id(app_id, chatbot_name)
+    from lanying_ai_plugin import delete_chatbot_plugin_bind_relation
+    delete_chatbot_plugin_bind_relation(app_id, chatbot_name)
+    logging.info(f"finish delete chatbot: app_id={app_id}, chatbot_id={chatbot_id}")
+    return {'result': 'ok', 'data':{
+        'name': chatbot_name
+    }}
 
 def get_default_user_id(app_id):
     chatbot_ids = get_chatbot_ids(app_id)
@@ -405,7 +433,7 @@ def get_chatbot(app_id, chatbot_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            if key in ["create_time", "user_id", "history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user"]:
+            if key in ["create_time", "user_id", "history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "price"]:
                 dto[key] = int(value)
             elif key in ["preset","chatbot_ids"]:
                 dto[key] = json.loads(value)
@@ -419,6 +447,10 @@ def get_chatbot(app_id, chatbot_id):
             dto['quota_exceed_reply_type'] = 'capsule'
         if 'quota_exceed_reply_msg' not in dto:
             dto['quota_exceed_reply_msg'] = ''
+        if 'cycle_type' not in dto:
+            dto['cycle_type'] = 'month'
+        if 'price' not in dto:
+            dto['price'] = 0
         return dto
     return None
 

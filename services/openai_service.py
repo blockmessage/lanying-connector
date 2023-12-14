@@ -2595,8 +2595,12 @@ def get_default_user_id():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
-    result = lanying_chatbot.get_default_user_id(app_id)
-    resp = make_response({'code':200, 'data': result})
+    default_user_id = lanying_chatbot.get_default_user_id(app_id)
+    if not default_user_id:
+        default_user_id = lanying_config.get_lanying_user_id(app_id)
+    if not default_user_id:
+        default_user_id = 0
+    resp = make_response({'code':200, 'data': default_user_id})
     return resp
 
 @bp.route("/service/openai/list_chatbots", methods=["POST"])
@@ -2822,6 +2826,22 @@ def create_chatbot_from_publish_capsule():
     user_id = int(data['user_id'])
     lanying_link = str(data['lanying_link'])
     result = lanying_chatbot.create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, user_id, lanying_link)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/delete_chatbot", methods=["POST"])
+def delete_chatbot():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    chatbot_id = str(data['chatbot_id'])
+    result = lanying_chatbot.delete_chatbot(app_id, chatbot_id)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

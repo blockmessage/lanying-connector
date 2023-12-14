@@ -315,6 +315,13 @@ def bind_ai_plugin(app_id, type, name, list):
     else:
         return {'result':'error', 'message':'bad argument: type'}
 
+def delete_chatbot_plugin_bind_relation(app_id, name):
+    relation = get_ai_plugin_bind_relation(app_id)
+    if name in relation:
+        del relation[name]
+        set_ai_plugin_bind_relation(app_id, relation)
+    return {'result':'ok', 'data':{}}
+
 def get_ai_plugin_bind_relation(app_id):
     key = ai_plugin_bind_relation_key(app_id)
     redis = lanying_redis.get_redis_connection()
