@@ -272,7 +272,7 @@ def delete_chatbot(app_id, chatbot_id):
     chatbot_name = chatbot_info['name']
     chatbot_user_id = chatbot_info['user_id']
     redis = lanying_redis.get_redis_connection()
-    redis.delete(get_chatbot_key(app_id, chatbot_id))
+    redis.rename(get_chatbot_key(app_id, chatbot_id), get_deleted_chatbot_key(app_id, chatbot_id))
     redis.lrem(get_chatbot_ids_key(app_id), 0, chatbot_id)
     del_user_chatbot_id(app_id, chatbot_user_id)
     del_name_chatbot_id(app_id, chatbot_name)
@@ -496,6 +496,9 @@ def generate_chatbot_id():
 
 def get_chatbot_key(app_id, chatbot_id):
     return f"lanying_connector:chatbot:{app_id}:{chatbot_id}"
+
+def get_deleted_chatbot_key(app_id, chatbot_id):
+    return f"lanying_connector:deleted_chatbot:{app_id}:{chatbot_id}"
 
 def get_chatbot_ids_key(app_id):
     return f"lanying_connector:chatbot_ids:{app_id}"
