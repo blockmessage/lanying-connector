@@ -1635,7 +1635,7 @@ def parse_file_ext(filename):
     if is_file_url(filename):
         return ".html"
     _,ext = os.path.splitext(filename)
-    return ext
+    return ext.lower()
 
 def is_file_url(filename):
     return filename.startswith("http://") or filename.startswith("https://")

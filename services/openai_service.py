@@ -2010,7 +2010,7 @@ def handle_chat_file(msg, config):
     attachment_str = msg['attachment']
     attachment = json.loads(attachment_str)
     dname = attachment['dName']
-    _,ext = os.path.splitext(dname)
+    ext = lanying_embedding.parse_file_ext(dname)
     check_result = check_upload_embedding(msg, config, ext, app_id)
     if check_result['result'] == 'error':
         return check_result['message']
