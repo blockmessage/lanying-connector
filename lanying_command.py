@@ -53,60 +53,26 @@ def check_rule(rule, fields, index, app_id):
     raise Exception({"not_match", rule, fields, index})
 
 def calc_preset_names(app_id):
-    if lanying_chatbot.is_chatbot_mode(app_id):
-        return lanying_chatbot.get_chatbot_names(app_id)
-    else:
-        preset_names = ["default"]
-        config = lanying_config.get_lanying_connector(app_id)
-        if "preset" in config and "presets" in config["preset"]:
-            try:
-                for k in config["preset"]["presets"].keys():
-                    preset_names.append(k)
-            except Exception as e:
-                logging.exception(e)
-                pass
-        return preset_names
+    return lanying_chatbot.get_chatbot_names(app_id)
 
 def calc_preset_infos(app_id, user_id):
-    if lanying_chatbot.is_chatbot_mode(app_id):
-        preset_infos = []
-        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, user_id)
-        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-        if chatbot:
-            default_desc = chatbot.get('desc', '')
-            sep=''
-            if default_desc != '':
-                sep = " "
-            preset_infos.append(("default", f"{default_desc}{sep}默认预设，也可使用别名 /bluebird 或 /bb 代替"))
-            chatbot_ids = chatbot.get('chatbot_ids',[])
-            for sub_chatbot_id in chatbot_ids:
-                sub_chatbot = lanying_chatbot.get_chatbot(app_id, sub_chatbot_id)
-                if sub_chatbot:
-                    name = sub_chatbot['name']
-                    desc = sub_chatbot.get('desc', '暂无说明')
-                    preset_infos.append((name, desc))
-        return preset_infos
-    else:
-        preset_infos = []
-        config = lanying_config.get_lanying_connector(app_id)
-        default_desc = ""
-        sep = ""
-        if "preset" in config:
-            ext = config["preset"].get('ext', {})
-            default_desc = ext.get('preset_desc', '')
+    preset_infos = []
+    chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, user_id)
+    chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot:
+        default_desc = chatbot.get('desc', '')
+        sep=''
         if default_desc != '':
             sep = " "
         preset_infos.append(("default", f"{default_desc}{sep}默认预设，也可使用别名 /bluebird 或 /bb 代替"))
-        if "preset" in config and "presets" in config["preset"]:
-            try:
-                for k in config["preset"]["presets"].keys():
-                    preset = config["preset"]["presets"][k]
-                    ext = preset.get('ext',{})
-                    preset_infos.append((k, ext.get('preset_desc', '暂无说明')))
-            except Exception as e:
-                logging.exception(e)
-                pass
-        return preset_infos
+        chatbot_ids = chatbot.get('chatbot_ids',[])
+        for sub_chatbot_id in chatbot_ids:
+            sub_chatbot = lanying_chatbot.get_chatbot(app_id, sub_chatbot_id)
+            if sub_chatbot:
+                name = sub_chatbot['name']
+                desc = sub_chatbot.get('desc', '暂无说明')
+                preset_infos.append((name, desc))
+    return preset_infos
 
 # def help(app_id, role):
 #     result = ['可以用命令如下:']

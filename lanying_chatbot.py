@@ -336,10 +336,6 @@ def del_name_chatbot_id(app_id, name):
 def name_chatbot_id_key(app_id):
     return f"lanying-connector:name_chatbot_id:{app_id}"
 
-def is_chatbot_mode(app_id):
-    redis = lanying_redis.get_redis_connection()
-    return redis.incrby(chatbot_mode_key(app_id), 0) == 1
-
 def set_chatbot_mode(app_id, mode):
     redis = lanying_redis.get_redis_connection()
     if mode:

@@ -286,7 +286,6 @@ def handle_chat_message_try(config, msg, retry_times):
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
     preset = copy.deepcopy(config.get('preset',{}))
-    is_chatbot_mode = lanying_chatbot.is_chatbot_mode(app_id)
     checkres = check_message_deduct_failed(msg['appId'], config)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -309,20 +308,22 @@ def handle_chat_message_try(config, msg, retry_times):
             if len(result) > 0:
                 return result
     elif ctype == 'FILE':
-        return handle_chat_file(msg, config)
+        file_res = handle_chat_file(msg, config)
+        if file_res['result'] == 'error':
+            return file_res['message']
+        msg['content'] = file_res['new_content']
     else:
         return ''
-    if is_chatbot_mode:
-        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, toUserId)
-        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-        if chatbot:
-            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id"]:
-                if key in chatbot:
-                    config[key] = chatbot[key]
-            preset = chatbot['preset']
-        else:
-            logging.warning(f"cannot get chatbot info: app_id={app_id}, user_id:{toUserId}, chatbot_id:{chatbot_id}")
-            return ''
+    chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, toUserId)
+    chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot:
+        for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id"]:
+            if key in chatbot:
+                config[key] = chatbot[key]
+        preset = chatbot['preset']
+    else:
+        logging.warning(f"cannot get chatbot info: app_id={app_id}, user_id:{toUserId}, chatbot_id:{chatbot_id}")
+        return ''
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -342,15 +343,10 @@ def handle_chat_message_try(config, msg, retry_times):
         try:
             if "preset_name" in command_ext:
                 if command_ext['preset_name'] != "default":
-                    if is_chatbot_mode:
-                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], command_ext['preset_name'])
-                        if sub_chatbot:
-                            chatbot = sub_chatbot
-                            preset = sub_chatbot['preset']
-                            preset_name = command_ext['preset_name']
-                            logging.info(f"using preset_name from command:{preset_name}")
-                    else:
-                        preset = preset['presets'][command_ext['preset_name']]
+                    sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], command_ext['preset_name'])
+                    if sub_chatbot:
+                        chatbot = sub_chatbot
+                        preset = sub_chatbot['preset']
                         preset_name = command_ext['preset_name']
                         logging.info(f"using preset_name from command:{preset_name}")
         except Exception as e:
@@ -359,15 +355,10 @@ def handle_chat_message_try(config, msg, retry_times):
         try:
             if 'preset_name' in lcExt:
                 if lcExt['preset_name'] != "default":
-                    if is_chatbot_mode:
-                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lcExt['preset_name'])
-                        if sub_chatbot:
-                            chatbot = sub_chatbot
-                            preset = sub_chatbot['preset']
-                            preset_name = lcExt['preset_name']
-                            logging.info(f"using preset_name from lc_ext:{preset_name}")
-                    else:
-                        preset = preset['presets'][lcExt['preset_name']]
+                    sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lcExt['preset_name'])
+                    if sub_chatbot:
+                        chatbot = sub_chatbot
+                        preset = sub_chatbot['preset']
                         preset_name = lcExt['preset_name']
                         logging.info(f"using preset_name from lc_ext:{preset_name}")
         except Exception as e:
@@ -378,26 +369,16 @@ def handle_chat_message_try(config, msg, retry_times):
         if lastChoosePresetName:
             try:
                 if lastChoosePresetName != "default":
-                    if is_chatbot_mode:
-                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lastChoosePresetName)
-                        if sub_chatbot:
-                            chatbot = sub_chatbot
-                            preset = json.loads(sub_chatbot['preset'])
-                            preset_name = lastChoosePresetName
-                            logging.info(f"using preset_name from last_choose_preset:{preset_name}")
-                    else:
-                        preset = preset['presets'][lastChoosePresetName]
+                    sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lastChoosePresetName)
+                    if sub_chatbot:
+                        chatbot = sub_chatbot
+                        preset = json.loads(sub_chatbot['preset'])
                         preset_name = lastChoosePresetName
                         logging.info(f"using preset_name from last_choose_preset:{preset_name}")
             except Exception as e:
                 logging.exception(e)
     if preset_name == "":
-        if is_chatbot_mode:
-            preset_name = chatbot['name']
-        else:
-            preset_name = "default"
-    if 'presets' in preset:
-        del preset['presets']
+        preset_name = chatbot['name']
     if 'ext' in preset:
         presetExt = copy.deepcopy(preset['ext'])
         del preset['ext']
@@ -1193,6 +1174,9 @@ def model_token_limit(model_config):
 def historyListChatGPTKey(fromUserId, toUserId):
     return "lanying:connector:history:list:chatGPT:" + fromUserId + ":" + toUserId
 
+def make_chatfile_key(from_user_id, to_user_id, name):
+    return f"lanying:connector:file_history:{from_user_id}:{to_user_id}:{name}"
+
 def addHistory(redis, historyListKey, history):
     if redis:
         Count = redis.rpush(historyListKey, json.dumps(history))
@@ -1848,10 +1832,7 @@ def search_by_preset(msg, config, preset_name, new_content):
 
 def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_depth, filters, urls, generate_lanying_links):
     config = lanying_config.get_lanying_connector(app_id)
-    if lanying_chatbot.is_chatbot_mode(app_id):
-        user_id = lanying_chatbot.get_default_user_id(app_id)
-    else:
-        user_id = config['lanying_user_id']
+    user_id = lanying_chatbot.get_default_user_id(app_id)
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
             'user_id': str(user_id)}
@@ -1953,7 +1934,7 @@ def check_upload_embedding(msg, config, ext, app_id):
         else:
             return {'result':'error', 'message': f'对不起，暂时只支持{allow_exts}格式的知识库'}
     else:
-        return {'result':'error', 'message':'对不起，我无法处理文件消息'}
+        return {'result':'error', 'message':'not_admin_user'}
 
 def check_can_manage_embedding(app_id, embedding_name, from_user_id):
     embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
@@ -2013,7 +1994,16 @@ def handle_chat_file(msg, config):
     ext = lanying_embedding.parse_file_ext(dname)
     check_result = check_upload_embedding(msg, config, ext, app_id)
     if check_result['result'] == 'error':
-        return check_result['message']
+        if check_result['message'] == 'not_admin_user':
+            url = attachment['url']
+            dname = attachment['dName']
+            chatfile_key = make_chatfile_key(from_user_id, to_user_id, dname)
+            redis = lanying_redis.get_redis_connection()
+            redis.hset(chatfile_key, 'url', url)
+            redis.expire(chatfile_key, 86400 * 3)
+            return {'result': 'ok', 'new_content': f"我上传了一个文件（{dname}）。"}
+        else:
+            return check_result
     logging.info(f"recevie embedding file from chat: app_id:{app_id}, attachment_str:{attachment_str}")
     embedding_names = lanying_embedding.list_embedding_names(app_id)
     can_manage_embedding_names = []
@@ -2034,7 +2024,7 @@ def handle_chat_file(msg, config):
         lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
         metadata = parse_metadata(msg)
         add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1, {'metadata': metadata}])
-        return f'添加到知识库({embedding_name})成功，请等待系统处理。'
+        return {'result': 'error', 'message': f'添加到知识库({embedding_name})成功，请等待系统处理。'}
     else:
         default_embedding_name = get_user_default_embedding_name(app_id, from_user_id)
         if default_embedding_name and default_embedding_name in can_manage_embedding_names:
@@ -2050,10 +2040,10 @@ def handle_chat_file(msg, config):
             lanying_embedding.update_trace_field(trace_id, "notify_from", to_user_id)
             metadata = parse_metadata(msg)
             add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], 'file', -1, {'metadata': metadata}])
-            return f'添加到知识库({embedding_name})成功，请等待系统处理。'
+            return {'result': 'error', 'message': f'添加到知识库({embedding_name})成功，请等待系统处理。'}
         else:
             file_id = save_attachment(from_user_id, attachment_str)
-            return f'上传文件成功， 文件ID:{file_id} 。\n您绑定了多个知识库{can_manage_embedding_names}, 可以设置默认知识库来自动添加文档到知识库,\n命令格式为：/bluevector mode auto <KNOWLEDGE_BASE_NAME>'
+            return {'result': 'error', 'message': f'上传文件成功， 文件ID:{file_id} 。\n您绑定了多个知识库{can_manage_embedding_names}, 可以设置默认知识库来自动添加文档到知识库,\n命令格式为：/bluevector mode auto <KNOWLEDGE_BASE_NAME>'}
 
 def parse_metadata(msg):
     metadata = {}
@@ -2556,7 +2546,7 @@ def is_chatbot_mode():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
-    result = lanying_chatbot.is_chatbot_mode(app_id)
+    result = True
     resp = make_response({'code':200, 'data': result})
     return resp
 
@@ -2937,10 +2927,7 @@ def plugin_import_by_public_id(app_id, public_id):
 
 def plugin_import_by_url(type, app_id, url):
     config = lanying_config.get_lanying_connector(app_id)
-    if lanying_chatbot.is_chatbot_mode(app_id):
-        user_id = lanying_chatbot.get_default_user_id(app_id)
-    else:
-        user_id = config['lanying_user_id']
+    user_id = lanying_chatbot.get_default_user_id(app_id)
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
             'user_id': str(user_id)}
@@ -2960,11 +2947,6 @@ def check_access_token_valid():
         return False
 
 def is_chatbot_user_id(app_id, user_id, config):
-    if lanying_chatbot.is_chatbot_mode(app_id):
-        if lanying_chatbot.get_user_chatbot_id(app_id, user_id):
-            return True
-    else:
-        myUserId = config.get('lanying_user_id')
-        logging.info(f'lanying_user_id:{myUserId}')
-        return myUserId != None and user_id == str(myUserId)
+    if lanying_chatbot.get_user_chatbot_id(app_id, user_id):
+        return True
     return False
