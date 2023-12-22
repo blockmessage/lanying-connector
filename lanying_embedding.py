@@ -723,7 +723,7 @@ def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_
             output = subprocess.check_output(['antiword', filename])
             text = output.decode('utf-8', 'ignore')
         except subprocess.CalledProcessError:
-            logging.error("Failed to convert the document: app_id:{app_id}, filename:{filename}, doc_id:{doc_id}")
+            logging.error(f"Failed to convert the document: app_id:{app_id}, filename:{filename}, doc_id:{doc_id}")
             raise
     else:
         text = docx2txt.process(filename)
@@ -764,6 +764,7 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
                 insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
     else:
         df = pd.read_csv(filename, header=None)
+        df = df.fillna('')
         lines = []
         for i, row in df.iterrows():
             line_blocks = []

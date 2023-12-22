@@ -5,13 +5,15 @@ import requests
 from langchain.document_loaders import WebBaseLoader
 import re
 import lanying_url_loader
+from urllib.parse import urlparse
+import lanying_utils
 
 server = os.getenv("FILE_STORAGE_SERVER", "localhost:9000")
 accesskey = os.getenv("FILE_STORAGE_ACCESS_KEY")
 screctkey = os.getenv("FILE_STORAGE_SCRECT_KEY")
 secure = os.getenv("FILE_STORAGE_SECURE", "false").lower() == "true"
 bucket_name = os.getenv("FILE_STORAGE_BUCKET_NAME", "embedding-file")
-max_upload_file_size = int(os.getenv("FILE_STORAGE_MAX_UPLOAD_FILE_SIZE", "10737418240"))
+max_upload_file_size = int(os.getenv("FILE_STORAGE_MAX_UPLOAD_FILE_SIZE", "20971520"))
 client = None
 if server:
     if accesskey:
@@ -53,38 +55,50 @@ def download(object_name, filename):
 
 def download_url(url, headers, filename):
     try:
-        if len(headers) == 0:
-            response = lanying_url_loader.load_url_content(url)
+        stream = True
+        response = requests.get(url, headers=headers, stream=stream)
+        if response.status_code == 200:
+            file_size = int(response.headers.get('Content-Length', "0"))
+            if file_size > max_upload_file_size:
+                logging.info(f"Download {filename} failed, for file_size:{file_size}")
+                return {"result":"error", "message":"file too large"}
+            content_type = response.headers.get('content-type', '')
+            file_extension = judge_file_extension(url, content_type)
+            if file_extension and file_extension == '.html':
+                stream = False
+                response = lanying_url_loader.load_url_content(url)
+            logging.info(f"Download {filename} started, file_size:{file_size}, stream:{stream}, file_extension:{file_extension}")
+            if stream:
+                with open(filename, 'wb') as f:
+                    file_size = 0
+                    chunk_size = 1024 * 1024
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        file_size += chunk_size
+                        if file_size > max_upload_file_size:
+                            return {"result":"error", "message":"file too large"}
+                        f.write(chunk)
+                        logging.info(f'Downloaded {filename} %.2f MB' % (f.tell() / 1024 / 1024))
+                    logging.info(f'Download {filename} complete')
+                    return {"result":"ok", "file_extension": file_extension, "file_size": file_size}
+            else:
+                with open(filename, 'wb') as f:
+                    file_size = len(response.content)
+                    if file_size > max_upload_file_size:
+                        return {"result":"error", "message":"file too large"}
+                    f.write(response.content)
+                    return {"result":"ok", "file_extension": file_extension, "file_size": file_size}
         else:
-            headers['Range'] = 'bytes=0-'
-            response = requests.get(url, headers=headers, stream=True)
-        if response.status_code == 206:
-            file_size = int(response.headers.get('Content-Length', "0"))
-            if file_size > max_upload_file_size:
-                logging.info(f"Download {filename} failed, for file_size:{file_size}")
-                return {"result":"error", "message":"file too large"}
-            logging.info(f"Download {filename} started, file_size:{file_size}")
-            with open(filename, 'wb') as f:
-                chunk_size = 1024 * 1024
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    f.write(chunk)
-                    logging.info(f'Downloaded {filename} %.2f MB' % (f.tell() / 1024 / 1024))
-                logging.info(f'Download {filename} complete')
-                return {"result":"ok"}
-        elif response.status_code == 200:
-            file_size = int(response.headers.get('Content-Length', "0"))
-            if file_size > max_upload_file_size:
-                logging.info(f"Download {filename} failed, for file_size:{file_size}")
-                return {"result":"error", "message":"file too large"}
-            logging.info(f"Download {filename} started, file_size:{file_size}")
-            with open(filename, 'wb') as f:
-                f.write(response.content)
-                return {"result":"ok"}
-        logging.info(f"download {filename} failed, response.status_code:{response.status_code}")
+            logging.info(f"download {filename} failed, response.status_code:{response.status_code}")
     except Exception as e:
         logging.exception(e)
     return {"result":"error", "message":"fail to download file"}
 
+def judge_file_extension(url, content_type):
+    if 'text/html' in content_type:
+        return '.html'
+    url_parsed = url_parsed(url)
+    return lanying_utils.parse_file_ext(url_parsed.path)
+    
 def download_url_in_text_format(url, filename):
     try:
         doc = WebBaseLoader(url).load()[0]

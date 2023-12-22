@@ -3,6 +3,8 @@ import ipaddress
 from urllib.parse import urlparse
 import logging
 import json
+import re
+import os
 
 def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
@@ -55,3 +57,16 @@ def safe_json_loads(str, default={}):
         return json.loads(str)
     except Exception as e:
         return default
+
+def is_valid_lanying_api_url(url):
+    pattern1 = r'^https://[^/]*api\.maximtop\.cn/'
+    if re.match(pattern1, url):
+        return True
+    pattern2 = r'^https://[^/]*api\.maximtop\.com\.cn/'
+    if re.match(pattern2, url):
+        return True
+    return False
+
+def parse_file_ext(path):
+    _,ext = os.path.splitext(path)
+    return ext.lower()

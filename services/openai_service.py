@@ -26,6 +26,8 @@ import lanying_file_storage
 import lanying_chatbot
 import lanying_ai_capsule
 import lanying_im_api
+download_dir = os.getenv("DOWNLOAD_DIR", "/data/download")
+os.makedirs(download_dir, exist_ok=True)
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -420,7 +422,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     reference = presetExt.get('reference')
     reference_list = []
     messages = preset.get('messages',[])
-    functions = []
+    functions = [make_file_access_function()]
     now = int(time.time())
     history = {'time':now}
     fromUserId = config['from_user_id']
@@ -676,7 +678,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
             if is_debug:
                 lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
-            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug)
+            response = handle_function_call(app_id, config, msg, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug)
             function_call_times -= 1
         else:
             break
@@ -843,7 +845,7 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug):
+def handle_function_call(app_id, config, msg, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug):
     function_name = function_call.get('name')
     function_args = json.loads(function_call.get('arguments', '{}'))
     functions = preset.get('functions', [])
@@ -868,37 +870,42 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
     if 'function_call' in function_config:
         lanying_function_call = function_config['function_call']
         method = lanying_function_call.get('method', 'get')
-        url = fill_function_args(function_args, lanying_function_call.get('url', ''))
-        params = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('params', {})))
-        headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
-        body = fill_function_args(function_args, lanying_function_call.get('body', {}))
-        if lanying_utils.is_valid_public_url(url):
-            logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
-            if method == 'get':
-                function_response = requests.get(url, params=params, headers=headers, timeout = (20.0, 40.0))
-            else:
-                function_response = requests.post(url, params=params, headers=headers, json = body, timeout = (20.0, 40.0))
-            function_content = function_response.text
-            logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
-            if is_debug:
-                fromUserId = config['from_user_id']
-                toUserId = config['to_user_id']
-                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
-            function_message = {
-                "role": "function",
-                "name": function_name,
-                "content": function_content
-            }
-            response_message = {
-                "role": "assistant",
-                "content": "",
-                "function_call": function_call
-            }
-            append_message(preset, model_config, response_message)
-            append_message(preset, model_config, function_message)
-            response = lanying_vendor.chat(vendor, prepare_info, preset)
-            logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
-            return response
+        function_content = ''
+        if method == 'system_function':
+            function_result = handle_system_function(config, msg, function_name, function_args)
+            function_content = json.dumps(function_result, ensure_ascii=False)
+        else:
+            url = fill_function_args(function_args, lanying_function_call.get('url', ''))
+            params = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('params', {})))
+            headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
+            body = fill_function_args(function_args, lanying_function_call.get('body', {}))
+            if lanying_utils.is_valid_public_url(url):
+                logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
+                if method == 'get':
+                    function_response = requests.get(url, params=params, headers=headers, timeout = (20.0, 40.0))
+                else:
+                    function_response = requests.post(url, params=params, headers=headers, json = body, timeout = (20.0, 40.0))
+                function_content = function_response.text
+        logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
+        if is_debug:
+            fromUserId = config['from_user_id']
+            toUserId = config['to_user_id']
+            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
+        function_message = {
+            "role": "function",
+            "name": function_name,
+            "content": function_content
+        }
+        response_message = {
+            "role": "assistant",
+            "content": "",
+            "function_call": function_call
+        }
+        append_message(preset, model_config, response_message)
+        append_message(preset, model_config, function_message)
+        response = lanying_vendor.chat(vendor, prepare_info, preset)
+        logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+        return response
     raise Exception('bad_preset_function')
 
 def ensure_value_is_string(obj):
@@ -2001,6 +2008,7 @@ def handle_chat_file(msg, config):
             redis = lanying_redis.get_redis_connection()
             redis.hset(chatfile_key, 'url', url)
             redis.expire(chatfile_key, 86400 * 3)
+            redis.hset(chatfile_key, 'create_time', int(time.time()))
             return {'result': 'ok', 'new_content': f"我上传了一个文件（{dname}）。"}
         else:
             return check_result
@@ -2950,3 +2958,95 @@ def is_chatbot_user_id(app_id, user_id, config):
     if lanying_chatbot.get_user_chatbot_id(app_id, user_id):
         return True
     return False
+
+def make_file_access_function():
+    function_info = {
+        "name": "system_get_file_content",
+        "description": "获取文件或网页的内容",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "文件名 或网页URL"
+                }
+            },
+            "required": ["name"]
+        },
+        "function_call":{
+            "method": "system_function"
+        }
+    }
+    return function_info
+
+def handle_system_function(config, msg, function_name, function_args):
+    app_id = msg['appId']
+    from_user_id = int(msg['from']['uid'])
+    to_user_id = int(msg['to']['uid'])
+    if function_name == 'system_get_file_content':
+        name = function_args.get('name', '')
+        chat_file_key = make_chatfile_key(from_user_id, to_user_id, name)
+        redis = lanying_redis.get_redis_connection()
+        chat_file_info = lanying_redis.redis_hgetall(redis, chat_file_key)
+        if 'object_name' in chat_file_info:
+            file_extension = chat_file_info['file_extension']
+            file_size = int(chat_file_info['file_size'])
+            temp_filename = os.path.join(f"{download_dir}/{app_id}-file-function-object-{uuid.uuid4()}{file_extension}")
+            lanying_file_storage.download(object_name, temp_filename)
+            return {'result':'ok', 'file_extension': file_extension, 'filename': temp_filename, 'file_size': file_size}
+        if name.startswith('http://') or name.startswith("https://"):
+            temp_filename = os.path.join(f"{download_dir}/{app_id}-file-function-url-{uuid.uuid4()}")
+            url = name
+            if lanying_utils.is_valid_public_url(url):
+                logging.info(f"system_function start request url | app_id:{app_id}, function_name:{function_name}, url:{url}")
+                headers = {}
+                result = lanying_file_storage.download_url(url, headers, temp_filename)
+                if result['result'] == 'error':
+                    return result
+                else:
+                    file_extension = result['file_extension']
+                    file_size = result['file_size']
+                    if file_extension not in lanying_embedding.allow_exts():
+                        return {'result':'error', 'message': 'unsupport file type'}
+                    object_name = os.path.join(f"chat-file/{app_id}/{from_user_id}{to_user_id}{file_extension}")
+                    upload_result = lanying_file_storage.upload(object_name, temp_filename)
+                    if upload_result["result"] == "error":
+                        return {'result':'error', 'message': 'fail to upload file'}
+                    redis.hsetnx(chat_file_key, 'url', url)
+                    redis.expire(chat_file_key, 86400 * 3)
+                    redis.hsetnx(chat_file_key, 'create_time', int(time.time()))
+                    redis.hset(chat_file_key, "file_size", file_size)
+                    redis.hset(chat_file_key, 'file_extension', file_extension)
+                    redis.hset(chat_file_key, 'update_time', int(time.time()))
+                    redis.hset(chat_file_key, 'object_name', object_name)
+                    return {'result':'ok', 'file_extension': file_extension, 'filename': temp_filename, 'file_size': file_size}
+            else:
+                return {'result':'error', 'message': 'failed to download url or file'}
+        else:
+            file_extension = lanying_utils.parse_file_ext(name)
+            if file_extension not in lanying_embedding.allow_exts():
+                return {'result':'error', 'message': 'unsupport file type'}
+            temp_filename = os.path.join(f"{download_dir}/{app_id}-file-function-attachment-{uuid.uuid4()}{file_extension}")
+            if 'url' in chat_file_info:
+                url = chat_file_info['url']
+                headers = {}
+                if lanying_utils.is_valid_lanying_api_url(url):
+                    headers = {'app_id': app_id,
+                            'access-token': config['lanying_admin_token'],
+                            'user_id': str(to_user_id)}
+                result = lanying_file_storage.download_url(url, headers, temp_filename)
+                if result['result'] == 'error':
+                    return result
+                file_size = result['file_size']
+                object_name = os.path.join(f"chat-file/{app_id}/{from_user_id}{to_user_id}{file_extension}")
+                upload_result = lanying_file_storage.upload(object_name, temp_filename)
+                if upload_result["result"] == "error":
+                    return {'result':'error', 'message': 'fail to upload file'}
+                redis.hset(chat_file_key, "file_size", file_size)
+                redis.hset(chat_file_key, 'file_extension', file_extension)
+                redis.hset(chat_file_key, 'update_time', int(time.time()))
+                redis.hset(chat_file_key, 'object_name', object_name)
+                return {'result':'ok', 'file_extension': file_extension, 'filename': temp_filename, 'file_size': file_size}
+            else:
+                return {'result':'error', 'message': 'file not found'}
+    return {'result':'error', 'message': 'function name not found'}
