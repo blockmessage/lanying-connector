@@ -451,6 +451,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['cycle_type'] = 'month'
         if 'price' not in dto:
             dto['price'] = 0
+        if 'wechat_chatbot_id' not in dto:
+            dto['wechat_chatbot_id'] = ''
         return dto
     return None
 

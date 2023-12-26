@@ -176,7 +176,7 @@ def get_lanying_api_endpoint(appId):
     return os.getenv('LANYING_API_ENDPOINT', 'https://s-1-3-api.maximtop.cn')
 
 def get_service_list():
-    return os.getenv('LANYING_CONNECTOR_SERVICE_LIST', 'openai,wechat_official_account').split(',')
+    return os.getenv('LANYING_CONNECTOR_SERVICE_LIST', 'openai,wechat_official_account,wechat').split(',')
 
 def is_show_info_page():
     if mode == 'etcd':
