@@ -399,7 +399,7 @@ def show_blocks(app_id, embedding_name, doc_id, count):
 def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids):
     page_size = int(page_size)
     db_table_name = embedding_uuid_info['db_table_name']
-    db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '10'))
+    db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '32'))
     with lanying_pgvector.get_connection() as conn:
         cursor = conn.cursor()
         embedding_str = f"{embedding}"
@@ -852,7 +852,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
         if doc_info:
             block_id = advised_block_id if len(advised_block_id) > 0 else generate_block_id(embedding_uuid, doc_id)
             maybe_rate_limit(5)
-            embedding_text = text + question
+            embedding_text = question + text
             embedding = fetch_embedding(app_id, vendor, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()

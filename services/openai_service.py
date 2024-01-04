@@ -1998,7 +1998,7 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
                             break
             else:
                 break
-    embedding_query_text = '\n'.join(reversed(result))
+    embedding_query_text = '\n'.join(result)
     if is_debug:
         lanying_connector.sendMessageAsync(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai'}})
     return embedding_query_text
