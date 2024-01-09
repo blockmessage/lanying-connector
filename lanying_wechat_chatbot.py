@@ -114,9 +114,12 @@ def get_login_info(app_id, w_id):
     body = {
         'wId': w_id
     }
-    response = requests.post(url, headers=headers, json=body,timeout=(20.0, 260.0))
-    logging.info(f"wechat_chatbot get_login_info result: body={body}, response: {response.text}")
-    result = response.json()
+    try:
+        response = requests.post(url, headers=headers, json=body,timeout=(10.0, 15.0))
+        logging.info(f"wechat_chatbot get_login_info result: body={body}, response: {response.text}")
+        result = response.json()
+    except requests.exceptions.Timeout:
+        result = {'code':'1001', 'message': 'timeout'}
     if result["code"] == "1000":
         wc_id = result["data"]["wcId"]
         w_account = result["data"]["wAccount"]

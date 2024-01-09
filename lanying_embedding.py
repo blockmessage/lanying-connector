@@ -399,7 +399,7 @@ def show_blocks(app_id, embedding_name, doc_id, count):
 def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids):
     page_size = int(page_size)
     db_table_name = embedding_uuid_info['db_table_name']
-    db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '32'))
+    db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '50'))
     with lanying_pgvector.get_connection() as conn:
         cursor = conn.cursor()
         embedding_str = f"{embedding}"
