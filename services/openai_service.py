@@ -532,10 +532,17 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
                 segment_id = lanying_embedding.parse_segment_id_int_value(doc)
+                segment_begin = f'\n<KNOWLEDGE id="{doc.block_id}">\n'
+                segment_end = '\n</KNOWLEDGE>\n'
                 if hasattr(doc, 'question') and doc.question != "":
                     if question_merge:
-                        qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
-                        context = context + qa_text
+                        line_sep = "\n------\n"
+                        if line_sep in doc.question or line_sep in doc.text:
+                            line_sep = "\n######\n"
+                        qa_text = f"问:{line_sep}{doc.question}{line_sep}答:{line_sep}{doc.text}{line_sep}"
+                        ## qa_text = f"<QUESTION>\n{doc.question}\n</QUESTION>\n<ANSWER>\n{doc.text}\n</ANSWER>"
+                        ## qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
+                        context = context + segment_begin + qa_text + segment_end
                         if is_debug:
                             context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"
                     else:
@@ -556,11 +563,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     function_info = lanying_ai_plugin.remove_function_parameters_without_function_call_reference(doc.owner_app_id, function_info, doc.doc_id)
                     functions.append(function_info)
                 elif embedding_content_type == 'summary':
-                    context = context + doc.summary + "\n\n"
+                    context = context + segment_begin + doc.summary + segment_end + "\n\n"
                     if is_debug:
                         context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.summary + "\n\n"
                 else:
-                    context = context + doc.text + "\n\n"
+                    context = context + segment_begin + doc.text + segment_end+ "\n\n"
                     if is_debug:
                         context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
@@ -1071,6 +1078,10 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
         doc_tokens = int(doc.num_of_tokens) + 8
         if hasattr(doc, 'function') and doc.function != "":
             doc_tokens += 20
+        elif hasattr(doc, 'question') and doc.question != "":
+            doc_tokens += 20
+        else:
+            doc_tokens += 10
         now_tokens += doc_tokens
         blocks_num += 1
         logging.info(f"multi_embedding_search count token: sort_key:{sort_key}, max_tokens:{max_tokens}, now_tokens:{now_tokens}, num_of_tokens:{int(doc.num_of_tokens)},max_blocks:{max_blocks},blocks_num:{blocks_num}")
