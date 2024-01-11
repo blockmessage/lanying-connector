@@ -151,29 +151,29 @@ def handle_wechat_chat_message(wc_id, account, data):
     to_user = data['toUser']
     wid = data['wId']
     if self:
-        logging.info(f"handle_chat_message skip self message | self:{self}, wc_id: {wc_id}, account:{account}, data:{data}")
+        logging.info(f"handle_chat_message skip self message | self:{self}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
     message_deduplication = message_deduplication_key(from_user, to_user, msg_id, new_msg_id)
     if redis.get(message_deduplication):
-        logging.info(f"handle_chat_message skip for message_deduplication | wc_id: {wc_id}, account:{account}, data:{data}")
+        logging.info(f"handle_chat_message skip for message_deduplication | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
-    wc_id_info = lanying_wechat_chatbot.get_wc_id_info(wc_id)
-    if wc_id_info is None:
-        logging.info(f"handle_chat_message wc_id not found: wc_id: {wc_id}, account:{account}, data:{data}")
+    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wc_id)
+    if global_wid_info is None:
+        logging.info(f"handle_chat_message wc_id not found: wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
-    app_id = wc_id_info['app_id']
-    wechat_chatbot_id = wc_id_info['wechat_chatbot_id']
+    app_id = global_wid_info['app_id']
+    wechat_chatbot_id = global_wid_info['wechat_chatbot_id']
     wechat_chatbot_info = lanying_wechat_chatbot.get_wechat_chatbot(app_id, wechat_chatbot_id)
     if wechat_chatbot_info is None:
-        logging.info(f"handle_chat_message wechat_chatbot_id not found | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, data:{data}")
+        logging.info(f"handle_chat_message wechat_chatbot_id not found | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
     if wechat_chatbot_info['status'] != 'normal':
-        logging.info(f"handle_chat_message wechat_chatbot status not normal | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, data:{data}, status:{wechat_chatbot_info['status']}")
+        logging.info(f"handle_chat_message wechat_chatbot status not normal | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, status:{wechat_chatbot_info['status']}")
         return
     chatbot_id = wechat_chatbot_info['chatbot_id']
     chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
     if chatbot_info is None:
-        logging.info(f"handle_chat_message chatbot_id not found | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, data:{data}, chatbot_id:{chatbot_id}")
+        logging.info(f"handle_chat_message chatbot_id not found | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, chatbot_id:{chatbot_id}")
         return
     to_user_id = chatbot_info['user_id']
     from_user_id = get_or_register_user(app_id, from_user)
@@ -197,7 +197,12 @@ def handle_chat_message(config, message):
     if wechat_username:
         w_id = wechat_chatbot['w_id']
         if len(w_id) > 0:
-            send_wechat_message(config, app_id, message, wechat_username, w_id)
+            w_id_info = lanying_wechat_chatbot.get_wid_info(app_id, w_id)
+            if w_id_info:
+                if w_id_info["status"] == 'binding':
+                    send_wechat_message(config, app_id, message, wechat_username, w_id)
+                else:
+                    logging.info(f"wechat chatbot skip send message for bad wid status: wid:{w_id}, app_id:{app_id}, status:{w_id_info['status']}")
 
 def check_message_need_send(config, message):
     from_user_id = int(message['from']['uid'])
@@ -314,6 +319,9 @@ def send_wechat_message(config, app_id, message, to_username, w_id):
         response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
         result = response.json()
         logging.info(f"wechat_chatbot send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
+        if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
+            logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
+            lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
 
 def split_string_by_size(input_string, chunk_size):
     return [input_string[i:i+chunk_size] for i in range(0, len(input_string), chunk_size)]

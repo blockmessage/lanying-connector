@@ -68,6 +68,13 @@ def handle_login_response(app_id, wechat_chatbot_id, response):
     else:
         return {'result': 'error', 'message': result['message']}
 
+def get_global_wid_info(w_id):
+    redis = lanying_redis.get_redis_connection()
+    app_id = lanying_redis.redis_hget(redis, get_wid_info_ids_key(), w_id)
+    if app_id:
+        return get_wid_info(app_id, w_id)
+    return None
+
 def create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url):
     now = int(time.time())
     redis = lanying_redis.get_redis_connection()
@@ -76,10 +83,11 @@ def create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url):
         'app_id': app_id,
         'wechat_chatbot_id': wechat_chatbot_id,
         'qr_code_url': qr_code_url,
-        'create_time': now
+        'create_time': now,
+        "status": "wait",
+        "reason": "ok"
     })
-    redis.expire(key, 86400 * 7)
-    redis.hset(get_wid_info_ids_key(), w_id, now)
+    redis.hset(get_wid_info_ids_key(), w_id, app_id)
     redis.hset(get_wid_info_ids_app_key(app_id), w_id, now)
 
 def delete_wid_info(app_id, w_id):
@@ -93,7 +101,6 @@ def set_wid_info_field(app_id, w_id, field, value):
     redis = lanying_redis.get_redis_connection()
     key = get_wid_info_key(app_id, w_id)
     redis.hset(key, field, value)
-    redis.expire(key, 86400*7)
 
 def get_wid_info(app_id, w_id):
     redis = lanying_redis.get_redis_connection()
@@ -102,7 +109,21 @@ def get_wid_info(app_id, w_id):
     if 'create_time' in info:
         return info
     return None
-    
+
+def change_wid_status(app_id, wid, status, reason):
+    wid_info = get_wid_info(app_id, wid)
+    if wid_info:
+        set_wid_info_field(app_id, wid, "status", status)
+        set_wid_info_field(app_id, wid, "reason", reason)
+        if status == 'offline':
+            wechat_chatbot_id = wid_info['wechat_chatbot_id']
+            wechat_chatbot_info = get_wechat_chatbot(app_id, wechat_chatbot_id)
+            if wechat_chatbot_info:
+                if wechat_chatbot_info['w_id'] == wid and wechat_chatbot_info["status"] == 'normal':
+                    update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", "offline")
+                    update_wechat_chatbot_field(app_id, wechat_chatbot_id, "reason", reason)
+                    logging.info(f"wechat chatbot change status to offline: app_id:{app_id}, wid:{wid}, wechat_chatbot_id:{wechat_chatbot_id}")
+
 def get_login_info(app_id, w_id):
     wid_info = get_wid_info(app_id, w_id)
     if wid_info is None:
@@ -119,6 +140,7 @@ def get_login_info(app_id, w_id):
         logging.info(f"wechat_chatbot get_login_info result: body={body}, response: {response.text}")
         result = response.json()
     except requests.exceptions.Timeout:
+        is_timeout = True
         result = {'code':'1001', 'message': 'timeout'}
     if result["code"] == "1000":
         wc_id = result["data"]["wcId"]
@@ -127,8 +149,10 @@ def get_login_info(app_id, w_id):
         set_wid_info_field(app_id, w_id, "wc_id", wc_id)
         set_wid_info_field(app_id, w_id, "w_account", w_account)
         set_wid_info_field(app_id, w_id, "result", wid_info_result)
+        logging.info(f"wechat chatbot login success | wc_id:{wc_id}, w_account:{w_account}, wid_info:{wid_info}, result:{result}")
         return {'result': "ok", "data":{"wc_id":wc_id, "w_account": w_account}}
     else:
+        logging.info(f"wechat chatbot login timeout or failed | wid_info:{wid_info}, result:{result}")
         return {'result': 'error', 'message': result['message']}
 
 def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note):
@@ -138,6 +162,8 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
         return {'result':'error', 'message': 'bad login info'}
     if wid_info["wechat_chatbot_id"] != "":
         return {'result':'error', 'message': 'bad login info'}
+    if wid_info["status"] != "wait":
+        return {'result':'error', 'message': 'login info already bind'}
     if 'result' not in wid_info:
         return {'result':'error', 'message': 'bad login info'}
     chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
@@ -165,9 +191,10 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
         "status": "normal"
     })
     redis.rpush(get_chatbot_ids_key(app_id), wechat_chatbot_id)
-    update_wc_id_info(wc_id, app_id, wechat_chatbot_id)
     lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
-    delete_wid_info(app_id, w_id)
+    set_wid_info_field(app_id, w_id, "wechat_chatbot_id", wechat_chatbot_id)
+    set_wid_info_field(app_id, w_id, "status", "binding")
+    logging.info(f"wechat chatbot create chatbot success: app_id:{app_id}, w_id:{w_id}, chatbot_id:{chatbot_id}, wechat_chatbot_id:{wechat_chatbot_id}")
     return {'result':'ok', 'data':{'wechat_chatbot_id':wechat_chatbot_id}}
 
 def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note):
@@ -175,6 +202,8 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_ty
     if wid_info:
         if wid_info["wechat_chatbot_id"] != wechat_chatbot_id:
             return {'result':'error', 'message': 'bad login info'}
+        if wid_info["status"] != "wait":
+            return {'result':'error', 'message': 'login info already bind'}
         if 'result' not in wid_info:
             return {'result':'error', 'message': 'bad login info'}
     wechat_chatbot = get_wechat_chatbot(app_id, wechat_chatbot_id)
@@ -196,8 +225,7 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_ty
             "wid_info_result": json.dumps(wid_info_result, ensure_ascii=False),
             "status": "normal"
         })
-        update_wc_id_info(wc_id, app_id, wechat_chatbot_id)
-        delete_wid_info(app_id, w_id)
+        set_wid_info_field(app_id, w_id, "status", "binding")
     else:
         redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), {
             "chatbot_id": chatbot_id,
@@ -253,31 +281,7 @@ def get_wechat_chatbot(app_id, wechat_chatbot_id):
                 dto[k] = v
         return dto
     else:
-        return None
-
-def update_wc_id_info(wc_id, app_id, wechat_chatbot_id):
-    key = get_wc_id_info_key(wc_id)
-    redis = lanying_redis.get_redis_connection()
-    redis.hmset(key, {
-        "app_id": app_id,
-        "wechat_chatbot_id": wechat_chatbot_id
-    })
-
-def get_wc_id_info(wc_id):
-    key = get_wc_id_info_key(wc_id)
-    redis = lanying_redis.get_redis_connection()
-    info = lanying_redis.redis_hgetall(redis, key)
-    if 'app_id' in info:
-        return info
-    return None
-
-def delete_wc_id_info(wc_id):
-    key = get_wc_id_info_key(wc_id)
-    redis = lanying_redis.get_redis_connection()
-    redis.delete(key)
-
-def clean_old_login(wechat_chatbot_info):
-    pass # TODO
+        return None 
 
 def generate_chatbot_id():
     redis = lanying_redis.get_redis_connection()
@@ -297,6 +301,3 @@ def get_wid_info_ids_key():
 
 def get_wid_info_ids_app_key(app_id):
     return f"lanying_connector:wechat:w_id_info_ids_by_app:{app_id}"
-
-def get_wc_id_info_key(wc_id):
-    return f"lanying_connector:wechat:wc_id_info:{wc_id}"
