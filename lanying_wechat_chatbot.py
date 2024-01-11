@@ -119,7 +119,7 @@ def change_wid_status(app_id, wid, status, reason):
             wechat_chatbot_id = wid_info['wechat_chatbot_id']
             wechat_chatbot_info = get_wechat_chatbot(app_id, wechat_chatbot_id)
             if wechat_chatbot_info:
-                if wechat_chatbot_info['w_id'] == wid and wechat_chatbot_info["status"] == 'normal':
+                if wechat_chatbot_info['w_id'] == wid and wechat_chatbot_info["status"] == 'online':
                     update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", "offline")
                     update_wechat_chatbot_field(app_id, wechat_chatbot_id, "reason", reason)
                     logging.info(f"wechat chatbot change status to offline: app_id:{app_id}, wid:{wid}, wechat_chatbot_id:{wechat_chatbot_id}")
@@ -188,7 +188,8 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
         "w_id": w_id,
         "w_account": w_account,
         "wid_info_result": json.dumps(wid_info_result, ensure_ascii=False),
-        "status": "normal"
+        "status": "online",
+        "soft_status": "enable"
     })
     redis.rpush(get_chatbot_ids_key(app_id), wechat_chatbot_id)
     lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
@@ -223,7 +224,7 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_ty
             "w_id": w_id,
             "w_account": w_account,
             "wid_info_result": json.dumps(wid_info_result, ensure_ascii=False),
-            "status": "normal"
+            "status": "online"
         })
         set_wid_info_field(app_id, w_id, "status", "binding")
     else:
@@ -255,11 +256,11 @@ def list_wechat_chatbots(app_id):
 
 def change_status(app_id, wechat_chatbot_id, status):
     wechat_chatbot = get_wechat_chatbot(app_id, wechat_chatbot_id)
-    if status not in ["normal", "disabled"]:
-        return {'result':'error', 'message': 'status only support normal or disabled'}
+    if status not in ["enabled", "disabled"]:
+        return {'result':'error', 'message': 'status only support enabled or disabled'}
     if wechat_chatbot is None:
         return {'result':'error', 'message': 'wechat_chatbot not exist'}
-    update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", status)
+    update_wechat_chatbot_field(app_id, wechat_chatbot_id, "soft_status", status)
     return {'result':'ok', 'data':{'success': True}}
 
 def update_wechat_chatbot_field(app_id, wechat_chatbot_id, field, value):
@@ -279,9 +280,13 @@ def get_wechat_chatbot(app_id, wechat_chatbot_id):
                 dto[k] = json.loads(v)
             else:
                 dto[k] = v
+        if 'soft_status' not in dto:
+            dto['soft_status'] = "enabled"
+        if dto["status"] == "normal" or dto["status"] == "disabled" :## for old dirty data
+            dto["status"] = "online"
         return dto
     else:
-        return None 
+        return None
 
 def generate_chatbot_id():
     redis = lanying_redis.get_redis_connection()

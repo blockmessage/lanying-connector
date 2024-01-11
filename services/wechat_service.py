@@ -167,8 +167,11 @@ def handle_wechat_chat_message(wc_id, account, data):
     if wechat_chatbot_info is None:
         logging.info(f"handle_chat_message wechat_chatbot_id not found | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
-    if wechat_chatbot_info['status'] != 'normal':
-        logging.info(f"handle_chat_message wechat_chatbot status not normal | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, status:{wechat_chatbot_info['status']}")
+    if wechat_chatbot_info['soft_status'] != 'enabled':
+        logging.info(f"handle_chat_message wechat_chatbot status not enabled | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, status:{wechat_chatbot_info['status']}")
+        return
+    if wechat_chatbot_info['status'] != 'online':
+        logging.info(f"handle_chat_message wechat_chatbot status not online | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, status:{wechat_chatbot_info['status']}")
         return
     chatbot_id = wechat_chatbot_info['chatbot_id']
     chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
@@ -219,8 +222,10 @@ def check_message_need_send(config, message):
     wechat_chatbot = lanying_wechat_chatbot.get_wechat_chatbot(app_id,wechat_chatbot_id)
     if wechat_chatbot is None:
         return {'result': 'error', 'message': 'wechat_chatbot not found'}
-    if wechat_chatbot['status'] != 'normal':
-        return {'result': 'error', 'message': 'wechat_chatbot status not normal'}
+    if wechat_chatbot['soft_status'] != 'enabled':
+        return {'result': 'error', 'message': 'wechat_chatbot status not enabled'}
+    if wechat_chatbot['status'] != 'online':
+        return {'result': 'error', 'message': 'wechat_chatbot status not online'}
     my_user_id = chatbot['user_id']
     if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and (type == 'CHAT' or type == 'REPLACE' or type == 'APPEND'):
         ext = message.get('ext', '')
