@@ -399,7 +399,13 @@ def show_blocks(app_id, embedding_name, doc_id, count):
 def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids):
     page_size = int(page_size)
     db_table_name = embedding_uuid_info['db_table_name']
-    db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '50'))
+    db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '32'))
+    embedding_count = int(embedding_uuid_info.get('embedding_count', '0'))
+    max_embedding_count = int(os.getenv('MAX_EMBEDDING_COUNT_FOR_FULL_TABLE_SCAN', '5000'))
+    if embedding_count < max_embedding_count and db_ivfflat_probes < 100:
+        logging.info(f"using full table scan: embedding_count:{embedding_count}")
+        db_ivfflat_probes = 100
+    start_time = time.time()
     with lanying_pgvector.get_connection() as conn:
         cursor = conn.cursor()
         embedding_str = f"{embedding}"
@@ -416,12 +422,13 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
             query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score FROM {db_table_name} where doc_id = %s ORDER BY embedding <=> %s LIMIT %s;"
             args = [embedding_str, doc_id, embedding_str, page_size]
         # logging.info(f"query:{query},args:{args}")
-        cursor.execute(f"SET ivfflat.probes = {db_ivfflat_probes};")
+        cursor.execute(f"SET LOCAL ivfflat.probes = {db_ivfflat_probes};")
         cursor.execute(query, args)
         rows = cursor.fetchall()
         cursor.close()
         lanying_pgvector.put_connection(conn)
         # logging.info(f"rows:{rows}")
+        logging.info(f"query finish with time: {time.time() - start_time}")
         class MyDocument:
             pass
         results = MyDocument()
@@ -830,6 +837,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
     db_type = config.get('db_type', 'redis')
     is_dry_run = config.get("dry_run", "false") == "true"
     max_block_size = get_max_token_count(config)
+    question_answer_index_mode = config.get("question_answer_index_mode", "all")
     logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}, vendor:{vendor}, max_block_size:{max_block_size}")
     for block in blocks:
         if len(block) == 2:
@@ -852,7 +860,13 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
         if doc_info:
             block_id = advised_block_id if len(advised_block_id) > 0 else generate_block_id(embedding_uuid, doc_id)
             maybe_rate_limit(5)
-            embedding_text = question + text
+            if question_answer_index_mode == "question":
+                if len(question) > 0:
+                    embedding_text = question
+                else:
+                    embedding_text = question + text
+            else:
+                embedding_text = question + text
             embedding = fetch_embedding(app_id, vendor, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
