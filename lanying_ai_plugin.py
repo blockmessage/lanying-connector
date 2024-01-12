@@ -78,13 +78,13 @@ def list_ai_plugins(app_id):
         info = get_ai_plugin(app_id, plugin_id)
         if info:
             dto = {}
-            for key in ["name", "plugin_id", "create_time", "endpoint", "envs", "headers", "params"]:
+            for key in ["name", "plugin_id", "create_time", "endpoint", "envs", "headers", "params", "auth"]:
                 if key in info:
-                    if key in ["envs", "headers", "params"]:
+                    if key in ["envs", "headers", "params", "auth"]:
                         dto[key] = json.loads(info[key])
                     else:
                         dto[key] = info[key]
-                elif key in ["envs", "headers", "params"]:
+                elif key in ["envs", "headers", "params", "auth"]:
                     dto[key] = {}
             result.append(dto)
     return {'result':'ok', 'data':{'list': result}}
@@ -233,7 +233,7 @@ def delete_ai_function_from_ai_plugin(app_id, plugin_id, function_id):
     increase_ai_function_count(app_id, -1)
     return {'result':'ok', 'data':{'success': True}}
 
-def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params):
+def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params, auth):
     ai_plugin_info = get_ai_plugin(app_id, plugin_id)
     if not ai_plugin_info:
         return {'result':'error', 'message': 'ai plugin not exist'}
@@ -243,6 +243,7 @@ def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params
         'headers': json.dumps(headers, ensure_ascii=False),
         'params': json.dumps(params, ensure_ascii=False),
         'envs': json.dumps(envs, ensure_ascii=False),
+        'auth': json.dumps(auth, ensure_ascii=False),
         'endpoint': endpoint
     })
     return {'result':'ok', 'data':{'success': True}}
@@ -495,6 +496,7 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
     headers = safe_json_loads(plugin_info.get('headers', '{}'))
     params = safe_json_loads(plugin_info.get('params', '{}'))
     envs = safe_json_loads(plugin_info.get('envs', '{}'))
+    auth = safe_json_loads(plugin_info.get('auth', '{}'))
     function_call = function_info.get('function_call', {})
     parameters = function_info.get('parameters', {})
     function_call = fill_parameters_to_function_call(function_call, parameters)
@@ -522,6 +524,7 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
     function_call['headers'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_headers))
     function_call['params'] = fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_params))
     function_call['body'] = maybe_format_function_call_body(parameters, fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_body)))
+    function_call['auth'] = auth
     function_info["function_call"] = function_call
     logging.info(f"function_info:{function_info}")
     return function_info
@@ -641,6 +644,12 @@ def plugin_export(app_id, plugin_id):
                 'function_call': safe_json_loads(function_info['function_call'])
             }
             function_dtos.append(function_dto)
+    plugin_auth = safe_json_loads(plugin_info.get('auth', '{}'))
+    auth = {
+        'type': plugin_auth.get('type', 'none'),
+        'username': '',
+        'password': ''
+    }
     plugin_dto = {
         'type': 'ai_plugin',
         'version': 1,
@@ -648,6 +657,7 @@ def plugin_export(app_id, plugin_id):
         "headers": safe_json_loads(plugin_info.get('headers', '{}')),
         "params": safe_json_loads(plugin_info.get('params', '{}')),
         "envs": safe_json_loads(plugin_info.get('envs', '{}')),
+        "auth": auth,
         "endpoint": plugin_info['endpoint'],
         "functions": function_dtos
     }
@@ -688,7 +698,8 @@ def plugin_import_from_config(app_id, plugin_config):
     plugin_envs = plugin_config.get('envs', {})
     plugin_headers = plugin_config.get('headers', {})
     plugin_params = plugin_config.get('params', {})
-    configure_ai_plugin(app_id, plugin_id, plugin_name, endpoint, plugin_headers, plugin_envs, plugin_params)
+    plugin_auth = plugin_config.get('auth', {})
+    configure_ai_plugin(app_id, plugin_id, plugin_name, endpoint, plugin_headers, plugin_envs, plugin_params, plugin_auth)
     for function_info in plugin_config.get('functions', []):
         try:
             function_name = function_info['name']

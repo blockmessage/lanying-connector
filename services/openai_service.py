@@ -26,6 +26,8 @@ import lanying_file_storage
 import lanying_chatbot
 import lanying_ai_capsule
 import lanying_im_api
+from requests.auth import HTTPDigestAuth
+from requests.auth import HTTPBasicAuth
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -898,12 +900,22 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         params = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('params', {})))
         headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
         body = fill_function_args(function_args, lanying_function_call.get('body', {}))
+        auth = lanying_function_call.get('auth', {})
         if lanying_utils.is_valid_public_url(url):
-            logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, url:{url}, params:{params}, headers: {headers}, body: {body}")
-            if method == 'get':
-                function_response = requests.get(url, params=params, headers=headers, timeout = (20.0, 40.0))
+            auth_type = auth.get('type', 'none')
+            logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, auth_type:{auth_type}, url:{url}, params:{params}, headers: {headers}, body: {body}")
+            auth_username = auth.get('username', '')
+            auth_password = auth.get('password', '')
+            if auth_type == 'basic' and len(auth_username) > 0 and len(auth_password) > 0:
+                auth_opts = HTTPBasicAuth(auth_username, auth_password)
+            elif auth_type == 'digest' and len(auth_username) > 0 and len(auth_password) > 0:
+                auth_opts = HTTPDigestAuth(auth_username, auth_password)
             else:
-                function_response = requests.post(url, params=params, headers=headers, json = body, timeout = (20.0, 40.0))
+                auth_opts = None
+            if method == 'get':
+                function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (20.0, 40.0))
+            else:
+                function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (20.0, 40.0))
             function_content = function_response.text
             logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
             if is_debug:
@@ -2304,7 +2316,8 @@ def configure_ai_plugin():
     params = dict(data.get('params',{}))
     envs = dict(data.get('envs',{}))
     endpoint = str(data.get('endpoint', ''))
-    result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params)
+    auth = dict(data.get('auth',{}))
+    result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params, auth)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
