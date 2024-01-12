@@ -30,6 +30,8 @@ def service_post_messages(token):
         data = message.get('data', {})
         if message_type == '60001':
             handle_wechat_chat_message(wc_id, account, data)
+        elif message_type == '30000':
+            handle_wechat_offline(wc_id, account, data)
     else:
         logging.info(f"receive invalid wechat message:{message}")
     resp = make_response({'code':200, 'data':{'success': True}})
@@ -187,6 +189,15 @@ def handle_wechat_chat_message(wc_id, account, data):
     else:
         logging.info(f"handle_chat_message user_id not found: {from_user_id}")
 
+def handle_wechat_offline(wc_id, account, data):
+    wid = data['wId']
+    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wc_id)
+    if global_wid_info is None:
+        logging.info(f"handle_wechat_offline wc_id not found: wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+        return
+    app_id = global_wid_info['app_id']
+    lanying_wechat_chatbot.change_wid_status(app_id, wid, "offline", 'kick')
+
 def handle_chat_message(config, message):
     checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
@@ -206,6 +217,8 @@ def handle_chat_message(config, message):
                     send_wechat_message(config, app_id, message, wechat_username, w_id)
                 else:
                     logging.info(f"wechat chatbot skip send message for bad wid status: wid:{w_id}, app_id:{app_id}, status:{w_id_info['status']}")
+            else:
+                logging.info(f"wechat chatbot skip send message for wid not found: wid:{w_id}, app_id:{app_id}")
 
 def check_message_need_send(config, message):
     from_user_id = int(message['from']['uid'])

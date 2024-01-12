@@ -249,7 +249,7 @@ def list_wechat_chatbots(app_id):
         if info:
             dto = {}
             for key,value in info.items():
-                if key in ["chatbot_id", "wechat_chatbot_id", "non_friend_chat_mode", "note", "wc_id", "w_account", "status", "create_time", "msg_types"]:
+                if key in ["chatbot_id", "wechat_chatbot_id", "non_friend_chat_mode", "note", "wc_id", "w_account", "status", "create_time", "msg_types", "soft_status"]:
                     dto[key] = value
             dtos.append(dto)
     return dtos
