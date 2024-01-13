@@ -99,7 +99,7 @@ def list_ai_functions(app_id, plugin_id, start, end):
         info = get_ai_function(app_id, function_id)
         if info:
             dto = {}
-            for key in ["function_id", "plugin_id", "create_time", "name", "description", "parameters", "function_call"]:
+            for key in ["function_id", "plugin_id", "create_time", "name", "description", "parameters", "function_call", "priority"]:
                 if key in info:
                     if key in ["parameters", "function_call"]:
                         dto[key] = json.loads(info[key])
@@ -126,10 +126,14 @@ def get_ai_function(app_id, function_id):
     key = get_ai_function_key(app_id, function_id)
     info = lanying_redis.redis_hgetall(redis, key)
     if "create_time" in info:
+        if 'priority' not in info:
+            info['priority'] = 10
+        else:
+            info['priority'] = int(info['priority'])
         return info
     return None
 
-def add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call):
+def add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call, priority):
     plugin = get_ai_plugin(app_id, plugin_id)
     if not plugin:
         return {'result': 'error', 'message': 'ai plugin not exist'}
@@ -150,7 +154,8 @@ def add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameter
         'name': name,
         'description': description,
         'parameters': json.dumps(parameters, ensure_ascii=False),
-        'function_call': json.dumps(function_call, ensure_ascii=False)
+        'function_call': json.dumps(function_call, ensure_ascii=False),
+        'priority': priority
     }
     redis = lanying_redis.get_redis_connection()
     increase_ai_function_count(app_id, 1)
@@ -177,6 +182,7 @@ def process_function_embedding(app_id, plugin_id, function_id):
     name = ai_function_info['name']
     embedding_name = ai_plugin_info["embedding_name"]
     description = ai_function_info['description']
+    priority = ai_function_info.get('priority', 10)
     block_id = ai_function_info['block_id']
     parameters = safe_json_loads(ai_function_info.get('parameters', '{}'))
     function_call = safe_json_loads(ai_function_info.get('function_call','{}'))
@@ -184,6 +190,7 @@ def process_function_embedding(app_id, plugin_id, function_id):
         'name': name,
         'description': description,
         'parameters': parameters,
+        'priority': priority,
         'function_call': function_call
     }
     function = json.dumps(function_info, ensure_ascii=False)
@@ -261,7 +268,7 @@ def delete_ai_plugin(app_id, plugin_id):
     redis.lrem(get_ai_plugin_ids_key(app_id), 1, plugin_id)
     return {'result': 'ok', 'data':{'success': True}}
 
-def configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call):
+def configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call, priority):
     ai_plugin_info = get_ai_plugin(app_id, plugin_id)
     if not ai_plugin_info:
         return {'result':'error', 'message': 'ai plugin not exist'}
@@ -273,6 +280,7 @@ def configure_ai_function(app_id, plugin_id, function_id, name, description, par
         'name': name,
         'description': description,
         'parameters': json.dumps(parameters, ensure_ascii=False),
+        'priority': priority,
         'function_call': json.dumps(function_call, ensure_ascii=False)
     })
     from lanying_tasks import process_function_embeddings
@@ -641,7 +649,8 @@ def plugin_export(app_id, plugin_id):
                 'name': function_info['name'],
                 'description': function_info['description'],
                 'parameters': safe_json_loads(function_info['parameters']),
-                'function_call': safe_json_loads(function_info['function_call'])
+                'function_call': safe_json_loads(function_info['function_call']),
+                'priority': function_info.get('priority', 10)
             }
             function_dtos.append(function_dto)
     plugin_auth = safe_json_loads(plugin_info.get('auth', '{}'))
@@ -706,7 +715,8 @@ def plugin_import_from_config(app_id, plugin_config):
             description = function_info['description']
             parameters = function_info['parameters']
             function_call = function_info['function_call']
-            add_ai_function_to_ai_plugin(app_id, plugin_id, function_name, description, parameters, function_call)
+            priority = function_info.get('priority', 10)
+            add_ai_function_to_ai_plugin(app_id, plugin_id, function_name, description, parameters, function_call, priority)
         except Exception as e:
             logging.info(f"fail to add_ai_function_to_ai_plugin:app_id:{app_id}, plugin_id:{plugin_id}, function_info:{function_info}")
             logging.exception(e)

@@ -556,12 +556,14 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                             question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
                 elif hasattr(doc, 'function') and doc.function != "":
                     function_info = json.loads(doc.function)
-                    if is_debug:
-                        functions_with_distance += f"[distance:{now_distance}, function_name:{function_info.get('name','')}]\n\n"
+                    if 'priority' not in function_info:
+                        function_info['priority'] = 10
                     function_name = function_info.get('name', '')
                     function_info["name"]  = f"class{len(functions)}_{function_name}"
                     function_info["doc_id"] = doc.doc_id
-                    function_info["owner_app_id"] = doc.owner_app_id;
+                    function_info["distance"] = now_distance
+                    function_info["short_name"]  = function_name
+                    function_info["owner_app_id"] = doc.owner_app_id
                     function_info = lanying_ai_plugin.remove_function_parameters_without_function_call_reference(doc.owner_app_id, function_info, doc.doc_id)
                     functions.append(function_info)
                 elif embedding_content_type == 'summary':
@@ -590,6 +592,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 messages.append({'role':embedding_role, 'content':context_with_prompt})
             if len(question_answers) > 0:
                 messages.extend(question_answers)
+            if len(functions) > 0:
+                functions = sort_functions(functions)
+                if is_debug:
+                    for function_info in functions:
+                        functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
             if is_debug:
                 if is_use_old_embeddings:
                     lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai'}})
@@ -2278,7 +2285,8 @@ def add_ai_function_to_ai_plugin():
     description = str(data['description'])
     parameters = dict(data['parameters'])
     function_call = dict(data['function_call'])
-    result = lanying_ai_plugin.add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call)
+    priority = int(data.get('priority', 10))
+    result = lanying_ai_plugin.add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call, priority)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2350,11 +2358,12 @@ def configure_ai_function():
     app_id = str(data['app_id'])
     plugin_id = str(data['plugin_id'])
     function_id = str(data['function_id'])
+    priority = int(data.get('priority', 10))
     name = str(data['name'])
     description = str(data['description'])
     parameters = dict(data['parameters'])
     function_call = dict(data['function_call'])
-    result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call)
+    result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call, priority)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2992,3 +3001,6 @@ def is_chatbot_user_id(app_id, user_id, config):
         logging.info(f'lanying_user_id:{myUserId}')
         return myUserId != None and user_id == str(myUserId)
     return False
+
+def sort_functions(functions):
+    return sorted(functions, key=lambda x: x['priority'])
