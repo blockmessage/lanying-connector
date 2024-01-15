@@ -12,6 +12,9 @@ def get_authorization(app_id):
 def get_api_server():
     return os.getenv("WECHAT_CHATBOT_API_SERVER", 'https://abc.com')
 
+def get_account():
+    return os.getenv("WECHAT_CHATBOT_ACCOUNT", "")
+
 def get_headers(app_id):
     return {
         'Content-Type': 'application/json',
@@ -24,7 +27,7 @@ def login(app_id, type, wechat_chatbot_id, proxy, ttuid):
         wechat_chatbot_info = get_wechat_chatbot(app_id, wechat_chatbot_id)
         if wechat_chatbot_info is None:
             return {'result':'error', 'message': 'wechat_chatbot_id not found'}
-        wc_id = wechat_chatbot_info['wc_id']
+        wc_id = maybe_kick_wechat_chatbot(app_id, wechat_chatbot_info)
     if type not in ["ttuid", "proxy"]:
         return {'result':'error', 'message': 'bad type'}
     if type == 'ttuid':
@@ -60,6 +63,8 @@ def handle_login_response(app_id, wechat_chatbot_id, response):
         w_id = result["data"]["wId"]
         qr_code_url = result["data"]["qrCodeUrl"]
         create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url)
+        if wechat_chatbot_id != "":
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "w_id", w_id)
         return {'result': "ok",
                 "data": {
                     "qr_code_url": qr_code_url,
@@ -140,7 +145,6 @@ def get_login_info(app_id, w_id):
         logging.info(f"wechat_chatbot get_login_info result: body={body}, response: {response.text}")
         result = response.json()
     except requests.exceptions.Timeout:
-        is_timeout = True
         result = {'code':'1001', 'message': 'timeout'}
     if result["code"] == "1000":
         wc_id = result["data"]["wcId"]
@@ -149,9 +153,18 @@ def get_login_info(app_id, w_id):
         set_wid_info_field(app_id, w_id, "wc_id", wc_id)
         set_wid_info_field(app_id, w_id, "w_account", w_account)
         set_wid_info_field(app_id, w_id, "result", wid_info_result)
+        wechat_chatbot_id = wid_info['wechat_chatbot_id']
+        if wechat_chatbot_id != '':
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "w_id", w_id)
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "wc_id", wc_id)
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "w_account", w_account)
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "result", wid_info_result)
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", "online")
         logging.info(f"wechat chatbot login success | wc_id:{wc_id}, w_account:{w_account}, wid_info:{wid_info}, result:{result}")
         return {'result': "ok", "data":{"wc_id":wc_id, "w_account": w_account}}
     else:
+        if result['message'] == '二维码已过期':
+            result['message'] = 'expired'
         logging.info(f"wechat chatbot login timeout or failed | wid_info:{wid_info}, result:{result}")
         return {'result': 'error', 'message': result['message']}
 
@@ -306,3 +319,102 @@ def get_wid_info_ids_key():
 
 def get_wid_info_ids_app_key(app_id):
     return f"lanying_connector:wechat:w_id_info_ids_by_app:{app_id}"
+
+def maybe_kick_wechat_chatbot(app_id, wechat_chatbot_info):
+    wc_id = ''
+    if wechat_chatbot_info:
+        w_id = wechat_chatbot_info['w_id']
+        wc_id = wechat_chatbot_info['wc_id']
+        wechat_chatbot_id = wechat_chatbot_info['wechat_chatbot_id']
+        if is_wid_online(app_id, w_id):
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", "offline")
+            update_wechat_chatbot_field(app_id, wechat_chatbot_id, "reason", "rebind")
+            online_wc_id = get_wc_id_by_wid(app_id, w_id)
+            if len(online_wc_id) > 0:
+                kick_wid(app_id, w_id, online_wc_id)
+                set_wid_info_field(app_id, w_id, "status", "offline")
+                set_wid_info_field(app_id, w_id, "reason", "rebind")
+                wc_id = ''
+                # for i in range(15):
+                #     if is_wid_online(app_id, w_id):
+                #         logging.info(f"wechat_chatbot kick_wid kick wait offline retry| app_id:{app_id}, w_id:{w_id}, wc_id:{online_wc_id}")
+                #         time.sleep(1)
+                #     else:
+                #         logging.info(f"wechat_chatbot kick_wid kick wait offline finish| app_id:{app_id}, w_id:{w_id}, wc_id:{online_wc_id}")
+                #         break
+        else:
+            online_w_id = get_wid_by_wc_id(app_id, wc_id)
+            if len(online_w_id) > 0 and online_w_id != w_id:
+                logging.info(f"wechat chatbot login on another w_id, so do not use wc_id | app_id:{app_id}, w_id:{w_id}, wc_id:{wc_id}")
+                wc_id = ''
+    return wc_id
+
+def kick_wid(app_id, w_id, wc_id):
+    url =  get_api_server() + "/member/offline"
+    headers = get_headers(app_id)
+    data = {
+        "wcIds": [wc_id],
+        "account": get_account()
+    }
+    logging.info(f"wechat_chatbot kick_wid kick start | app_id:{app_id}, w_id:{w_id}, wc_id:{wc_id}")
+    response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+    result = response.json()
+    logging.info(f"wechat_chatbot kick_wid kick finish | app_id:{app_id}, w_id:{w_id}, wc_id:{wc_id}, result:{result}")
+
+def is_wid_online(app_id, w_id):
+    url =  get_api_server() + "/isOnline"
+    headers = get_headers(app_id)
+    data = {
+        "wId": w_id
+    }
+    logging.info(f"wechat_chatbot kick_wid check online start | app_id:{app_id}, w_id:{w_id}")
+    response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+    result = response.json()
+    logging.info(f"wechat_chatbot kick_wid check online finish| app_id:{app_id}, w_id:{w_id}, result:{result}")
+    if result["code"] == "1000" and result["data"]["isOnline"]:
+        return True
+    else:
+        return False
+
+def get_wc_id_by_wid(app_id, w_id):
+    account_list = get_login_account_list(app_id)
+    for account in account_list:
+        now_wid = account.get('wId', '')
+        if now_wid == w_id:
+            return account.get('wcId', '')
+    return ''
+
+def get_wid_by_wc_id(app_id, wc_id):
+    account_list = get_login_account_list(app_id)
+    for account in account_list:
+        now_wc_id = account.get('wcId', '')
+        if now_wc_id == wc_id:
+            return account.get('wId', '')
+    return ''
+
+def get_login_account_list(app_id):
+    url =  get_api_server() + "/queryLoginWx"
+    headers = get_headers(app_id)
+    data = {
+    }
+    logging.info(f"wechat_chatbot get_login_account start | app_id:{app_id}")
+    response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+    result = response.json()
+    logging.info(f"wechat_chatbot get_login_account finish| app_id:{app_id}, result:{result}")
+    if result["code"] == "1000":
+        return result["data"]
+    else:
+        return []
+
+def info():
+    accounts = get_login_account_list('')
+    for account in accounts:
+        wid = account.get('wId')
+        wc_id = account.get('wcId')
+        wid_info = get_global_wid_info(wid)
+        app_id = wid_info.get('app_id', '')
+        print(f'========= app_id:{app_id}, w_id:{wid},wc_id:{wc_id} ===========')
+        print(wid_info)
+        wechat_chatbot_id = wid_info.get('wechat_chatbot_id', '')
+        wechat_chatbot_info = get_wechat_chatbot(app_id, wechat_chatbot_id)
+        print(wechat_chatbot_info)

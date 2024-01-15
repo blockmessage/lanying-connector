@@ -191,9 +191,9 @@ def handle_wechat_chat_message(wc_id, account, data):
 
 def handle_wechat_offline(wc_id, account, data):
     wid = data['wId']
-    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wc_id)
+    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wid)
     if global_wid_info is None:
-        logging.info(f"handle_wechat_offline wc_id not found: wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+        logging.info(f"handle_wechat_offline w_id not found: wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
     app_id = global_wid_info['app_id']
     lanying_wechat_chatbot.change_wid_status(app_id, wid, "offline", 'kick')
