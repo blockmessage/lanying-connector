@@ -85,6 +85,23 @@ def download_url(url, headers, filename):
         logging.exception(e)
     return {"result":"error", "message":"fail to download file"}
 
+def download_file_url(url, headers, filename):
+    try:
+        response = requests.get(url, headers=headers, stream=True)
+        if response.status_code == 200:
+            file_size = int(response.headers.get('Content-Length', "0"))
+            if file_size > max_upload_file_size:
+                logging.info(f"Download {filename} failed, for file_size:{file_size}")
+                return {"result":"error", "message":"file too large"}
+            logging.info(f"Download {filename} started, file_size:{file_size}")
+            with open(filename, 'wb') as f:
+                f.write(response.content)
+                return {"result":"ok"}
+        logging.info(f"download {filename} failed, response.status_code:{response.status_code}")
+    except Exception as e:
+        logging.exception(e)
+    return {"result":"error", "message":"fail to download file"}
+
 def download_url_in_text_format(url, filename):
     try:
         doc = WebBaseLoader(url).load()[0]

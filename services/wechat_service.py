@@ -12,6 +12,9 @@ import requests
 import string
 import random
 import lanying_message
+import lanying_im_api
+import lanying_file_storage
+from lanying_connector import executor
 
 wechat_max_message_size = 3900
 service = 'wechat'
@@ -183,6 +186,7 @@ def handle_wechat_chat_message(wc_id, account, data):
     to_user_id = chatbot_info['user_id']
     from_user_id = get_or_register_user(app_id, from_user)
     if from_user_id:
+        maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
         config = lanying_config.get_service_config(app_id, service)
         redis.setex(message_deduplication, 3*86400, "1")
         lanying_message.send_message_async(config, app_id, from_user_id, to_user_id,content)
@@ -307,6 +311,9 @@ def get_random_string(length):
 def wechat_user_key(app_id, username):
     return f"lc_service:{service}:wechat_user:{app_id}:{username}"
 
+def wechat_user_info_key(app_id, username):
+    return f"lc_service:{service}:wechat_user_info:{app_id}:{username}"
+
 def im_user_key(app_id, user_id):
     return f"lc_service:{service}:im_user:{app_id}:{user_id}"
 
@@ -351,3 +358,83 @@ def check_access_token_valid():
         return True
     else:
         return False
+
+def maybe_update_user_profile_from_wechat(app_id, wid, username, user_id):
+    redis = lanying_redis.get_redis_connection()
+    user_info_key = wechat_user_info_key(app_id, username)
+    info = lanying_redis.redis_hgetall(redis, user_info_key)
+    update_time = int(info.get('update_time', 0))
+    nickname = info.get('nickname', '')
+    now = int(time.time())
+    if (nickname == '' and now - update_time > 86400) or (now - update_time > 7 * 86400):
+        redis.hset(user_info_key, "update_time", now)
+        executor.submit(update_user_profile_from_wechat, app_id, wid, username, user_id)
+
+def update_user_profile_from_wechat(app_id, wid, username, user_id):
+    logging.info(f"update_user_profile_from_wechat start | app_id:{app_id}, wid:{wid}, username:{username}, user_id:{user_id}")
+    url =  lanying_wechat_chatbot.get_api_server() + "/getContact"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    data = {
+        "wId": wid,
+        "wcId": username
+    }
+    logging.info(f"update_user_profile_from_wechat fetch from wechat start | app_id:{app_id}, username:{username}")
+    response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+    result = response.json()
+    logging.info(f"update_user_profile_from_wechat fetch from wechat finish | app_id:{app_id}, username:{username}, result:{result}")
+    if result["code"] == "1000" and len(result['data']) == 1:
+        info = result['data'][0]
+        nickname = info.get('nickName', '')
+        avatar = info.get('bigHead', '')
+        if len(nickname) > 0 or len(avatar) > 0:
+            redis = lanying_redis.get_redis_connection()
+            user_info_key = wechat_user_info_key(app_id, username)
+            info = lanying_redis.redis_hgetall(redis, user_info_key)
+            old_nickname = info.get('nickname', '')
+            old_avatar = info.get('avatar', '')
+            if old_nickname != nickname:
+                success = sync_user_profile_to_lanying_user(app_id, user_id, nickname)
+                logging.info(f"sync_user_profile_to_lanying_user | app_id:{app_id}, wid:{wid}, username:{username}, user_id:{user_id}, success:{success}")
+                if success:
+                    redis.hset(user_info_key, 'nickname', nickname)
+            if  old_avatar != avatar:
+                success = sync_user_avatar_to_lanying_user(app_id, user_id, avatar)
+                logging.info(f"sync_user_avatar_to_lanying_user | app_id:{app_id}, wid:{wid}, username:{username}, user_id:{user_id}, success:{success}")
+                if success:
+                    redis.hset(user_info_key, 'avatar', avatar)
+
+def sync_user_profile_to_lanying_user(app_id, user_id, nickname):
+    profile_result = lanying_im_api.set_user_profile(app_id, user_id, '', nickname, '')
+    logging.info(f"set profile result:{profile_result}")
+    if profile_result and profile_result["code"] == 200:
+        return True
+    return False
+
+def sync_user_avatar_to_lanying_user(app_id, user_id, avatar):
+    temp_filename = f"{app_id}_{user_id}_{int(time.time())}.jpg"
+    download_result = lanying_file_storage.download_file_url(avatar, {}, temp_filename)
+    if download_result['result'] == 'ok':
+        upload_info = lanying_im_api.get_user_avatar_upload_url(app_id, user_id)
+        if upload_info and upload_info['code'] == 200:
+            upload_info_data = upload_info.get('data', {})
+            upload_url = upload_info_data.get('upload_url', '')
+            download_url = upload_info_data.get('download_url', '')
+            oss_body_param = upload_info_data.get('oss_body_param', {})
+            files = {
+                'file': ('avatar.jpg', open(temp_filename, 'rb'), 'image/jpeg'),
+            }
+            data = {
+                'OSSAccessKeyId': oss_body_param.get('OSSAccessKeyId', ''),
+                'policy': oss_body_param.get('policy', ''),
+                'signature': oss_body_param.get('signature', ''),
+                'callback': oss_body_param.get('callback', ''),
+                'key': oss_body_param.get('key', ''),
+            }
+            response = requests.post(upload_url, headers={}, files=files, data=data)
+            logging.info(f"upload to oss result | app_id:{app_id}, user_id:{user_id}, response.status_code:{response.status_code}, response_text:{response.text}")
+            if response.status_code == 200:
+                avatar_set_result = lanying_im_api.set_user_avatar(app_id, user_id, download_url)
+                logging.info(f"set avatar result:{avatar_set_result}")
+                if avatar_set_result and avatar_set_result["code"] == 200:
+                    return True
+    return False
