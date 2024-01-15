@@ -159,7 +159,7 @@ def handle_wechat_chat_message(wc_id, account, data):
     if redis.get(message_deduplication):
         logging.info(f"handle_chat_message skip for message_deduplication | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
-    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wc_id)
+    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wid)
     if global_wid_info is None:
         logging.info(f"handle_chat_message wc_id not found: wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
