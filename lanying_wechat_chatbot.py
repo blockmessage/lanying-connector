@@ -213,6 +213,23 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
     logging.info(f"wechat chatbot create chatbot success: app_id:{app_id}, w_id:{w_id}, chatbot_id:{chatbot_id}, wechat_chatbot_id:{wechat_chatbot_id}")
     return {'result':'ok', 'data':{'wechat_chatbot_id':wechat_chatbot_id, 'w_account': w_account, 'wc_id': wc_id}}
 
+def delete_wechat_chatbot(app_id, wechat_chatbot_id):
+    wechat_chatbot = get_wechat_chatbot(app_id, wechat_chatbot_id)
+    if wechat_chatbot is None:
+        return {'result':'error', 'message': 'wechat_chatbot not exist'}
+    try:
+        maybe_kick_wechat_chatbot(app_id, wechat_chatbot)
+    except Exception as e:
+        pass
+    redis = lanying_redis.get_redis_connection()
+    chatbot_id = wechat_chatbot['chatbot_id']
+    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot_info:
+        lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", '')
+    redis.lrem(get_chatbot_ids_key(app_id), 1, wechat_chatbot_id)
+    redis.delete(get_chatbot_key(app_id, wechat_chatbot_id))
+    return {'result':'ok', 'data':{'success': True}}
+
 def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note):
     wid_info = get_wid_info(app_id, w_id)
     if wid_info:
