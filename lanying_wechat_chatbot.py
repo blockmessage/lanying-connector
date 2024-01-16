@@ -70,6 +70,8 @@ def handle_login_response(app_id, wechat_chatbot_id, response):
                     "qr_code_url": qr_code_url,
                     "w_id": w_id
                 }}
+    elif result['code'] == '1001' and result['message'] == '当前用户登录微信号上限已满':
+        return {'result': 'error', 'message': 'server_total_account_num_limit_reached'}
     else:
         return {'result': 'error', 'message': result['message']}
 
@@ -209,7 +211,7 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
     set_wid_info_field(app_id, w_id, "wechat_chatbot_id", wechat_chatbot_id)
     set_wid_info_field(app_id, w_id, "status", "binding")
     logging.info(f"wechat chatbot create chatbot success: app_id:{app_id}, w_id:{w_id}, chatbot_id:{chatbot_id}, wechat_chatbot_id:{wechat_chatbot_id}")
-    return {'result':'ok', 'data':{'wechat_chatbot_id':wechat_chatbot_id}}
+    return {'result':'ok', 'data':{'wechat_chatbot_id':wechat_chatbot_id, 'w_account': w_account, 'wc_id': wc_id}}
 
 def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note):
     wid_info = get_wid_info(app_id, w_id)
@@ -276,6 +278,14 @@ def change_status(app_id, wechat_chatbot_id, status):
     update_wechat_chatbot_field(app_id, wechat_chatbot_id, "soft_status", status)
     return {'result':'ok', 'data':{'success': True}}
 
+def deduct_failed(app_id, wechat_chatbot_id):
+    wechat_chatbot = get_wechat_chatbot(app_id, wechat_chatbot_id)
+    if wechat_chatbot is None:
+        return {'result':'error', 'message': 'wechat_chatbot not exist'}
+    update_wechat_chatbot_field(app_id, wechat_chatbot_id, "deduct_failed", "yes")
+    maybe_kick_wechat_chatbot(app_id, wechat_chatbot)
+    return {'result':'ok', 'data':{'success':True}}
+
 def update_wechat_chatbot_field(app_id, wechat_chatbot_id, field, value):
     redis = lanying_redis.get_redis_connection()
     redis.hset(get_chatbot_key(app_id, wechat_chatbot_id), field, value)
@@ -297,6 +307,8 @@ def get_wechat_chatbot(app_id, wechat_chatbot_id):
             dto['soft_status'] = "enabled"
         if dto["status"] == "normal" or dto["status"] == "disabled" :## for old dirty data
             dto["status"] = "online"
+        if 'deduct_failed' not in dto:
+            dto['deduct_failed'] = 'no'
         return dto
     else:
         return None
