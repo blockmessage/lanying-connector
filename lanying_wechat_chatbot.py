@@ -204,7 +204,7 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
         "w_account": w_account,
         "wid_info_result": json.dumps(wid_info_result, ensure_ascii=False),
         "status": "online",
-        "soft_status": "enable"
+        "soft_status": "enabled"
     })
     redis.rpush(get_chatbot_ids_key(app_id), wechat_chatbot_id)
     lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
