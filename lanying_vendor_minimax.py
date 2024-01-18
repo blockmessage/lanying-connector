@@ -9,7 +9,7 @@ def model_configs():
             "model": 'abab5.5-chat',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1,
+            "quota": 1.5,
             'order': 1,
             "token_limit": 11000
         },
@@ -17,7 +17,7 @@ def model_configs():
             "model": 'abab5.5s-chat',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.4,
+            "quota": 0.5,
             'order': 2,
             "token_limit": 8000
         },
@@ -25,7 +25,7 @@ def model_configs():
             "model": 'abab6-chat',
             "type": "chat",
             "is_prefix": False,
-            "quota": 15,
+            "quota": 20,
             'order': 3,
             "token_limit": 32000
         },

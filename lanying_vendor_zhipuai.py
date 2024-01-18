@@ -12,7 +12,7 @@ def model_configs():
             "model": 'glm-3-turbo',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1,
+            "quota": 0.5,
             "token_limit": 128000,
             'order': 1
         },
@@ -20,7 +20,7 @@ def model_configs():
             "model": 'glm-4',
             "type": "chat",
             "is_prefix": False,
-            "quota": 20,
+            "quota": 10,
             "token_limit": 128000,
             'order': 2
         },
@@ -30,7 +30,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 1,
             "token_limit": 4000,
-            'order': 3
+            'order': 3,
+            'hidden': True
         },
         {
             "model": 'chatglm_std',
@@ -38,7 +39,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 4000,
-            'order': 4
+            'order': 4,
+            'hidden': True
         },
         {
             "model": 'chatglm_lite',
@@ -46,7 +48,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.2,
             "token_limit": 4000,
-            'order': 5
+            'order': 5,
+            'hidden': True
         }
     ]
 

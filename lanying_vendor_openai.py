@@ -47,7 +47,8 @@ def model_configs():
             "is_prefix": True,
             "quota": 2,
             "token_limit": 16000,
-            'order': 2
+            'order': 2,
+            'hidden': True
         },
         {
             "model": 'gpt-3.5-turbo',
