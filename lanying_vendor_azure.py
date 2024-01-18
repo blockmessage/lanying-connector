@@ -21,7 +21,7 @@ def model_configs():
             "quota": 20,
             "token_limit": 8000,
             'order': 3,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2023-07-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2023-12-01-preview'
         },
         {
             "model": 'gpt-35-turbo-16k',
@@ -30,7 +30,7 @@ def model_configs():
             "quota": 2,
             "token_limit": 16000,
             'order': 2,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-07-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-12-01-preview'
         },
         {
             "model": 'gpt-35-turbo',
@@ -39,7 +39,7 @@ def model_configs():
             "quota": 1,
             "token_limit": 4000,
             'order': 1,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-07-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-12-01-preview'
         },
         {
             "model": 'text-embedding-ada-002',
@@ -48,7 +48,7 @@ def model_configs():
             "quota": 0.05,
             "token_limit": 8000,
             'order': 1000,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-03-15-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-12-01-preview'
         }
     ]
 
