@@ -31,6 +31,26 @@ def model_configs():
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
         },
         {
+            "model": 'ERNIE-Bot-8K',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 4,
+            "token_limit": 7000,
+            "token_limit_type": "prompt",
+            'order': 3,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie_bot_8k'
+        },
+        {
+            "model": 'ERNIE-Bot-4',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 20,
+            "token_limit": 7000,
+            "token_limit_type": "prompt",
+            'order': 4,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro'
+        },
+        {
             "model": 'Embedding-V1',
             "type": "embedding",
             "is_prefix": False,
@@ -87,7 +107,7 @@ def chat(prepare_info, preset):
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json"}
     try:
-        logging.info(f"baidu chat_completion start | preset={preset}, final_preset={final_preset}, access_token_len={len(access_token)}")
+        logging.info(f"baidu chat_completion start | model_url={model_url},preset={preset}, final_preset={final_preset}, access_token_len={len(access_token)}")
         stream = final_preset.get("stream", False)
         if stream:
             response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
@@ -230,7 +250,7 @@ def encoding_for_model(model): # for temp
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(prepare_info, preset):
-    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id", "stream"]
+    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id", "stream", "stop", "disable_search", "enable_citation"]
     ret = dict()
     for key in support_fields:
         if key in preset:
