@@ -1,6 +1,6 @@
 import logging
 import tiktoken
-import zhipuai
+from zhipuai import ZhipuAI
 import json
 
 ASSISTANT_MESSAGE_DEFAULT = '好的'
@@ -9,12 +9,28 @@ USER_MESSAGE_DEFAULT = '继续'
 def model_configs():
     return [
         {
+            "model": 'glm-3-turbo',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1,
+            "token_limit": 128000,
+            'order': 1
+        },
+        {
+            "model": 'glm-4',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 20,
+            "token_limit": 128000,
+            'order': 2
+        },
+        {
             "model": 'chatglm_pro',
             "type": "chat",
             "is_prefix": False,
             "quota": 1,
             "token_limit": 4000,
-            'order': 1
+            'order': 3
         },
         {
             "model": 'chatglm_std',
@@ -22,7 +38,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 4000,
-            'order': 2
+            'order': 4
         },
         {
             "model": 'chatglm_lite',
@@ -30,7 +46,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.2,
             "token_limit": 4000,
-            'order': 3
+            'order': 5
         }
     ]
 
@@ -40,30 +56,22 @@ def prepare_chat(auth_info, preset):
     }
 
 def chat(prepare_info, preset):
-    zhipuai.api_key = prepare_info['api_key']
+    client = ZhipuAI(api_key=prepare_info['api_key'])
     final_preset = format_preset(preset)
     try:
         logging.info(f"zhipuai chat_completion start | preset={preset}, final_preset={final_preset}")
         stream = final_preset.get("stream", False)
-        if 'stream' in final_preset:
-            del final_preset['stream']
         if stream:
-            response = zhipuai.model_api.sse_invoke(**final_preset)
+            response = client.chat.completions.create(**final_preset)
             logging.info(f"zhipuai chat_completion finish | stream={stream}")
             def generator():
-                for event in response.events():
-                    if event.event == "add":
-                        yield {'content':event.data}
-                    elif event.event == "error" or event.event == "interrupted":
-                        logging.info(f"got error event:{event.event}, {event.data}")
-                    elif event.event == "finish":
-                        text = ''
-                        if hasattr(event, 'data'):
-                            text = event.data
-                        meta = json.loads(event.meta)
-                        yield {'content': text, 'usage': meta.get('usage', {})}
+                for chunk in response:
+                    logging.info(f"chunk.choices[0].delta:{chunk.choices[0].delta}")
+                    content = chunk.choices[0].delta.content
+                    if 'usage' in chunk:
+                        yield {'content':content, 'usage': chunk.get('usage')}
                     else:
-                        logging.info(f"unknown event:{event.event}, {event.data}")
+                        yield {'content':content}
             return {
                 'result': 'ok',
                 'reply' : '',
@@ -75,32 +83,17 @@ def chat(prepare_info, preset):
                 }
             }
         else:
-            response = zhipuai.model_api.invoke(**final_preset)
+            response = client.chat.completions.create(**final_preset)
             logging.info(f"zhipuai chat_completion finish | response={response}")
-            usage = response.get('usage',{})
-            reply = response['data']['choices'][0]['content'].strip()
-            try:
-                if reply.startswith('"'):
-                    reply_str = json.loads(reply)
-                    if isinstance(reply_str, str):
-                        reply = reply_str
-                    if reply.startswith('"'):
-                        reply_str = json.loads(reply)
-                        if isinstance(reply_str, str):
-                            reply = reply_str
-                        if reply.startswith('"'):
-                            reply_str = json.loads(reply)
-                            if isinstance(reply_str, str):
-                                reply = reply_str
-            except Exception as e:
-                pass
+            usage = response.usage
+            reply = response.choices[0].message.content
             return {
                 'result': 'ok',
                 'reply' : reply,
                 'usage' : {
-                    'completion_tokens' : usage.get('completion_tokens',0),
-                    'prompt_tokens' : usage.get('prompt_tokens', 0),
-                    'total_tokens' : usage.get('total_tokens', 0)
+                    'completion_tokens' : usage.completion_tokens,
+                    'prompt_tokens' : usage.prompt_tokens,
+                    'total_tokens' : usage.total_tokens
                 }
             }
     except Exception as e:
@@ -121,35 +114,22 @@ def encoding_for_model(model): # for temp
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(preset):
-    support_fields = ['model', "prompt", "temperature", "top_p", "stream"]
+    support_fields = ['model', "messages", "temperature", "top_p", "max_tokens", "stop", "stream"]
     ret = dict()
     for key in support_fields:
-        if key == 'prompt':
-            messages = []
-            for message in preset.get('messages', []) + preset.get('prompt', []):
-                if 'role' in message and 'content' in message:
-                    role = message['role']
-                    content = message['content']
-                    if len(content) > 0:
-                        if role == "system":
-                            messages.append({'role':'user', 'content':content})
-                            messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
-                        elif role == "user":
-                            if len(messages) > 0 and messages[-1]['role'] == 'user':
-                                messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
-                            messages.append({'role':'user', 'content':content})
-                        elif role == 'assistant':
-                            if len(messages) > 0 and messages[-1]['role'] == 'user':
-                                messages.append({'role':'assistant', 'content':content})
-                            else:
-                                logging.info(f"dropping a assistant message: {message}")
-            ret[key] = messages
-        elif key == 'top_p':
-            if key in preset:
-                ret[key] = min(1.0, max(0.01, preset[key]))
-        elif key == 'temperature':
-            if key in preset:
-                ret[key] = min(0.99, max(0.01, preset[key]))
-        elif key in preset:
-            ret[key] = preset[key]
+        if key in preset:
+            if key == "functions":
+                functions = []
+                for function in preset['functions']:
+                    function_obj = {}
+                    for k,v in function.items():
+                        if k in ["name", "description", "parameters"]:
+                            function_obj[k] = v
+                    functions.append(function_obj)
+                ret[key] = functions
+            elif key == 'stop':
+                if len(key) == 1:
+                    ret[key] = preset[key]
+            else:
+                ret[key] = preset[key]
     return ret
