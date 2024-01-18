@@ -8,10 +8,26 @@ def model_configs():
         {
             "model": 'abab5.5-chat',
             "type": "chat",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 1,
             'order': 1,
             "token_limit": 11000
+        },
+        {
+            "model": 'abab5.5s-chat',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.4,
+            'order': 2,
+            "token_limit": 8000
+        },
+        {
+            "model": 'abab6-chat',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 15,
+            'order': 3,
+            "token_limit": 32000
         },
         {
             "model": 'embo-01',
@@ -69,7 +85,7 @@ def chat(prepare_info, preset):
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        #logging.info(f"stream got line:{line_str}|")
+                        # logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
@@ -242,6 +258,11 @@ def format_preset(prepare_info, preset):
                     "sender_type": "BOT",
                     "sender_name": bot_name
                 }
+            else:
+                payload[key] = preset[key]
+        elif key == 'mask_sensitive_info':
+            if key not in preset:
+                payload[key] = False
             else:
                 payload[key] = preset[key]
         elif key in preset:
