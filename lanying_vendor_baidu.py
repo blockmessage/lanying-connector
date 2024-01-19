@@ -15,7 +15,7 @@ def model_configs():
             "model": 'ERNIE-Bot-turbo',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.6666,
+            "quota": 1,
             "token_limit": 10000,
             'order': 1,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant'
@@ -34,7 +34,7 @@ def model_configs():
             "model": 'ERNIE-Bot-8K',
             "type": "chat",
             "is_prefix": False,
-            "quota": 5,
+            "quota": 4,
             "token_limit": 7000,
             "token_limit_type": "prompt",
             'order': 3,
