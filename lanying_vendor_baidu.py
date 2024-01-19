@@ -117,18 +117,23 @@ def chat(prepare_info, preset):
                     completion_tokens = 0
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        # logging.info(f"stream got line:{line_str}|")
+                        #logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
                                 text = data.get('result','')
+                                chunk_info = {'content': text}
                                 if 'usage' in data:
                                     usage = data['usage']
                                     completion_tokens += usage.get('completion_tokens', 0)
                                     usage['completion_tokens'] = completion_tokens
-                                    yield {'usage': usage, 'content': text}
-                                else:
-                                    yield {'content': text}
+                                    chunk_info['usage'] = usage
+                                if 'function_call' in data:
+                                    chunk_info['function_call'] = {
+                                        'name': data['function_call'].get('name'),
+                                        'arguments': data['function_call'].get('arguments'),
+                                    }
+                                yield chunk_info
                             except Exception as e:
                                 pass
                 return {
@@ -166,9 +171,16 @@ def chat(prepare_info, preset):
                     'code': error_code
                 }
             usage = res.get('usage',{})
+            function_call = None
+            if 'function_call' in res:
+                function_call = {
+                    'name': res['function_call'].get('name'),
+                    'arguments': res['function_call'].get('arguments'),
+                }
             return {
                 'result': 'ok',
                 'reply': res['result'],
+                'function_call': function_call,
                 'usage': {
                     'completion_tokens' : usage.get('completion_tokens',0),
                     'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -250,7 +262,7 @@ def encoding_for_model(model): # for temp
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(prepare_info, preset):
-    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id", "stream", "stop", "disable_search", "enable_citation"]
+    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id", "stream", "stop", "disable_search", "enable_citation", "functions"]
     ret = dict()
     for key in support_fields:
         if key in preset:
@@ -260,7 +272,7 @@ def format_preset(prepare_info, preset):
                     if 'role' in message and 'content' in message:
                         role = message['role']
                         content = message['content']
-                        if len(content) > 0:
+                        if len(content) > 0 or 'function_call' in message:
                             if role == "system":
                                 messages.append({'role':'user', 'content':content})
                                 messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
@@ -270,10 +282,24 @@ def format_preset(prepare_info, preset):
                                 messages.append({'role':'user', 'content':content})
                             elif role == 'assistant':
                                 if len(messages) > 0 and messages[-1]['role'] == 'user':
-                                    messages.append({'role':'assistant', 'content':content})
+                                    if 'function_call' in message:
+                                        messages.append({'role':'assistant', 'content':content, 'function_call': message['function_call']})
+                                    else:
+                                        messages.append({'role':'assistant', 'content':content})
                                 else:
                                     logging.info(f"dropping a assistant message: {message}")
+                            elif role == 'function':
+                                messages.append(message)
                 ret[key] = messages
+            elif key == "functions":
+                functions = []
+                for function in preset['functions']:
+                    function_obj = {}
+                    for k,v in function.items():
+                        if k in ["name", "description", "parameters"]:
+                            function_obj[k] = v
+                    functions.append(function_obj)
+                ret[key] = functions
             else:
                 ret[key] = preset[key]
     return ret

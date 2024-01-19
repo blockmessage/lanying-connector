@@ -67,7 +67,7 @@ def chat(prepare_info, preset):
         stream = final_preset.get("stream", False)
         if stream:
             response = client.chat.completions.create(**final_preset)
-            logging.info(f"zhipuai chat_completion finish | stream={stream}")
+            #logging.info(f"zhipuai chat_completion finish | stream={stream}")
             def generator():
                 for chunk in response:
                     logging.info(f"chunk:{chunk}")
