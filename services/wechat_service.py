@@ -33,6 +33,10 @@ def service_post_messages(token):
         data = message.get('data', {})
         if message_type == '60001':
             handle_wechat_chat_message(wc_id, account, data)
+        elif message_type == '80001':
+            handle_wechat_group_message(wc_id, account, data)
+        elif message_type == '85001':
+            handle_wechat_group_notify(wc_id, account, data)
         elif message_type == '30000':
             handle_wechat_offline(wc_id, account, data)
     else:
@@ -194,31 +198,12 @@ def handle_wechat_chat_message(wc_id, account, data):
     if redis.get(message_deduplication):
         logging.info(f"handle_chat_message skip for message_deduplication | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
-    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wid)
-    if global_wid_info is None:
-        logging.info(f"handle_chat_message wc_id not found: wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+    check_result = check_wid(wid)
+    if check_result['result'] == 'error':
+        logging.info(f"handle_wechat_chat_message skip for {check_result['message']} | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
-    app_id = global_wid_info['app_id']
-    wechat_chatbot_id = global_wid_info['wechat_chatbot_id']
-    wechat_chatbot_info = lanying_wechat_chatbot.get_wechat_chatbot(app_id, wechat_chatbot_id)
-    if wechat_chatbot_info is None:
-        logging.info(f"handle_chat_message wechat_chatbot_id not found | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
-        return
-    if wechat_chatbot_info['deduct_failed'] == 'yes':
-        logging.info(f"handle_chat_message wechat_chatbot deduct_failed | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, status:{wechat_chatbot_info['status']}")
-        return
-    if wechat_chatbot_info['soft_status'] != 'enabled':
-        logging.info(f"handle_chat_message wechat_chatbot status not enabled | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, status:{wechat_chatbot_info['status']}")
-        return
-    if wechat_chatbot_info['status'] != 'online':
-        logging.info(f"handle_chat_message wechat_chatbot status not online | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, status:{wechat_chatbot_info['status']}")
-        return
-    chatbot_id = wechat_chatbot_info['chatbot_id']
-    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    if chatbot_info is None:
-        logging.info(f"handle_chat_message chatbot_id not found | app_id:{app_id}, wechat_chatbot_id:{wechat_chatbot_id}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}, chatbot_id:{chatbot_id}")
-        return
-    to_user_id = chatbot_info['user_id']
+    to_user_id = check_result['user_id']
+    app_id = check_result['app_id']
     from_user_id = get_or_register_user(app_id, from_user)
     if from_user_id:
         maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
@@ -227,6 +212,76 @@ def handle_wechat_chat_message(wc_id, account, data):
         lanying_message.send_message_async(config, app_id, from_user_id, to_user_id,content)
     else:
         logging.info(f"handle_chat_message user_id not found: {from_user_id}")
+
+def handle_wechat_group_message(wc_id, account, data):
+    redis = lanying_redis.get_redis_connection()
+    content = data['content']
+    from_user = data['fromUser']
+    from_group = data['fromGroup']
+    msg_id = data['msgId']
+    new_msg_id = data['newMsgId']
+    self = data.get('self', False)
+    timestamp = data['timestamp']
+    to_user = data['toUser']
+    atlist = data.get('atlist', [])
+    wid = data['wId']
+    if self:
+        logging.info(f"handle_wechat_group_message skip self message | self:{self}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+        return
+    message_deduplication = message_deduplication_key(from_user, to_user, msg_id, new_msg_id)
+    if redis.get(message_deduplication):
+        logging.info(f"handle_wechat_group_message skip for message_deduplication | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+        return
+    check_result = check_wid(wid)
+    if check_result['result'] == 'error':
+        logging.info(f"handle_wechat_group_message skip for {check_result['message']} | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+        return
+    to_user_id = check_result['user_id']
+    app_id = check_result['app_id']
+    from_user_id = get_or_register_user(app_id, from_user)
+    group_id = get_or_create_group(app_id, from_group, from_user_id, to_user_id)
+    ensure_user_in_group(app_id, from_user_id, group_id)
+    ensure_user_in_group(app_id, to_user_id, group_id)
+    if from_user_id:
+        #maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
+        config = lanying_config.get_service_config(app_id, service)
+        redis.setex(message_deduplication, 3*86400, "1")
+        lanying_message.send_group_message_async(config, app_id, from_user_id, group_id,content)
+    else:
+        logging.info(f"handle_wechat_group_message user_id not found: {from_user_id}")
+
+def check_wid(wid):
+    global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wid)
+    if global_wid_info is None:
+        return {'result': 'error', 'message': 'w_id not found'}
+    app_id = global_wid_info['app_id']
+    wechat_chatbot_id = global_wid_info['wechat_chatbot_id']
+    wechat_chatbot_info = lanying_wechat_chatbot.get_wechat_chatbot(app_id, wechat_chatbot_id)
+    if wechat_chatbot_info is None:
+        return {'result': 'error', 'message': 'wechat_chatbot_id not found'}
+    if wechat_chatbot_info['deduct_failed'] == 'yes':
+        return {'result': 'error', 'message': 'wechat_chatbot deduct_failed'}
+    if wechat_chatbot_info['soft_status'] != 'enabled':
+        return {'result': 'error', 'message': 'wechat_chatbot status not enabled'}
+    if wechat_chatbot_info['status'] != 'online':
+        return {'result': 'error', 'message': 'wechat_chatbot status not online'}
+    chatbot_id = wechat_chatbot_info['chatbot_id']
+    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot_info is None:
+        return {'result': 'error', 'message': 'chatbot_id not found'}
+    user_id = chatbot_info['user_id']
+    return {'result': 'ok', 'user_id': user_id, 'app_id': app_id}
+
+def handle_wechat_group_notify(wc_id, account, data):
+    wid = data['wId']
+    group_name = data['userName']
+    group_nickname = data.get('nickName', '')
+    check_result = check_wid(wid)
+    if check_result['result'] == 'error':
+        logging.info(f"handle_wechat_chat_message skip for {check_result['message']} | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+        return
+    to_user_id = check_result['user_id']
+    app_id = check_result['app_id']
 
 def handle_wechat_offline(wc_id, account, data):
     wid = data['wId']
@@ -243,6 +298,7 @@ def handle_chat_message(config, message):
         logging.info(f"handle_chat_message skip with message: {checkres['message']}")
         return
     wechat_chatbot = checkres['wechat_chatbot']
+    msg_type = checkres['type']
     app_id = message['appId']
     to_user_id = message['to']['uid']
     logging.info(f"{service} | handle_chat_message do for user_id, app_id={app_id}, to_user_id:{to_user_id}")
@@ -258,6 +314,19 @@ def handle_chat_message(config, message):
                     logging.info(f"wechat chatbot skip send message for bad wid status: wid:{w_id}, app_id:{app_id}, status:{w_id_info['status']}")
             else:
                 logging.info(f"wechat chatbot skip send message for wid not found: wid:{w_id}, app_id:{app_id}")
+    group_id = message['to']['uid']
+    wechat_group_id = get_wechat_group_id(app_id, group_id)
+    if wechat_group_id:
+        w_id = wechat_chatbot['w_id']
+        if len(w_id) > 0:
+            w_id_info = lanying_wechat_chatbot.get_wid_info(app_id, w_id)
+            if w_id_info:
+                if w_id_info["status"] == 'binding':
+                    send_wechat_group_message(config, app_id, message, wechat_group_id, w_id)
+                else:
+                    logging.info(f"wechat chatbot skip send group message for bad wid status: wid:{w_id}, app_id:{app_id}, status:{w_id_info['status']}")
+            else:
+                logging.info(f"wechat chatbot skip send group message for wid not found: wid:{w_id}, app_id:{app_id}")
 
 def check_message_need_send(config, message):
     from_user_id = int(message['from']['uid'])
@@ -281,7 +350,7 @@ def check_message_need_send(config, message):
     if wechat_chatbot['status'] != 'online':
         return {'result': 'error', 'message': 'wechat_chatbot status not online'}
     my_user_id = chatbot['user_id']
-    if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and (type == 'CHAT' or type == 'REPLACE' or type == 'APPEND'):
+    if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and (type == 'CHAT' or type == 'GROUPCHAT' or type == 'REPLACE' or type == 'APPEND'):
         ext = message.get('ext', '')
         try:
             json_ext = json.loads(ext)
@@ -296,19 +365,19 @@ def check_message_need_send(config, message):
         if is_stream:
             if type == 'REPLACE':
                 pass
-            elif type == 'CHAT' and is_finish:
+            elif (type == 'CHAT' or type == 'GROUPCHAT') and is_finish:
                 pass
             else:
                 logging.info(f"skip chat and stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
-                return {'result':'error', 'msg':''}
+                return {'result':'error', 'message':''}
         else:
             if type == 'REPLACE' or type == 'APPEND':
                 logging.info(f"skip EDIT and not stream msg:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},ext:{json_ext}")
-                return {'result':'error', 'msg':''}
+                return {'result':'error', 'message':''}
         logging.info(f'check_message_need_send: lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id},type:{type},result:ok')
-        return {'result':'ok', 'wechat_chatbot': wechat_chatbot}
+        return {'result':'ok', 'wechat_chatbot': wechat_chatbot, 'type': type}
     logging.info(f'skip other user msg: lanying_user_id:{my_user_id},from_user_id:{from_user_id},to_user_id:{to_user_id}, type:{type}')
-    return {'result':'error', 'msg':''}
+    return {'result':'error', 'message':''}
 
 def get_or_register_user(app_id, username):
     redis = lanying_redis.get_redis_connection()
@@ -325,6 +394,22 @@ def get_or_register_user(app_id, username):
             redis.set(im_key, username)
         return user_id
 
+def get_or_create_group(app_id, from_group, from_user_id, to_user_id):
+    redis = lanying_redis.get_redis_connection()
+    key = wechat_group_key(app_id, from_group)
+    result = redis.get(key)
+    if result:
+        group_id = int(result)
+        return group_id
+    else:
+        group_id = create_lanying_group(app_id, from_group, from_user_id, to_user_id)
+        change_group_apply_approval_accept_all(app_id, group_id)
+        if group_id:
+            im_key = im_group_key(app_id, group_id)
+            redis.set(key, group_id)
+            redis.set(im_key, from_group)
+        return group_id
+
 def register_anonymous_user(app_id, username, prefix):
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     password = get_random_string(32)
@@ -333,13 +418,74 @@ def register_anonymous_user(app_id, username, prefix):
                                 json={'username':prefix,
                                         'password': password})
     logging.info(f"register user, app_id={app_id}, username={username}, response={response.content}")
-    logging.info(password)
     response_json = json.loads(response.content)
     if response_json['code'] == 200:
         user_id = response_json['data']['user_id']
         logging.info(f"register user, app_id={app_id}, username={username}, user_id={user_id}")
         return user_id
     return None
+
+def create_lanying_group(app_id, from_group, from_user_id, to_user_id):
+    apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    response = requests.post(apiEndpoint + '/group/create',
+                                headers={'app_id': app_id, 'access-token': admin_token, 'user_id': str(to_user_id)},
+                                json={'name':from_group,
+                                        'type': 0,
+                                        'user_list': [from_user_id]})
+    logging.info(f"create group, app_id={app_id}, from_group={from_group}, response={response.content}")
+    response_json = json.loads(response.content)
+    if response_json['code'] == 200:
+        group_id = response_json['data']['group_id']
+        logging.info(f"create group, app_id={app_id}, from_group={from_group}, group_id={group_id}")
+        return group_id
+    return None
+
+def change_group_apply_approval_accept_all(app_id, group_id):
+    apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    response = requests.post(apiEndpoint + '/group/settings/require_admin_approval',
+                                headers={'app_id': app_id, 'access-token': admin_token, 'group_id': str(group_id)},
+                                json={'group_id':group_id,
+                                        'apply_approval': 0})
+    logging.info(f"change_group_apply_approval_accept_all start, app_id={app_id}, group_id={group_id}, response={response.content}")
+    response_json = json.loads(response.content)
+    if response_json['code'] == 200:
+        logging.info(f"change_group_apply_approval_accept_all success, app_id={app_id},group_id={group_id}")
+        return True
+    return False
+
+def group_apply(app_id, user_id, group_id):
+    apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    response = requests.post(apiEndpoint + '/group/apply',
+                                headers={'app_id': app_id, 'access-token': admin_token, 'user_id': str(user_id)},
+                                json={'group_id':group_id,
+                                        'reason': 'apply from lanying connector'})
+    logging.info(f"group_apply start, app_id={app_id}, group_id={group_id}, response={response.content}")
+    response_json = json.loads(response.content)
+    if response_json['code'] in [200, 20017]:
+        logging.info(f"group_apply success, app_id={app_id},group_id={group_id}")
+        return True
+    return False
+
+def wait_user_in_group(app_id, user_id, group_id, try_times):
+    for i in range(try_times):
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        admin_token = lanying_config.get_lanying_admin_token(app_id)
+        response = requests.get(apiEndpoint + '/group/user_joined',
+                                    headers={'app_id': app_id, 'access-token': admin_token, 'user_id': str(user_id)})
+        logging.info(f"wait_user_in_group | app_id={app_id}, user_id={user_id}, group_id={group_id}, try_times:{i}/{try_times}, response={response.content}")
+        response_json = json.loads(response.content)
+        if response_json['code'] == 200:
+            if group_id in response_json['data']:
+                key = im_group_member_key(app_id, group_id)
+                redis = lanying_redis.get_redis_connection()
+                redis.hset(key, user_id, int(time.time()))
+                return True
+            else:
+                time.sleep(1)
+    return False
 
 def get_random_string(length):
     letters = string.ascii_letters
@@ -348,11 +494,20 @@ def get_random_string(length):
 def wechat_user_key(app_id, username):
     return f"lc_service:{service}:wechat_user:{app_id}:{username}"
 
+def wechat_group_key(app_id, group):
+    return f"lc_service:{service}:wechat_group:{app_id}:{group}"
+
 def wechat_user_info_key(app_id, username):
     return f"lc_service:{service}:wechat_user_info:{app_id}:{username}"
 
 def im_user_key(app_id, user_id):
     return f"lc_service:{service}:im_user:{app_id}:{user_id}"
+
+def im_group_key(app_id, group_id):
+    return f"lc_service:{service}:im_group:{app_id}:{group_id}"
+
+def im_group_member_key(app_id, group_id):
+    return f"lc_service:{service}:im_group_member:{app_id}:{group_id}"
 
 def message_deduplication_key(from_user, to_user, msg_id, new_msg_id):
     return f"lc_service:{service}:message_deduplication:{from_user}:{to_user}:{msg_id}:{new_msg_id}"
@@ -364,6 +519,15 @@ def get_wechat_username(app_id, user_id):
     if result:
         return str(result,'utf-8')
     logging.info(f"get_wechat_username | not found, app_id:{app_id}, user_id:{user_id}")
+    return None
+
+def get_wechat_group_id(app_id, group_id):
+    redis = lanying_redis.get_redis_connection()
+    im_key = im_group_key(app_id, group_id)
+    result = redis.get(im_key)
+    if result:
+        return str(result,'utf-8')
+    logging.info(f"get_wechat_group_id | not found, app_id:{app_id}, group_id:{group_id}")
     return None
 
 def send_wechat_message(config, app_id, message, to_username, w_id):
@@ -385,6 +549,25 @@ def send_wechat_message(config, app_id, message, to_username, w_id):
             logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
             lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
 
+def send_wechat_group_message(config, app_id, message, wechat_group_id, w_id):
+    url =  lanying_wechat_chatbot.get_api_server() + "/sendText"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    content = message['content']
+    content_list = split_string_by_size(content, wechat_max_message_size)
+    for now_content in content_list:
+        data = {
+            "wId": w_id,
+            "wcId": wechat_group_id,
+            "content": now_content
+        }
+        logging.info(f"wechat_chatbot send_wechat_message start | app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}")
+        response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+        result = response.json()
+        logging.info(f"wechat_chatbot send_wechat_message finish| app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, result:{result}")
+        if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
+            logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
+            lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
+    
 def split_string_by_size(input_string, chunk_size):
     return [input_string[i:i+chunk_size] for i in range(0, len(input_string), chunk_size)]
 
@@ -475,3 +658,11 @@ def sync_user_avatar_to_lanying_user(app_id, user_id, avatar):
                 if avatar_set_result and avatar_set_result["code"] == 200:
                     return True
     return False
+
+def ensure_user_in_group(app_id, user_id, group_id):
+    key = im_group_member_key(app_id, group_id)
+    redis = lanying_redis.get_redis_connection()
+    if redis.hexists(key, user_id):
+        return True
+    group_apply(app_id, user_id, group_id)
+    wait_user_in_group(app_id, user_id, group_id, 5)
