@@ -15,6 +15,8 @@ import lanying_message
 import lanying_im_api
 import lanying_file_storage
 from lanying_connector import executor
+import lanying_utils
+import re
 
 wechat_max_message_size = 3900
 service = 'wechat'
@@ -246,9 +248,31 @@ def handle_wechat_group_message(wc_id, account, data):
         #maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
         config = lanying_config.get_service_config(app_id, service)
         redis.setex(message_deduplication, 3*86400, "1")
-        lanying_message.send_group_message_async(config, app_id, from_user_id, group_id,content)
+        ext = transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id)
+        lanying_message.send_group_message_async(config, app_id, from_user_id, group_id,content, ext)
     else:
         logging.info(f"handle_wechat_group_message user_id not found: {from_user_id}")
+
+def transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id):
+    if content.startswith('@所有人\u2005') and len(atlist) > 0:
+        return {'mentionAll': True}
+    else:
+        mention_list = []
+        for now_wc_id in atlist:
+            if now_wc_id == wc_id:
+                mention_list.append(to_user_id)
+            else:
+                user_id = get_user(app_id, now_wc_id)
+                if user_id:
+                    mention_list.append(user_id)
+                elif len(mention_list) < 2:
+                    user_id = get_or_register_user(app_id, now_wc_id)
+                    if user_id:
+                        mention_list.append(user_id)
+        if len(mention_list) > 0:
+            return {'mentionList': mention_list}
+        else:
+            return {}
 
 def check_wid(wid):
     global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wid)
@@ -314,20 +338,35 @@ def handle_chat_message(config, message):
                     logging.info(f"wechat chatbot skip send message for bad wid status: wid:{w_id}, app_id:{app_id}, status:{w_id_info['status']}")
             else:
                 logging.info(f"wechat chatbot skip send message for wid not found: wid:{w_id}, app_id:{app_id}")
-    group_id = message['to']['uid']
-    wechat_group_id = get_wechat_group_id(app_id, group_id)
-    if wechat_group_id:
-        w_id = wechat_chatbot['w_id']
-        if len(w_id) > 0:
-            w_id_info = lanying_wechat_chatbot.get_wid_info(app_id, w_id)
-            if w_id_info:
-                if w_id_info["status"] == 'binding':
-                    send_wechat_group_message(config, app_id, message, wechat_group_id, w_id)
+    else:
+        group_id = message['to']['uid']
+        wechat_group_id = get_wechat_group_id(app_id, group_id)
+        if wechat_group_id:
+            w_id = wechat_chatbot['w_id']
+            if len(w_id) > 0:
+                w_id_info = lanying_wechat_chatbot.get_wid_info(app_id, w_id)
+                if w_id_info:
+                    if w_id_info["status"] == 'binding':
+                        wechat_at_list = transform_at_list_from_im(app_id, message)
+                        send_wechat_group_message(config, app_id, message, wechat_group_id, w_id, wechat_at_list)
+                    else:
+                        logging.info(f"wechat chatbot skip send group message for bad wid status: wid:{w_id}, app_id:{app_id}, status:{w_id_info['status']}")
                 else:
-                    logging.info(f"wechat chatbot skip send group message for bad wid status: wid:{w_id}, app_id:{app_id}, status:{w_id_info['status']}")
-            else:
-                logging.info(f"wechat chatbot skip send group message for wid not found: wid:{w_id}, app_id:{app_id}")
+                    logging.info(f"wechat chatbot skip send group message for wid not found: wid:{w_id}, app_id:{app_id}")
 
+def transform_at_list_from_im(app_id, message):
+    config = lanying_utils.safe_json_loads(message.get('config', '{}'))
+    mention_list = config.get('mentionList', [])
+    wechat_at_list = []
+    if len(mention_list) > 0:
+        for mention_user_id in mention_list:
+            username = get_wechat_username(app_id, mention_user_id)
+            if username:
+                wechat_at_list.append(username)
+        if len(wechat_at_list) > 0:
+            message['content'] = replace_at_message(message['content'])
+    return wechat_at_list
+            
 def check_message_need_send(config, message):
     from_user_id = int(message['from']['uid'])
     to_user_id = int(message['to']['uid'])
@@ -393,6 +432,16 @@ def get_or_register_user(app_id, username):
             redis.set(key, user_id)
             redis.set(im_key, username)
         return user_id
+
+def get_user(app_id, username):
+    redis = lanying_redis.get_redis_connection()
+    key = wechat_user_key(app_id, username)
+    result = redis.get(key)
+    if result:
+        user_id = int(result)
+        return user_id
+    else:
+        return None
 
 def get_or_create_group(app_id, from_group, from_user_id, to_user_id):
     redis = lanying_redis.get_redis_connection()
@@ -549,7 +598,7 @@ def send_wechat_message(config, app_id, message, to_username, w_id):
             logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
             lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
 
-def send_wechat_group_message(config, app_id, message, wechat_group_id, w_id):
+def send_wechat_group_message(config, app_id, message, wechat_group_id, w_id, wechat_at_list):
     url =  lanying_wechat_chatbot.get_api_server() + "/sendText"
     headers = lanying_wechat_chatbot.get_headers(app_id)
     content = message['content']
@@ -560,14 +609,21 @@ def send_wechat_group_message(config, app_id, message, wechat_group_id, w_id):
             "wcId": wechat_group_id,
             "content": now_content
         }
-        logging.info(f"wechat_chatbot send_wechat_message start | app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}")
+        if len(wechat_at_list) > 0:
+            data['at'] = ','.join(wechat_at_list)
+        logging.info(f"wechat_chatbot send_wechat_group_message start | app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, wechat_at_list:{wechat_at_list}")
         response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
         result = response.json()
-        logging.info(f"wechat_chatbot send_wechat_message finish| app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, result:{result}")
+        logging.info(f"wechat_chatbot send_wechat_group_message finish| app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, wechat_at_list:{wechat_at_list}, result:{result}")
         if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
             logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
             lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
-    
+
+def replace_at_message(text):
+    pattern = re.compile(r'(@[^\s,\u2005]+)[\s\u2005,]+')
+    result = pattern.sub('\\1\u2005', text)
+    return result
+
 def split_string_by_size(input_string, chunk_size):
     return [input_string[i:i+chunk_size] for i in range(0, len(input_string), chunk_size)]
 
