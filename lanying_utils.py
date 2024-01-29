@@ -3,6 +3,7 @@ import ipaddress
 from urllib.parse import urlparse
 import logging
 import json
+import hashlib
 
 def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
@@ -55,3 +56,7 @@ def safe_json_loads(str, default={}):
         return json.loads(str)
     except Exception as e:
         return default
+
+def sha256(text):
+    value = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    return value

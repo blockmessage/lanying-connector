@@ -88,9 +88,9 @@ def trace_finish(request):
         lanying_embedding.delete_trace_field(trace_id, "notify_user")
         user_id = int(notify_user)
         if status == "success":
-            lanying_connector.sendMessageAsync(app_id, notify_from, user_id, f"文章（ID：{doc_id}）已加入知识库 {embedding_name}，有用的知识又增加了，谢谢您 ♪(･ω･)ﾉ",{'ai':{'role': 'ai'}})
+            sendMessageAsync(app_id, notify_from, user_id, f"文章（ID：{doc_id}）已加入知识库 {embedding_name}，有用的知识又增加了，谢谢您 ♪(･ω･)ﾉ",{'ai':{'role': 'ai'}})
         else:
-            lanying_connector.sendMessageAsync(app_id, notify_from, user_id, f"文章（ID：{doc_id}）加入知识库 {embedding_name}失败：{message}",{'ai':{'role': 'ai'}})
+            sendMessageAsync(app_id, notify_from, user_id, f"文章（ID：{doc_id}）加入知识库 {embedding_name}失败：{message}",{'ai':{'role': 'ai'}})
 
 def handle_request(request):
     text = request.get_data(as_text=True)
@@ -235,7 +235,21 @@ def check_message_need_reply(config, msg):
         try:
             ext = json.loads(msg['ext'])
             if ext.get('ai',{}).get('role', 'none') == 'ai':
+                logging.info(f"hard stop message reply for ai role | msg:{msg}")
                 return {'result':'error', 'msg':''} # message is from ai
+        except Exception as e:
+            pass
+        try:
+            content = msg['content']
+            round = get_ai_message_round(fromUserId, toUserId, content)
+            logging.info(f"check_message_need_reply round | app_id:{app_id}, fromUserId:{fromUserId}, toUserId:{toUserId}, round:{round}")
+            limit = 3
+            if round == limit:
+                logging.info(f"soft stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
+                return {'result':'error', 'msg':'您发消息速度过快，请稍后再试。'}
+            elif round > limit:
+                logging.info(f"hard stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
+                return {'result':'error', 'msg':''}
         except Exception as e:
             pass
         return {'result':'ok'}
@@ -275,7 +289,7 @@ def handle_chat_message(config, msg):
             }
             if 'feedback' in lcExt:
                 reply_ext['ai']['feedback'] = lcExt['feedback']
-            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, now_reply, reply_ext)
+            sendMessageAsync(config['app_id'], toUserId, fromUserId, now_reply, reply_ext)
             if len(reply_list) > 0:
                 time.sleep(0.5)
 
@@ -405,7 +419,7 @@ def handle_chat_message_try(config, msg, retry_times):
         del preset['ext']
     is_debug = 'debug' in presetExt and presetExt['debug'] == True
     if is_debug:
-        lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 当前预设为: {preset_name}",{'ai':{'role': 'ai'}})
+        sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 当前预设为: {preset_name}",{'ai':{'role': 'ai'}})
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
     vendor = config.get('vendor', 'openai')
     if 'vendor' in preset:
@@ -599,9 +613,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
             if is_debug:
                 if is_use_old_embeddings:
-                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai'}})
+                    sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai'}})
                 else:
-                    lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{question_answer_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai'}})
+                    sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{question_answer_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai'}})
     history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
     if history_result['result'] == 'error':
         return history_result['message']
@@ -684,6 +698,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                             lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
                         else:
                             try:
+                                add_ai_message_cnt(message_to_send)
                                 reply_ext['ai']['seq'] += 1
                                 stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
                             except Exception as e:
@@ -710,7 +725,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 function_name_debug = function_call_debug['name']
                 function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
             if is_debug:
-                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
+                sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
             response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug)
             function_call_times -= 1
         else:
@@ -730,7 +745,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             pass
     if command:
         if is_debug:
-            lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}",{'ai':{'role': 'ai'}})
+            sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}",{'ai':{'role': 'ai'}})
         if 'preset_welcome' in command:
             reply = command['preset_welcome']
     if command and 'ai_generate' in command and command['ai_generate'] == True:
@@ -763,7 +778,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     if command and 'ai_generate' in command and command['ai_generate'] == True:
         if retry_times > 0:
             if 'preset_welcome' in command:
-                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, command['preset_welcome'],{'ai':{'role': 'ai'}})
+                sendMessageAsync(config['app_id'], toUserId, fromUserId, command['preset_welcome'],{'ai':{'role': 'ai'}})
             return handle_chat_message_try(config, msg, retry_times - 1)
         else:
             return ''
@@ -862,15 +877,16 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             if send_delay > 0:
                 logging.info(f"Delay Send replace msg |  stream_msg_delay_send_time: {stream_msg_last_send_time}, now:{now}, send_delay: {send_delay}")
                 time.sleep(send_delay)
+            add_ai_message_cnt(reply)
             lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, oper_msg_config, False)
         else:
             if is_stream:
                 reply_ext['ai']['seq'] += 1
                 reply_ext['ai']['finish'] = True
-                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+                sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
             else:
                 reply_ext['ai']['stream'] = False
-                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+                sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
     return ''
 
 def is_link_need_ignore(link):
@@ -928,7 +944,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             if is_debug:
                 fromUserId = config['from_user_id']
                 toUserId = config['to_user_id']
-                lanying_connector.sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
+                sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
             function_message = {
                 "role": "function",
                 "name": function_name,
@@ -2030,7 +2046,7 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
                 break
     embedding_query_text = '\n'.join(result)
     if is_debug:
-        lanying_connector.sendMessageAsync(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai'}})
+        sendMessageAsync(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai'}})
     return embedding_query_text
 
 def handle_chat_file(msg, config):
@@ -3004,3 +3020,40 @@ def is_chatbot_user_id(app_id, user_id, config):
 
 def sort_functions(functions):
     return sorted(functions, key=lambda x: x['priority'])
+
+def get_ai_message_round(from_user_id, to_user_id, content):
+    redis = lanying_redis.get_redis_connection()
+    cnt = get_ai_message_cnt(content)
+    round_key = get_ai_message_round_key(from_user_id, to_user_id)
+    if cnt > 0:
+        round = redis.incrby(round_key, 1)
+        redis.expire(round_key, 600)
+        return round
+    else:
+        redis.delete(round_key)
+        return 0
+
+def add_ai_message_cnt(content):
+    redis = lanying_redis.get_redis_connection()
+    key = get_ai_message_key(content)
+    redis.setex(key, 600, 1)
+
+def get_ai_message_cnt(content):
+    redis = lanying_redis.get_redis_connection()
+    key = get_ai_message_key(content)
+    ret_str = lanying_redis.redis_get(redis, key)
+    if ret_str:
+        return int(ret_str)
+    else:
+        return 0
+
+def get_ai_message_key(content):
+    hash_value = lanying_utils.sha256(content)
+    return f"lanying_connector:ai_message_key:{hash_value}"
+
+def get_ai_message_round_key(from_user_id, to_user_id):
+    return f"lanying_connector:ai_message_round_key:{from_user_id}:{to_user_id}"
+
+def sendMessageAsync(app_id, notify_from, user_id, content, ext = {}):
+    add_ai_message_cnt(content)
+    return lanying_connector.sendMessageAsync(app_id, notify_from, user_id, content, ext)
