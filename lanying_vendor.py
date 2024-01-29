@@ -3,6 +3,7 @@ import lanying_vendor_minimax
 import lanying_vendor_baidu
 import lanying_vendor_zhipuai
 import lanying_vendor_azure
+import lanying_vendor_claude
 import copy
 
 vendor_to_module = {
@@ -10,7 +11,8 @@ vendor_to_module = {
     'minimax': lanying_vendor_minimax,
     'baidu': lanying_vendor_baidu,
     'zhipuai': lanying_vendor_zhipuai,
-    "azure": lanying_vendor_azure
+    "azure": lanying_vendor_azure,
+    "claude": lanying_vendor_claude
 }
 def get_module(vendor):
     return vendor_to_module.get(vendor)
