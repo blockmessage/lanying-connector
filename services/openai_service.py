@@ -28,6 +28,7 @@ import lanying_ai_capsule
 import lanying_im_api
 from requests.auth import HTTPDigestAuth
 from requests.auth import HTTPBasicAuth
+import lanying_message
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -229,33 +230,78 @@ def check_message_need_reply(config, msg):
     fromUserId = str(msg['from']['uid'])
     toUserId = str(msg['to']['uid'])
     app_id = msg['appId']
-    type = msg['type']
-    is_chatbot = is_chatbot_user_id(app_id, toUserId, config)
-    if is_chatbot and fromUserId != toUserId and type == 'CHAT':
-        try:
-            ext = json.loads(msg['ext'])
-            if ext.get('ai',{}).get('role', 'none') == 'ai':
-                logging.info(f"hard stop message reply for ai role | msg:{msg}")
-                return {'result':'error', 'msg':''} # message is from ai
-        except Exception as e:
-            pass
-        try:
-            content = msg['content']
-            round = get_ai_message_round(fromUserId, toUserId, content)
-            logging.info(f"check_message_need_reply round | app_id:{app_id}, fromUserId:{fromUserId}, toUserId:{toUserId}, round:{round}")
-            limit = 3
-            if round == limit:
-                logging.info(f"soft stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
-                return {'result':'error', 'msg':'您发消息速度过快，请稍后再试。'}
-            elif round > limit:
-                logging.info(f"hard stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
-                return {'result':'error', 'msg':''}
-        except Exception as e:
-            pass
-        return {'result':'ok'}
+    msg_type = msg['type']
+    if msg_type == 'CHAT':
+        is_chatbot = is_chatbot_user_id(app_id, toUserId, config)
+        if is_chatbot and fromUserId != toUserId:
+            config['reply_from'] = toUserId
+            config['reply_to'] = fromUserId
+            config['reply_msg_type'] = 'CHAT'
+            config['reply_msg_id'] = msg['msgId']
+            try:
+                ext = json.loads(msg['ext'])
+                if ext.get('ai',{}).get('role', 'none') == 'ai':
+                    logging.info(f"hard stop message reply for ai role | msg:{msg}")
+                    return {'result':'error', 'msg':''} # message is from ai
+            except Exception as e:
+                pass
+            try:
+                content = msg['content']
+                round = get_ai_message_round(fromUserId, toUserId, content)
+                logging.info(f"check_message_need_reply round | app_id:{app_id}, fromUserId:{fromUserId}, toUserId:{toUserId}, round:{round}")
+                limit = 3
+                if round == limit:
+                    logging.info(f"soft stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
+                    return {'result':'error', 'msg':'您发消息速度过快，请稍后再试。'}
+                elif round > limit:
+                    logging.info(f"hard stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
+                    return {'result':'error', 'msg':''}
+            except Exception as e:
+                pass
+            return {'result':'ok', 'chatbot_user_id': chatbot_user_id}
+    elif msg_type == 'GROUPCHAT':
+        group_id = toUserId
+        msg_config = lanying_utils.safe_json_loads(msg.get('config'))
+        chatbot_user_id = find_chatbot_user_id_in_group_mention(app_id, group_id, msg_config)
+        if chatbot_user_id:
+            config['reply_from'] = chatbot_user_id
+            config['reply_to'] = group_id
+            config['reply_msg_type'] = 'GROUPCHAT'
+            config['reply_msg_id'] = msg['msgId']
+            try:
+                ext = json.loads(msg['ext'])
+                if ext.get('ai',{}).get('role', 'none') == 'ai':
+                    logging.info(f"hard stop group message reply for ai role | msg:{msg}")
+                    return {'result':'error', 'msg':''} # message is from ai
+            except Exception as e:
+                pass
+            try:
+                content = msg['content']
+                round = get_ai_message_round(0, group_id, content)
+                logging.info(f"check_message_need_reply round | app_id:{app_id}, groupId:{group_id}, round:{round}")
+                limit = 3
+                if round == limit:
+                    logging.info(f"soft stop group message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
+                    return {'result':'error', 'msg':'您发消息速度过快，请稍后再试。'}
+                elif round > limit:
+                    logging.info(f"hard stop group message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
+                    return {'result':'error', 'msg':''}
+            except Exception as e:
+                pass
+            return {'result':'ok', 'chatbot_user_id': chatbot_user_id}
     return {'result':'error', 'msg':''}
 
+def find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, msg_config):
+    mention_list = msg_config.get('mentionList', [])
+    for user_id in mention_list:
+        if fromUserId != user_id and is_chatbot_user_id(app_id, user_id, config):
+            return user_id
+    return None
+
 def handle_chat_message(config, msg):
+    msg_type = msg['type']
+    if msg_type not in ["CHAT", "GROUPCHAT"]:
+        return ''
     maybe_add_history(config, msg)
     try:
         reply = handle_chat_message_try(config, msg, 3)
@@ -289,16 +335,19 @@ def handle_chat_message(config, msg):
             }
             if 'feedback' in lcExt:
                 reply_ext['ai']['feedback'] = lcExt['feedback']
-            sendMessageAsync(config['app_id'], toUserId, fromUserId, now_reply, reply_ext)
+            replyMessageAsync(config, now_reply, reply_ext)
             if len(reply_list) > 0:
                 time.sleep(0.5)
 
 def handle_chat_message_try(config, msg, retry_times):
     app_id = msg['appId']
+    msg_type = msg['type']
     checkres = check_message_need_reply(config, msg)
     if checkres['result'] == 'error':
         return checkres['msg']
-    reply_message_read_ack(config)
+    chatbot_user_id = checkres['chatbot_user_id']
+    config['chatbot_user_id'] = chatbot_user_id
+    reply_message_read_ack(config, msg)
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
     preset = copy.deepcopy(config.get('preset',{}))
@@ -311,25 +360,29 @@ def handle_chat_message_try(config, msg, retry_times):
         return checkres['msg']
     ctype = msg['ctype']
     command_ext = {}
-    if ctype == 'TEXT':
-        content = msg['content']
-        if content.startswith("/"):
-            result = handle_embedding_command(msg, config)
-            if isinstance(result, str):
+    if msg_type == 'CHAT':
+        if ctype == 'TEXT':
+            content = msg['content']
+            if content.startswith("/"):
+                result = handle_embedding_command(msg, config)
+                if isinstance(result, str):
+                    if len(result) > 0:
+                        return result
+                elif result["result"] == "continue":
+                    command_ext = result["command_ext"]
+            elif content.startswith('http://') or content.startswith('https://'):
+                result = handle_chat_links(msg, config)
                 if len(result) > 0:
                     return result
-            elif result["result"] == "continue":
-                command_ext = result["command_ext"]
-        elif content.startswith('http://') or content.startswith('https://'):
-            result = handle_chat_links(msg, config)
-            if len(result) > 0:
-                return result
-    elif ctype == 'FILE':
-        return handle_chat_file(msg, config)
+        elif ctype == 'FILE':
+            return handle_chat_file(msg, config)
+        else:
+            return ''
     else:
-        return ''
+        if ctype != 'TEXT':
+            return ''
     if is_chatbot_mode:
-        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, toUserId)
+        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
             for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id"]:
@@ -419,7 +472,7 @@ def handle_chat_message_try(config, msg, retry_times):
         del preset['ext']
     is_debug = 'debug' in presetExt and presetExt['debug'] == True
     if is_debug:
-        sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 当前预设为: {preset_name}",{'ai':{'role': 'ai'}})
+        replyMessageAsync(config, f"[LanyingConnector DEBUG] 当前预设为: {preset_name}",{'ai':{'role': 'ai'}})
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
     vendor = config.get('vendor', 'openai')
     if 'vendor' in preset:
@@ -460,28 +513,34 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     history = {'time':now}
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
-    historyListKey = historyListChatGPTKey(fromUserId, toUserId)
+    msg_type = msg['type']
+    if msg_type == 'CHAT':
+        historyListKey = historyListChatGPTKey(fromUserId, toUserId)
+    elif msg_type == 'GROUPCHAT':
+        historyListKey = historyListGroupKey(toUserId)
     redis = lanying_redis.get_redis_connection()
     is_debug = 'debug' in presetExt and presetExt['debug'] == True
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
         del_embedding_info(redis, fromUserId, toUserId)
-    if 'prompt_ext' in lcExt and lcExt['prompt_ext']:
+    if msg_type == 'CHAT' and 'prompt_ext' in lcExt and lcExt['prompt_ext']:
         customHistoryList = []
         for customHistory in lcExt['prompt_ext']:
             if customHistory['role'] and customHistory['content']:
                 customHistoryList.append({'role':customHistory['role'], 'content': customHistory['content']})
         addHistory(redis, historyListKey, {'list':customHistoryList, 'time':now})
     if 'ai_generate' in lcExt and lcExt['ai_generate'] == False:
-        history['user'] = content
-        history['assistant'] = ''
-        history['uid'] = fromUserId
-        history['type'] = 'ask'
-        addHistory(redis, historyListKey, history)
+        if msg_type == 'CHAT':
+            history['user'] = content
+            history['assistant'] = ''
+            history['uid'] = fromUserId
+            history['type'] = 'ask'
+            addHistory(redis, historyListKey, history)
         return ''
     if content == '/reset_prompt' or content == "/reset":
-        removeAllHistory(redis, historyListKey)
+        if msg_type == 'CHAT':
+            removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
         del_embedding_info(redis, fromUserId, toUserId)
         return 'prompt is reset'
@@ -503,9 +562,6 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
-        question_merge = presetExt.get('question_merge', True)
-        question_answers = []
-        question_answer_with_distance = ""
         functions_with_distance = ""
         is_use_old_embeddings = False
         embedding_names = []
@@ -530,7 +586,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
             embedding_content_type = presetExt.get('embedding_content_type', 'text')
             embedding_history_num = presetExt.get('embedding_history_num', 0)
-            embedding_query_text = calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config)
+            embedding_query_text = calc_embedding_query_text(config, content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config)
             ask_message = {"role": "user", "content": content}
             embedding_message =  {"role": embedding_role, "content": embedding_content}
             embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(messages, model, vendor) - preset.get('max_tokens', 1024) - calcMessageTokens(ask_message, model, vendor) - calcMessageTokens(embedding_message, model, vendor)
@@ -551,23 +607,15 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 segment_begin = f'\n<KNOWLEDGE id="{doc.block_id}">\n'
                 segment_end = '\n</KNOWLEDGE>\n'
                 if hasattr(doc, 'question') and doc.question != "":
-                    if question_merge:
-                        line_sep = "\n------\n"
-                        if line_sep in doc.question or line_sep in doc.text:
-                            line_sep = "\n######\n"
-                        qa_text = f"问:{line_sep}{doc.question}{line_sep}答:{line_sep}{doc.text}{line_sep}"
-                        ## qa_text = f"<QUESTION>\n{doc.question}\n</QUESTION>\n<ANSWER>\n{doc.text}\n</ANSWER>"
-                        ## qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
-                        context = context + segment_begin + qa_text + segment_end
-                        if is_debug:
-                            context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"
-                    else:
-                        question_info = {'role':'user', 'content':doc.question}
-                        answer_info = {'role':'assistant', 'content':doc.text}
-                        question_answers.append(question_info)
-                        question_answers.append(answer_info)
-                        if is_debug:
-                            question_answer_with_distance = question_answer_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + "\n" + json.dumps(question_info, ensure_ascii=False) + "\n" + json.dumps(answer_info, ensure_ascii=False) + "\n\n"
+                    line_sep = "\n------\n"
+                    if line_sep in doc.question or line_sep in doc.text:
+                        line_sep = "\n######\n"
+                    qa_text = f"问:{line_sep}{doc.question}{line_sep}答:{line_sep}{doc.text}{line_sep}"
+                    ## qa_text = f"<QUESTION>\n{doc.question}\n</QUESTION>\n<ANSWER>\n{doc.text}\n</ANSWER>"
+                    ## qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
+                    context = context + segment_begin + qa_text + segment_end
+                    if is_debug:
+                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"
                 elif hasattr(doc, 'function') and doc.function != "":
                     function_info = json.loads(doc.function)
                     if 'priority' not in function_info:
@@ -604,8 +652,6 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 context_with_prompt = f"{embedding_content}\n\n{context}"
                 context_with_distance = f"{embedding_content}\n\n{context_with_distance}"
                 messages.append({'role':embedding_role, 'content':context_with_prompt})
-            if len(question_answers) > 0:
-                messages.extend(question_answers)
             if len(functions) > 0:
                 functions = sort_functions(functions)
                 if is_debug:
@@ -613,9 +659,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
             if is_debug:
                 if is_use_old_embeddings:
-                    sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai'}})
+                    replyMessageAsync(config, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai'}})
                 else:
-                    sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{question_answer_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai'}})
+                    replyMessageAsync(config, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai'}})
     history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
     if history_result['result'] == 'error':
         return history_result['message']
@@ -695,12 +741,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         message_to_send = ''.join(content_collect)
                         if stream_msg_id > 0:
                             reply_ext['ai']['seq'] += 1
-                            lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
+                            replyMessageOperAsync(config, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
                         else:
                             try:
-                                add_ai_message_cnt(message_to_send)
                                 reply_ext['ai']['seq'] += 1
-                                stream_msg_id = lanying_connector.sendMessage(app_id, toUserId, fromUserId, message_to_send, reply_ext)
+                                stream_msg_id = replyMessageSync(config, message_to_send, reply_ext)
                             except Exception as e:
                                 pass
                         reply += message_to_send
@@ -725,7 +770,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 function_name_debug = function_call_debug['name']
                 function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
             if is_debug:
-                sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
+                replyMessageAsync(config, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
             response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug)
             function_call_times -= 1
         else:
@@ -745,7 +790,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             pass
     if command:
         if is_debug:
-            sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}",{'ai':{'role': 'ai'}})
+            replyMessageAsync(config, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}",{'ai':{'role': 'ai'}})
         if 'preset_welcome' in command:
             reply = command['preset_welcome']
     if command and 'ai_generate' in command and command['ai_generate'] == True:
@@ -778,7 +823,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     if command and 'ai_generate' in command and command['ai_generate'] == True:
         if retry_times > 0:
             if 'preset_welcome' in command:
-                sendMessageAsync(config['app_id'], toUserId, fromUserId, command['preset_welcome'],{'ai':{'role': 'ai'}})
+                replyMessageAsync(config, command['preset_welcome'],{'ai':{'role': 'ai'}})
             return handle_chat_message_try(config, msg, retry_times - 1)
         else:
             return ''
@@ -878,15 +923,15 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 logging.info(f"Delay Send replace msg |  stream_msg_delay_send_time: {stream_msg_last_send_time}, now:{now}, send_delay: {send_delay}")
                 time.sleep(send_delay)
             add_ai_message_cnt(reply)
-            lanying_connector.sendMessageOperAsync(app_id, toUserId, fromUserId, stream_msg_id, 12, reply, reply_ext, oper_msg_config, False)
+            replyMessageOperAsync(config, stream_msg_id, 12, reply, reply_ext, oper_msg_config, False)
         else:
             if is_stream:
                 reply_ext['ai']['seq'] += 1
                 reply_ext['ai']['finish'] = True
-                sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+                replyMessageAsync(config, reply, reply_ext)
             else:
                 reply_ext['ai']['stream'] = False
-                sendMessageAsync(config['app_id'], toUserId, fromUserId, reply, reply_ext)
+                replyMessageAsync(config, reply, reply_ext)
     return ''
 
 def is_link_need_ignore(link):
@@ -942,9 +987,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             function_content = function_response.text
             logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
             if is_debug:
-                fromUserId = config['from_user_id']
-                toUserId = config['to_user_id']
-                sendMessageAsync(config['app_id'], toUserId, fromUserId, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
+                replyMessageAsync(config, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
             function_message = {
                 "role": "function",
                 "name": function_name,
@@ -1239,6 +1282,9 @@ def model_token_limit(model_config):
 def historyListChatGPTKey(fromUserId, toUserId):
     return "lanying:connector:history:list:chatGPT:" + fromUserId + ":" + toUserId
 
+def historyListGroupKey(groupId):
+    return "lanying:connector:history:list:group:" + groupId
+
 def addHistory(redis, historyListKey, history):
     if redis:
         Count = redis.rpush(historyListKey, json.dumps(history))
@@ -1342,12 +1388,14 @@ def get_preset_self_auth_info(config, vendor):
             }
     return auth_info
 
-def reply_message_read_ack(config):
-    fromUserId = config['from_user_id']
-    toUserId = config['to_user_id']
-    msgId = config['msg_id']
-    appId = config['app_id']
-    lanying_connector.sendReadAckAsync(appId, toUserId, fromUserId, msgId)
+def reply_message_read_ack(config, msg):
+    msg_type = msg['type']
+    if msg_type == 'CHAT':
+        fromUserId = config['from_user_id']
+        toUserId = config['to_user_id']
+        msgId = config['msg_id']
+        appId = config['app_id']
+        lanying_connector.sendReadAckAsync(appId, toUserId, fromUserId, msgId)
 
 def add_message_statistic(app_id, config, preset, response, openai_key_type, model_config):
     if 'usage' in response:
@@ -2014,7 +2062,7 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
 def text_byte_size(text):
     return len(text.encode('utf-8'))
 
-def calc_embedding_query_text(content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config):
+def calc_embedding_query_text(config, content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config):
     if embedding_history_num <= 0:
         return content
     result = [content]
@@ -2046,7 +2094,7 @@ def calc_embedding_query_text(content, historyListKey, embedding_history_num, is
                 break
     embedding_query_text = '\n'.join(result)
     if is_debug:
-        sendMessageAsync(app_id, toUserId, fromUserId, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai'}})
+        replyMessageAsync(config, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai'}})
     return embedding_query_text
 
 def handle_chat_file(msg, config):
@@ -2204,16 +2252,26 @@ def maybe_add_history(config, msg):
         redis = lanying_redis.get_redis_connection()
         now = int(time.time())
         history = {'time':now}
-        ai_user_id = msg['from']['uid']
-        human_user_id = msg['to']['uid']
         content = msg.get('content', '')
-        historyListKey = historyListChatGPTKey(human_user_id, ai_user_id)
-        history['user'] = ''
-        history['assistant'] = content
-        history['uid'] = human_user_id
-        history['type'] = 'reply'
-        addHistory(redis, historyListKey, history)
-        pass
+        msg_type = msg['type']
+        if msg_type == 'CHAT':
+            ai_user_id = msg['from']['uid']
+            human_user_id = msg['to']['uid']
+            historyListKey = historyListChatGPTKey(human_user_id, ai_user_id)
+            history['user'] = ''
+            history['assistant'] = content
+            history['uid'] = human_user_id
+            history['type'] = 'reply'
+            addHistory(redis, historyListKey, history)
+        elif msg_type == 'GROUPCHAT':
+            from_user_id = msg['from']['uid']
+            group_id = msg['to']['uid']
+            historyListKey = historyListGroupKey(group_id)
+            history['type'] = 'group'
+            history['content'] = content
+            history['group_id'] = group_id
+            history['from'] = from_user_id
+            addHistory(redis, historyListKey, history)
 
 def need_add_history(config, msg):
     try:
@@ -2221,8 +2279,22 @@ def need_add_history(config, msg):
         toUserId = str(msg['to']['uid'])
         type = msg['type']
         app_id = msg['appId']
-        is_chatbot = is_chatbot_user_id(app_id, fromUserId, config)
-        if is_chatbot and toUserId != fromUserId  and type == 'CHAT':
+        if type == 'CHAT':
+            is_chatbot = is_chatbot_user_id(app_id, fromUserId, config)
+            if is_chatbot and toUserId != fromUserId:
+                ext = msg.get('ext','')
+                try:
+                    ext_json = json.loads(ext)
+                except Exception as e:
+                    ext_json = {}
+                try:
+                    role = ext_json.get('ai', {}).get('role', 'none')
+                    if role == 'ai':
+                        return False
+                except Exception as e:
+                    pass
+                return True
+        elif type == 'GROUPCHAT':
             ext = msg.get('ext','')
             try:
                 ext_json = json.loads(ext)
@@ -3057,3 +3129,44 @@ def get_ai_message_round_key(from_user_id, to_user_id):
 def sendMessageAsync(app_id, notify_from, user_id, content, ext = {}):
     add_ai_message_cnt(content)
     return lanying_connector.sendMessageAsync(app_id, notify_from, user_id, content, ext)
+
+def replyMessageAsync(config, content, ext = {}):
+    add_ai_message_cnt(content)
+    if 'reply_msg_type' in config:
+        app_id = config['app_id']
+        reply_msg_type = config['reply_msg_type']
+        reply_from = config['reply_from']
+        reply_to = config['reply_to']
+        reply_msg_id = config['reply_msg_id']
+        if 'ai' in ext:
+            ext['ai']['ask_msg_id'] = reply_msg_id
+        if reply_msg_type == 'CHAT':
+            return lanying_connector.sendMessageAsync(app_id, reply_from, reply_to, content, ext)
+        elif reply_msg_type == 'GROUPCHAT':
+            return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
+
+def replyMessageSync(config, content, ext = {}):
+    add_ai_message_cnt(content)
+    if 'reply_msg_type' in config:
+        app_id = config['app_id']
+        reply_msg_type = config['reply_msg_type']
+        reply_from = config['reply_from']
+        reply_to = config['reply_to']
+        reply_msg_id = config['reply_msg_id']
+        if 'ai' in ext:
+            ext['ai']['ask_msg_id'] = reply_msg_id
+        if reply_msg_type == 'CHAT':
+            return lanying_connector.sendMessage(app_id, reply_from, reply_to, content, ext)
+        elif reply_msg_type == 'GROUPCHAT':
+            return lanying_message.send_group_message_sync(config, app_id, reply_from, reply_to, content, ext)
+
+def replyMessageOperAsync(config, stream_msg_id, oper_type, content, ext, msg_config, online_only):
+    if 'reply_msg_type' in config:
+        app_id = config['app_id']
+        reply_msg_type = config['reply_msg_type']
+        reply_from = config['reply_from']
+        reply_to = config['reply_to']
+        if reply_msg_type == 'CHAT':
+            return lanying_connector.sendMessageOperAsync(app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
+        else:
+            return lanying_message.send_group_message_oper_async(app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)

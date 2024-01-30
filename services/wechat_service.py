@@ -251,8 +251,8 @@ def handle_wechat_group_message(wc_id, account, data):
         #maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
         config = lanying_config.get_service_config(app_id, service)
         redis.setex(message_deduplication, 3*86400, "1")
-        ext = transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id)
-        lanying_message.send_group_message_async(config, app_id, from_user_id, group_id,content, ext)
+        msg_config = transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id)
+        lanying_message.send_group_message_async(config, app_id, from_user_id, group_id,content, {}, msg_config)
     else:
         logging.info(f"handle_wechat_group_message user_id not found: {from_user_id}")
 
