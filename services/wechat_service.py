@@ -196,6 +196,9 @@ def handle_wechat_chat_message(wc_id, account, data):
     if self:
         logging.info(f"handle_chat_message skip self message | self:{self}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
         return
+    if is_wechat_official_account(from_user):
+        logging.info(f"handle_chat_message skip wechat official account message: wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
+        return
     message_deduplication = message_deduplication_key(from_user, to_user, msg_id, new_msg_id)
     if redis.get(message_deduplication):
         logging.info(f"handle_chat_message skip for message_deduplication | wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
@@ -722,3 +725,9 @@ def ensure_user_in_group(app_id, user_id, group_id):
         return True
     group_apply(app_id, user_id, group_id)
     wait_user_in_group(app_id, user_id, group_id, 5)
+
+def is_wechat_official_account(username):
+    pattern = re.compile(r'^gh_[0-9a-f]{10,16}$')
+    if pattern.match(username):
+        return True
+    return False
