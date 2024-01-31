@@ -236,6 +236,8 @@ def check_message_need_reply(config, msg):
         if is_chatbot and fromUserId != toUserId:
             config['reply_from'] = toUserId
             config['reply_to'] = fromUserId
+            config['send_from'] = fromUserId
+            config['send_to'] = toUserId
             config['reply_msg_type'] = 'CHAT'
             config['reply_msg_id'] = msg['msgId']
             try:
@@ -266,6 +268,8 @@ def check_message_need_reply(config, msg):
         if chatbot_user_id:
             config['reply_from'] = chatbot_user_id
             config['reply_to'] = group_id
+            config['send_from'] = fromUserId
+            config['send_to'] = group_id
             config['reply_msg_type'] = 'GROUPCHAT'
             config['reply_msg_id'] = msg['msgId']
             try:
@@ -343,9 +347,9 @@ def handle_chat_message(config, msg):
                 history = {'time':now}
                 history['type'] = 'group'
                 history['content'] = now_reply
-                history['group_id'] = config['reply_from']
-                history['from'] =  config['reply_to']
-                historyListKey = historyListGroupKey(config['reply_from'])
+                history['group_id'] = config['reply_to']
+                history['from'] =  config['reply_from']
+                historyListKey = historyListGroupKey(config['reply_to'])
                 addHistory(redis, historyListKey, history)
             if len(reply_list) > 0:
                 time.sleep(0.5)
@@ -694,7 +698,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             messages.append(userHistory)
     preset['messages'] = messages
     if msg_type == 'GROUPCHAT':
-        preset['user'] = config['reply_to']
+        preset['user'] = config['send_from']
     if len(functions) > 0:
         preset['functions'] = functions
     else:
@@ -1270,7 +1274,7 @@ def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, m
     model = preset['model']
     token_limit = model_token_limit(model_config)
     messagesSize = calcMessagesTokens(messages, model, vendor)
-    ask_user_id = config['reply_to']
+    ask_user_id = config['send_from']
     ai_user_id = config['reply_from']
     askMessage = {"role": "user", "content": content, "name": ask_user_id}
     nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
@@ -1327,6 +1331,7 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
     messagesSize = calcMessagesTokens(messages, model, vendor)
     reply_to = config['reply_to']
     reply_from = config['reply_from']
+    send_from = config['send_from']
     history_prompt = presetExt.get('group_history_prompt', '请根据之前的知识和下面的群聊历史，以{ai}的身份回复{user}的问题，不要输出标签，但需要输出@标记表明在回复谁：')
     history_prompt = history_prompt.replace("{ai}", f"{reply_from}").replace("{user}", f"{reply_to}")
     askMessage = {"role": "user", "content": content}
@@ -1336,7 +1341,7 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
     history_bytes = 0
     history_count = 0
-    ask_message_segment = f'\n\n<UserMessage from="{reply_to}">\n{content}\n</UserMessage>\n\n<UserMessage from="{reply_from}">\n'
+    ask_message_segment = f'\n\n<UserMessage from="{send_from}">\n{content}\n</UserMessage>\n\n<UserMessage from="{reply_from}">\n'
     history_seqments = []
     final_history = {'role': 'user', 'content': history_prompt + ask_message_segment}
     for history in reversed_group_history_generator(historyListKey):
