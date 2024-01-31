@@ -262,7 +262,7 @@ def check_message_need_reply(config, msg):
     elif msg_type == 'GROUPCHAT':
         group_id = toUserId
         msg_config = lanying_utils.safe_json_loads(msg.get('config'))
-        chatbot_user_id = find_chatbot_user_id_in_group_mention(app_id, group_id, msg_config)
+        chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, msg_config)
         if chatbot_user_id:
             config['reply_from'] = chatbot_user_id
             config['reply_to'] = group_id
@@ -1257,7 +1257,10 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
     model = preset['model']
     token_limit = model_token_limit(model_config)
     messagesSize = calcMessagesTokens(messages, model, vendor)
-    history_prompt = presetExt.get('group_history_prompt', '补全下面群聊会话，仅需回复最近一个用户的问题，不要输出标签，但需要输出@标记表明在回复谁：')
+    reply_to = config['reply_to']
+    reply_from = config['reply_from']
+    history_prompt = presetExt.get('group_history_prompt', '请根据之前的知识和下面的群聊历史，以{ai}的身份回复{user}的问题，不要输出标签，但需要输出@标记表明在回复谁：')
+    history_prompt = history_prompt.replace("{ai}", f"{reply_from}").replace("{user}", f"{reply_to}")
     askMessage = {"role": "user", "content": content}
     nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
     if nowSize + completionTokens >= token_limit:
@@ -1265,8 +1268,6 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
     history_bytes = 0
     history_count = 0
-    reply_to = config['reply_to']
-    reply_from = config['reply_from']
     ask_message_segment = f'\n\n<UserMessage from="{reply_to}">\n{content}\n</UserMessage>\n\n<UserMessage from="{reply_from}">\n'
     history_seqments = []
     final_history = {'role': 'user', 'content': history_prompt + ask_message_segment}
@@ -1278,7 +1279,7 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         history_seqments.append(user_message_segment)
         now_content = history_prompt + '\n\n'.join(history_seqments) + ask_message_segment
         now_history = {'role':'user', 'content': now_content}
-        history_size += calcMessageTokens(now_history, model, vendor)
+        history_size = calcMessageTokens(now_history, model, vendor)
         history_bytes = text_byte_size(now_content)
         logging.info(f"group_history_bytes: app_id={app_id}, bytes={history_bytes}")
         if history_count > history_msg_count_min:
