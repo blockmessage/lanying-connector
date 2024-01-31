@@ -1285,7 +1285,7 @@ def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, m
     history_bytes = 0
     history_count = 0
     for history in reversed_group_history_generator(historyListKey):
-        message_from = history.get('from', '')
+        message_from = str(history.get('from', ''))
         message_content = history.get('content', '')
         if message_from == ai_user_id:
             now_message = {'role': 'assistant', 'content': message_content}
