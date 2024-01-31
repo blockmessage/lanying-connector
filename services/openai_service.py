@@ -674,14 +674,16 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             messages.append(userHistory)
         messages.append({"role": "user", "content": content})
     else:
-        history_result = loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
+        history_result = loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
             return history_result['message']
         userHistoryList = history_result['data']
         for userHistory in userHistoryList:
-            logging.info(f'userHistory:{userHistory}')
+            logging.info(f'GroupHistory:{userHistory}')
             messages.append(userHistory)
     preset['messages'] = messages
+    if msg_type == 'GROUPCHAT':
+        preset['user'] = config['reply_to']
     if len(functions) > 0:
         preset['functions'] = functions
     else:
@@ -1244,6 +1246,62 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
             logging.info(f'stop history for max tokens: app_id={app_id}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
             break
     logging.info(f"history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
+    return {'result':'ok', 'data': reversed(res)}
+
+def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor):
+    history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
+    history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
+    history_msg_size_max = config.get('history_msg_size_max', 4096)
+    history_msg_count_min = ensure_even(presetExt.get('history_msg_count_min', history_msg_count_min))
+    history_msg_count_max = ensure_even(presetExt.get('history_msg_count_max', history_msg_count_max))
+    history_msg_size_max = presetExt.get('history_msg_size_max', history_msg_size_max)
+    completionTokens = preset.get('max_tokens', 1024)
+    model = preset['model']
+    token_limit = model_token_limit(model_config)
+    messagesSize = calcMessagesTokens(messages, model, vendor)
+    ask_user_id = config['reply_to']
+    ai_user_id = config['reply_from']
+    askMessage = {"role": "user", "content": content, "name": ask_user_id}
+    nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
+    if nowSize + completionTokens >= token_limit:
+        logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
+        return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
+    res = []
+    history_bytes = 0
+    history_count = 0
+    for history in reversed_group_history_generator(historyListKey):
+        message_from = history.get('from', '')
+        message_content = history.get('content', '')
+        if message_from == ai_user_id:
+            now_message = {'role': 'assistant', 'content': message_content}
+        else:
+            now_message = {'role': 'user', 'content': message_content, 'name': message_from}
+        nowHistoryList = [now_message]
+        history_count += len(nowHistoryList)
+        historySize = 0
+        for nowHistory in nowHistoryList:
+            historySize += calcMessageTokens(nowHistory, model, vendor)
+            now_history_content = nowHistory.get('content','')
+            now_history_bytes = text_byte_size(now_history_content)
+            history_bytes += now_history_bytes
+            logging.info(f"history_bytes: app_id={app_id}, content={now_history_content}, bytes={now_history_bytes}")
+        if history_count > history_msg_count_min:
+            if history_count > history_msg_count_max:
+                logging.info(f"stop history for history_msg_count_max: app_id={app_id}, history_msg_count_max={history_msg_count_max}, history_count={history_count}")
+                break
+            if history_bytes > history_msg_size_max:
+                logging.info(f"stop history for history_msg_size_max: app_id={app_id}, history_msg_size_max={history_msg_size_max}, history_count={history_count}")
+                break
+        if nowSize + historySize + completionTokens < token_limit:
+            for nowHistory in reversed(nowHistoryList):
+                res.append(nowHistory)
+            nowSize += historySize
+            logging.info(f'history state: app_id={app_id}, now_prompt_size={nowSize}, history_count={history_count}, history_bytes={history_bytes}')
+        else:
+            logging.info(f'stop history for max tokens: app_id={app_id}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
+            break
+    logging.info(f"history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
+    res.append(askMessage)
     return {'result':'ok', 'data': reversed(res)}
 
 def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor):
