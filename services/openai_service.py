@@ -314,7 +314,9 @@ def handle_chat_message(config, msg):
         reply_list = reply
     else:
         reply_list = [reply]
+    cnt = 0
     for now_reply in reply_list:
+        cnt += 1
         if len(now_reply) > 0:
             lcExt = {}
             try:
@@ -334,6 +336,16 @@ def handle_chat_message(config, msg):
             if 'feedback' in lcExt:
                 reply_ext['ai']['feedback'] = lcExt['feedback']
             replyMessageAsync(config, now_reply, reply_ext)
+            if cnt == 1 and msg_type == 'GROUPCHAT' and 'reply_msg_type' in config:
+                now = int(time.time())
+                redis = lanying_redis.get_redis_connection()
+                history = {'time':now}
+                history['type'] = 'group'
+                history['content'] = now_reply
+                history['group_id'] = config['reply_from']
+                history['from'] =  config['reply_to']
+                historyListKey = historyListGroupKey(config['reply_from'])
+                addHistory(redis, historyListKey, history)
             if len(reply_list) > 0:
                 time.sleep(0.5)
 
@@ -470,7 +482,7 @@ def handle_chat_message_try(config, msg, retry_times):
         del preset['ext']
     is_debug = 'debug' in presetExt and presetExt['debug'] == True
     if is_debug:
-        replyMessageAsync(config, f"[LanyingConnector DEBUG] 当前预设为: {preset_name}",{'ai':{'role': 'ai'}})
+        replyMessageAsync(config, f"[LanyingConnector DEBUG] 当前预设为: {preset_name}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
     vendor = config.get('vendor', 'openai')
     if 'vendor' in preset:
@@ -659,9 +671,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
             if is_debug:
                 if is_use_old_embeddings:
-                    replyMessageAsync(config, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai'}})
+                    replyMessageAsync(config, f"[LanyingConnector DEBUG] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
                 else:
-                    replyMessageAsync(config, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai'}})
+                    replyMessageAsync(config, f"[LanyingConnector DEBUG] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai', 'is_debug_msg': True}})
     if msg_type == 'CHAT':
         history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
@@ -781,7 +793,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 function_name_debug = function_call_debug['name']
                 function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
             if is_debug:
-                replyMessageAsync(config, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai'}})
+                replyMessageAsync(config, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
             response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug)
             function_call_times -= 1
         else:
@@ -801,7 +813,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             pass
     if command:
         if is_debug:
-            replyMessageAsync(config, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}",{'ai':{'role': 'ai'}})
+            replyMessageAsync(config, f"[LanyingConnector DEBUG]收到如下JSON:\n{reply}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
         if 'preset_welcome' in command:
             reply = command['preset_welcome']
     if command and 'ai_generate' in command and command['ai_generate'] == True:
@@ -1005,7 +1017,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             function_content = function_response.text
             logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
             if is_debug:
-                replyMessageAsync(config, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai'}})
+                replyMessageAsync(config, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
             function_message = {
                 "role": "function",
                 "name": function_name,
@@ -2234,7 +2246,7 @@ def calc_embedding_query_text(config, content, historyListKey, embedding_history
                 break
     embedding_query_text = '\n'.join(result)
     if is_debug:
-        replyMessageAsync(config, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai'}})
+        replyMessageAsync(config, f"[LanyingConnector DEBUG] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
     return embedding_query_text
 
 def handle_chat_file(msg, config):
@@ -2443,6 +2455,12 @@ def need_add_history(config, msg):
             try:
                 role = ext_json.get('ai', {}).get('role', 'none')
                 if role == 'ai':
+                    return False
+            except Exception as e:
+                pass
+            try:
+                is_debug_msg = ext_json.get('ai', {}).get('is_debug_msg', False)
+                if is_debug_msg == True:
                     return False
             except Exception as e:
                 pass
