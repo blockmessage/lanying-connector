@@ -258,7 +258,7 @@ def check_message_need_reply(config, msg):
                     return {'result':'error', 'msg':''}
             except Exception as e:
                 pass
-            return {'result':'ok', 'chatbot_user_id': chatbot_user_id}
+            return {'result':'ok', 'chatbot_user_id': toUserId}
     elif msg_type == 'GROUPCHAT':
         group_id = toUserId
         msg_config = lanying_utils.safe_json_loads(msg.get('config'))
@@ -325,8 +325,6 @@ def handle_chat_message(config, msg):
                     lcExt = ext['lanying_connector']
             except Exception as e:
                 pass
-            fromUserId = config['from_user_id']
-            toUserId = config['to_user_id']
             reply_ext = {
                 'ai': {
                     'stream': False,
