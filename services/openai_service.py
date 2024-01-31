@@ -316,8 +316,8 @@ def handle_chat_message(config, msg):
         reply_list = [reply]
     cnt = 0
     for now_reply in reply_list:
-        cnt += 1
         if len(now_reply) > 0:
+            cnt += 1
             lcExt = {}
             try:
                 ext = json.loads(config['ext'])
@@ -337,6 +337,7 @@ def handle_chat_message(config, msg):
                 reply_ext['ai']['feedback'] = lcExt['feedback']
             replyMessageAsync(config, now_reply, reply_ext)
             if cnt == 1 and msg_type == 'GROUPCHAT' and 'reply_msg_type' in config:
+                logging.info(f"ADD HISTORY CONFIG:{config}")
                 now = int(time.time())
                 redis = lanying_redis.get_redis_connection()
                 history = {'time':now}
@@ -1311,7 +1312,6 @@ def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, m
             logging.info(f'stop history for max tokens: app_id={app_id}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
             break
     logging.info(f"history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
-    res.append(askMessage)
     return {'result':'ok', 'data': reversed(res)}
 
 def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor):
@@ -3327,4 +3327,6 @@ def replyMessageOperAsync(config, stream_msg_id, oper_type, content, ext, msg_co
         if reply_msg_type == 'CHAT':
             return lanying_connector.sendMessageOperAsync(app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
         else:
-            return lanying_message.send_group_message_oper_async(app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
+            return lanying_message.send_group_message_oper_async(config, app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
+    else:
+        logging.info(f"Skip replyMessageOperAsync for config:{config}")
