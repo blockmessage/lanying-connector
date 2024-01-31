@@ -298,6 +298,7 @@ def check_message_need_reply(config, msg):
 def find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, msg_config):
     mention_list = msg_config.get('mentionList', [])
     for user_id in mention_list:
+        user_id = str(user_id)
         if fromUserId != user_id and is_chatbot_user_id(app_id, user_id, config):
             return user_id
     return None
@@ -1287,6 +1288,7 @@ def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, m
     for history in reversed_group_history_generator(historyListKey):
         message_from = str(history.get('from', ''))
         message_content = history.get('content', '')
+        logging.info(f"message_from == ai_user_id: {message_from} -> {ai_user_id} -> {message_from == ai_user_id} -> {type(message_from)} -> {type(ai_user_id)}")
         if message_from == ai_user_id:
             now_message = {'role': 'assistant', 'content': message_content}
         else:
@@ -2229,6 +2231,7 @@ def calc_embedding_query_text(config, content, historyListKey, embedding_history
     model = 'text-embedding-ada-002'
     token_limit = model_token_limit(model_config)
     redis = lanying_redis.get_redis_connection()
+    msg_type = config['reply_msg_type']
     for historyStr in reversed(getHistoryList(redis, historyListKey)):
         history = json.loads(historyStr)
         if history['time'] < now - expireSeconds:
@@ -2238,7 +2241,10 @@ def calc_embedding_query_text(config, content, historyListKey, embedding_history
                 if 'list' in history:
                     pass
                 else:
-                    history_content = history['user']
+                    if msg_type == 'CHAT':
+                        history_content = history.get('user', '')
+                    else:
+                        history_content = history.get('content', '')
                     if len(history_content) > 0:
                         token_num = lanying_embedding.num_of_tokens(history_content) + 1
                         if history_size + token_num < token_limit:
