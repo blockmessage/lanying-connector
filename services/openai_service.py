@@ -239,7 +239,7 @@ def check_message_need_reply(config, msg):
             config['send_from'] = fromUserId
             config['send_to'] = toUserId
             config['reply_msg_type'] = 'CHAT'
-            config['reply_msg_id'] = msg['msgId']
+            config['request_msg_id'] = msg['msgId']
             try:
                 ext = json.loads(msg['ext'])
                 if ext.get('ai',{}).get('role', 'none') == 'ai':
@@ -271,7 +271,7 @@ def check_message_need_reply(config, msg):
             config['send_from'] = fromUserId
             config['send_to'] = group_id
             config['reply_msg_type'] = 'GROUPCHAT'
-            config['reply_msg_id'] = msg['msgId']
+            config['request_msg_id'] = msg['msgId']
             try:
                 ext = json.loads(msg['ext'])
                 if ext.get('ai',{}).get('role', 'none') == 'ai':
@@ -3306,9 +3306,9 @@ def replyMessageAsync(config, content, ext = {}):
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
         reply_to = config['reply_to']
-        reply_msg_id = config['reply_msg_id']
+        request_msg_id = config['request_msg_id']
         if 'ai' in ext:
-            ext['ai']['ask_msg_id'] = reply_msg_id
+            ext['ai']['request_msg_id'] = request_msg_id
         if reply_msg_type == 'CHAT':
             return lanying_connector.sendMessageAsync(app_id, reply_from, reply_to, content, ext)
         elif reply_msg_type == 'GROUPCHAT':
@@ -3321,9 +3321,9 @@ def replyMessageSync(config, content, ext = {}):
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
         reply_to = config['reply_to']
-        reply_msg_id = config['reply_msg_id']
+        request_msg_id = config['request_msg_id']
         if 'ai' in ext:
-            ext['ai']['ask_msg_id'] = reply_msg_id
+            ext['ai']['request_msg_id'] = request_msg_id
         if reply_msg_type == 'CHAT':
             return lanying_connector.sendMessage(app_id, reply_from, reply_to, content, ext)
         elif reply_msg_type == 'GROUPCHAT':
