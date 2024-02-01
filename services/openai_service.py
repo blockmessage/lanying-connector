@@ -1320,59 +1320,6 @@ def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, m
     logging.info(f"history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
     return {'result':'ok', 'data': reversed(res)}
 
-def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor):
-    history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
-    history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
-    history_msg_size_max = config.get('history_msg_size_max', 4096)
-    history_msg_count_min = ensure_even(presetExt.get('history_msg_count_min', history_msg_count_min))
-    history_msg_count_max = ensure_even(presetExt.get('history_msg_count_max', history_msg_count_max))
-    history_msg_size_max = presetExt.get('history_msg_size_max', history_msg_size_max)
-    completionTokens = preset.get('max_tokens', 1024)
-    model = preset['model']
-    token_limit = model_token_limit(model_config)
-    messagesSize = calcMessagesTokens(messages, model, vendor)
-    reply_to = config['reply_to']
-    reply_from = config['reply_from']
-    send_from = config['send_from']
-    history_prompt = presetExt.get('group_history_prompt', '请根据之前的知识和下面的群聊历史，以{ai}的身份回复{user}的问题，不要输出标签，但需要输出@标记表明在回复谁：')
-    history_prompt = history_prompt.replace("{ai}", f"{reply_from}").replace("{user}", f"{reply_to}")
-    askMessage = {"role": "user", "content": content}
-    nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
-    if nowSize + completionTokens >= token_limit:
-        logging.info(f'stop group_history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
-        return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
-    history_bytes = 0
-    history_count = 0
-    ask_message_segment = f'\n\n<UserMessage from="{send_from}">\n{content}\n</UserMessage>\n\n<UserMessage from="{reply_from}">\n'
-    history_seqments = []
-    final_history = {'role': 'user', 'content': history_prompt + ask_message_segment}
-    for history in reversed_group_history_generator(historyListKey):
-        history_count += 1
-        user_message_from = history.get('from', '')
-        user_message_content = history.get('content', '')
-        user_message_segment = f'<UserMessage from="{user_message_from}">\n{user_message_content}\n</UserMessage>'
-        history_seqments.append(user_message_segment)
-        now_content = history_prompt + '\n\n'.join(history_seqments) + ask_message_segment
-        now_history = {'role':'user', 'content': now_content}
-        history_size = calcMessageTokens(now_history, model, vendor)
-        history_bytes = text_byte_size(now_content)
-        logging.info(f"group_history_bytes: app_id={app_id}, bytes={history_bytes}")
-        if history_count > history_msg_count_min:
-            if history_count > history_msg_count_max:
-                logging.info(f"stop group_history for history_msg_count_max: app_id={app_id}, history_msg_count_max={history_msg_count_max}, history_count={history_count}")
-                break
-            if history_bytes > history_msg_size_max:
-                logging.info(f"stop group_history for history_msg_size_max: app_id={app_id}, history_msg_size_max={history_msg_size_max}, history_count={history_count}")
-                break
-        if messagesSize + history_size + completionTokens < token_limit:
-            final_history = now_history
-            logging.info(f'group_history state: app_id={app_id}, now_prompt_size={nowSize}, history_count={history_count}, history_bytes={history_bytes}')
-        else:
-            logging.info(f'stop group_history for max tokens: app_id={app_id}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}')
-            break
-    logging.info(f"group_history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
-    return {'result':'ok', 'data': [final_history]}
-
 def reversed_history_generator(historyListKey):
     redis = lanying_redis.get_redis_connection()
     now = int(time.time())
