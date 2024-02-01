@@ -7,7 +7,7 @@ from datetime import datetime
 import lanying_im_api
 import lanying_utils
 
-def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg):
+def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -38,7 +38,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "capsule_id": capsule_id,
         'welcome_message': welcome_message,
         "quota_exceed_reply_type": quota_exceed_reply_type,
-        "quota_exceed_reply_msg": quota_exceed_reply_msg
+        "quota_exceed_reply_msg": quota_exceed_reply_msg,
+        "group_history_use_mode": group_history_use_mode
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -108,7 +109,8 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
     welcome_message = capsule_chatbot.get('welcome_message','')
     quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
     quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
-    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
+    group_history_use_mode = capsule_chatbot.get('group_history_use_mode', 'all')
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -166,7 +168,8 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
     welcome_message = capsule_chatbot.get('welcome_message','')
     quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
     quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
-    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
+    group_history_use_mode = capsule_chatbot.get('group_history_use_mode', 'all')
+    create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link, capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'], capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'], capsule_chatbot['message_per_month_per_user'], [],welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -199,8 +202,8 @@ def delete_chatbots(app_id):
         delete_chatbot(app_id, chatbot_id)
     return {'result':'ok', 'data':{}}
 
-def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg):
-    logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}")
+def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode):
+    logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
         return {'result':'error', 'message': 'chatbot not exist'}
@@ -228,7 +231,8 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         "chatbot_ids": json.dumps(chatbot_ids, ensure_ascii=False),
         'welcome_message': welcome_message,
         "quota_exceed_reply_type": quota_exceed_reply_type,
-        "quota_exceed_reply_msg": quota_exceed_reply_msg
+        "quota_exceed_reply_msg": quota_exceed_reply_msg,
+        "group_history_use_mode": group_history_use_mode
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -453,6 +457,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['price'] = 0
         if 'wechat_chatbot_id' not in dto:
             dto['wechat_chatbot_id'] = ''
+        if 'group_history_use_mode' not in dto:
+            dto['group_history_use_mode'] = 'all'
         return dto
     return None
 

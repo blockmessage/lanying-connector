@@ -350,6 +350,8 @@ def handle_chat_message(config, msg):
                 history['content'] = now_reply
                 history['group_id'] = config['reply_to']
                 history['from'] =  config['reply_from']
+                if 'send_from' in config:
+                    history['mention_list'] = [int(config['send_from'])]
                 historyListKey = historyListGroupKey(config['reply_to'])
                 addHistory(redis, historyListKey, history)
             if len(reply_list) > 0:
@@ -401,7 +403,7 @@ def handle_chat_message_try(config, msg, retry_times):
         chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
-            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id"]:
+            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
             preset = chatbot['preset']
@@ -690,7 +692,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             messages.append(userHistory)
         messages.append({"role": "user", "content": content})
     else:
-        history_result = loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
+        history_result = loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
             return history_result['message']
         userHistoryList = history_result['data']
@@ -835,6 +837,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['content'] = reply
             history['group_id'] = config['reply_to']
             history['from'] = config['reply_from']
+            if 'send_from' in config:
+                history['mention_list'] = [int(config['send_from'])]
             addHistory(redis, historyListKey, history)
     if msg_type == 'CHAT' and command:
         if 'reset_prompt' in command:
@@ -1264,7 +1268,8 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
     logging.info(f"history finish: app_id={app_id}, vendor:{vendor}, now_prompt_size:{nowSize}, completionTokens:{completionTokens}, token_limit:{token_limit}")
     return {'result':'ok', 'data': reversed(res)}
 
-def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor):
+def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor):
+    group_history_use_mode = config.get('group_history_use_mode', 'all')
     history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
     history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
     history_msg_size_max = config.get('history_msg_size_max', 4096)
@@ -1288,7 +1293,23 @@ def loadGroupHistoryWithUserId(config, app_id, redis, historyListKey, content, m
     for history in reversed_group_history_generator(historyListKey):
         message_from = str(history.get('from', ''))
         message_content = history.get('content', '')
-        logging.info(f"message_from == ai_user_id: {message_from} -> {ai_user_id} -> {message_from == ai_user_id} -> {type(message_from)} -> {type(ai_user_id)}")
+        mention_list = history.get('mention_list', [])
+        if group_history_use_mode == 'mention':
+            if message_from == ai_user_id:
+                if int(ask_user_id) in mention_list:
+                    pass
+                else:
+                    logging.info(f"group_history_use_mode skip assistant not mention message:{message_from}, {mention_list}")
+                    continue
+            elif message_from == ask_user_id:
+                if int(ai_user_id) in mention_list:
+                    pass
+                else:
+                    logging.info(f"group_history_use_mode skip user not mention message:{message_from}, {mention_list}")
+                    continue
+            else:
+                logging.info(f"group_history_use_mode skip other user message:{message_from}")
+                continue
         if message_from == ai_user_id:
             now_message = {'role': 'assistant', 'content': message_content}
         else:
@@ -2381,6 +2402,9 @@ def maybe_add_history(config, msg):
             history['content'] = content
             history['group_id'] = group_id
             history['from'] = from_user_id
+            msg_config = lanying_utils.safe_json_loads(msg.get('config'))
+            mention_list = msg_config.get('mentionList', [])
+            history['mention_list'] = mention_list
             addHistory(redis, historyListKey, history)
 
 def need_add_history(config, msg):
@@ -2712,7 +2736,8 @@ def create_chatbot():
     welcome_message = str(data.get('welcome_message','嘿，你好'))
     quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
     quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
-    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
+    group_history_use_mode = str(data.get('group_history_use_mode', 'all'))
+    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -2743,7 +2768,8 @@ def configure_chatbot():
     welcome_message = str(data.get('welcome_message',''))
     quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
     quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
-    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg)
+    group_history_use_mode = str(data.get('group_history_use_mode', 'all'))
+    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
