@@ -9,6 +9,8 @@ from anthropic.types.beta import (
     MessageDeltaEvent,
     MessageStartEvent,
 )
+ASSISTANT_MESSAGE_DEFAULT = '好的'
+USER_MESSAGE_DEFAULT = '继续'
 
 def model_configs():
     return [
@@ -156,13 +158,21 @@ def format_preset(preset):
                 system_message = ret.get('system', '')
                 for message in preset['messages']:
                     if 'role' in message and 'content' in message:
-                        if message['role'] == 'system':
+                        role = message['role']
+                        content = message['content']
+                        if role == 'system':
                             if len(system_message) > 0:
                                 system_message += "\n\n\n" + message['content']
-                        else:
-                            messages.append({'role':message['role'], 'content':message['content']})
-                else:
-                    logging.info(f"vendor claude ingore message in preset: {message}")
+                        elif role == "user":
+                            if len(messages) > 0 and messages[-1]['role'] == 'user':
+                                messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
+                            messages.append({'role': role, 'content':content})
+                        elif role == 'assistant':
+                            if len(messages) > 0 and messages[-1]['role'] == 'assistant':
+                                messages.append({'role':'user', 'content':USER_MESSAGE_DEFAULT})
+                            messages.append({'role': role, 'content':content})
+                    else:
+                        logging.info(f"vendor claude ingore message in preset: {message}")
                 if len(system_message) > 0:
                     ret['system'] = system_message
                 ret[key] = messages
