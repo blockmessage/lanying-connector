@@ -82,3 +82,19 @@ def get_avatar_real_download_url(app_id, user_id, avatar_url):
                 return redirected_url
         else:
             return avatar_url
+
+def set_group_name(app_id, group_id, name):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config['lanying_admin_token']
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        body = {
+            'group_id': group_id,
+            'value': name
+        }
+        response = requests.post(apiEndpoint + '/group/info/name',
+                                    headers={'app_id': app_id, 'access-token': adminToken, 'group_id': str(group_id)},
+                                    json=body)
+        result = response.json()
+        logging.info(f"set_group_name, app_id={app_id} group_id={group_id}, result:{result}")
+        return result

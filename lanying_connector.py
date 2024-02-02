@@ -28,7 +28,7 @@ def init_logging():
     logger.addHandler(ch)
     logger.addHandler(fh)
 init_logging()
-executor = ThreadPoolExecutor(8)
+executor = ThreadPoolExecutor(16)
 sys.path.append("services")
 lanying_config.init()
 accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')

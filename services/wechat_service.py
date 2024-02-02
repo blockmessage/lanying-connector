@@ -244,9 +244,13 @@ def handle_wechat_group_message(wc_id, account, data):
     to_user_id = check_result['user_id']
     app_id = check_result['app_id']
     from_user_id = get_or_register_user(app_id, from_user)
-    group_id = get_or_create_group(app_id, from_group, from_user_id, to_user_id)
+    group_id = get_or_create_group(app_id, wid, from_group, from_user_id, to_user_id)
     ensure_user_in_group(app_id, from_user_id, group_id)
     ensure_user_in_group(app_id, to_user_id, group_id)
+    try:
+        maybe_sync_wechat_user_group_info_to_im(app_id, wid, from_group, group_id, from_user, from_user_id)
+    except Exception as e:
+        logging.exception(e)
     if from_user_id:
         #maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
         config = lanying_config.get_service_config(app_id, service)
@@ -301,7 +305,7 @@ def check_wid(wid):
 
 def handle_wechat_group_notify(wc_id, account, data):
     wid = data['wId']
-    group_name = data['userName']
+    wechat_group_id = data['userName']
     group_nickname = data.get('nickName', '')
     check_result = check_wid(wid)
     if check_result['result'] == 'error':
@@ -309,6 +313,10 @@ def handle_wechat_group_notify(wc_id, account, data):
         return
     to_user_id = check_result['user_id']
     app_id = check_result['app_id']
+    info_key = wechat_group_info_key(app_id, wechat_group_id)
+    redis = lanying_redis.get_redis_connection()
+    redis.delete(info_key)
+    logging.info(f"handle_wechat_group_notify remove cache | wechat_group_id:{wechat_group_id}, group_nickname:{group_nickname}")
 
 def handle_wechat_offline(wc_id, account, data):
     wid = data['wId']
@@ -366,10 +374,8 @@ def transform_at_list_from_im(app_id, message):
             username = get_wechat_username(app_id, mention_user_id)
             if username:
                 wechat_at_list.append(username)
-        if len(wechat_at_list) > 0:
-            message['content'] = replace_at_message(message['content'])
     return wechat_at_list
-            
+
 def check_message_need_send(config, message):
     from_user_id = int(message['from']['uid'])
     to_user_id = int(message['to']['uid'])
@@ -446,7 +452,16 @@ def get_user(app_id, username):
     else:
         return None
 
-def get_or_create_group(app_id, from_group, from_user_id, to_user_id):
+def get_im_group(app_id, wechat_group_id):
+    redis = lanying_redis.get_redis_connection()
+    key = wechat_group_key(app_id, wechat_group_id)
+    result = redis.get(key)
+    if result:
+        group_id = int(result)
+        return group_id
+    return None
+
+def get_or_create_group(app_id, wid, from_group, from_user_id, to_user_id):
     redis = lanying_redis.get_redis_connection()
     key = wechat_group_key(app_id, from_group)
     result = redis.get(key)
@@ -454,7 +469,11 @@ def get_or_create_group(app_id, from_group, from_user_id, to_user_id):
         group_id = int(result)
         return group_id
     else:
-        group_id = create_lanying_group(app_id, from_group, from_user_id, to_user_id)
+        wechat_group_info = get_wechat_group_info(app_id, wid, from_group)
+        wechat_group_name = wechat_group_info.get('nickName', '')
+        if wechat_group_name is None or wechat_group_name == '':
+            wechat_group_name = from_group
+        group_id = create_lanying_group(app_id, wechat_group_name, from_user_id, to_user_id)
         change_group_apply_approval_accept_all(app_id, group_id)
         if group_id:
             im_key = im_group_key(app_id, group_id)
@@ -492,6 +511,42 @@ def create_lanying_group(app_id, from_group, from_user_id, to_user_id):
         logging.info(f"create group, app_id={app_id}, from_group={from_group}, group_id={group_id}")
         return group_id
     return None
+
+def get_wechat_group_info_from_cache(app_id, wechat_group_id):
+    info_key = wechat_group_info_key(app_id, wechat_group_id)
+    redis = lanying_redis.get_redis_connection()
+    result = redis.get(info_key)
+    if result:
+        try:
+            return json.loads(result)
+        except Exception as e:
+            pass
+    return {}
+
+def get_wechat_group_info(app_id, wid, wechat_group_id):
+    try:
+        url =  lanying_wechat_chatbot.get_api_server() + "/getChatRoomInfo"
+        headers = lanying_wechat_chatbot.get_headers(app_id)
+        data = {
+            "wId": wid,
+            "chatRoomId": wechat_group_id
+        }
+        logging.info(f"get_wechat_group_info start | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}")
+        response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+        result = response.json()
+        logging.info(f"get_wechat_group_info finish | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}, result:{result}")
+        if result["code"] == "1000":
+            group_info_list = result['data']
+            if len(group_info_list) == 1:
+                group_info = group_info_list[0]
+                info_key = wechat_group_info_key(app_id, wechat_group_id)
+                redis = lanying_redis.get_redis_connection()
+                redis.setex(info_key, 3600, json.dumps(group_info, ensure_ascii=False))
+                return group_info
+    except Exception as e:
+        logging.exception(e)
+    logging.info(f"get_wechat_group_info failed | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}")
+    return {}
 
 def change_group_apply_approval_accept_all(app_id, group_id):
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
@@ -549,6 +604,9 @@ def wechat_user_key(app_id, username):
 def wechat_group_key(app_id, group):
     return f"lc_service:{service}:wechat_group:{app_id}:{group}"
 
+def wechat_group_info_key(app_id, group):
+    return f"lc_service:{service}:wechat_group_info:{app_id}:{group}"
+
 def wechat_user_info_key(app_id, username):
     return f"lc_service:{service}:wechat_user_info:{app_id}:{username}"
 
@@ -560,6 +618,12 @@ def im_group_key(app_id, group_id):
 
 def im_group_member_key(app_id, group_id):
     return f"lc_service:{service}:im_group_member:{app_id}:{group_id}"
+
+def im_group_member_info_key(app_id, group_id):
+    return f"lc_service:{service}:im_group_member_info:{app_id}:{group_id}"
+
+def im_group_info_key(app_id, group_id):
+    return f"lc_service:{service}:im_group_info:{app_id}:{group_id}"
 
 def message_deduplication_key(from_user, to_user, msg_id, new_msg_id):
     return f"lc_service:{service}:message_deduplication:{from_user}:{to_user}:{msg_id}:{new_msg_id}"
@@ -731,3 +795,47 @@ def is_wechat_official_account(username):
     if pattern.match(username):
         return True
     return False
+
+def maybe_sync_wechat_user_group_info_to_im(app_id, wid, wechat_group_id, group_id, from_user, from_user_id):
+    logging.info(f"maybe_sync_wechat_user_group_info_to_im start | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}, group_id:{group_id}, from_user:{from_user}, from_user_id:{from_user_id}")
+    group_info = get_wechat_group_info_from_cache(app_id, wechat_group_id)
+    members = group_info.get('chatRoomMembers',[])
+    from_user_info = None
+    for member in members:
+        if member.get('userName', '') == from_user:
+            from_user_info = member
+            break
+    if from_user_info is None:
+        logging.info(f"maybe_sync_wechat_user_group_info_to_im cache not used | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}, group_id:{group_id}, from_user:{from_user}, from_user_id:{from_user_id}")
+        group_info = get_wechat_group_info(app_id, wid, wechat_group_id)
+        members = group_info.get('chatRoomMembers',[])
+        from_user_info = None
+        for member in members:
+            if member.get('userName', '') == from_user:
+                from_user_info = member
+                break
+    redis = lanying_redis.get_redis_connection()
+    group_name = group_info.get('nickName', '')
+    if group_name is not None and len(group_name) > 0:
+        group_info_key = im_group_info_key(app_id, group_id)
+        old_groupname = lanying_redis.redis_hget(redis, group_info_key, 'name')
+        if old_groupname is None or old_groupname != group_name:
+            logging.info(f"maybe_sync_wechat_user_group_info_to_im sync group name | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}, group_id:{group_id}, from_user:{from_user}, from_user_id:{from_user_id}, group_name:{group_name}, old_groupname:{old_groupname}")
+            result = lanying_im_api.set_group_name(app_id, group_id, group_name)
+            if result and result["code"] == 200:
+                redis.hset(group_info_key, 'name', group_name)
+            else:
+                logging.info("maybe_sync_wechat_user_group_info_to_im fail to sync group_name")
+    if from_user_info:
+        nickname = from_user_info.get('nickName', '')
+        if nickname is not None and nickname != '':
+            logging.info(f"maybe_sync_wechat_user_group_info_to_im user found | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}, group_id:{group_id}, from_user:{from_user}, from_user_id:{from_user_id}, nickname:{nickname}")
+            member_info_key = im_group_member_info_key(app_id, group_id)
+            old_nickname = lanying_redis.redis_hget(redis, member_info_key, from_user_id)
+            if old_nickname is None or old_nickname != nickname:
+                logging.info(f"maybe_sync_wechat_user_group_info_to_im sync user nickname | app_id:{app_id}, wid:{wid}, wechat_group_id:{wechat_group_id}, group_id:{group_id}, from_user:{from_user}, from_user_id:{from_user_id}, nickname:{nickname}")
+                success = sync_user_profile_to_lanying_user(app_id, from_user_id, nickname)
+                if success:
+                    redis.hset(member_info_key, from_user_id, nickname)
+                else:
+                    logging.info("maybe_sync_wechat_user_group_info_to_im fail to sync user nickname")
