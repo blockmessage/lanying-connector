@@ -3,16 +3,17 @@ import time
 import logging
 
 def handle_msg_route_to_im(app_id, channel, send_msg_user_id, router_user_id, router_sub_user_ids):
-    now = int(time.time())
-    set_router_binding(app_id, channel, send_msg_user_id, router_user_id, router_user_id, now)
-    for router_sub_user_id in router_sub_user_ids:
-        set_router_binding(app_id, channel, send_msg_user_id, router_user_id, router_sub_user_id, now)
-    router_state = get_router_state(app_id, channel, send_msg_user_id, router_user_id)
-    if router_state:
-        if 'redirect_to_user_id' in router_state:
-            redirect_to_user_id = router_state['redirect_to_user_id']
-            logging.info(f"handle_msg_route_to_im redirect to sub user | app_id:{app_id}, channel:{channel}, send_msg_user_id:{send_msg_user_id}, router_user_id:{router_user_id}, redirect_to_user_id:{redirect_to_user_id}")
-            return {'result':'ok', 'from':send_msg_user_id, 'to': redirect_to_user_id}
+    if len(router_sub_user_ids) > 0:
+        now = int(time.time())
+        set_router_binding(app_id, channel, send_msg_user_id, router_user_id, router_user_id, now)
+        for router_sub_user_id in router_sub_user_ids:
+            set_router_binding(app_id, channel, send_msg_user_id, router_user_id, router_sub_user_id, now)
+        router_state = get_router_state(app_id, channel, send_msg_user_id, router_user_id)
+        if router_state:
+            if 'redirect_to_user_id' in router_state:
+                redirect_to_user_id = router_state['redirect_to_user_id']
+                logging.info(f"handle_msg_route_to_im redirect to sub user | app_id:{app_id}, channel:{channel}, send_msg_user_id:{send_msg_user_id}, router_user_id:{router_user_id}, redirect_to_user_id:{redirect_to_user_id}")
+                return {'result':'ok', 'from':send_msg_user_id, 'to': redirect_to_user_id}
     return {'result':'ok', 'from':send_msg_user_id, 'to': router_user_id}
 
 def handle_msg_route_from_im(app_id, channel, from_user_id, to_user_id):

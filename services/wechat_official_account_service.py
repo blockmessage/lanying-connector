@@ -13,6 +13,7 @@ import os
 import time
 import lanying_im_api
 import lanying_utils
+import lanying_user_router
 
 official_account_max_message_size = 600
 service = 'wechat_official_account'
@@ -108,7 +109,13 @@ def handle_wechat_msg_text(xml, config, app_id, start_time):
                         </xml>
                         """
         else:
-            lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content)
+            from_user_id = user_id
+            to_user_id = config['lanying_user_id']
+            router_sub_user_ids = config.get('router_sub_user_ids', [])
+            router_res = lanying_user_router.handle_msg_route_to_im(app_id, service, str(from_user_id), str(to_user_id), router_sub_user_ids)
+            if router_res['result'] == 'ok':
+                msg_ext = {'ai':{'role':'user', 'channel':'wechat_official_account'}}
+                lanying_message.send_message_async(config, app_id, user_id, config['lanying_user_id'],content, msg_ext)
             reply = 'success'
     else:
         logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
@@ -205,6 +212,15 @@ def wait_reply_msg(app_id, key, expire_time, is_last, lock_value):
         return 'wait'
 
 def handle_chat_message(config, message):
+    from_user_id = message['from']['uid']
+    to_user_id = message['to']['uid']
+    app_id = message['appId']
+    router_res = lanying_user_router.handle_msg_route_from_im(app_id, service, from_user_id, to_user_id)
+    if router_res['result'] == 'error':
+        logging.info(f"handle_chat_message skip with message: {router_res['message']}")
+        return
+    message['from']['uid'] = router_res['from']
+    message['to']['uid'] = router_res['to']
     checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
         return
