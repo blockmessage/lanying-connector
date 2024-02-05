@@ -170,7 +170,7 @@ def get_login_info(app_id, w_id):
         logging.info(f"wechat chatbot login timeout or failed | wid_info:{wid_info}, result:{result}")
         return {'result': 'error', 'message': result['message']}
 
-def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note):
+def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids):
     now = int(time.time())
     wid_info = get_wid_info(app_id, w_id)
     if wid_info is None:
@@ -204,7 +204,8 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
         "w_account": w_account,
         "wid_info_result": json.dumps(wid_info_result, ensure_ascii=False),
         "status": "online",
-        "soft_status": "enabled"
+        "soft_status": "enabled",
+        "router_sub_user_ids": json.dumps(router_sub_user_ids)
     })
     redis.rpush(get_chatbot_ids_key(app_id), wechat_chatbot_id)
     lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
@@ -230,7 +231,7 @@ def delete_wechat_chatbot(app_id, wechat_chatbot_id):
     redis.delete(get_chatbot_key(app_id, wechat_chatbot_id))
     return {'result':'ok', 'data':{'success': True}}
 
-def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note):
+def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids):
     wid_info = get_wid_info(app_id, w_id)
     if wid_info:
         if wid_info["wechat_chatbot_id"] != wechat_chatbot_id:
@@ -256,7 +257,8 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_ty
             "w_id": w_id,
             "w_account": w_account,
             "wid_info_result": json.dumps(wid_info_result, ensure_ascii=False),
-            "status": "online"
+            "status": "online",
+            "router_sub_user_ids": json.dumps(router_sub_user_ids)
         })
         set_wid_info_field(app_id, w_id, "status", "binding")
     else:
@@ -264,7 +266,8 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_ty
             "chatbot_id": chatbot_id,
             "msg_types": json.dumps(msg_types, ensure_ascii=False),
             "non_friend_chat_mode": non_friend_chat_mode,
-            "note": note
+            "note": note,
+            "router_sub_user_ids": json.dumps(router_sub_user_ids)
         })
     if wechat_chatbot['chatbot_id'] != chatbot_id:
         lanying_chatbot.set_chatbot_field(app_id, wechat_chatbot['chatbot_id'], "wechat_chatbot_id", '')
@@ -281,7 +284,7 @@ def list_wechat_chatbots(app_id):
         if info:
             dto = {}
             for key,value in info.items():
-                if key in ["chatbot_id", "wechat_chatbot_id", "non_friend_chat_mode", "note", "wc_id", "w_account", "status", "create_time", "msg_types", "soft_status"]:
+                if key in ["chatbot_id", "wechat_chatbot_id", "non_friend_chat_mode", "note", "wc_id", "w_account", "status", "create_time", "msg_types", "soft_status", "router_sub_user_ids"]:
                     dto[key] = value
             dtos.append(dto)
     return dtos
@@ -316,7 +319,7 @@ def get_wechat_chatbot(app_id, wechat_chatbot_id):
         for k,v in result.items():
             if k in ["create_time"]:
                 dto[k] = int(v)
-            elif k in ["msg_types"]:
+            elif k in ["msg_types", "router_sub_user_ids"]:
                 dto[k] = json.loads(v)
             else:
                 dto[k] = v
@@ -326,6 +329,8 @@ def get_wechat_chatbot(app_id, wechat_chatbot_id):
             dto["status"] = "online"
         if 'deduct_failed' not in dto:
             dto['deduct_failed'] = 'no'
+        if 'router_sub_user_ids' not in dto:
+            dto['router_sub_user_ids'] = []
         return dto
     else:
         return None

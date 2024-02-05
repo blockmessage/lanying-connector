@@ -17,6 +17,7 @@ import lanying_file_storage
 from lanying_connector import executor
 import lanying_utils
 import re
+import lanying_user_router
 
 wechat_max_message_size = 3900
 service = 'wechat'
@@ -94,7 +95,8 @@ def create_wechat_chatbot():
     msg_types = list(data['msg_types'])
     non_friend_chat_mode = str(data['non_friend_chat_mode'])
     note = str(data.get('note',''))
-    result = lanying_wechat_chatbot.create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note)
+    router_sub_user_ids = list(data.get('router_sub_user_ids',[]))
+    result = lanying_wechat_chatbot.create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -176,7 +178,8 @@ def configure_wechat_chatbot():
     msg_types = list(data['msg_types'])
     non_friend_chat_mode = str(data['non_friend_chat_mode'])
     note = str(data.get('note',''))
-    result = lanying_wechat_chatbot.configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note)
+    router_sub_user_ids = list(data.get('router_sub_user_ids',[]))
+    result = lanying_wechat_chatbot.configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -209,12 +212,15 @@ def handle_wechat_chat_message(wc_id, account, data):
         return
     to_user_id = check_result['user_id']
     app_id = check_result['app_id']
+    router_sub_user_ids = check_result['router_sub_user_ids']
     from_user_id = get_or_register_user(app_id, from_user)
     if from_user_id:
         maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
         config = lanying_config.get_service_config(app_id, service)
         redis.setex(message_deduplication, 3*86400, "1")
-        lanying_message.send_message_async(config, app_id, from_user_id, to_user_id,content)
+        router_res = lanying_user_router.handle_msg_route_to_im(app_id, service, str(from_user_id), str(to_user_id), router_sub_user_ids)
+        if router_res['result'] == 'ok':
+            lanying_message.send_message_async(config, app_id, router_res['from'], router_res['to'],content)
     else:
         logging.info(f"handle_chat_message user_id not found: {from_user_id}")
 
@@ -297,11 +303,12 @@ def check_wid(wid):
     if wechat_chatbot_info['status'] != 'online':
         return {'result': 'error', 'message': 'wechat_chatbot status not online'}
     chatbot_id = wechat_chatbot_info['chatbot_id']
+    router_sub_user_ids = wechat_chatbot_info['router_sub_user_ids']
     chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
     if chatbot_info is None:
         return {'result': 'error', 'message': 'chatbot_id not found'}
     user_id = chatbot_info['user_id']
-    return {'result': 'ok', 'user_id': user_id, 'app_id': app_id}
+    return {'result': 'ok', 'user_id': user_id, 'app_id': app_id, 'router_sub_user_ids':router_sub_user_ids}
 
 def handle_wechat_group_notify(wc_id, account, data):
     wid = data['wId']
@@ -328,14 +335,21 @@ def handle_wechat_offline(wc_id, account, data):
     lanying_wechat_chatbot.change_wid_status(app_id, wid, "offline", 'kick')
 
 def handle_chat_message(config, message):
+    from_user_id = message['from']['uid']
+    to_user_id = message['to']['uid']
+    app_id = message['appId']
+    router_res = lanying_user_router.handle_msg_route_from_im(app_id, service, from_user_id, to_user_id)
+    if router_res['result'] == 'error':
+        logging.info(f"handle_chat_message skip with message: {router_res['message']}")
+        return
+    message['from']['uid'] = router_res['from']
+    message['to']['uid'] = router_res['to']
     checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
         logging.info(f"handle_chat_message skip with message: {checkres['message']}")
         return
     wechat_chatbot = checkres['wechat_chatbot']
     msg_type = checkres['type']
-    app_id = message['appId']
-    to_user_id = message['to']['uid']
     logging.info(f"{service} | handle_chat_message do for user_id, app_id={app_id}, to_user_id:{to_user_id}")
     wechat_username = get_wechat_username(app_id, to_user_id)
     if wechat_username:
