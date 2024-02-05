@@ -340,7 +340,8 @@ def handle_chat_message(config, message):
     from_user_id = message['from']['uid']
     to_user_id = message['to']['uid']
     app_id = message['appId']
-    router_res = lanying_user_router.handle_msg_route_from_im(app_id, service, from_user_id, to_user_id)
+    msg_type = message['type']
+    router_res = lanying_user_router.handle_msg_route_from_im(app_id, service, from_user_id, to_user_id, msg_type)
     if router_res['result'] == 'error':
         logging.info(f"handle_chat_message skip with message: {router_res['message']}")
         return

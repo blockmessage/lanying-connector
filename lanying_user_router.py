@@ -16,26 +16,27 @@ def handle_msg_route_to_im(app_id, channel, send_msg_user_id, router_user_id, ro
                 return {'result':'ok', 'from':send_msg_user_id, 'to': redirect_to_user_id}
     return {'result':'ok', 'from':send_msg_user_id, 'to': router_user_id}
 
-def handle_msg_route_from_im(app_id, channel, from_user_id, to_user_id):
-    binding_info = get_router_binding(app_id, from_user_id, to_user_id)
-    if binding_info:
-        router_user_id = binding_info['router_user_id']
-        router_channel = binding_info['channel']
-        if router_channel == channel:
-            now = int(time.time())
-            redis = lanying_redis.get_redis_connection()
-            state_key = get_router_state_key(app_id, channel, to_user_id, router_user_id)
-            redis.hmset(state_key, {
-                'channel': channel,
-                'channel_msg_time': now,
-                'redirect_to_user_id': from_user_id
-            })
-            redis.expire(state_key, get_state_expire_time())
-            if router_user_id != from_user_id:
-                logging.info(f"handle_msg_route_from_im redirect from sub user| app_id:{app_id}, channel:{channel}, from_user_id:{from_user_id}, router_user_id:{router_user_id}, to_user_id:{to_user_id}")
-            return {'result':'ok', 'from': router_user_id, 'to': to_user_id}
-        else:
-            return {'result': 'error', 'message': 'skip different channel message'}
+def handle_msg_route_from_im(app_id, channel, from_user_id, to_user_id, msg_type):
+    if msg_type in ['CHAT', 'GROUPCHAT', 'REPLACE', 'APPEND']:
+        binding_info = get_router_binding(app_id, from_user_id, to_user_id)
+        if binding_info:
+            router_user_id = binding_info['router_user_id']
+            router_channel = binding_info['channel']
+            if router_channel == channel:
+                now = int(time.time())
+                redis = lanying_redis.get_redis_connection()
+                state_key = get_router_state_key(app_id, channel, to_user_id, router_user_id)
+                redis.hmset(state_key, {
+                    'channel': channel,
+                    'channel_msg_time': now,
+                    'redirect_to_user_id': from_user_id
+                })
+                redis.expire(state_key, get_state_expire_time())
+                if router_user_id != from_user_id:
+                    logging.info(f"handle_msg_route_from_im redirect from sub user| app_id:{app_id}, channel:{channel}, from_user_id:{from_user_id}, router_user_id:{router_user_id}, to_user_id:{to_user_id}")
+                return {'result':'ok', 'from': router_user_id, 'to': to_user_id}
+            else:
+                return {'result': 'error', 'message': 'skip different channel message'}
     return {'result':'ok', 'from': from_user_id, 'to': to_user_id}
 
 def get_router_state(app_id, channel, send_msg_user_id, router_user_id):
