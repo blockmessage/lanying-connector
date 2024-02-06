@@ -29,6 +29,7 @@ import lanying_im_api
 from requests.auth import HTTPDigestAuth
 from requests.auth import HTTPBasicAuth
 import lanying_message
+from urllib.parse import urlparse
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -1020,6 +1021,16 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                 auth_opts = HTTPDigestAuth(auth_username, auth_password)
             else:
                 auth_opts = None
+            if is_lanying_send_msg_url(url):
+                if 'content' in body:
+                    try:
+                        send_message_content = str(body['content'])
+                        content_type = str(body.get('content_type', 0))
+                        if content_type == '0':
+                            logging.info(f"Found send message plugin, so add content to ai_message:{send_message_content}")
+                            add_ai_message_cnt(send_message_content)
+                    except Exception as e:
+                        pass
             if method == 'get':
                 function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (20.0, 40.0))
             else:
@@ -1044,6 +1055,12 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
             return response
     raise Exception('bad_preset_function')
+
+def is_lanying_send_msg_url(url):
+    parsed = urlparse(url)
+    if (parsed.path == '/message/send' or parsed.path == '//message/send') and 'api.maximtop' in parsed.netloc:
+        return True
+    return False
 
 def ensure_value_is_string(obj):
     ret = {}
@@ -3241,7 +3258,7 @@ def get_ai_message_round(from_user_id, to_user_id, content):
     round_key = get_ai_message_round_key(from_user_id, to_user_id)
     if cnt > 0:
         round = redis.incrby(round_key, 1)
-        redis.expire(round_key, 600)
+        redis.expire(round_key, 300)
         return round
     else:
         redis.delete(round_key)
@@ -3250,7 +3267,7 @@ def get_ai_message_round(from_user_id, to_user_id, content):
 def add_ai_message_cnt(content):
     redis = lanying_redis.get_redis_connection()
     key = get_ai_message_key(content)
-    redis.setex(key, 600, 1)
+    redis.setex(key, 300, 1)
 
 def get_ai_message_cnt(content):
     redis = lanying_redis.get_redis_connection()
