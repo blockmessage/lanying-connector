@@ -112,10 +112,13 @@ def handle_wechat_msg_text(xml, config, app_id, start_time):
             from_user_id = user_id
             to_user_id = config['lanying_user_id']
             router_sub_user_ids = config.get('router_sub_user_ids', [])
-            router_res = lanying_user_router.handle_msg_route_to_im(app_id, service, str(from_user_id), str(to_user_id), router_sub_user_ids)
+            router_res = lanying_user_router.handle_msg_route_to_im(app_id, service, from_user_id, to_user_id, router_sub_user_ids)
             if router_res['result'] == 'ok':
                 msg_ext = {'ai':{'role':'user', 'channel':'wechat_official_account'}}
-                lanying_message.send_message_async(config, app_id, router_res['from'], router_res['to'], content, msg_ext)
+                if router_res['msg_type'] == 'CHAT':
+                    lanying_message.send_message_async(config, app_id, router_res['from'], router_res['to'], content, msg_ext)
+                else:
+                    logging.info(f"handle_wechat_msg_text receive groupchat | router_res:{router_res}")
             reply = 'success'
     else:
         logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
@@ -222,6 +225,7 @@ def handle_chat_message(config, message):
         return
     message['from']['uid'] = router_res['from']
     message['to']['uid'] = router_res['to']
+    message['type'] = router_res['msg_type']
     checkres = check_message_need_send(config, message)
     if checkres['result'] == 'error':
         return
