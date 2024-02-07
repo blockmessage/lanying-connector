@@ -18,6 +18,7 @@ from lanying_connector import executor
 import lanying_utils
 import re
 import lanying_user_router
+import xml.etree.ElementTree as ET
 
 wechat_max_message_size = 3900
 service = 'wechat'
@@ -34,10 +35,13 @@ def service_post_messages(token):
         account = message.get('account', '')
         message_type = message.get('messageType', '')
         data = message.get('data', {})
-        if message_type == '60001':
-            handle_wechat_chat_message(wc_id, account, data)
-        elif message_type == '80001':
-            handle_wechat_group_message(wc_id, account, data)
+        parse_res = parse_wechat_message(message_type, data)
+        logging.info(f"parse_res:{parse_res}")
+        if parse_res['result'] == 'ok':
+            if parse_res['type'] == 'CHAT':
+                handle_wechat_chat_message(wc_id, account, data, parse_res)
+            elif parse_res['type'] == 'GROUPCHAT':
+                handle_wechat_group_message(wc_id, account, data, parse_res)
         elif message_type == '85001':
             handle_wechat_group_notify(wc_id, account, data)
         elif message_type == '30000':
@@ -46,6 +50,77 @@ def service_post_messages(token):
         logging.info(f"receive invalid wechat message:{message}")
     resp = make_response({'code':200, 'data':{'success': True}})
     return resp
+
+def parse_wechat_message(message_type, data):
+    try:
+        content = data.get('content','')
+        logging.info(f"parse_wechat_message: content:{content}")
+        if message_type == '60001':
+            return {'result':'ok', 'type': 'CHAT', 'content': content}
+        elif message_type == '80001':
+            return {'result': 'ok', 'type': 'GROUPCHAT', 'content': content}
+        elif message_type == '60007': # 私聊链接消息
+            xml = ET.fromstring(content)
+            app_msg = xml.find('appmsg')
+            new_content = ''
+            if app_msg is not None:
+                if app_msg.find('url') is not None:
+                    new_content += app_msg.find('url').text + "\n"
+                if app_msg.find('title') is not None:
+                    new_content += '<title>' + app_msg.find('title').text + "</title>\n"
+                if app_msg.find('des') is not None:
+                    new_content += '<desc>' + app_msg.find('des').text + "</desc>\n"
+                if new_content != '':
+                    return {'result':'ok', 'type': 'CHAT', 'content': new_content}
+        elif message_type == '60014': # 私聊引用消息
+            xml = ET.fromstring(content)
+            app_msg = xml.find('appmsg')
+            new_content = ''
+            if app_msg is not None:
+                if app_msg.find('title') is not None:
+                    new_content += app_msg.find('title').text + "\n"
+                refermsg = app_msg.find('refermsg')
+                if refermsg is not None:
+                    if refermsg.find('content') is not None:
+                        new_content += '<refermsg>' + refermsg.find('content').text + '</refermsg>'
+                if new_content != '':
+                    return {'result':'ok', 'type': 'CHAT', 'content': new_content}
+        elif message_type == '80007': # 群聊链接消息
+            xml = ET.fromstring(content)
+            app_msg = xml.find('appmsg')
+            new_content = ''
+            if app_msg is not None:
+                logging.info(f"parse_wechat_message: found app_msg:{app_msg}")
+                url = app_msg.find('url')
+                if url is not None:
+                    new_content += str(url.text) + "\n"
+                title = app_msg.find('title')
+                if title is not None:
+                    new_content += '<title>' + title.text + "</title>\n"
+                desc = app_msg.find('des')
+                if desc is not None:
+                    new_content += '<desc>' + desc.text + "</desc>\n"
+                if new_content != '':
+                    return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content}
+        elif message_type == '80014': # 群聊引用消息
+            xml = ET.fromstring(content)
+            app_msg = xml.find('appmsg')
+            new_content = ''
+            atlist = []
+            if app_msg is not None:
+                if app_msg.find('title') is not None:
+                    new_content += app_msg.find('title').text + "\n"
+                refermsg = app_msg.find('refermsg')
+                if refermsg is not None:
+                    if refermsg.find('chatusr') is not None:
+                        atlist.append(refermsg.find('chatusr').text)
+                    if refermsg.find('content') is not None:
+                        new_content += '<refermsg>' + refermsg.find('content').text + '</refermsg>'
+                if new_content != '':
+                    return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content, 'atlist': atlist}
+    except Exception as e:
+        logging.info(f"fail to parse_wechat_message | message_type:{message_type}, data:{data}")
+    return {'result': 'ignore'}
 
 @bp.route("/service/wechat/login", methods=["POST"])
 def login():
@@ -186,9 +261,9 @@ def configure_wechat_chatbot():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
-def handle_wechat_chat_message(wc_id, account, data):
+def handle_wechat_chat_message(wc_id, account, data, parse_res):
     redis = lanying_redis.get_redis_connection()
-    content = data['content']
+    content = parse_res['content']
     from_user = data['fromUser']
     msg_id = data['msgId']
     new_msg_id = data['newMsgId']
@@ -228,9 +303,9 @@ def handle_wechat_chat_message(wc_id, account, data):
     else:
         logging.info(f"handle_wechat_chat_message user_id not found: {from_user_id}")
 
-def handle_wechat_group_message(wc_id, account, data):
+def handle_wechat_group_message(wc_id, account, data, parse_res):
     redis = lanying_redis.get_redis_connection()
-    content = data['content']
+    content = parse_res['content']
     from_user = data['fromUser']
     from_group = data['fromGroup']
     msg_id = data['msgId']
@@ -238,7 +313,7 @@ def handle_wechat_group_message(wc_id, account, data):
     self = data.get('self', False)
     timestamp = data['timestamp']
     to_user = data['toUser']
-    atlist = data.get('atlist', [])
+    atlist = data.get('atlist', []).extend(parse_res.get('atlist',[]))
     wid = data['wId']
     if self:
         logging.info(f"handle_wechat_group_message skip self message | self:{self}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
@@ -282,17 +357,18 @@ def transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id):
         return {'mentionAll': True}
     else:
         mention_list = []
-        for now_wc_id in atlist:
-            if now_wc_id == wc_id:
-                mention_list.append(to_user_id)
-            else:
-                user_id = get_user(app_id, now_wc_id)
-                if user_id:
-                    mention_list.append(user_id)
-                elif len(mention_list) < 2:
-                    user_id = get_or_register_user(app_id, now_wc_id)
+        if atlist:
+            for now_wc_id in atlist:
+                if now_wc_id == wc_id:
+                    mention_list.append(to_user_id)
+                else:
+                    user_id = get_user(app_id, now_wc_id)
                     if user_id:
                         mention_list.append(user_id)
+                    elif len(mention_list) < 2:
+                        user_id = get_or_register_user(app_id, now_wc_id)
+                        if user_id:
+                            mention_list.append(user_id)
         if len(mention_list) > 0:
             return {'mentionList': mention_list}
         else:
