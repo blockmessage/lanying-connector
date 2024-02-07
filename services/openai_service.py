@@ -94,16 +94,24 @@ def trace_finish(request):
         else:
             sendMessageAsync(app_id, notify_from, user_id, f"文章（ID：{doc_id}）加入知识库 {embedding_name}失败：{message}",{'ai':{'role': 'ai'}})
 
-def handle_request(request):
-    text = request.get_data(as_text=True)
+def handle_request(request, request_type):
     path = request.path
-    logging.info(f"receive api request: {text}")
+    if request_type == 'json':
+        text = request.get_data(as_text=True)
+        logging.info(f"receive api json request: path: {path}, text:{text}")
+        preset = json.loads(text)
+    else:
+        preset = {}
+        for key in ["prompt", "model", "n", "size", "response_format", "user"]:
+            if key in request.form:
+                preset[key] = request.form[key]
+        logging.info(f"receive api form request: path: {path}, preset:{preset}")
     auth_result = check_authorization(request)
     if auth_result['result'] == 'error':
         logging.info(f"check_authorization deny, msg={auth_result['msg']}")
         return auth_result
     app_id = auth_result['app_id']
-    config = auth_result['config']
+    config = copy.deepcopy(auth_result['config'])
     rate_res = check_message_rate(app_id, request.path)
     if rate_res['result'] == 'error':
         logging.info(f"check_message_rate deny: app_id={app_id}, msg={rate_res['msg']}")
@@ -112,14 +120,26 @@ def handle_request(request):
     if deduct_res['result'] == 'error':
         logging.info(f"check_message_deduct_failed deny: app_id={app_id}, msg={deduct_res['msg']}")
         return deduct_res
-    preset = json.loads(text)
-    maybe_init_preset_model_for_embedding(preset, path)
+    maybe_init_preset_default_model(preset, path)
     preset_name = "default"
     vendor = "openai"
     model = preset['model']
     model_config = lanying_vendor.get_chat_model_config(vendor, model)
+    force_no_stream = False
     if model_config is None:
         model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+    if model_config is None:
+        model_config = lanying_vendor.get_image_model_config(vendor, model)
+        image_quota_res = check_image_quota(model_config, preset)
+        if image_quota_res['result'] == 'error':
+            logging.info(f"handle_openai_request failed with:{image_quota_res}")
+            return {'result':'error', 'msg':'The size is not supported by this model.', 'code':'invalid_size'}
+        else:
+            logging.info(f"handle_openai_request image_quota_res:{image_quota_res}")
+            model_config['quota'] = image_quota_res['quota']
+            model_config['image_summary'] = image_quota_res['image_summary']
+            config['quota_pre_check'] = image_quota_res['quota']
+            force_no_stream = True
     model_res = check_model_allow(model_config, model)
     if model_res['result'] == 'error':
         logging.info(f"check_model_allow deny: app_id={app_id}, msg={model_res['msg']}")
@@ -131,7 +151,7 @@ def handle_request(request):
     openai_key_type = limit_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
-    stream,response = forward_request(app_id, request, auth_info)
+    stream,response = forward_request(app_id, request, auth_info, force_no_stream, request_type)
     if response.status_code == 200:
         if stream:
             def generate_response():
@@ -151,41 +171,62 @@ def handle_request(request):
                 finally:
                     reply = ''.join(contents)
                     response_json = stream_lines_to_response(preset, reply, vendor, {}, "", "")
+                    logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
                     add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
         else:
+            logging.info(f"forward request: not stream response | status_code: {response.status_code}, response_content:{response.content}")
             response_content = json.loads(response.content)
             add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
     else:
         logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
     return {'result':'ok', 'response':response}
 
-def maybe_init_preset_model_for_embedding(preset, path):
+def maybe_init_preset_default_model(preset, path):
     if path == '/v1/engines/text-embedding-ada-002/embeddings':
         preset['model'] = 'text-embedding-ada-002'
+    elif 'model' not in preset:
+        if path in ['/v1/images/generations', '/v1/images/edits', '/v1/images/variations']:
+            preset['model'] = 'dall-e-2'
 
-def forward_request(app_id, request, auth_info):
+def forward_request(app_id, request, auth_info, force_no_stream, request_type):
     openai_key = auth_info.get('api_key','')
     proxy_domain = os.getenv('LANYING_CONNECTOR_OPENAI_PROXY_DOMAIN', '')
     if len(proxy_domain) > 0:
         proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
         url = proxy_domain + request.path
-        headers = {"Content-Type":"application/json", "Authorization-Next":"Bearer " + openai_key,  "Authorization":"Basic " + proxy_api_key}
+        headers = {"Authorization-Next":"Bearer " + openai_key,  "Authorization":"Basic " + proxy_api_key}
     else:
         url = "https://api.openai.com" + request.path
-        headers = {"Content-Type":"application/json", "Authorization":"Bearer " + openai_key}
-    data = request.get_data()
-    request_json = json.loads(data)
-    stream = request_json.get('stream', False)
-    if stream:
-        logging.info(f"forward request stream start: app_id:{app_id}, url:{url}")
-        response = requests.post(url, data=data, headers=headers, stream=True)
-        logging.info(f"forward request stream finish: app_id:{app_id}, status_code: {response.status_code}")
-        return (stream, response)
+        headers = {"Authorization":"Bearer " + openai_key}
+    if request_type == 'json':
+        headers['Content-Type'] = "application/json"
+        data = request.get_data()
+        request_json = json.loads(data)
+        stream = request_json.get('stream', False)
+        if force_no_stream:
+            stream = False
+        if stream:
+            logging.info(f"forward request stream start: app_id:{app_id}, url:{url}")
+            response = requests.post(url, data=data, headers=headers, stream=True)
+            logging.info(f"forward request stream finish: app_id:{app_id}, status_code: {response.status_code}")
+            return (stream, response)
+        else:
+            logging.info(f"forward request start: app_id:{app_id}, url:{url}")
+            response = requests.post(url, data=data, headers=headers)
+            logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}")
+            return (stream, response)
     else:
-        logging.info(f"forward request start: app_id:{app_id}, url:{url}")
-        response = requests.post(url, data=data, headers=headers)
-        logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}")
+        form_data = request.form
+        files = {}
+        for file_key in request.files:
+            file = request.files[file_key]
+            logging.info(f"file_key:{file_key}, {file.filename}, {file.mimetype}, {file.stream}")
+            files[file_key] = (file.filename, file.stream, file.mimetype)
+        logging.info(f"forward form request start: app_id:{app_id}, url:{url}")
+        response = requests.post(url, data=form_data, files=files, headers=headers)
+        logging.info(f"forward form request finish: app_id:{app_id}, status_code: {response.status_code}")
+        stream = False
         return (stream, response)
 
 def check_authorization(request):
@@ -1541,8 +1582,43 @@ def reply_message_read_ack(config, msg):
         appId = config['app_id']
         lanying_connector.sendReadAckAsync(appId, toUserId, fromUserId, msgId)
 
+def check_image_quota(model_config, preset):
+    n = abs(int(preset.get('n', 1)))
+    quality = str(preset.get('quality', 'standard')).lower()
+    size = str(preset.get('size', '1024x1024')).lower()
+    image_summary = f"{quality}_{size}"
+    image_quota = model_config.get("image_quota", {})
+    if image_summary in image_quota and n > 0:
+        return {'result':'ok', 'quota': n * image_quota[image_summary], 'image_summary': image_summary}
+    else:
+        return {'result':'error', 'message': 'The size is not supported by this model.'}
+
 def add_message_statistic(app_id, config, preset, response, openai_key_type, model_config):
-    if 'usage' in response:
+    if model_config.get('type', '') == 'image':
+        logging.info(f"add_message_statistic image response: {response}, model_config: {model_config}")
+        redis = lanying_redis.get_redis_connection()
+        if redis:
+            model = preset['model']
+            message_count_quota = model_config['quota']
+            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            key_count = 0
+            for key in get_message_statistic_keys(config, app_id):
+                key_count += 1
+                redis.hincrby(key, 'image_message_count', 1)
+                if openai_key_type == 'share':
+                    add_quota(redis, key, 'message_count_quota_share', message_count_quota)
+                else:
+                    add_quota(redis, key, 'message_count_quota_self', message_count_quota)
+                new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
+                if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
+                    notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+            # try:
+            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
+            # except Exception as e:
+            #     logging.exception(e)
+        else:
+            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, openai_key_type:{openai_key_type}, model_config:{model_config}")
+    elif 'usage' in response:
         usage = response['usage']
         completion_tokens = usage.get('completion_tokens',0)
         prompt_tokens = usage.get('prompt_tokens', 0)
@@ -1631,7 +1707,8 @@ def check_message_limit(app_id, config, vendor, is_chat):
     if redis:
         key = get_message_statistic_keys(config, app_id)[0]
         message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
-        if message_count_quota < message_per_month:
+        quota_pre_check = config.get('quota_pre_check', 0)
+        if message_count_quota + quota_pre_check < message_per_month:
             return {'result':'ok', 'openai_key_type':'share'}
         else:
             if enable_extra_price:

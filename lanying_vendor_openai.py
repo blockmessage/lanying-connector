@@ -73,6 +73,37 @@ def model_configs():
             "quota": 0.05,
             "token_limit": 8000,
             'order': 1000
+        },
+        {
+            "model": 'dall-e-3',
+            "type": "image",
+            "is_prefix": False,
+            "quota": 100,
+            "image_quota":{
+                "standard_1024x1024": 40,
+                "standard_1024x1792": 80,
+                "standard_1792x1024": 80,
+                "hd_1024x1024": 80,
+                "hd_1024x1792": 120,
+                "hd_1792x1024": 120
+            },
+            "token_limit": 16000,
+            'order': 10,
+            'hidden': True
+        },
+        {
+            "model": 'dall-e-2',
+            "type": "image",
+            "is_prefix": False,
+            "quota": 100,
+            "image_quota":{
+                "standard_1024x1024": 20,
+                "standard_512x512": 18,
+                "standard_256x256": 16
+            },
+            "token_limit": 16000,
+            'order': 10,
+            'hidden': True
         }
     ]
 

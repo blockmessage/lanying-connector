@@ -46,6 +46,23 @@ def get_chat_model_config(vendor, model):
                     return newConfig
     return None
 
+def get_image_model_config(vendor, model):
+    module = get_module(vendor)
+    if module:
+        model_configs = module.model_configs()
+        for config in model_configs:
+            if config['type'] == "image":
+                is_prefix = config.get('is_prefix', True)
+                now_model = config.get('model')
+                if is_prefix and model.startswith(now_model):
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
+                if model == now_model:
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
+    return None
 
 def get_embedding_model(vendor):
     module = get_module(vendor)

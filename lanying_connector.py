@@ -175,11 +175,37 @@ def get_message_limit_state(service):
 @app.route("/v1/chat/completions", methods=["POST"])
 @app.route("/v1/embeddings", methods=["POST"])
 @app.route("/v1/engines/text-embedding-ada-002/embeddings", methods=["POST"])
+@app.route("/v1/images/generations", methods=["POST"])
 def openai_request():
     try:
         service = "openai"
         service_module = get_service_module(service)
-        res = service_module.handle_request(request)
+        res = service_module.handle_request(request, "json")
+        if res['result'] == 'error':
+            code = res.get('code', 401)
+            resp = app.make_response({"error":{"type": "invalid_request_error","code":code, "message":res['msg']},"data":[]})
+            return resp
+        else:
+            response = res['response']
+            iter = res.get('iter')
+            if iter:
+                return Response(iter(), status=response.status_code, headers=response.headers.items())
+            else:
+                response.headers['Content-Encoding'] = 'identity'
+                resp = Response(response.content, status=response.status_code, headers=response.headers.items())
+                return resp
+    except Exception as e:
+        logging.exception(e)
+        resp = app.make_response({"error":{"type": "internal_server_error","code":500, "message":"Internal Server Error"}})
+        return resp
+    
+@app.route("/v1/images/edits", methods=["POST"])
+@app.route("/v1/images/variations", methods=["POST"])
+def openai_form_request():
+    try:
+        service = "openai"
+        service_module = get_service_module(service)
+        res = service_module.handle_request(request, "form")
         if res['result'] == 'error':
             code = res.get('code', 401)
             resp = app.make_response({"error":{"type": "invalid_request_error","code":code, "message":res['msg']},"data":[]})
