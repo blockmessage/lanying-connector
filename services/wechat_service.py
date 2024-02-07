@@ -54,7 +54,6 @@ def service_post_messages(token):
 def parse_wechat_message(message_type, data):
     try:
         content = data.get('content','')
-        logging.info(f"parse_wechat_message: content:{content}")
         if message_type == '60001':
             return {'result':'ok', 'type': 'CHAT', 'content': content}
         elif message_type == '80001':
@@ -90,7 +89,6 @@ def parse_wechat_message(message_type, data):
             app_msg = xml.find('appmsg')
             new_content = ''
             if app_msg is not None:
-                logging.info(f"parse_wechat_message: found app_msg:{app_msg}")
                 url = app_msg.find('url')
                 if url is not None:
                     new_content += str(url.text) + "\n"
@@ -113,7 +111,9 @@ def parse_wechat_message(message_type, data):
                 refermsg = app_msg.find('refermsg')
                 if refermsg is not None:
                     if refermsg.find('chatusr') is not None:
-                        atlist.append(refermsg.find('chatusr').text)
+                        username = refermsg.find('chatusr').text
+                        if username is not None:
+                            atlist.append(username)
                     if refermsg.find('content') is not None:
                         new_content += '<refermsg>' + refermsg.find('content').text + '</refermsg>'
                 if new_content != '':
@@ -313,7 +313,11 @@ def handle_wechat_group_message(wc_id, account, data, parse_res):
     self = data.get('self', False)
     timestamp = data['timestamp']
     to_user = data['toUser']
-    atlist = data.get('atlist', []).extend(parse_res.get('atlist',[]))
+    atlist = data.get('atlist', [])
+    new_atlist = parse_res.get('atlist',[])
+    if new_atlist and len(new_atlist) > 0:
+        atlist.extend(new_atlist)
+    logging.info(f"atlist:{atlist}, {new_atlist}")
     wid = data['wId']
     if self:
         logging.info(f"handle_wechat_group_message skip self message | self:{self}, wc_id: {wc_id}, account:{account}, wid:{wid}, data:{data}")
@@ -357,18 +361,17 @@ def transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id):
         return {'mentionAll': True}
     else:
         mention_list = []
-        if atlist:
-            for now_wc_id in atlist:
-                if now_wc_id == wc_id:
-                    mention_list.append(to_user_id)
-                else:
-                    user_id = get_user(app_id, now_wc_id)
+        for now_wc_id in atlist:
+            if now_wc_id == wc_id:
+                mention_list.append(to_user_id)
+            else:
+                user_id = get_user(app_id, now_wc_id)
+                if user_id:
+                    mention_list.append(user_id)
+                elif len(mention_list) < 2:
+                    user_id = get_or_register_user(app_id, now_wc_id)
                     if user_id:
                         mention_list.append(user_id)
-                    elif len(mention_list) < 2:
-                        user_id = get_or_register_user(app_id, now_wc_id)
-                        if user_id:
-                            mention_list.append(user_id)
         if len(mention_list) > 0:
             return {'mentionList': mention_list}
         else:

@@ -35,6 +35,7 @@ def send_message(config, appId, fromUserId, toUserId, content, ext = {}, msg_con
             if 'msg_ids' in res:
                 msg_ids = res['msg_ids']
                 if len(msg_ids) > 0:
+                    logging.info(f"Send message response msg_ids:{msg_ids}")
                     return msg_ids[0]
         except Exception as e:
             pass
@@ -65,6 +66,7 @@ def send_group_message_sync(config, appId, fromUserId, groupId, content, ext = {
             if 'msg_ids' in res:
                 msg_ids = res['msg_ids']
                 if len(msg_ids) > 0:
+                    logging.info(f"Send message response msg_ids:{msg_ids}")
                     return msg_ids[0]
         except Exception as e:
             pass
