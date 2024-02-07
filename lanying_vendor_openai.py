@@ -80,12 +80,12 @@ def model_configs():
             "is_prefix": False,
             "quota": 100,
             "image_quota":{
-                "standard_1024x1024": 40,
-                "standard_1024x1792": 80,
-                "standard_1792x1024": 80,
-                "hd_1024x1024": 80,
-                "hd_1024x1792": 120,
-                "hd_1792x1024": 120
+                "standard_1024x1024": 30,
+                "standard_1024x1792": 60,
+                "standard_1792x1024": 60,
+                "hd_1024x1024": 60,
+                "hd_1024x1792": 90,
+                "hd_1792x1024": 90
             },
             "token_limit": 16000,
             'order': 10,
@@ -97,9 +97,9 @@ def model_configs():
             "is_prefix": False,
             "quota": 100,
             "image_quota":{
-                "standard_1024x1024": 20,
-                "standard_512x512": 18,
-                "standard_256x256": 16
+                "standard_1024x1024": 15,
+                "standard_512x512": 13.5,
+                "standard_256x256": 12
             },
             "token_limit": 16000,
             'order': 10,
