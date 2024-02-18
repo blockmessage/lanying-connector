@@ -206,6 +206,7 @@ def encoding_for_model(model): # for temp
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(prepare_info, preset):
+    model = preset.get('model','')
     bot_name = prepare_info['bot_name']
     user_name = prepare_info['user_name']
     support_fields = ['model', "tokens_to_generate", "temperature", "top_p", "mask_sensitive_info", "messages", "bot_setting", "reply_constraints", "functions", "stream"]
@@ -267,14 +268,17 @@ def format_preset(prepare_info, preset):
                 payload[key] = preset[key]
         elif key in preset:
             if key == "functions":
-                functions = []
-                for function in preset['functions']:
-                    function_obj = {}
-                    for k,v in function.items():
-                        if k in ["name", "description", "parameters"]:
-                            function_obj[k] = v
-                    functions.append(function_obj)
-                payload[key] = functions
+                if model == 'abab5.5s-chat': # not support function
+                    pass
+                else:
+                    functions = []
+                    for function in preset['functions']:
+                        function_obj = {}
+                        for k,v in function.items():
+                            if k in ["name", "description", "parameters"]:
+                                function_obj[k] = v
+                        functions.append(function_obj)
+                    payload[key] = functions
             else:
                 payload[key] = preset[key]
     return payload

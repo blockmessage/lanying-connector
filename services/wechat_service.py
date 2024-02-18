@@ -59,68 +59,54 @@ def parse_wechat_message(message_type, data):
         elif message_type == '80001':
             return {'result': 'ok', 'type': 'GROUPCHAT', 'content': content}
         elif message_type == '60007': # 私聊链接消息
-            xml = ET.fromstring(content)
-            app_msg = xml.find('appmsg')
-            new_content = ''
-            if app_msg is not None:
-                if app_msg.find('url') is not None:
-                    new_content += app_msg.find('url').text + "\n"
-                if app_msg.find('title') is not None:
-                    new_content += '<title>' + app_msg.find('title').text + "</title>\n"
-                if app_msg.find('des') is not None:
-                    new_content += '<desc>' + app_msg.find('des').text + "</desc>\n"
-                if new_content != '':
-                    return {'result':'ok', 'type': 'CHAT', 'content': new_content}
+            new_content = parse_wechat_content(content)
+            if new_content is not None:
+                return {'result':'ok', 'type': 'CHAT', 'content': new_content}
         elif message_type == '60014': # 私聊引用消息
-            xml = ET.fromstring(content)
-            app_msg = xml.find('appmsg')
-            new_content = ''
-            if app_msg is not None:
-                if app_msg.find('title') is not None:
-                    new_content += app_msg.find('title').text + "\n"
-                refermsg = app_msg.find('refermsg')
-                if refermsg is not None:
-                    if refermsg.find('content') is not None:
-                        new_content += '<refermsg>' + refermsg.find('content').text + '</refermsg>'
-                if new_content != '':
-                    return {'result':'ok', 'type': 'CHAT', 'content': new_content}
+            new_content = parse_wechat_content(content)
+            if new_content is not None:
+                return {'result':'ok', 'type': 'CHAT', 'content': new_content}
         elif message_type == '80007': # 群聊链接消息
-            xml = ET.fromstring(content)
-            app_msg = xml.find('appmsg')
-            new_content = ''
-            if app_msg is not None:
-                url = app_msg.find('url')
-                if url is not None:
-                    new_content += str(url.text) + "\n"
-                title = app_msg.find('title')
-                if title is not None:
-                    new_content += '<title>' + title.text + "</title>\n"
-                desc = app_msg.find('des')
-                if desc is not None:
-                    new_content += '<desc>' + desc.text + "</desc>\n"
-                if new_content != '':
-                    return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content}
+            new_content = parse_wechat_content(content)
+            if new_content is not None:
+                return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content}
         elif message_type == '80014': # 群聊引用消息
-            xml = ET.fromstring(content)
-            app_msg = xml.find('appmsg')
-            new_content = ''
-            atlist = []
-            if app_msg is not None:
-                if app_msg.find('title') is not None:
-                    new_content += app_msg.find('title').text + "\n"
-                refermsg = app_msg.find('refermsg')
-                if refermsg is not None:
-                    if refermsg.find('chatusr') is not None:
-                        username = refermsg.find('chatusr').text
-                        if username is not None:
-                            atlist.append(username)
-                    if refermsg.find('content') is not None:
-                        new_content += '<refermsg>' + refermsg.find('content').text + '</refermsg>'
-                if new_content != '':
-                    return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content, 'atlist': atlist}
+            new_content = parse_wechat_content(content)
+            if new_content is not None:
+                return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content}
     except Exception as e:
         logging.info(f"fail to parse_wechat_message | message_type:{message_type}, data:{data}")
     return {'result': 'ignore'}
+
+def parse_wechat_content(content):
+    try:
+        xml = ET.fromstring(content)
+        new_content = ''
+        app_msg = xml.find('appmsg')
+        if app_msg is not None:
+            refermsg = app_msg.find('refermsg')
+            if app_msg.find('title') is not None:
+                if refermsg is not None:
+                    new_content += app_msg.find('title').text + "\n"
+                else:
+                    new_content += '<title>' + app_msg.find('title').text + "</title>\n"
+            if app_msg.find('des') is not None:
+                new_content += '<desc>' + app_msg.find('des').text + "</desc>\n"
+            if app_msg.find('url') is not None:
+                new_content += '<url>' + app_msg.find('url').text + "</url>\n"
+            if refermsg is not None:
+                if refermsg.find('content') is not None:
+                    refermsg_content = parse_wechat_content(refermsg.find('content').text)
+                    if refermsg_content is not None:
+                        new_content += '<refermsg>' + refermsg_content + '</refermsg>'
+                    else:
+                        new_content += '<refermsg>' + '</refermsg>'
+        if new_content != '':
+            return new_content
+        else:
+            return None
+    except Exception as e:
+        return content
 
 @bp.route("/service/wechat/login", methods=["POST"])
 def login():

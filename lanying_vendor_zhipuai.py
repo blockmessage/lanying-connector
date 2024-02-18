@@ -182,6 +182,13 @@ def format_preset(preset):
             elif key == 'stop':
                 if len(key) == 1:
                     ret[key] = preset[key]
+            elif key == 'top_p':
+                value = preset[key]
+                if value >= 1:
+                    value = 0.9
+                elif value <=0:
+                    value = 0.1
+                ret[key] = value
             else:
                 ret[key] = preset[key]
     return ret
