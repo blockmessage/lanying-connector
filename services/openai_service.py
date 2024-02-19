@@ -345,7 +345,16 @@ def find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, 
             return user_id
     return None
 
+def handle_sync_messages(config, msg):
+    set_sync_mode(config)
+    try:
+        handle_chat_message(config, msg)
+    except Exception as e:
+        logging.exception(e)
+    return get_sync_mode_messages(config)
+
 def handle_chat_message(config, msg):
+    app_id = msg['appId']
     msg_type = msg['type']
     if msg_type not in ["CHAT", "GROUPCHAT"]:
         return ''
@@ -355,7 +364,6 @@ def handle_chat_message(config, msg):
     except Exception as e:
         logging.error("fail to handle_chat_message:")
         logging.exception(e)
-        app_id = msg['appId']
         reply = lanying_config.get_message_404(app_id)
     if isinstance(reply, list):
         reply_list = reply
@@ -377,7 +385,8 @@ def handle_chat_message(config, msg):
             reply_ext = {
                 'ai': {
                     'stream': False,
-                    'role': 'ai'
+                    'role': 'ai',
+                    'result': 'error'
                 }
             }
             if 'feedback' in lcExt:
@@ -394,7 +403,7 @@ def handle_chat_message(config, msg):
                 history['from'] =  config['reply_from']
                 if 'send_from' in config:
                     history['mention_list'] = [int(config['send_from'])]
-                historyListKey = historyListGroupKey(config['reply_to'])
+                historyListKey = historyListGroupKey(app_id, config['reply_to'])
                 addHistory(redis, historyListKey, history)
             if len(reply_list) > 0:
                 time.sleep(0.5)
@@ -575,9 +584,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     toUserId = config['to_user_id']
     msg_type = msg['type']
     if msg_type == 'CHAT':
-        historyListKey = historyListChatGPTKey(fromUserId, toUserId)
+        historyListKey = historyListChatGPTKey(app_id, fromUserId, toUserId)
     elif msg_type == 'GROUPCHAT':
-        historyListKey = historyListGroupKey(toUserId)
+        historyListKey = historyListGroupKey(app_id, toUserId)
     redis = lanying_redis.get_redis_connection()
     is_debug = 'debug' in presetExt and presetExt['debug'] == True
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
@@ -1464,11 +1473,11 @@ def merge_history_content(a, b):
 def model_token_limit(model_config):
     return model_config['token_limit']
 
-def historyListChatGPTKey(fromUserId, toUserId):
-    return "lanying:connector:history:list:chatGPT:" + fromUserId + ":" + toUserId
+def historyListChatGPTKey(app_id, fromUserId, toUserId):
+    return "lanying:connector:history:list:chatGPT:" + app_id + ":" + fromUserId + ":" + toUserId
 
-def historyListGroupKey(groupId):
-    return "lanying:connector:history:list:group:" + groupId
+def historyListGroupKey(app_id, groupId):
+    return "lanying:connector:history:list:group:" + app_id + ":" + groupId
 
 def addHistory(redis, historyListKey, history):
     if redis:
@@ -1575,7 +1584,8 @@ def get_preset_self_auth_info(config, vendor):
 
 def reply_message_read_ack(config, msg):
     msg_type = msg['type']
-    if msg_type == 'CHAT':
+    is_sync_mode = get_is_sync_mode(config)
+    if msg_type == 'CHAT' and not is_sync_mode:
         fromUserId = config['from_user_id']
         toUserId = config['to_user_id']
         msgId = config['msg_id']
@@ -2474,6 +2484,7 @@ def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name,
 
 def maybe_add_history(config, msg):
     if need_add_history(config, msg):
+        app_id = msg['appId']
         redis = lanying_redis.get_redis_connection()
         now = int(time.time())
         history = {'time':now}
@@ -2482,7 +2493,7 @@ def maybe_add_history(config, msg):
         if msg_type == 'CHAT':
             ai_user_id = msg['from']['uid']
             human_user_id = msg['to']['uid']
-            historyListKey = historyListChatGPTKey(human_user_id, ai_user_id)
+            historyListKey = historyListChatGPTKey(app_id, human_user_id, ai_user_id)
             history['user'] = ''
             history['assistant'] = content
             history['uid'] = human_user_id
@@ -2491,7 +2502,7 @@ def maybe_add_history(config, msg):
         elif msg_type == 'GROUPCHAT':
             from_user_id = msg['from']['uid']
             group_id = msg['to']['uid']
-            historyListKey = historyListGroupKey(group_id)
+            historyListKey = historyListGroupKey(app_id, group_id)
             history['type'] = 'group'
             history['content'] = content
             history['group_id'] = group_id
@@ -3285,6 +3296,32 @@ def get_quota_income_app_ids():
     resp = make_response({'code':200, 'data':{'list':app_ids}})
     return resp
 
+@bp.route("/service/openai/sync_messages", methods=["POST"])
+def sync_messages():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    msg = json.loads(text)
+    logging.info(f"receive sync messages start | msg:{msg}")
+    app_id = str(msg['appId'])
+    try:
+        config = lanying_config.get_lanying_connector(app_id)
+        newConfig = copy.deepcopy(config)
+        newConfig['from_user_id'] = msg['from']['uid']
+        newConfig['to_user_id'] = msg['to']['uid']
+        newConfig['ext'] = msg.get('ext', '')
+        newConfig['app_id'] = msg['appId']
+        newConfig['msg_id'] = msg['msgId']
+        messages = handle_sync_messages(newConfig, msg)
+        logging.info(f"receive sync messages finish | msg:{msg}, messages:{messages}")
+        resp = make_response({'code':200, 'data':{'messages': messages}})
+        return resp
+    except Exception as e:
+        logging.exception(e)
+        resp = make_response({'code':500, 'message':'server internal error'})
+        return resp
+
 def plugin_import_by_public_id(app_id, public_id):
     plugin_info = lanying_ai_plugin.get_public_plugin(public_id)
     if not plugin_info:
@@ -3376,6 +3413,9 @@ def replyMessageAsync(config, content, ext = {}):
         request_msg_id = config['request_msg_id']
         if 'ai' in ext:
             ext['ai']['request_msg_id'] = request_msg_id
+        if get_is_sync_mode(config):
+            add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext)
+            return
         if reply_msg_type == 'CHAT':
             return lanying_connector.sendMessageAsync(app_id, reply_from, reply_to, content, ext)
         elif reply_msg_type == 'GROUPCHAT':
@@ -3391,6 +3431,9 @@ def replyMessageSync(config, content, ext = {}):
         request_msg_id = config['request_msg_id']
         if 'ai' in ext:
             ext['ai']['request_msg_id'] = request_msg_id
+        if get_is_sync_mode(config):
+            add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext)
+            return int(time.time() * 1000000)
         if reply_msg_type == 'CHAT':
             return lanying_connector.sendMessage(app_id, reply_from, reply_to, content, ext)
         elif reply_msg_type == 'GROUPCHAT':
@@ -3402,9 +3445,62 @@ def replyMessageOperAsync(config, stream_msg_id, oper_type, content, ext, msg_co
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
         reply_to = config['reply_to']
+        if get_is_sync_mode(config):
+            if oper_type == 12:
+                add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext, msg_config)
+            return
         if reply_msg_type == 'CHAT':
             return lanying_connector.sendMessageOperAsync(app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
         else:
             return lanying_message.send_group_message_oper_async(config, app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
     else:
         logging.info(f"Skip replyMessageOperAsync for config:{config}")
+
+def is_debug_message(ext):
+    try:
+        return ext['ai']['is_debug_msg'] == True
+    except Exception as e:
+        return False
+
+def set_sync_mode(config):
+    config['is_sync_mode'] = True
+    config['sync_mode_messages'] = []
+
+def get_is_sync_mode(config):
+    return config.get('is_sync_mode', False)
+
+def get_sync_mode_messages(config):
+    return config.get('sync_mode_messages',[])
+
+def is_stream_msg_not_finish(ext):
+    try:
+        ai = ext.get('ai', {})
+        is_stream = bool(ai.get('stream', False))
+        is_finish = bool(ai.get('finish', False))
+        if is_stream and not is_finish:
+            return True
+    except Exception as e:
+        pass
+    return False
+
+def add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext, msg_config={}):
+    if is_debug_message(ext):
+        return
+    if is_stream_msg_not_finish(ext):
+        return
+    app_id = config['app_id']
+    message_antispam = lanying_config.get_message_antispam(app_id)
+    msg_config['antispam_prompt'] = message_antispam
+    now = time.time()
+    message = {
+        'msg_id': int(now * 1000000),
+        'timestamp': int(now * 1000),
+        'type': reply_msg_type,
+        'ctype': 'TEXT',
+        'from_xid': {'uid': int(reply_from)},
+        'to_xid': {'uid': int(reply_to)},
+        'content': content,
+        'ext': json.dumps(ext, ensure_ascii=False),
+        'config': json.dumps(msg_config, ensure_ascii=False)
+    }
+    config['sync_mode_messages'].append(message)
