@@ -343,7 +343,7 @@ def handle_wechat_group_message(wc_id, account, data, parse_res):
         logging.info(f"handle_wechat_group_message user_id not found: {from_user_id}")
 
 def transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id):
-    if content.startswith('@所有人\u2005') and len(atlist) > 0:
+    if content.startswith('@所有人') and len(atlist) > 0:
         return {'mentionAll': True}
     else:
         mention_list = []
