@@ -66,7 +66,13 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                 logging.info(f"add_embedding_file | got zip filenames: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, sub_filenames:{sub_filenames}")
                 for sub_filename in sub_filenames:
                     sub_ext = lanying_embedding.parse_file_ext(sub_filename)
-                    right_filename = sub_filename.encode('cp437').decode('utf-8')
+                    try:
+                        right_filename = sub_filename.encode('cp437').decode('utf-8')
+                    except Exception as e:
+                        try:
+                            right_filename = sub_filename.encode('cp437').decode('gbk')
+                        except Exception as ee:
+                            right_filename = sub_filename
                     if "__MACOSX" in sub_filename:
                         pass
                     elif "DS_Store" in sub_filename:
