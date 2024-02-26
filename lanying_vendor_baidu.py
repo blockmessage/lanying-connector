@@ -12,12 +12,30 @@ USER_MESSAGE_DEFAULT = '继续'
 def model_configs():
     return [
         {
+            "model": 'ERNIE-3.5-4K-0205',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1.2,
+            "token_limit": 4000,
+            'order': 1,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-4k-0205'
+        },
+        {
+            "model": 'ERNIE-3.5-8K-0205',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 4,
+            "token_limit": 5000,
+            'order': 2,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-8k-0205'
+        },
+        {
             "model": 'ERNIE-Bot-turbo',
             "type": "chat",
             "is_prefix": False,
             "quota": 1,
             "token_limit": 10000,
-            'order': 1,
+            'order': 3,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant'
         },
         {
@@ -27,7 +45,7 @@ def model_configs():
             "quota": 1.2,
             "token_limit": 1900,
             "token_limit_type": "prompt",
-            'order': 2,
+            'order': 4,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
         },
         {
@@ -37,7 +55,7 @@ def model_configs():
             "quota": 4,
             "token_limit": 7000,
             "token_limit_type": "prompt",
-            'order': 3,
+            'order': 5,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie_bot_8k'
         },
         {
@@ -47,7 +65,7 @@ def model_configs():
             "quota": 12,
             "token_limit": 7000,
             "token_limit_type": "prompt",
-            'order': 4,
+            'order': 6,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro'
         },
         {
@@ -124,10 +142,7 @@ def chat(prepare_info, preset):
                                 text = data.get('result','')
                                 chunk_info = {'content': text}
                                 if 'usage' in data:
-                                    usage = data['usage']
-                                    completion_tokens += usage.get('completion_tokens', 0)
-                                    usage['completion_tokens'] = completion_tokens
-                                    chunk_info['usage'] = usage
+                                    chunk_info['usage'] = data['usage']
                                 if 'function_call' in data:
                                     chunk_info['function_call'] = {
                                         'name': data['function_call'].get('name'),
