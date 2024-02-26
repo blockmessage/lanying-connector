@@ -204,6 +204,7 @@ def handle_request(request, request_type):
                 id = f'chatcmpl-{int(time.time()*1000000)}{random.randint(1,100000000)}'
                 created = int(time.time())
                 usage = {}
+                role_count = 0
                 try:
                     reply_generator = response.get('reply_generator')
                     for delta in reply_generator:
@@ -224,12 +225,14 @@ def handle_request(request, request_type):
                                 {
                                     'index': 0,
                                     'delta':{
-                                        'role': 'assistant',
                                         'content': content
                                     }
                                 }
                             ]
                         }
+                        if role_count == 0:
+                            role_count += 1
+                            delta_response['choices'][0]['delta']['role'] = 'assistant'
                         if 'function_call' in delta:
                             delta_response['choices'][0]['delta']['function_call'] = delta.get('function_call')
                         delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"

@@ -178,6 +178,9 @@ def format_preset(preset):
                 ret[key] = messages
             else:
                 ret[key] = preset[key]
+        else:
+            if key == 'max_tokens':
+                ret[key] = 1024
     return ret
 
 def maybe_add_proxy_headers(prepare_info, client):
