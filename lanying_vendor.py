@@ -28,7 +28,20 @@ def list_models():
             models.append(new_config)
     return models
 
+def get_vendor_by_model(model):
+    for vendor,module in vendor_to_module.items():
+        for config in module.model_configs():
+            is_prefix = config.get('is_prefix', True)
+            now_model = config.get('model')
+            if is_prefix and model.startswith(now_model):
+                return vendor
+            if model == now_model:
+                return vendor
+    return None
+
 def get_chat_model_config(vendor, model):
+    if vendor is None:
+        vendor = get_vendor_by_model(model)
     module = get_module(vendor)
     if module:
         model_configs = module.model_configs()
@@ -47,6 +60,8 @@ def get_chat_model_config(vendor, model):
     return None
 
 def get_image_model_config(vendor, model):
+    if vendor is None:
+        vendor = get_vendor_by_model(model)
     module = get_module(vendor)
     if module:
         model_configs = module.model_configs()
@@ -74,6 +89,8 @@ def get_embedding_model(vendor):
     return None
 
 def get_embedding_model_config(vendor, model):
+    if vendor is None:
+        vendor = get_vendor_by_model(model)
     module = get_module(vendor)
     if module:
         model_configs = module.model_configs()

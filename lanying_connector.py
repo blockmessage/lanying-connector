@@ -189,10 +189,21 @@ def openai_request():
             response = res['response']
             iter = res.get('iter')
             if iter:
-                return Response(iter(), status=response.status_code, headers=response.headers.items())
+                if isinstance(response, dict):
+                    headers = {
+                        'Content-Type': 'text/event-stream'
+                    }
+                    return Response(iter(), status=200, headers=headers)
+                else:
+                    return Response(iter(), status=response.status_code, headers=response.headers.items())
             else:
-                response.headers['Content-Encoding'] = 'identity'
-                resp = Response(response.content, status=response.status_code, headers=response.headers.items())
+                if isinstance(response, dict):
+                    response_json = json.dumps(response, ensure_ascii=False, indent=4)
+                    new_response = Response(response_json, content_type="application/json")
+                    resp = app.make_response(new_response)
+                else:
+                    response.headers['Content-Encoding'] = 'identity'
+                    resp = Response(response.content, status=response.status_code, headers=response.headers.items())
                 return resp
     except Exception as e:
         logging.exception(e)

@@ -121,14 +121,15 @@ def handle_request(request, request_type):
         logging.info(f"check_message_deduct_failed deny: app_id={app_id}, msg={deduct_res['msg']}")
         return deduct_res
     maybe_init_preset_default_model(preset, path)
-    preset_name = "default"
-    vendor = "openai"
+    vendor = request.headers.get('vendor')
     model = preset['model']
     model_config = lanying_vendor.get_chat_model_config(vendor, model)
     force_no_stream = False
     if model_config is None:
+        vendor = 'openai'
         model_config = lanying_vendor.get_embedding_model_config(vendor, model)
     if model_config is None:
+        vendor = 'openai'
         model_config = lanying_vendor.get_image_model_config(vendor, model)
         image_quota_res = check_image_quota(model_config, preset)
         if image_quota_res['result'] == 'error':
@@ -140,6 +141,9 @@ def handle_request(request, request_type):
             model_config['image_summary'] = image_quota_res['image_summary']
             config['quota_pre_check'] = image_quota_res['quota']
             force_no_stream = True
+    if model_config is None:
+        return {'result':'error', 'msg':'model not exist.', 'code':'invalid_model'}
+    vendor = model_config['vendor']
     model_res = check_model_allow(model_config, model)
     if model_res['result'] == 'error':
         logging.info(f"check_model_allow deny: app_id={app_id}, msg={model_res['msg']}")
@@ -149,38 +153,138 @@ def handle_request(request, request_type):
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
     openai_key_type = limit_res['openai_key_type']
-    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}, vendor={vendor}, model:{model}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
-    stream,response = forward_request(app_id, request, auth_info, force_no_stream, request_type)
-    if response.status_code == 200:
+    if vendor == 'openai':
+        stream,response = forward_request(app_id, request, auth_info, force_no_stream, request_type)
+        if response.status_code == 200:
+            if stream:
+                def generate_response():
+                    contents = []
+                    try:
+                        for line in response.iter_lines():
+                            line_str = line.decode('utf-8')
+                            # logging.info(f"stream got line:{line_str}|")
+                            if line_str.startswith('data:'):
+                                try:
+                                    data = json.loads(line_str[5:])
+                                    content = data['choices'][0]['delta']['content']
+                                    if content is not None:
+                                        contents.append(content)
+                                except Exception as e:
+                                    pass
+                            yield line_str + '\n'
+                    finally:
+                        reply = ''.join(contents)
+                        response_json = stream_lines_to_response(preset, reply, vendor, {}, "", "")
+                        logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
+                        add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
+                return {'result':'ok', 'response':response, 'iter': generate_response}
+            else:
+                logging.info(f"forward request: not stream response | status_code: {response.status_code}, response_content:{response.content}")
+                response_content = json.loads(response.content)
+                add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
+        else:
+            logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
+        return {'result':'ok', 'response':response}
+    else:
+        prepare_info = lanying_vendor.prepare_chat(vendor, auth_info, preset)
+        response = lanying_vendor.chat(vendor, prepare_info, preset)
+        stream = 'reply_generator' in response
+        logging.info(f"forward request other vendor: vendor:{vendor}, stream:{stream}, response:{response}")
+        if response.get('result', '') == 'error':
+            reason = response.get('reason', '')
+            if reason == '':
+                reason =  response.get('code', '')
+            logging.info(f"forward request reply error: vendor:{vendor}, stream:{stream}, reason:{reason}, response:{response}")
+            return {'result':'error', 'msg':reason, 'code': reason}
         if stream:
             def generate_response():
                 contents = []
+                id = f'chatcmpl-{int(time.time()*1000000)}{random.randint(1,100000000)}'
+                created = int(time.time())
+                usage = {}
                 try:
-                    for line in response.iter_lines():
-                        line_str = line.decode('utf-8')
-                        # logging.info(f"stream got line:{line_str}|")
-                        if line_str.startswith('data:'):
-                            try:
-                                data = json.loads(line_str[5:])
-                                content = data['choices'][0]['delta']['content']
-                                contents.append(content)
-                            except Exception as e:
-                                pass
-                        yield line_str + '\n'
+                    reply_generator = response.get('reply_generator')
+                    for delta in reply_generator:
+                        logging.info(f"forward request other vendor: vendor:{vendor}, delta:{delta}")
+                        if 'content' in delta:
+                            content = delta['content']
+                        else:
+                            content = ''
+                        contents.append(content)
+                        if 'usage' in delta:
+                            usage = delta['usage']
+                        delta_response = {
+                            'id': id,
+                            'object': 'chat.completion.chunk',
+                            'created': created,
+                            'model': model,
+                            'choices': [
+                                {
+                                    'index': 0,
+                                    'delta':{
+                                        'role': 'assistant',
+                                        'content': content
+                                    }
+                                }
+                            ]
+                        }
+                        if 'function_call' in delta:
+                            delta_response['choices'][0]['delta']['function_call'] = delta.get('function_call')
+                        delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"
+                        logging.info(f"delta_line:{delta_line}")
+                        yield delta_line
                 finally:
+                    delta_response = {
+                            'id': id,
+                            'object': 'chat.completion.chunk',
+                            'created': created,
+                            'model': model,
+                            'choices': [
+                                {
+                                    'index': 0,
+                                    'delta':{
+                                    },
+                                    'finish_reason': 'stop'
+                                }
+                            ],
+                            'usage': usage
+                        }
+                    delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"
+                    logging.info(f"delta_line:{delta_line}")
+                    yield delta_line
+                    yield 'data: [DONE]\n'
                     reply = ''.join(contents)
-                    response_json = stream_lines_to_response(preset, reply, vendor, {}, "", "")
-                    logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
+                    response_json = stream_lines_to_response(preset, reply, vendor, usage, "", "")
+                    logging.info(f"forward request: stream response | response: {response}, response_json:{response_json}")
                     add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
         else:
-            logging.info(f"forward request: not stream response | status_code: {response.status_code}, response_content:{response.content}")
-            response_content = json.loads(response.content)
-            add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
-    else:
-        logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
-    return {'result':'ok', 'response':response}
+            response_body = {
+                'id': f'chatcmpl-{int(time.time()*1000000)}{random.randint(1,100000000)}',
+                'object': 'chat.completion',
+                'created': int(time.time()),
+                'vendor': vendor,
+                'model': model,
+                'choices': [
+                    {
+                        'index': 0,
+                        'message':{
+                            'role': 'assistant',
+                            'content': response.get('reply', '')
+                        },
+                        'finish_reason': 'stop'
+                    }
+                ]
+            }
+            if 'usage' in response:
+                response_body['usage'] = response.get('usage')
+            if 'function_call' in response and response.get('function_call') is not None:
+                response_body['choices'][0]['message']['function_call'] = response.get('function_call')
+                response_body['choices'][0]['finish_reason'] = 'function_call'
+            add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
+            return {'result':'ok', 'response':response_body}
 
 def maybe_init_preset_default_model(preset, path):
     if path == '/v1/engines/text-embedding-ada-002/embeddings':
@@ -1840,7 +1944,10 @@ def calc_used_text_size(preset, response, model_config):
         if 'reply' in response:
             reply = response['reply']
         else:
-            reply = response['choices'][0]['message']['content'].strip()
+            try:
+                reply = response['choices'][0]['message']['content'].strip()
+            except Exception as e:
+                reply = ''
         text_size += text_byte_size(reply)
     elif model_config['type'] == "embedding":
         text_size += text_byte_size(preset['input'])
