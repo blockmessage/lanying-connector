@@ -85,7 +85,11 @@ def chat(prepare_info, preset):
                             'id': tool_calls[0].id
                         }
                     if chunk.usage:
-                        chunk_info['usage'] = chunk.usage
+                        chunk_info['usage'] = {
+                            'completion_tokens' : chunk.usage.completion_tokens,
+                            'prompt_tokens' : chunk.usage.prompt_tokens,
+                            'total_tokens' : chunk.usage.total_tokens
+                        }
                     yield chunk_info
             return {
                 'result': 'ok',
