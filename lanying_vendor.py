@@ -102,6 +102,8 @@ def get_embedding_model_config(vendor, model):
                     return config
                 if model == now_model:
                     return config
+                if model == '':
+                    return config
     return None
 
 def prepare_chat(vendor, auth_info, preset):
@@ -116,9 +118,9 @@ def prepare_embedding(vendor, auth_info, type):
     module = get_module(vendor)
     return module.prepare_embedding(auth_info, type)
 
-def embedding(vendor, prepare_info, text):
+def embedding(vendor, prepare_info, model, text):
     module = get_module(vendor)
-    return module.embedding(prepare_info, text)
+    return module.embedding(prepare_info, model, text)
 
 def encoding_for_model(vendor, model):
     module = get_module(vendor)

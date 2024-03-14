@@ -12,7 +12,7 @@ import lanying_vendor
 import lanying_ai_capsule
 from lanying_chatbot import get_chatbot
 
-def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor):
+def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor, model):
     embedding_name = maybe_create_function_embedding(app_id)
     admin_user_ids = []
     preset_name = ''
@@ -21,9 +21,10 @@ def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_bl
     max_block_size = 500
     overlapping_size = 0
     old_embedding_info = get_ai_plugin_embedding(app_id)
-    lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor)
+    lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model)
     new_embedding_info = get_ai_plugin_embedding(app_id)
-    if old_embedding_info.get('vendor', 'openai') != new_embedding_info.get('vendor', 'openai'):
+    if old_embedding_info.get('vendor', 'openai') != new_embedding_info.get('vendor', 'openai') or old_embedding_info.get('model', '') != new_embedding_info.get('model', ''):
+        logging.info("configure_ai_plugin_embedding | regenerate function embedding")
         redis = lanying_redis.get_redis_connection()
         list_key = get_ai_plugin_ids_key(app_id)
         plugin_ids = lanying_redis.redis_lrange(redis, list_key, 0, -1)
@@ -39,7 +40,7 @@ def get_ai_plugin_embedding(app_id):
     details = lanying_embedding.get_embedding_info_with_details(app_id, embedding_name)
     ret = {}
     if details:
-        for key in [ "embedding_max_tokens", "embedding_max_blocks",  "vendor"]:
+        for key in [ "embedding_max_tokens", "embedding_max_blocks",  "vendor", "model"]:
             if key in details:
                 ret[key] = details[key]
     return ret
@@ -174,7 +175,9 @@ def process_function_embedding(app_id, plugin_id, function_id):
         return {'result':'error', 'message': 'ai function not exist'}
     embedding_info = get_ai_plugin_embedding(app_id)
     vendor = embedding_info.get('vendor', 'openai')
-    model = lanying_vendor.get_embedding_model(vendor)
+    model = embedding_info.get('model', '')
+    if model == '':
+        model = lanying_vendor.get_embedding_model(vendor)
     redis_stack = lanying_redis.get_redis_stack_connection()
     embedding_uuid = ai_plugin_info["embedding_uuid"]
     doc_id = ai_plugin_info["doc_id"]
@@ -441,7 +444,7 @@ def maybe_create_function_embedding(app_id):
     embedding_name = get_function_embedding_name(app_id)
     if not embedding_name:
         embedding_name = f"function_embedding_{int(time.time())}_{random.randint(1,100000000)}"
-        lanying_embedding.create_embedding(app_id, embedding_name, 500, 'COSINE', [], "", 0, "openai", "function")
+        lanying_embedding.create_embedding(app_id, embedding_name, 500, 'COSINE', [], "", 0, "openai", "", "function")
         set_function_embedding_name(app_id, embedding_name)
     return embedding_name
 

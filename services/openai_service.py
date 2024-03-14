@@ -58,16 +58,17 @@ def handle_embedding_request(request):
     request_text = request.get_data(as_text=True)
     data = json.loads(request_text)
     vendor = data.get('vendor')
+    model = data.get('model', '')
     text = data.get('text')
     limit_res = check_message_limit(app_id, config, vendor, False)
     if limit_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
     openai_key_type = limit_res['openai_key_type']
-    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}, vendor={vendor}, model={model}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
     prepare_info = lanying_vendor.prepare_embedding(vendor,auth_info, 'db')
-    response = lanying_vendor.embedding(vendor, prepare_info, text)
+    response = lanying_vendor.embedding(vendor, prepare_info, model, text)
     return response
 
 def trace_finish(request):
@@ -131,16 +132,17 @@ def handle_request(request, request_type):
     if model_config is None:
         vendor = 'openai'
         model_config = lanying_vendor.get_image_model_config(vendor, model)
-        image_quota_res = check_image_quota(model_config, preset)
-        if image_quota_res['result'] == 'error':
-            logging.info(f"handle_openai_request failed with:{image_quota_res}")
-            return {'result':'error', 'msg':'The size is not supported by this model.', 'code':'invalid_size'}
-        else:
-            logging.info(f"handle_openai_request image_quota_res:{image_quota_res}")
-            model_config['quota'] = image_quota_res['quota']
-            model_config['image_summary'] = image_quota_res['image_summary']
-            config['quota_pre_check'] = image_quota_res['quota']
-            force_no_stream = True
+        if model_config is not None:
+            image_quota_res = check_image_quota(model_config, preset)
+            if image_quota_res['result'] == 'error':
+                logging.info(f"handle_openai_request failed with:{image_quota_res}")
+                return {'result':'error', 'msg':'The size is not supported by this model.', 'code':'invalid_size'}
+            else:
+                logging.info(f"handle_openai_request image_quota_res:{image_quota_res}")
+                model_config['quota'] = image_quota_res['quota']
+                model_config['image_summary'] = image_quota_res['image_summary']
+                config['quota_pre_check'] = image_quota_res['quota']
+                force_no_stream = True
     if model_config is None:
         return {'result':'error', 'msg':'model not exist.', 'code':'invalid_model'}
     vendor = model_config['vendor']
@@ -1320,11 +1322,14 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
         embedding_uuid = preset_embedding_info['embedding_uuid']
         embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
         vendor = embedding_uuid_info.get('vendor', 'openai')
-        if vendor in embedding_cache:
-            q_embedding = embedding_cache[vendor]
+        advised_model = embedding_uuid_info.get('model', '')
+        model_config = lanying_vendor.get_embedding_model_config(vendor, advised_model)
+        cache_key = vendor + ":" + model_config['model']
+        if cache_key in embedding_cache:
+            q_embedding = embedding_cache[cache_key]
         else:
-            q_embedding = fetch_embeddings(app_id, config, api_key_type, embedding_query_text, vendor)
-            embedding_cache[vendor] = q_embedding
+            q_embedding = fetch_embeddings(app_id, config, api_key_type, embedding_query_text, vendor, model_config)
+            embedding_cache[cache_key] = q_embedding
         preset_idx = preset_idx + 1
         embedding_max_tokens = lanying_embedding.word_num_to_token_num(preset_embedding_info.get('embedding_max_tokens', 1024))
         embedding_max_blocks = preset_embedding_info.get('embedding_max_blocks', 2)
@@ -2035,11 +2040,11 @@ def del_embedding_info(redis, fromUserId, toUserId):
         key = embedding_info_key(fromUserId,toUserId)
         redis.delete(key)
 
-def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor):
-    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor)
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor, model):
+    return lanying_embedding.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor, model)
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor):
-    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor)
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model):
+    return lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model)
 
 def list_embeddings(app_id):
     return lanying_embedding.list_embeddings(app_id)
@@ -2054,19 +2059,18 @@ def list_embedding_tasks(app_id, embedding_name):
         return task_list
     return []
 
-def fetch_embeddings(app_id, config, openai_key_type, text, vendor):
+def fetch_embeddings(app_id, config, openai_key_type, text, vendor, model_config):
+    model = model_config['model']
     embedding_api_key_type = openai_key_type
-    logging.info(f"fetch_embeddings: app_id={app_id}, vendor:{vendor}, text={text}")
+    logging.info(f"fetch_embeddings: app_id={app_id}, vendor:{vendor}, model={model},text={text}")
     auth_info = get_preset_auth_info(config, embedding_api_key_type, vendor)
     if auth_info is None:
         embedding_api_key_type = "share"
         auth_info = get_preset_auth_info(config, embedding_api_key_type, vendor)
     prepare_info = lanying_vendor.prepare_embedding(vendor, auth_info, 'query')
-    response = lanying_vendor.embedding(vendor, prepare_info, text)
+    response = lanying_vendor.embedding(vendor, prepare_info, model, text)
     embedding = response['embedding']
-    model = response['model']
     preset = {'model':model, 'input':text}
-    model_config = lanying_vendor.get_embedding_model_config(vendor, model)
     add_message_statistic(app_id, config, preset, response, embedding_api_key_type, model_config)
     return embedding
 
@@ -2410,7 +2414,6 @@ def calc_embedding_query_text(config, content, historyListKey, embedding_history
     now = int(time.time())
     history_count = 0
     history_size = lanying_embedding.num_of_tokens(content)
-    model = 'text-embedding-ada-002'
     token_limit = model_token_limit(model_config)
     redis = lanying_redis.get_redis_connection()
     msg_type = config['reply_msg_type']
@@ -2866,7 +2869,8 @@ def configure_ai_plugin_embedding():
     embedding_max_tokens = int(data['embedding_max_tokens'])
     embedding_max_blocks = int(data['embedding_max_blocks'])
     vendor = str(data['vendor'])
-    result = lanying_ai_plugin.configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor)
+    model = str(data.get('model', ''))
+    result = lanying_ai_plugin.configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor, model)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

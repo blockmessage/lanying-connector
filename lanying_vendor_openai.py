@@ -69,10 +69,32 @@ def model_configs():
         {
             "model": 'text-embedding-ada-002',
             "type": "embedding",
-            "is_prefix": True,
-            "quota": 0.05,
+            "is_prefix": False,
+            "quota": 0.1,
             "token_limit": 8000,
-            'order': 1000
+            'order': 1000,
+            'dim': 1536,
+            'dim_origin': 1536
+        },
+        {
+            "model": 'text-embedding-3-small',
+            "type": "embedding",
+            "is_prefix": False,
+            "quota": 0.02,
+            "token_limit": 8000,
+            'order': 1001,
+            'dim': 1536,
+            'dim_origin': 1536
+        },
+        {
+            "model": 'text-embedding-3-large',
+            "type": "embedding",
+            "is_prefix": False,
+            "quota": 0.1,
+            "token_limit": 8000,
+            'order': 1002,
+            'dim': 1536,
+            'dim_origin': 3072
         },
         {
             "model": 'dall-e-3',
@@ -195,16 +217,22 @@ def prepare_embedding(auth_info, _):
         'api_key' : auth_info['api_key']
     }
 
-def embedding(prepare_info, text):
+def embedding(prepare_info, model, text):
     api_key = prepare_info['api_key']
     openai.api_key = api_key
     type = prepare_info.get('type', '')
-    model = 'text-embedding-ada-002'
+    if model == '':
+        model = 'text-embedding-ada-002'
     headers = maybe_add_proxy_headers(prepare_info)
     logging.info(f"openai embedding start | type={type}, api_key:{api_key[:4]}...{api_key[-4:]}")
-    response = openai.Embedding.create(input=text, engine=model, headers=headers)
+    if model == 'text-embedding-3-large':
+        response = openai.Embedding.create(input=text, engine=model, headers=headers, dimensions=1536)
+    else:
+        response = openai.Embedding.create(input=text, engine=model, headers=headers)
     try:
         embedding = response['data'][0]['embedding']
+        if model == 'text-embedding-3-large':
+            logging.info(f"embedding len: {len(embedding)}")
         usage = response.get('usage',{})
         return {
             'result':'ok',

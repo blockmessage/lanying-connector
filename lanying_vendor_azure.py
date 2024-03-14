@@ -48,7 +48,9 @@ def model_configs():
             "quota": 0.05,
             "token_limit": 8000,
             'order': 1000,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-12-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-12-01-preview',
+            'dim': 1536,
+            'dim_origin': 1536
         }
     ]
 
@@ -144,7 +146,7 @@ def prepare_embedding(auth_info, _):
         'api_key' : auth_info['api_key']
     }
 
-def embedding(prepare_info, text):
+def embedding(prepare_info, model, text):
     model = 'text-embedding-ada-002'
     url = get_chat_model_url(model)
     headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}

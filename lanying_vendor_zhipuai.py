@@ -1,6 +1,7 @@
 import logging
 import tiktoken
 from zhipuai import ZhipuAI
+import zhipuai.core._errors
 import json
 import copy
 
@@ -62,6 +63,7 @@ def prepare_chat(auth_info, preset):
 def chat(prepare_info, preset):
     client = ZhipuAI(api_key=prepare_info['api_key'])
     final_preset = format_preset(preset)
+    response = None
     try:
         logging.info(f"zhipuai chat_completion start | preset={preset}, final_preset={final_preset}")
         stream = final_preset.get("stream", False)
@@ -128,6 +130,8 @@ def chat(prepare_info, preset):
                     'total_tokens' : usage.total_tokens
                 }
             }
+    except APIRequestFailedError as e:
+        pass
     except Exception as e:
         logging.exception(e)
         logging.info(f"fail to transform response:{response}")

@@ -26,6 +26,7 @@ from openai_token_counter import openai_token_counter
 import lanying_chatbot
 import lanying_config
 import lanying_ai_capsule
+import lanying_vendor
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -46,7 +47,7 @@ class IgnoringScriptConverter(MarkdownConverter):
 def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
-def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor, type='text'):
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor, model, type='text'):
     db_type = get_embedding_default_db_type(app_id)
     logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}, vendor:{vendor}, embedding_db_type: {db_type}")
     if app_id is None:
@@ -54,6 +55,11 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if old_embedding_name_info:
         return {'result':"error", 'message': 'embedding_name exist'}
+    model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+    if model_config is None:
+        return {'result':"error", 'message': 'model not exist'}
+    model = model_config['model']
+    model_dim = model_config['dim']
     now = int(time.time())
     redis = lanying_redis.get_redis_stack_connection()
     embedding_uuid = generate_embedding_id()
@@ -88,6 +94,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
                 "embedding_count":0,
                 "embedding_size": 0,
                 "vendor": vendor,
+                "model": model,
                 "text_size": 0,
                 "time": now,
                 "type": type,
@@ -95,12 +102,12 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
                 "db_table_name": db_table_name,
                 "status": "ok"})
     if db_type == 'redis':
-        result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", "1536", "DISTANCE_METRIC",algo)
+        result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", f"{model_dim}", "DISTANCE_METRIC",algo)
         logging.info(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
     elif db_type == 'pgvector':
         with lanying_pgvector.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
+            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
             conn.commit()
@@ -109,6 +116,34 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
+
+def re_create_embedding_table(embedding_uuid):
+    embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+    if embedding_uuid_info:
+        db_type = embedding_uuid_info.get('db_type', 'redis')
+        app_id = embedding_uuid_info['app_id']
+        old_db_table_name = embedding_uuid_info.get('db_table_name', '')
+        db_table_name = f"embedding_{embedding_uuid}_{app_id}_{int(time.time())}"
+        vendor = embedding_uuid_info.get('vendor', 'openai')
+        model = embedding_uuid_info.get('model', '')
+        model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+        if model_config:
+            model_dim = model_config['dim']
+            if db_type == 'pgvector':
+                with lanying_pgvector.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
+                    cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
+                    cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
+                    conn.commit()
+                    cursor.close()
+                    lanying_pgvector.put_connection(conn)
+                update_embedding_uuid_info(embedding_uuid, "db_table_name", db_table_name)
+                redis = lanying_redis.get_redis_stack_connection()
+                redis.rpush("lanying_connector:pgvector:table_to_deleted", old_db_table_name)
+                return {'result': 'ok'}
+    logging.error(f"fail to re_create_embedding_table: {embedding_uuid}")
+    return {'result':'error'}
 
 def migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name):
     redis = lanying_redis.get_redis_stack_connection()
@@ -279,10 +314,18 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
+    if vendor == '':
+        return {'result':"error", 'message': 'vendor not exist'}
+    model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+    if model_config is None:
+        return {'result':"error", 'message': 'model not exist'}
+    model = model_config['model']
+    embedding_uuid = embedding_name_info["embedding_uuid"]
+    old_embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
     redis = lanying_redis.get_redis_stack_connection()
     if new_embedding_name != embedding_name and new_embedding_name != "":
         new_embedding_name_info = get_embedding_name_info(app_id, new_embedding_name)
@@ -296,7 +339,6 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
             redis.lrem(list_key, 1, embedding_name)
             redis.rpush(list_key, new_embedding_name)
             embedding_name = new_embedding_name
-            embedding_uuid = embedding_name_info["embedding_uuid"]
             embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
             if embedding_uuid_info:
                 embedding_uuid_key = get_embedding_uuid_key(embedding_uuid)
@@ -313,9 +355,28 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
         update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"max_block_size", max_block_size)
     update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"overlapping_size", overlapping_size)
     update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"vendor", vendor)
+    update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"model", model)
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
-    return {"result":"ok"}
+    new_embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+    is_table_changed = False
+    if old_embedding_uuid_info['vendor'] != new_embedding_uuid_info['vendor'] or old_embedding_uuid_info['model'] != new_embedding_uuid_info['model']:
+        logging.info(f"configure_embedding recreate db table: {old_embedding_uuid_info}, {new_embedding_uuid_info}")
+        re_create_result = re_create_embedding_table(embedding_uuid)
+        embedding_type = new_embedding_uuid_info.get('type', 'text')
+        if re_create_result['result'] == 'ok' and embedding_type != 'function':
+            logging.info(f"configure_embedding re_run_all_doc_to_embedding: app_id:{app_id}, embedding_uuid:{embedding_uuid}")
+            re_run_all_doc_to_embedding(app_id, embedding_uuid)
+        is_table_changed = True
+    return {"result":"ok", "data":{"is_table_changed": is_table_changed}}
+
+def re_run_all_doc_to_embedding(app_id, embedding_uuid):
+    trace_id = create_trace_id()
+    doc_ids = get_embedding_doc_id_list(embedding_uuid, 0, -1)
+    config = lanying_config.get_lanying_connector(app_id)
+    update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
+    from lanying_tasks import re_run_doc_to_embedding_by_doc_ids
+    re_run_doc_to_embedding_by_doc_ids.apply_async(args = [trace_id, app_id, embedding_uuid, doc_ids])
 
 def list_embeddings(app_id):
     redis = lanying_redis.get_redis_stack_connection()
@@ -334,7 +395,7 @@ def get_embedding_info_with_details(app_id, embedding_name):
         embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
         embedding_uuid = embedding_info["embedding_uuid"]
         embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-        for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size", "vendor"]:
+        for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size", "vendor", "model"]:
             if key in embedding_uuid_info:
                 embedding_info[key] = embedding_uuid_info[key]
         if "embedding_content" not in embedding_info:
@@ -428,7 +489,7 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
         cursor.close()
         lanying_pgvector.put_connection(conn)
         # logging.info(f"rows:{rows}")
-        logging.info(f"query finish with time: {time.time() - start_time}")
+        logging.info(f"query finish with time: {time.time() - start_time}, db_table_name:{db_table_name}")
         class MyDocument:
             pass
         results = MyDocument()
@@ -628,6 +689,19 @@ def get_embedding_uuid_info(embedding_uuid):
     key = get_embedding_uuid_key(embedding_uuid)
     info = redis_hgetall(redis, key)
     if "index" in info:
+        if 'vendor' not in info:
+            vendor = 'openai'
+            info['vendor'] = vendor
+            update_embedding_uuid_info(embedding_uuid, "vendor", vendor)
+        if 'model' not in info or info['model'] == '':
+            vendor = info['vendor']
+            model_config = lanying_vendor.get_embedding_model_config(vendor, '')
+            if model_config:
+                model = model_config['model']
+                info['model'] = model
+                update_embedding_uuid_info(embedding_uuid, "model", model)
+            else:
+                info['model'] = ''
         return info
     return None
 
@@ -834,11 +908,14 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
 
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     vendor = config.get('vendor', 'openai')
+    advised_model = config.get('model', '')
+    model_config = lanying_vendor.get_embedding_model_config(vendor, advised_model)
+    model = model_config['model']
     db_type = config.get('db_type', 'redis')
     is_dry_run = config.get("dry_run", "false") == "true"
     max_block_size = get_max_token_count(config)
     question_answer_index_mode = config.get("question_answer_index_mode", "all")
-    logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}, vendor:{vendor}, max_block_size:{max_block_size}")
+    logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}, vendor:{vendor}, model:{model}, max_block_size:{max_block_size}")
     for block in blocks:
         if len(block) == 2:
             token_cnt,text = block
@@ -867,7 +944,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                     embedding_text = question + text
             else:
                 embedding_text = question + text
-            embedding = fetch_embedding(app_id, vendor, embedding_text, is_dry_run)
+            embedding = fetch_embedding(app_id, vendor, model_config, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
             text_hash = sha256(embedding_text+function)
@@ -918,21 +995,24 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "char_cnt", char_cnt)
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "token_cnt", token_cnt)
             update_doc_field(embedding_uuid, doc_id, "vendor", vendor)
+            update_doc_field(embedding_uuid, doc_id, "model", model)
             update_progress(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), 1)
             question_desc = ''
             if question != '':
                 question_desc = f"question:{question}\nanswer:"
             logging.info(f"=======block_id:{block_id},token_cnt:{token_cnt},char_cnt:{char_cnt},text_size:{text_size},max_block_size:{max_block_size}, text_hash:{text_hash}=====\n{question_desc}{text}")
 
-def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
+def fetch_embedding(app_id, vendor, model_config, text, is_dry_run=False, retry = 10, sleep = 0.2, sleep_multi=1.7):
+    model = model_config['model']
     if is_dry_run:
-        return [random.uniform(0, 1) for i in range(1536)]
+        return [random.uniform(0, 1) for i in range(model_config['dim'])]
     auth_secret = lanying_config.get_embedding_auth_secret()
     headers = {"Content-Type": "application/json",
                "Authorization": f"Bearer {app_id}-{auth_secret}"}
     body = {
         "text": text,
-        "vendor": vendor
+        "vendor": vendor,
+        "model": model
     }
     response = {}
     url = global_embedding_lanying_connector_server + "/fetch_embeddings"
@@ -940,7 +1020,7 @@ def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 
         response = requests.post(url, headers=headers, json = body).json()
         return response['embedding']
     except Exception as e:
-        logging.info(f"fetch_embedding got error response:{response}, text:{text}, vendor:{vendor}")
+        logging.info(f"fetch_embedding got error response:{response}, text:{text}, vendor:{vendor}, model:{model}")
         code = ""
         try:
             code = response["code"]
@@ -950,7 +1030,7 @@ def fetch_embedding(app_id, vendor, text, is_dry_run=False, retry = 10, sleep = 
             raise Exception(code)
         if retry > 0:
             time.sleep(sleep)
-            return fetch_embedding(app_id, vendor, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
+            return fetch_embedding(app_id, vendor, model_config, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
         raise e
 
 def process_block(config, block):
@@ -1713,7 +1793,10 @@ def calc_functions_tokens(functions, model, vendor):
         return 0
     try:
         if vendor == 'openai':
-            token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
+            if model in ["text-embedding-3-large", "text-embedding-3-small"]:
+                token_cnt = openai_token_counter(messages=[], functions=functions, model='text-embedding-ada-002') - openai_token_counter(messages=[])
+            else:
+                token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
         else:
             token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
         return token_cnt

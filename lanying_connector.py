@@ -275,8 +275,9 @@ def create_embedding(service):
         preset_name = data.get('preset_name', '')
         overlapping_size = data.get('overlapping_size', 0)
         vendor = data.get('vendor', 'openai')
+        model = data.get('model', '')
         service_module = get_service_module(service)
-        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor)
+        result = service_module.create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor, model)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
@@ -302,14 +303,15 @@ def configure_embedding(service):
         new_embedding_name = data['new_embedding_name']
         max_block_size = data.get('max_block_size', 0)
         overlapping_size = data.get('overlapping_size', 0)
-        vendor = data.get('vendor', 'openai')
+        vendor = str(data.get('vendor', 'openai'))
+        model = str(data.get('model', ''))
         logging.info(f"configure_embedding | {data}")
         service_module = get_service_module(service)
-        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor)
+        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
-            resp = app.make_response({'code':200, 'data':True})
+            resp = app.make_response({'code':200, 'data': result['data']})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp

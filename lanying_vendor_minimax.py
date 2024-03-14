@@ -35,7 +35,9 @@ def model_configs():
             "is_prefix": True,
             "quota": 0.0005,
             'order': 1000,
-            "token_limit": 11000
+            "token_limit": 11000,
+            'dim': 1536,
+            'dim_origin': 1536
         }
     ]
 
@@ -158,7 +160,7 @@ def prepare_embedding(auth_info, type):
         'type': type
     }
 
-def embedding(prepare_info, text):
+def embedding(prepare_info, model, text):
     api_key = prepare_info['api_key']
     api_group_id = prepare_info['api_group_id']
     type = prepare_info.get('type', 'db')

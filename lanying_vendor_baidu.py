@@ -74,7 +74,9 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.15,
             'order': 1000,
-            "token_limit": 10000
+            "token_limit": 10000,
+            'dim': 1536,
+            'dim_origin': 1536
         }
     ]
 
@@ -215,7 +217,7 @@ def prepare_embedding(auth_info, type):
         'secret_key': auth_info['secret_key']
     }
 
-def embedding(prepare_info, text):
+def embedding(prepare_info, model, text):
     api_key = prepare_info['api_key']
     secret_key = prepare_info['secret_key']
     access_token = get_access_token(api_key, secret_key)
