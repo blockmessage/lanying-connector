@@ -56,7 +56,7 @@ def model_configs():
             "is_prefix": True,
             "quota": 2,
             "token_limit": 16000,
-            'order': 2,
+            'order': 1,
             'hidden': True
         },
         {
@@ -65,7 +65,7 @@ def model_configs():
             "is_prefix": True,
             "quota": 1,
             "token_limit": 4000,
-            'order': 1
+            'order': 2
         },
         {
             "model": 'text-embedding-ada-002',
