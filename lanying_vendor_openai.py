@@ -5,6 +5,7 @@ import os
 import types
 from openai.error import APIError
 import time
+import json
 
 def model_configs():
     return [
@@ -148,7 +149,7 @@ def chat(prepare_info, preset):
     openai.api_key = prepare_info['api_key']
     final_preset = format_preset(preset)
     headers = maybe_add_proxy_headers(prepare_info)
-    logging.info(f"vendor openai chat request: {final_preset}")
+    logging.info(f"vendor openai chat request: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
     retry_times = 3
     response = None
     task_id = time.time()

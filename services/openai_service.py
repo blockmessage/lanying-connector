@@ -687,6 +687,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     reference_list = []
     messages = preset.get('messages',[])
     functions = []
+    function_names = {}
     now = int(time.time())
     history = {'time':now}
     fromUserId = config['from_user_id']
@@ -801,7 +802,26 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     if 'priority' not in function_info:
                         function_info['priority'] = 10
                     function_name = function_info.get('name', '')
-                    function_info["name"]  = f"class{len(functions)}_{function_name}"
+                    if function_name in function_names:
+                        function_name_finish = False
+                        if hasattr(doc, 'doc_id'):
+                            new_function_name = f"{function_name}_{doc.doc_id.replace('-','_')}"
+                            if new_function_name not in function_names:
+                                function_info["name"]  = new_function_name
+                                function_names[new_function_name] = function_name
+                                function_name_finish = True
+                        if not function_name_finish:
+                            function_seq = 2
+                            while True:
+                                new_function_name = f"class_{function_seq}_{function_name}"
+                                if new_function_name not in function_names:
+                                    function_info["name"]  = new_function_name
+                                    function_names[new_function_name] = function_name
+                                    break
+                                function_seq += 1
+                    else:
+                        function_info["name"] = function_name
+                        function_names[function_name] = function_name
                     function_info["doc_id"] = doc.doc_id
                     function_info["distance"] = now_distance
                     function_info["short_name"]  = function_name
@@ -890,6 +910,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     function_call_times = 5
     is_stream = False
     stream_msg_last_send_time = 0
+    function_messages = []
     while True:
         is_stream = ('reply_generator' in response)
         if is_stream:
@@ -959,10 +980,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             function_call_debug = copy.deepcopy(function_call)
             if 'name' in function_call_debug:
                 function_name_debug = function_call_debug['name']
-                function_call_debug['name'] = function_name_debug[(function_name_debug.find('_')+1):]
+                if function_name_debug in function_names:
+                    function_call_debug['name'] = function_names[function_name_debug]
             if is_debug:
                 replyMessageAsync(config, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
-            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug)
+            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages)
             function_call_times -= 1
         else:
             break
@@ -991,12 +1013,15 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['user'] = content
             history['assistant'] = reply
             history['uid'] = fromUserId
+            history['function_messages'] = function_messages
             addHistory(redis, historyListKey, history)
         elif msg_type == 'GROUPCHAT':
             history['type'] = 'group'
             history['content'] = reply
             history['group_id'] = config['reply_to']
             history['from'] = config['reply_from']
+            history['function_messages'] = function_messages
+            history['function_messages_owner'] = config['send_from']
             if 'send_from' in config:
                 history['mention_list'] = [int(config['send_from'])]
             addHistory(redis, historyListKey, history)
@@ -1139,7 +1164,7 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug):
+def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages):
     function_name = function_call.get('name')
     function_args = json.loads(function_call.get('arguments', '{}'))
     functions = preset.get('functions', [])
@@ -1210,6 +1235,8 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             }
             append_message(preset, model_config, response_message)
             append_message(preset, model_config, function_message)
+            function_messages.append(response_message)
+            function_messages.append(function_message)
             response = lanying_vendor.chat(vendor, prepare_info, preset)
             logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
             return response
@@ -1418,9 +1445,14 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
         if isinstance(history, list):
             nowHistoryList = history
         else:
+            nowHistoryList = []
             userMessage = {'role':'user', 'content': history['user']}
             assistantMessage = {'role':'assistant', 'content': history['assistant']}
-            nowHistoryList = [userMessage, assistantMessage]
+            nowHistoryList.append(userMessage)
+            if 'function_messages' in history:
+                for function_message in history['function_messages']:
+                    nowHistoryList.append(function_message)
+            nowHistoryList.append(assistantMessage)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
@@ -1493,7 +1525,12 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
             now_message = {'role': 'assistant', 'content': message_content}
         else:
             now_message = {'role': 'user', 'content': message_content, 'name': message_from}
-        nowHistoryList = [now_message]
+        nowHistoryList = []
+        if 'function_messages' in history and 'function_messages_owner' in history:
+            if history['function_messages_owner'] == config['send_from']:
+                for function_message in history['function_messages']:
+                    nowHistoryList.append(function_message)
+        nowHistoryList.append(now_message)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:

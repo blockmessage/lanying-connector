@@ -127,7 +127,8 @@ def chat(prepare_info, preset):
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json"}
     try:
-        logging.info(f"baidu chat_completion start | model_url={model_url},preset={preset}, final_preset={final_preset}, access_token_len={len(access_token)}")
+        logging.info(f"baidu chat_completion start | model_url={model_url},preset={preset}, access_token_len={len(access_token)}")
+        logging.info(f"baidu chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
         stream = final_preset.get("stream", False)
         if stream:
             response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
@@ -151,6 +152,13 @@ def chat(prepare_info, preset):
                                         'arguments': data['function_call'].get('arguments'),
                                     }
                                 yield chunk_info
+                            except Exception as e:
+                                pass
+                        else:
+                            try:
+                                data = json.loads(line_str)
+                                if 'error_code' in data and 'error_msg' in data:
+                                    logging.info(f"baidu got error:{data}")
                             except Exception as e:
                                 pass
                 return {
@@ -298,7 +306,7 @@ def format_preset(prepare_info, preset):
                                     messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
                                 messages.append({'role':'user', 'content':content})
                             elif role == 'assistant':
-                                if len(messages) > 0 and messages[-1]['role'] == 'user':
+                                if len(messages) > 0 and messages[-1]['role'] in ['user','function']:
                                     if 'function_call' in message:
                                         messages.append({'role':'assistant', 'content':content, 'function_call': message['function_call']})
                                     else:

@@ -74,7 +74,8 @@ def chat(prepare_info, preset):
     final_preset = format_preset(preset)
     headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
     try:
-        logging.info(f"azure chat_completion start | preset={preset}, final_preset={final_preset}, url:{url}")
+        logging.info(f"azure chat_completion start | preset={preset}, url:{url}")
+        logging.info(f"azure chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
         stream = final_preset.get("stream", False)
         if stream:
             response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)

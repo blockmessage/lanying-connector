@@ -9,6 +9,7 @@ from anthropic.types.beta import (
     MessageDeltaEvent,
     MessageStartEvent,
 )
+import json
 ASSISTANT_MESSAGE_DEFAULT = '好的'
 USER_MESSAGE_DEFAULT = '继续'
 
@@ -51,7 +52,7 @@ def chat(prepare_info, preset):
     )
     final_preset = format_preset(preset)
     headers = maybe_add_proxy_headers(prepare_info, client)
-    logging.info(f"vendor claude chat request: {final_preset}")
+    logging.info(f"vendor claude chat request: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
     retry_times = 1
     response = None
     task_id = time.time()
@@ -168,9 +169,10 @@ def format_preset(preset):
                                 messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
                             messages.append({'role': role, 'content':content})
                         elif role == 'assistant':
-                            if len(messages) > 0 and messages[-1]['role'] == 'assistant':
-                                messages.append({'role':'user', 'content':USER_MESSAGE_DEFAULT})
-                            messages.append({'role': role, 'content':content})
+                            if len(content) > 0:
+                                if len(messages) > 0 and messages[-1]['role'] == 'assistant':
+                                    messages.append({'role':'user', 'content':USER_MESSAGE_DEFAULT})
+                                messages.append({'role': role, 'content':content})
                     else:
                         logging.info(f"vendor claude ingore message in preset: {message}")
                 if len(system_message) > 0:

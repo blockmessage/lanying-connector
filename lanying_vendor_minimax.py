@@ -77,7 +77,8 @@ def chat(prepare_info, preset):
     url = f"https://api.minimax.chat/v1/text/chatcompletion_pro?GroupId={api_group_id}"
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json", "Authorization": api_key}
-    logging.info(f"minimax chat_completion start | preset={preset}, final_preset={final_preset}, url:{url}, api_key:{api_key[:10]}...{api_key[-6:]}")
+    logging.info(f"minimax chat_completion start | preset={preset}, url:{url}, api_key:{api_key[:10]}...{api_key[-6:]}")
+    logging.info(f"minimax chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
     try:
         stream = final_preset.get("stream", False)
         if stream:
