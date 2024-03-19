@@ -27,7 +27,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 1.2,
             "token_limit": 4000,
-            'order': 2,
+            'order': 99,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-4k-0205'
         },
         {
@@ -63,11 +63,12 @@ def model_configs():
             "model": 'ERNIE-Bot-8K',
             "type": "chat",
             "is_prefix": False,
-            "quota": 4,
-            "token_limit": 7000,
+            "quota": 1.2,
+            "token_limit": 5000,
             "token_limit_type": "prompt",
             'order': 6,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie_bot_8k'
+            'hidden': True,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
         },
         {
             "model": 'ERNIE-Bot-4',
