@@ -30,8 +30,8 @@ def model_configs():
             "model": 'chatglm_pro',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1,
-            "token_limit": 4000,
+            "quota": 10,
+            "token_limit": 128000,
             'order': 3,
             'hidden': True
         },
@@ -40,7 +40,7 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 0.5,
-            "token_limit": 4000,
+            "token_limit": 128000,
             'order': 4,
             'hidden': True
         },
@@ -48,8 +48,8 @@ def model_configs():
             "model": 'chatglm_lite',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.2,
-            "token_limit": 4000,
+            "quota": 0.5,
+            "token_limit": 128000,
             'order': 5,
             'hidden': True
         }
