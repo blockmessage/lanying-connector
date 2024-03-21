@@ -459,6 +459,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['wechat_chatbot_id'] = ''
         if 'group_history_use_mode' not in dto:
             dto['group_history_use_mode'] = 'all'
+        if 'image_generator' not in dto:
+            dto['image_generator'] = 'on'
         return dto
     return None
 

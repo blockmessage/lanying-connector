@@ -14,7 +14,7 @@ import random
 import lanying_message
 import lanying_im_api
 import lanying_file_storage
-from lanying_connector import executor
+from lanying_async import executor
 import lanying_utils
 import re
 import lanying_user_router

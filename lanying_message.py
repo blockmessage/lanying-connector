@@ -4,7 +4,7 @@ import requests
 import json
 import logging
 
-from lanying_connector import executor
+from lanying_async import executor
 
 def send_message_async(config, appId, fromUserId, toUserId, content, ext = {}, msg_config = {}):
     executor.submit(send_message_async_internal, (config, appId, fromUserId, toUserId, content, ext, msg_config))

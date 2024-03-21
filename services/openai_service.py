@@ -34,6 +34,8 @@ from urllib.parse import urlparse
 service = 'openai_service'
 bp = Blueprint(service, __name__)
 
+global_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
+
 expireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
@@ -563,7 +565,7 @@ def handle_chat_message_try(config, msg, retry_times):
         chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
-            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode"]:
+            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode", "image_generator"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
             preset = chatbot['preset']
@@ -686,8 +688,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     reference = presetExt.get('reference')
     reference_list = []
     messages = preset.get('messages',[])
-    functions = []
+    user_functions = []
     function_names = {}
+    system_functions = get_system_functions(config, presetExt)
+    for function_info in system_functions:
+        if 'name' in function_info:
+            function_names[function_info['name']] = function_info['name']
     now = int(time.time())
     history = {'time':now}
     fromUserId = config['from_user_id']
@@ -827,7 +833,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     function_info["short_name"]  = function_name
                     function_info["owner_app_id"] = doc.owner_app_id
                     function_info = lanying_ai_plugin.remove_function_parameters_without_function_call_reference(doc.owner_app_id, function_info, doc.doc_id)
-                    functions.append(function_info)
+                    user_functions.append(function_info)
                 elif embedding_content_type == 'summary':
                     context = context + segment_begin + doc.summary + segment_end + "\n\n"
                     if is_debug:
@@ -852,10 +858,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 context_with_prompt = f"{embedding_content}\n\n{context}"
                 context_with_distance = f"{embedding_content}\n\n{context_with_distance}"
                 messages.append({'role':embedding_role, 'content':context_with_prompt})
-            if len(functions) > 0:
-                functions = sort_functions(functions)
+            if len(user_functions) > 0:
+                user_functions = sort_functions(user_functions)
                 if is_debug:
-                    for function_info in functions:
+                    for function_info in user_functions:
                         functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
             if is_debug:
                 if is_use_old_embeddings:
@@ -882,6 +888,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     preset['messages'] = messages
     if msg_type == 'GROUPCHAT':
         preset['user'] = config['send_from']
+    functions = system_functions
+    functions.extend(user_functions)
     if len(functions) > 0:
         preset['functions'] = functions
     else:
@@ -1188,45 +1196,67 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
     function_config = lanying_ai_plugin.fill_function_info(owner_app_id, function_config, doc_id, system_envs)
     if 'function_call' in function_config:
         lanying_function_call = function_config['function_call']
-        method = lanying_function_call.get('method', 'get')
-        url = fill_function_args(function_args, lanying_function_call.get('url', ''))
-        params = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('params', {})))
-        headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
-        body = fill_function_args(function_args, lanying_function_call.get('body', {}))
-        auth = lanying_function_call.get('auth', {})
-        if lanying_utils.is_valid_public_url(url):
-            auth_type = auth.get('type', 'none')
-            logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, auth_type:{auth_type}, url:{url}, params:{params}, headers: {headers}, body: {body}")
-            auth_username = auth.get('username', '')
-            auth_password = auth.get('password', '')
-            if auth_type == 'basic' and len(auth_username) > 0 and len(auth_password) > 0:
-                auth_opts = HTTPBasicAuth(auth_username, auth_password)
-            elif auth_type == 'digest' and len(auth_username) > 0 and len(auth_password) > 0:
-                auth_opts = HTTPDigestAuth(auth_username, auth_password)
-            else:
-                auth_opts = None
-            if is_lanying_send_msg_url(url):
-                if 'content' in body:
-                    try:
-                        send_message_content = str(body['content'])
-                        content_type = str(body.get('content_type', 0))
-                        if content_type == '0':
-                            logging.info(f"Found send message plugin, so add content to ai_message:{send_message_content}")
-                            add_ai_message_cnt(send_message_content)
-                    except Exception as e:
-                        pass
-            if method == 'get':
-                function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (20.0, 40.0))
-            else:
-                function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (20.0, 40.0))
-            function_content = function_response.text
-            logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
-            if is_debug:
-                replyMessageAsync(config, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
+        function_call_type = lanying_function_call.get('type', 'http')
+        if function_call_type == 'http':
+            method = lanying_function_call.get('method', 'get')
+            url = fill_function_args(function_args, lanying_function_call.get('url', ''))
+            params = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('params', {})))
+            headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
+            body = fill_function_args(function_args, lanying_function_call.get('body', {}))
+            auth = lanying_function_call.get('auth', {})
+            if lanying_utils.is_valid_public_url(url):
+                auth_type = auth.get('type', 'none')
+                logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, auth_type:{auth_type}, url:{url}, params:{params}, headers: {headers}, body: {body}")
+                auth_username = auth.get('username', '')
+                auth_password = auth.get('password', '')
+                if auth_type == 'basic' and len(auth_username) > 0 and len(auth_password) > 0:
+                    auth_opts = HTTPBasicAuth(auth_username, auth_password)
+                elif auth_type == 'digest' and len(auth_username) > 0 and len(auth_password) > 0:
+                    auth_opts = HTTPDigestAuth(auth_username, auth_password)
+                else:
+                    auth_opts = None
+                if is_lanying_send_msg_url(url):
+                    if 'content' in body:
+                        try:
+                            send_message_content = str(body['content'])
+                            content_type = str(body.get('content_type', 0))
+                            if content_type == '0':
+                                logging.info(f"Found send message plugin, so add content to ai_message:{send_message_content}")
+                                add_ai_message_cnt(send_message_content)
+                        except Exception as e:
+                            pass
+                if method == 'get':
+                    function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (20.0, 40.0))
+                else:
+                    function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (20.0, 40.0))
+                function_content = function_response.text
+                logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
+                if is_debug:
+                    replyMessageAsync(config, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
+                function_message = {
+                    "role": "function",
+                    "name": function_name,
+                    "content": function_content
+                }
+                response_message = {
+                    "role": "assistant",
+                    "content": "",
+                    "function_call": function_call
+                }
+                append_message(preset, model_config, response_message)
+                append_message(preset, model_config, function_message)
+                function_messages.append(response_message)
+                function_messages.append(function_message)
+                response = lanying_vendor.chat(vendor, prepare_info, preset)
+                logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+                return response
+        elif function_call_type == 'system':
+            logging.info(f"handle system function call:{function_call}")
+            function_response = handle_system_function(config, function_name, function_args)
             function_message = {
                 "role": "function",
                 "name": function_name,
-                "content": function_content
+                "content": json.dumps(function_response, ensure_ascii=False)
             }
             response_message = {
                 "role": "assistant",
@@ -1240,7 +1270,59 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             response = lanying_vendor.chat(vendor, prepare_info, preset)
             logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
             return response
+    else:
+        function_response = {'result': 'fail', 'message': 'function not exist'}
+        function_message = {
+            "role": "function",
+            "name": function_name,
+            "content": json.dumps(function_response, ensure_ascii=False)
+        }
+        response_message = {
+            "role": "assistant",
+            "content": "",
+            "function_call": function_call
+        }
+        append_message(preset, model_config, response_message)
+        append_message(preset, model_config, function_message)
+        function_messages.append(response_message)
+        function_messages.append(function_message)
+        response = lanying_vendor.chat(vendor, prepare_info, preset)
+        logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+        return response
     raise Exception('bad_preset_function')
+
+def handle_system_function(config, function_name, function_args):
+    if function_name == 'system_create_image':
+        prompt = function_args.get('prompt', '')
+        url = global_lanying_connector_server + '/v1/images/generations'
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {config['access_token']}"
+        }
+        body = {
+            "model": "dall-e-3",
+            "prompt": prompt,
+            "n": 1,
+            "size": "1024x1024"
+        }
+        # body = {
+        #     "model": "dall-e-2",
+        #     "prompt": prompt,
+        #     "n": 1,
+        #     "size": "256x256"
+        # }
+        response = requests.post(url, headers=headers, json = body, timeout = (20.0, 40.0))
+        try:
+            response_json = response.json()
+            image_url = response_json['data'][0]['url']
+            ext = {'ai':{'role': 'ai'}}
+            replyMessageImageAsync(config, image_url, ext)
+            return {
+                'result': 'success'
+            }
+        except Exception as e:
+            pass
+    return {'result': 'failed'}
 
 def is_lanying_send_msg_url(url):
     parsed = urlparse(url)
@@ -2668,6 +2750,10 @@ def need_add_history(config, msg):
         toUserId = str(msg['to']['uid'])
         type = msg['type']
         app_id = msg['appId']
+        ctype = msg.get('ctype')
+        if ctype != 'TEXT':
+            logging.info("need_add_history skip for ctype not TEXT")
+            return False
         if type == 'CHAT':
             is_chatbot = is_chatbot_user_id(app_id, fromUserId, config)
             if is_chatbot and toUserId != fromUserId:
@@ -3572,6 +3658,40 @@ def replyMessageAsync(config, content, ext = {}):
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
 
+def replyMessageImageAsync(config, url, ext = {}):
+    add_ai_message_cnt(url)
+    if 'reply_msg_type' in config:
+        app_id = config['app_id']
+        reply_msg_type = config['reply_msg_type']
+        reply_from = config['reply_from']
+        reply_to = config['reply_to']
+        request_msg_id = config['request_msg_id']
+        file_type = 102
+        if reply_msg_type == 'CHAT':
+            to_type = 1
+        else:
+            to_type = 2
+        attachment = {'dName':'image.png', 'url': url}
+        content = ''
+        if 'ai' in ext:
+            ext['ai']['request_msg_id'] = request_msg_id
+        if get_is_sync_mode(config):
+            upload_res = lanying_im_api.download_url_and_upload_to_im(app_id, reply_from, url, 'png', file_type, to_type, reply_to)
+            if upload_res['result'] == 'ok':
+                download_url = upload_res['url']
+                attachment['url'] = download_url
+            add_sync_mode_image_message(config, reply_msg_type, reply_from, reply_to, content, attachment, ext)
+            return
+        extra = {
+            'ext': ext,
+            'attachment': attachment,
+            'download_args': [app_id, reply_from, url, 'png', file_type, to_type, reply_to]
+        }
+        if reply_msg_type == 'CHAT':
+            return lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, 1, 1, content, extra)
+        elif reply_msg_type == 'GROUPCHAT':
+            return lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, 2, 1, content, extra)
+
 def replyMessageSync(config, content, ext = {}):
     add_ai_message_cnt(content)
     if 'reply_msg_type' in config:
@@ -3655,3 +3775,53 @@ def add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content,
         'config': json.dumps(msg_config, ensure_ascii=False)
     }
     config['sync_mode_messages'].append(message)
+
+def add_sync_mode_image_message(config, reply_msg_type, reply_from, reply_to, content, attachment, ext, msg_config={}):
+    if is_debug_message(ext):
+        return
+    if is_stream_msg_not_finish(ext):
+        return
+    app_id = config['app_id']
+    message_antispam = lanying_config.get_message_antispam(app_id)
+    msg_config['antispam_prompt'] = message_antispam
+    now = time.time()
+    message = {
+        'msg_id': int(now * 1000000),
+        'timestamp': int(now * 1000),
+        'type': reply_msg_type,
+        'ctype': 'IMAGE',
+        'from_xid': {'uid': int(reply_from)},
+        'to_xid': {'uid': int(reply_to)},
+        'content': content,
+        'attachment': json.dumps(attachment, ensure_ascii=False),
+        'ext': json.dumps(ext, ensure_ascii=False),
+        'config': json.dumps(msg_config, ensure_ascii=False)
+    }
+    config['sync_mode_messages'].append(message)
+
+def get_system_functions(config, presetExt):
+    functions = []
+    #if config['image_generator'] == 'on':
+    if presetExt.get('image_generator', False) == True:
+        image_generator_function = {
+            "name": "system_create_image",
+            "description": "根据提示创建一幅图像。当给出一个纯文本提示以生成图像时，创建一个可用于 dalle 的提示。请遵循以下政策：\n1. 如果用户请求多幅图像，请只返回用户 1 幅图像。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "图像的提示词，用于大模型 dalle 生成图像，此参数需使用英文，最大长度为 4000 个字符。"
+                    }
+                },
+                "required": [
+                    "prompt"
+                ]
+            },
+            "priority": 0,
+            "function_call":{
+                "type": "system"
+            }
+        }
+        functions.append(image_generator_function)
+    return functions

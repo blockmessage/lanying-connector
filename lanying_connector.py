@@ -3,7 +3,6 @@ from flask import Flask, Response, request, render_template
 import requests
 import logging
 import json
-from concurrent.futures import ThreadPoolExecutor
 import importlib
 import sys
 import lanying_config
@@ -13,6 +12,7 @@ import lanying_redis
 import socket
 import uuid
 import lanying_embedding
+from lanying_async import executor
 def init_logging():
     logdir = f"log/{socket.gethostname()}"
     os.makedirs(logdir, exist_ok=True)
@@ -28,7 +28,6 @@ def init_logging():
     logger.addHandler(ch)
     logger.addHandler(fh)
 init_logging()
-executor = ThreadPoolExecutor(16)
 sys.path.append("services")
 lanying_config.init()
 accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
