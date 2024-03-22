@@ -83,6 +83,7 @@ pycparser==2.21
 pycryptodome==3.18.0
 pydantic==2.5.3
 pydantic_core==2.14.6
+pydub==0.25.1
 PyJWT==2.8.0
 pyparsing==3.0.9
 pypdfium2==4.18.0

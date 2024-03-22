@@ -127,6 +127,33 @@ def model_configs():
             "token_limit": 16000,
             'order': 10,
             'hidden': True
+        },
+        {
+            "model": 'whisper-1',
+            "type": "speech_to_text",
+            "is_prefix": False,
+            "quota": 0.1,
+            "token_limit": 16000,
+            'order': 10,
+            'hidden': True
+        },
+        {
+            "model": 'tts-1',
+            "type": "text_to_speech",
+            "is_prefix": False,
+            "quota": 15,
+            "token_limit": 16000,
+            'order': 10,
+            'hidden': True
+        },
+        {
+            "model": 'tts-1-hd',
+            "type": "text_to_speech",
+            "is_prefix": False,
+            "quota": 30,
+            "token_limit": 16000,
+            'order': 10,
+            'hidden': True
         }
     ]
 

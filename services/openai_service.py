@@ -30,6 +30,9 @@ from requests.auth import HTTPDigestAuth
 from requests.auth import HTTPBasicAuth
 import lanying_message
 from urllib.parse import urlparse
+import uuid
+from pydub import AudioSegment
+import math
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -105,9 +108,14 @@ def handle_request(request, request_type):
         preset = json.loads(text)
     else:
         preset = {}
-        for key in ["prompt", "model", "n", "size", "response_format", "user"]:
-            if key in request.form:
-                preset[key] = request.form[key]
+        if path == "/v1/audio/transcriptions":
+            for key in ["model", "language", "prompt", "response_format", "temperature", "timestamp_granularities"]:
+                if key in request.form:
+                    preset[key] = request.form[key]
+        else:
+            for key in ["prompt", "model", "n", "size", "response_format", "user"]:
+                if key in request.form:
+                    preset[key] = request.form[key]
         logging.info(f"receive api form request: path: {path}, preset:{preset}")
     auth_result = check_authorization(request)
     if auth_result['result'] == 'error':
@@ -128,6 +136,7 @@ def handle_request(request, request_type):
     model = preset['model']
     model_config = lanying_vendor.get_chat_model_config(vendor, model)
     force_no_stream = False
+    forward_file_info = None
     if model_config is None:
         vendor = 'openai'
         model_config = lanying_vendor.get_embedding_model_config(vendor, model)
@@ -145,6 +154,34 @@ def handle_request(request, request_type):
                 model_config['image_summary'] = image_quota_res['image_summary']
                 config['quota_pre_check'] = image_quota_res['quota']
                 force_no_stream = True
+    if model_config is None and path == '/v1/audio/speech':
+        vendor = 'openai'
+        model_config = lanying_vendor.get_text_to_speech_model_config(vendor, model)
+        if model_config is not None:
+            quota_res = check_text_to_speech_quota(model_config, preset)
+            if quota_res['result'] == 'error':
+                logging.info(f"handle_openai_request text_to_speech failed with:{quota_res}")
+                return {'result':'error', 'msg': quota_res['message'], 'code':quota_res['code']}
+            else:
+                logging.info(f"handle_openai_request text_to_speech quota_res:{quota_res}")
+                model_config['quota'] = quota_res['quota']
+                config['quota_pre_check'] = quota_res['quota']
+                force_no_stream = True
+    if model_config is None and path == '/v1/audio/transcriptions':
+        vendor = 'openai'
+        model_config = lanying_vendor.get_speech_to_text_model_config(vendor, model)
+        if model_config is not None:
+            quota_res = check_speech_to_text_quota(model_config, preset, request)
+            if quota_res['result'] == 'error':
+                logging.info(f"handle_openai_request speech_to_text failed with:{quota_res}")
+                return {'result':'error', 'msg': quota_res['message'], 'code':quota_res['code']}
+            else:
+                logging.info(f"handle_openai_request speech_to_text quota_res:{quota_res}")
+                model_config['quota'] = quota_res['quota']
+                config['quota_pre_check'] = quota_res['quota']
+                config['speech_to_text_duration'] = quota_res['duration']
+                forward_file_info = quota_res['file_info']
+                force_no_stream = True
     if model_config is None:
         return {'result':'error', 'msg':'model not exist.', 'code':'invalid_model'}
     vendor = model_config['vendor']
@@ -160,7 +197,7 @@ def handle_request(request, request_type):
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}, vendor={vendor}, model:{model}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
     if vendor == 'openai':
-        stream,response = forward_request(app_id, request, auth_info, force_no_stream, request_type)
+        stream,response = forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info)
         if response.status_code == 200:
             if stream:
                 def generate_response():
@@ -185,8 +222,12 @@ def handle_request(request, request_type):
                         add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
                 return {'result':'ok', 'response':response, 'iter': generate_response}
             else:
-                logging.info(f"forward request: not stream response | status_code: {response.status_code}, response_content:{response.content}")
-                response_content = json.loads(response.content)
+                if path == '/v1/audio/speech':
+                    logging.info(f"forward request: not stream response , got file response| status_code: {response.status_code}")
+                    response_content = {}
+                else:
+                    logging.info(f"forward request: not stream response | status_code: {response.status_code}, response_content:{response.content}")
+                    response_content = json.loads(response.content)
                 add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
         else:
             logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
@@ -300,7 +341,7 @@ def maybe_init_preset_default_model(preset, path):
         if path in ['/v1/images/generations', '/v1/images/edits', '/v1/images/variations']:
             preset['model'] = 'dall-e-2'
 
-def forward_request(app_id, request, auth_info, force_no_stream, request_type):
+def forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info):
     openai_key = auth_info.get('api_key','')
     proxy_domain = os.getenv('LANYING_CONNECTOR_OPENAI_PROXY_DOMAIN', '')
     if len(proxy_domain) > 0:
@@ -330,13 +371,21 @@ def forward_request(app_id, request, auth_info, force_no_stream, request_type):
     else:
         form_data = request.form
         files = {}
-        for file_key in request.files:
-            file = request.files[file_key]
-            logging.info(f"file_key:{file_key}, {file.filename}, {file.mimetype}, {file.stream}")
-            files[file_key] = (file.filename, file.stream, file.mimetype)
-        logging.info(f"forward form request start: app_id:{app_id}, url:{url}")
-        response = requests.post(url, data=form_data, files=files, headers=headers)
-        logging.info(f"forward form request finish: app_id:{app_id}, status_code: {response.status_code}")
+        if forward_file_info:
+            logging.info(f"file_key from forward_file_info :{forward_file_info['filename']}, {forward_file_info['mimetype']}, {forward_file_info['path']}")
+            with open(forward_file_info['path'], 'rb') as file_stream:
+                files['file'] = (forward_file_info['filename'], file_stream, forward_file_info['mimetype'])
+                logging.info(f"forward form request start: app_id:{app_id}, url:{url}")
+                response = requests.post(url, data=form_data, files=files, headers=headers)
+                logging.info(f"forward form request finish: app_id:{app_id}, status_code: {response.status_code}")
+        else:
+            for file_key in request.files:
+                file = request.files[file_key]
+                logging.info(f"file_key:{file_key}, {file.filename}, {file.mimetype}, {file.stream}")
+                files[file_key] = (file.filename, file.stream, file.mimetype)
+            logging.info(f"forward form request start: app_id:{app_id}, url:{url}")
+            response = requests.post(url, data=form_data, files=files, headers=headers)
+            logging.info(f"forward form request finish: app_id:{app_id}, status_code: {response.status_code}")
         stream = False
         return (stream, response)
 
@@ -1834,9 +1883,46 @@ def check_image_quota(model_config, preset):
     else:
         return {'result':'error', 'message': 'The size is not supported by this model.'}
 
+def check_text_to_speech_quota(model_config, preset):
+    input = preset.get('input', '')
+    byte_size = text_byte_size(input)
+    count = round(byte_size / 1024)
+    if  count < 1:
+        count = 1
+    quota = model_config['quota'] * count
+    logging.info(f"check_text_to_speech_quota | input:{input}, byte_size:{byte_size}, count: {count}, quota:{quota}")
+    return {'result':'ok', 'quota': quota}
+
+def check_speech_to_text_quota(model_config, preset, request):
+    if 'file' not in request.files:
+        return {'result': 'error', 'message': 'file not exist', 'code': 'file_not_exist'}
+    file = request.files['file']
+    if file.filename == '':
+        return {'result': 'error', 'message': 'file not exist', 'code': 'file_not_exist'}
+    audio_file_path = f"/tmp/audio-{int(time.time())}-{uuid.uuid4()}-{file.filename}"
+    file.save(audio_file_path)
+    duration_ms = 0
+    try:
+        audio = AudioSegment.from_file(audio_file_path)
+        duration_ms = len(audio)
+    except Exception as e:
+        logging.exception(e)
+    duration = math.ceil(duration_ms / 1000)
+    if duration <= 0:
+        return {'result': 'error', 'message': 'file format not support', 'code': 'file_format_not_support'}
+    file_info = {
+        'filename': file.filename,
+        'path': audio_file_path,
+        'mimetype': file.mimetype
+    }
+    quota = model_config['quota'] * duration
+    logging.info(f"check_speech_to_text_quota | audio_file_path:{audio_file_path}, duration_ms:{duration_ms}, duration: {duration}, quota:{quota}")
+    return {'result':'ok', 'quota': quota, 'duration_ms': duration_ms, 'duration': duration, 'file_info': file_info}
+
 def add_message_statistic(app_id, config, preset, response, openai_key_type, model_config):
-    if model_config.get('type', '') == 'image':
-        logging.info(f"add_message_statistic image response: {response}, model_config: {model_config}")
+    model_type = model_config.get('type', '')
+    if model_type == 'image':
+        logging.info(f"add_message_statistic {model_type} response: {response}, model_config: {model_config}")
         redis = lanying_redis.get_redis_connection()
         if redis:
             model = preset['model']
@@ -1859,6 +1945,34 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
             #     logging.exception(e)
         else:
             logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, openai_key_type:{openai_key_type}, model_config:{model_config}")
+    elif model_type in ['text_to_speech', 'speech_to_text'] :
+        logging.info(f"add_message_statistic {model_type} response: {response}, model_config: {model_config}")
+        redis = lanying_redis.get_redis_connection()
+        if redis:
+            model = preset['model']
+            message_count_quota = model_config['quota']
+            if model_type == 'speech_to_text':
+                speech_to_text_duration = config.get('speech_to_text_duration', 0)
+                logging.info(f"speech_to_text response | duration={speech_to_text_duration}, response:{response}")
+            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            key_count = 0
+            for key in get_message_statistic_keys(config, app_id):
+                key_count += 1
+                redis.hincrby(key, f'{model_type}_message_count', 1)
+                if openai_key_type == 'share':
+                    add_quota(redis, key, 'message_count_quota_share', message_count_quota)
+                else:
+                    add_quota(redis, key, 'message_count_quota_self', message_count_quota)
+                new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
+                if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
+                    notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+            # try:
+            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
+            # except Exception as e:
+            #     logging.exception(e)
+        else:
+            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, openai_key_type:{openai_key_type}, model_config:{model_config}")
+    
     elif 'usage' in response:
         usage = response['usage']
         completion_tokens = usage.get('completion_tokens',0)

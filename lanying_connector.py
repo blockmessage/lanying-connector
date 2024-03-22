@@ -175,6 +175,7 @@ def get_message_limit_state(service):
 @app.route("/v1/embeddings", methods=["POST"])
 @app.route("/v1/engines/text-embedding-ada-002/embeddings", methods=["POST"])
 @app.route("/v1/images/generations", methods=["POST"])
+@app.route("/v1/audio/speech", methods=["POST"])
 def openai_request():
     try:
         service = "openai"
@@ -211,6 +212,7 @@ def openai_request():
     
 @app.route("/v1/images/edits", methods=["POST"])
 @app.route("/v1/images/variations", methods=["POST"])
+@app.route("/v1/audio/transcriptions", methods=["POST"])
 def openai_form_request():
     try:
         service = "openai"

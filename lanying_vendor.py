@@ -79,6 +79,46 @@ def get_image_model_config(vendor, model):
                     return newConfig
     return None
 
+def get_text_to_speech_model_config(vendor, model):
+    if vendor is None:
+        vendor = get_vendor_by_model(model)
+    module = get_module(vendor)
+    if module:
+        model_configs = module.model_configs()
+        for config in model_configs:
+            if config['type'] == "text_to_speech":
+                is_prefix = config.get('is_prefix', True)
+                now_model = config.get('model')
+                if is_prefix and model.startswith(now_model):
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
+                if model == now_model:
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
+    return None
+
+def get_speech_to_text_model_config(vendor, model):
+    if vendor is None:
+        vendor = get_vendor_by_model(model)
+    module = get_module(vendor)
+    if module:
+        model_configs = module.model_configs()
+        for config in model_configs:
+            if config['type'] == "speech_to_text":
+                is_prefix = config.get('is_prefix', True)
+                now_model = config.get('model')
+                if is_prefix and model.startswith(now_model):
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
+                if model == now_model:
+                    newConfig = copy.deepcopy(config)
+                    newConfig['vendor'] = vendor
+                    return newConfig
+    return None
+
 def get_embedding_model(vendor):
     module = get_module(vendor)
     if module:
