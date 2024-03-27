@@ -428,6 +428,38 @@ def check_embedding_authorization(request):
         logging.exception(e)
     return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
 
+def init_chatbot_config(config, msg):
+    app_id = msg['appId']
+    check_res = check_message_chatbot_id(config, msg)
+    if check_res['result'] == 'ok':
+        chatbot_user_id = check_res['chatbot_user_id']
+        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
+        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot:
+            config['chatbot'] = chatbot
+            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode", "image_generator", "audio"]:
+                if key in chatbot:
+                    config[key] = chatbot[key]
+        else:
+            logging.warning(f"cannot get chatbot info: app_id={app_id}, chatbot_user_id:{chatbot_user_id}, chatbot_id:{chatbot_id}")
+
+def check_message_chatbot_id(config, msg):
+    app_id = msg['appId']
+    from_user_id = str(msg['from']['uid'])
+    to_user_id = str(msg['to']['uid'])
+    msg_type = msg['type']
+    if msg_type == 'CHAT':
+        is_chatbot = is_chatbot_user_id(app_id, to_user_id, config)
+        if is_chatbot:
+            return {'result': 'ok', 'chatbot_user_id': to_user_id}
+    elif msg_type == 'GROUPCHAT':
+        group_id = to_user_id
+        msg_config = lanying_utils.safe_json_loads(msg.get('config'))
+        chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, from_user_id, msg_config)
+        if chatbot_user_id:
+            return {'result': 'ok', 'chatbot_user_id': to_user_id}
+    return {'result': 'error', 'message': 'no chatbot'}
+
 def check_message_need_reply(config, msg):
     fromUserId = str(msg['from']['uid'])
     toUserId = str(msg['to']['uid'])
@@ -518,8 +550,10 @@ def handle_chat_message(config, msg):
     msg_type = msg['type']
     if msg_type not in ["CHAT", "GROUPCHAT"]:
         return ''
-    maybe_add_history(config, msg)
     try:
+        init_chatbot_config(config, msg)
+        maybe_transcription_audio_msg(config, msg)
+        maybe_add_history(config, msg)
         reply = handle_chat_message_try(config, msg, 3)
     except Exception as e:
         logging.error("fail to handle_chat_message:")
@@ -588,10 +622,10 @@ def handle_chat_message_try(config, msg, retry_times):
     if checkres['result'] == 'error':
         return checkres['msg']
     ctype = msg['ctype']
+    content = msg.get('content','')
     command_ext = {}
     if msg_type == 'CHAT':
         if ctype == 'TEXT':
-            content = msg['content']
             if content.startswith("/"):
                 result = handle_embedding_command(msg, config)
                 if isinstance(result, str):
@@ -605,22 +639,21 @@ def handle_chat_message_try(config, msg, retry_times):
                     return result
         elif ctype == 'FILE':
             return handle_chat_file(msg, config)
+        elif ctype == 'AUDIO':
+            if content == '':
+                return '对不起，我无法处理语音消息。'
         else:
             return ''
     else:
-        if ctype != 'TEXT':
+        if ctype == 'AUDIO':
+            if content == '':
+                return '对不起，我无法处理语音消息。'
+        elif ctype != 'TEXT':
             return ''
     if is_chatbot_mode:
-        chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
-        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        chatbot = config.get('chatbot')
         if chatbot:
-            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode", "image_generator"]:
-                if key in chatbot:
-                    config[key] = chatbot[key]
             preset = chatbot['preset']
-        else:
-            logging.warning(f"cannot get chatbot info: app_id={app_id}, user_id:{toUserId}, chatbot_id:{chatbot_id}")
-            return ''
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
         return checkres['msg']
@@ -2858,6 +2891,57 @@ def maybe_add_history(config, msg):
             history['mention_list'] = mention_list
             addHistory(redis, historyListKey, history)
 
+def is_chatbot_audio_on(config):
+    if 'chatbot' in config:
+        chatbot = config['chatbot']
+        # if chatbot['audio'] == 'on':
+        #     return True
+        if chatbot.get('preset',{}).get('ext',{}).get('audio', False) == True:
+            return True
+    return False
+
+def maybe_transcription_audio_msg(config, msg):
+    app_id = msg['appId']
+    ctype = msg.get('ctype')
+    from_user_id = str(msg['from']['uid'])
+    content = msg.get('content', '')
+    if ctype == 'AUDIO' and content == '' and is_chatbot_audio_on(config):
+        attachment = lanying_utils.safe_json_loads(msg.get('attachment',''))
+        url = attachment.get('url', '')
+        if len(url) > 0:
+            if lanying_utils.is_lanying_url(url):
+                url += '&format=mp3'
+            audio_filename = f"/tmp/{app_id}_{from_user_id}_{int(time.time())}.mp3"
+            res = lanying_im_api.download_url(config, app_id, from_user_id, url, audio_filename)
+            logging.info(f"transcription_audio_msg result: {res}")
+            if res['result'] == 'ok':
+                res = transcription_audio_msg(config, audio_filename)
+                logging.info("")
+                if res['result'] == 'ok':
+                    audio_text = res['data']['text']
+                    logging.info(f"mark audio msg text: msg:{msg}, audio_text:{audio_text}")
+                    msg['content'] = audio_text
+
+def transcription_audio_msg(config, audio_filename):
+    try:
+        headers = {
+            "Authorization": f"Bearer {config['access_token']}"
+        }
+        data = {
+            "model": "whisper-1",
+            "response_format": "verbose_json"
+        }
+        files = {'file': ('audio.mp3', open(audio_filename, 'rb'))}
+        url = global_lanying_connector_server + '/v1/audio/transcriptions'
+        response = requests.post(url, headers=headers, data=data, files=files)
+        if response.status_code == 200:
+            return {'result': 'ok', 'data': response.json()}
+        else:
+            return {'result': 'error', 'message': 'bad_status_code', 'text': response.text}
+    except Exception as e:
+        logging.exception(e)
+        return {'result': 'error', 'message': 'exception'}
+
 def need_add_history(config, msg):
     try:
         fromUserId = str(msg['from']['uid'])
@@ -2865,8 +2949,14 @@ def need_add_history(config, msg):
         type = msg['type']
         app_id = msg['appId']
         ctype = msg.get('ctype')
-        if ctype != 'TEXT':
-            logging.info("need_add_history skip for ctype not TEXT")
+        allow_ctypes = ['TEXT']
+        content = msg.get('content', '')
+        if content == '':
+            return False
+        if is_chatbot_audio_on(config):
+            allow_ctypes.append('AUDIO')
+        if ctype not in allow_ctypes:
+            logging.info(f"need_add_history skip for ctype not in{allow_ctypes}")
             return False
         if type == 'CHAT':
             is_chatbot = is_chatbot_user_id(app_id, fromUserId, config)

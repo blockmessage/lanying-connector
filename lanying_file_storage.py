@@ -5,7 +5,7 @@ import requests
 from langchain.document_loaders import WebBaseLoader
 import re
 import lanying_url_loader
-from urllib.parse import urlparse
+import lanying_utils
 
 server = os.getenv("FILE_STORAGE_SERVER", "localhost:9000")
 accesskey = os.getenv("FILE_STORAGE_ACCESS_KEY")
@@ -57,7 +57,7 @@ def download_url(url, headers, filename):
         if len(headers) == 0:
             response = lanying_url_loader.load_url_content(url)
         else:
-            if not is_lanying_url(url):
+            if not lanying_utils.is_lanying_url(url):
                 headers = {}
             headers['Range'] = 'bytes=0-'
             response = requests.get(url, headers=headers, stream=True)
@@ -90,7 +90,7 @@ def download_url(url, headers, filename):
 
 def download_file_url(url, headers, filename):
     try:
-        if not is_lanying_url(url):
+        if not lanying_utils.is_lanying_url(url):
             headers = {}
         response = requests.get(url, headers=headers, stream=True)
         if response.status_code == 200:
@@ -106,11 +106,6 @@ def download_file_url(url, headers, filename):
     except Exception as e:
         logging.exception(e)
     return {"result":"error", "message":"fail to download file"}
-
-def is_lanying_url(url):
-    parsed = urlparse(url)
-    host = parsed.netloc.split(':')[0]
-    return host.endswith(".maximtop.cn") or host.endswith("api.maximtop.com")
 
 def download_url_in_text_format(url, filename):
     try:

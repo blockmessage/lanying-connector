@@ -461,6 +461,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['group_history_use_mode'] = 'all'
         if 'image_generator' not in dto:
             dto['image_generator'] = 'on'
+        if 'audio' not in dto:
+            dto['audio'] = 'on'
         return dto
     return None
 

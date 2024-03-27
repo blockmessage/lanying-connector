@@ -60,3 +60,8 @@ def safe_json_loads(str, default={}):
 def sha256(text):
     value = hashlib.sha256(text.encode('utf-8')).hexdigest()
     return value
+
+def is_lanying_url(url):
+    parsed = urlparse(url)
+    host = parsed.netloc.split(':')[0]
+    return host.endswith(".maximtop.cn") or host.endswith("api.maximtop.com")
