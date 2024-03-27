@@ -747,6 +747,7 @@ def handle_chat_message_try(config, msg, retry_times):
 
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
+    ctype = msg.get('ctype', '')
     model = preset['model']
     check_res = check_message_limit(app_id, config, vendor, True)
     if check_res['result'] == 'error':
@@ -983,6 +984,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     if is_force_stream:
         logging.info("force use stream")
         preset['stream'] = True
+    if ctype == 'AUDIO':
+        if 'stream' in preset:
+            del preset['stream']
     oper_msg_config = {
         'force_callback': True
     }
@@ -1246,7 +1250,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 replyMessageAsync(config, reply, reply_ext)
             else:
                 reply_ext['ai']['stream'] = False
-                replyMessageAsync(config, reply, reply_ext)
+                if ctype == 'AUDIO':
+                    replyAudioMessageAsync(config, reply, reply_ext)
+                else:
+                    replyMessageAsync(config, reply, reply_ext)
     return ''
 
 def is_link_need_ignore(link):
@@ -2911,18 +2918,18 @@ def maybe_transcription_audio_msg(config, msg):
         if len(url) > 0:
             if lanying_utils.is_lanying_url(url):
                 url += '&format=mp3'
-            audio_filename = f"/tmp/{app_id}_{from_user_id}_{int(time.time())}.mp3"
+            audio_filename = f"/tmp/audio_{app_id}_{from_user_id}_{int(time.time())}_{uuid.uuid4()}.mp3"
             res = lanying_im_api.download_url(config, app_id, from_user_id, url, audio_filename)
             logging.info(f"transcription_audio_msg result: {res}")
             if res['result'] == 'ok':
-                res = transcription_audio_msg(config, audio_filename)
+                res = speech_to_text(config, audio_filename)
                 logging.info("")
                 if res['result'] == 'ok':
                     audio_text = res['data']['text']
                     logging.info(f"mark audio msg text: msg:{msg}, audio_text:{audio_text}")
                     msg['content'] = audio_text
 
-def transcription_audio_msg(config, audio_filename):
+def speech_to_text(config, audio_filename):
     try:
         headers = {
             "Authorization": f"Bearer {config['access_token']}"
@@ -2941,6 +2948,27 @@ def transcription_audio_msg(config, audio_filename):
     except Exception as e:
         logging.exception(e)
         return {'result': 'error', 'message': 'exception'}
+
+def text_to_speech(config, content, audio_filename):
+    url = global_lanying_connector_server + '/v1/audio/speech'
+    headers = {
+        "Authorization": f"Bearer {config['access_token']}"
+    }
+    data = {
+        'model': 'tts-1',
+        'input': content,
+        'voice': 'alloy',
+    }
+
+    response = requests.post(url, headers=headers, json=data)
+
+    if response.status_code == 200:
+        with open(audio_filename, 'wb') as f:
+            f.write(response.content)
+            return {'result':'ok'}
+    else:
+        logging.info("出现错误，状态码：", response.status_code)
+    return {'result': 'error', 'message': 'fail to transform text to speech'}
 
 def need_add_history(config, msg):
     try:
@@ -3862,6 +3890,55 @@ def replyMessageAsync(config, content, ext = {}):
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
 
+def replyAudioMessageAsync(config, content, ext = {}):
+    add_ai_message_cnt(content)
+    if 'reply_msg_type' in config:
+        app_id = config['app_id']
+        reply_msg_type = config['reply_msg_type']
+        reply_from = config['reply_from']
+        reply_to = config['reply_to']
+        request_msg_id = config['request_msg_id']
+        if 'ai' in ext:
+            ext['ai']['request_msg_id'] = request_msg_id
+        audio_filename = f"/tmp/audio_{app_id}_{reply_from}_{int(time.time())}_{uuid.uuid4()}.mp3"
+        res = text_to_speech(config, content, audio_filename)
+        if res['result'] == 'error':
+            return replyMessageAsync(config, content, ext)
+        file_type = 104
+        if reply_msg_type == 'CHAT':
+            to_type = 1
+        else:
+            to_type = 2
+        duration_ms = 0
+        try:
+            audio = AudioSegment.from_file(audio_filename)
+            duration_ms = len(audio)
+        except Exception as e:
+            logging.exception(e)
+        duration = round(duration_ms / 1000)
+        attachment = {
+            'dName': 'voice',
+            'duration': duration
+        }
+        upload_res = lanying_im_api.upload_chat_file(app_id, reply_from, 'mp3', 'audio/mpeg', file_type, to_type, reply_to, audio_filename)
+        if upload_res['result'] == 'ok':
+            download_url = upload_res['url']
+            attachment['url'] = download_url
+        else:
+            return replyMessageAsync(config, content, ext)
+        if get_is_sync_mode(config):
+            add_sync_mode_audio_message(config, reply_msg_type, reply_from, reply_to, content, ext, {}, attachment)
+            return
+        content_type = 2
+        extra = {
+            'ext': ext,
+            'attachment': attachment
+        }
+        if reply_msg_type == 'CHAT':
+            return lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, 1, content_type, content, extra)
+        elif reply_msg_type == 'GROUPCHAT':
+            return lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, 2, content_type, content, extra)
+
 def replyMessageImageAsync(config, url, ext = {}):
     add_ai_message_cnt(url)
     if 'reply_msg_type' in config:
@@ -3977,6 +4054,29 @@ def add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content,
         'content': content,
         'ext': json.dumps(ext, ensure_ascii=False),
         'config': json.dumps(msg_config, ensure_ascii=False)
+    }
+    config['sync_mode_messages'].append(message)
+
+def add_sync_mode_audio_message(config, reply_msg_type, reply_from, reply_to, content, ext, msg_config, attachment):
+    if is_debug_message(ext):
+        return
+    if is_stream_msg_not_finish(ext):
+        return
+    app_id = config['app_id']
+    message_antispam = lanying_config.get_message_antispam(app_id)
+    msg_config['antispam_prompt'] = message_antispam
+    now = time.time()
+    message = {
+        'msg_id': int(now * 1000000),
+        'timestamp': int(now * 1000),
+        'type': reply_msg_type,
+        'ctype': 'AUDIO',
+        'from_xid': {'uid': int(reply_from)},
+        'to_xid': {'uid': int(reply_to)},
+        'content': content,
+        'ext': json.dumps(ext, ensure_ascii=False),
+        'config': json.dumps(msg_config, ensure_ascii=False),
+        'attachment': json.dumps(attachment, ensure_ascii=False)
     }
     config['sync_mode_messages'].append(message)
 
