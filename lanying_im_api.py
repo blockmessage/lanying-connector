@@ -192,6 +192,8 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
     ext = extra.get('ext', {})
     attachment = extra.get('attachment', {})
     msg_config = extra.get('msg_config', {})
+    online_only = extra.get('online_only', False)
+    related_mid = extra.get('related_mid', 0)
     adminToken = config['lanying_admin_token']
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     message_antispam = lanying_config.get_message_antispam(app_id)
@@ -214,7 +216,9 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
                                           'content': content,
                                           'attachment': json.dumps(attachment, ensure_ascii=False) if attachment else '',
                                           'config': json.dumps(msg_config, ensure_ascii=False),
-                                          'ext': json.dumps(ext, ensure_ascii=False) if ext else ''})
+                                          'ext': json.dumps(ext, ensure_ascii=False) if ext else '',
+                                          'online_only': online_only,
+                                          'related_mid': related_mid})
         logging.info(sendResponse)
         try:
             res = sendResponse.json()

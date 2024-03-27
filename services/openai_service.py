@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import uuid
 from pydub import AudioSegment
 import math
+from lanying_async import executor
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -2923,11 +2924,12 @@ def maybe_transcription_audio_msg(config, msg):
             logging.info(f"transcription_audio_msg result: {res}")
             if res['result'] == 'ok':
                 res = speech_to_text(config, audio_filename)
-                logging.info("")
+                logging.info(f"speech_to_text | result: {res}")
                 if res['result'] == 'ok':
                     audio_text = res['data']['text']
                     logging.info(f"mark audio msg text: msg:{msg}, audio_text:{audio_text}")
                     msg['content'] = audio_text
+                    executor.submit(add_audio_msg_text, config, msg)
 
 def speech_to_text(config, audio_filename):
     try:
@@ -2948,6 +2950,25 @@ def speech_to_text(config, audio_filename):
     except Exception as e:
         logging.exception(e)
         return {'result': 'error', 'message': 'exception'}
+
+def add_audio_msg_text(config, msg):
+    app_id = msg['appId']
+    from_user_id = str(msg['from']['uid'])
+    to_user_id = str(msg['to']['uid'])
+    msg_type = msg['type']
+    msg_id = msg['msgId']
+    content_type = 12
+    content = msg.get('content', '')
+    extra = {
+        'ext': lanying_utils.safe_json_loads(msg.get("ext", '')),
+        'attachment': lanying_utils.safe_json_loads(msg.get("attachment", '')),
+        'config': lanying_utils.safe_json_loads(msg.get("config", '')),
+        'related_mid': msg_id
+    }
+    if msg_type == 'CHAT':
+        return lanying_im_api.send_message_async(config, app_id, from_user_id, to_user_id, 1, content_type, content, extra)
+    else:
+        return lanying_im_api.send_message_async(config, app_id, from_user_id, to_user_id, 2, content_type, content, extra)
 
 def text_to_speech(config, content, audio_filename):
     url = global_lanying_connector_server + '/v1/audio/speech'
