@@ -132,7 +132,9 @@ def model_configs():
             "model": 'whisper-1',
             "type": "speech_to_text",
             "is_prefix": False,
-            "quota": 0.1,
+            "quota": 1,
+            "quota_count_type": "audio_duration_second",
+            "quota_count_value": 10,
             "token_limit": 16000,
             'order': 10,
             'hidden': True
@@ -141,7 +143,9 @@ def model_configs():
             "model": 'tts-1',
             "type": "text_to_speech",
             "is_prefix": False,
-            "quota": 15,
+            "quota": 1.5,
+            "quota_count_type": "chat_count",
+            "quota_count_value": 100,
             "token_limit": 16000,
             'order': 10,
             'hidden': True
@@ -150,7 +154,9 @@ def model_configs():
             "model": 'tts-1-hd',
             "type": "text_to_speech",
             "is_prefix": False,
-            "quota": 30,
+            "quota": 3,
+            "quota_count_type": "chat_count",
+            "quota_count_value": 100,
             "token_limit": 16000,
             'order': 10,
             'hidden': True

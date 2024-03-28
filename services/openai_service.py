@@ -1930,7 +1930,8 @@ def check_image_quota(model_config, preset):
 def check_text_to_speech_quota(model_config, preset):
     input = preset.get('input', '')
     byte_size = text_byte_size(input)
-    count = round(byte_size / 1024)
+    quota_count_value = model_config['quota_count_value']
+    count = math.ceil(byte_size / quota_count_value)
     if  count < 1:
         count = 1
     quota = model_config['quota'] * count
@@ -1959,7 +1960,11 @@ def check_speech_to_text_quota(model_config, preset, request):
         'path': audio_file_path,
         'mimetype': file.mimetype
     }
-    quota = model_config['quota'] * duration
+    quota_count_value = model_config['quota_count_value']
+    count = math.ceil(duration / quota_count_value)
+    if  count < 1:
+        count = 1
+    quota = model_config['quota'] * count
     logging.info(f"check_speech_to_text_quota | audio_file_path:{audio_file_path}, duration_ms:{duration_ms}, duration: {duration}, quota:{quota}")
     return {'result':'ok', 'quota': quota, 'duration_ms': duration_ms, 'duration': duration, 'file_info': file_info}
 
