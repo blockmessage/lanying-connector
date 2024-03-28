@@ -441,7 +441,7 @@ def init_chatbot_config(config, msg):
             for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max",
                         "message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id",
                         "quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode",
-                        "image_generator", "image_generator_model", "audio", "audio_to_text_model", "text_to_audio_model"]:
+                        "image_generator", "image_generator_model", "audio", "audio_to_text_model", "text_to_audio_model", "text_to_audio_voice"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
         else:
@@ -2984,9 +2984,9 @@ def text_to_speech(config, content, audio_filename):
     data = {
         'model': config['text_to_audio_model'],
         'input': content,
-        'voice': 'alloy',
+        'voice': config['text_to_audio_voice']
     }
-
+    logging.info(f"text_to_speech | data={data}")
     response = requests.post(url, headers=headers, json=data)
 
     if response.status_code == 200:
@@ -3343,11 +3343,12 @@ def create_chatbot():
     audio = str(data.get('audio', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     text_to_audio_model = str(data.get('text_to_audio_model', 'tts-1'))
+    text_to_audio_voice = str(data.get('text_to_audio_voice', 'alloy'))
     result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link,
                                             preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                             message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                                             quota_exceed_reply_msg, group_history_use_mode,
-                                            image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model)
+                                            image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -3384,11 +3385,12 @@ def configure_chatbot():
     audio = str(data.get('audio', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     text_to_audio_model = str(data.get('text_to_audio_model', 'tts-1'))
+    text_to_audio_voice = str(data.get('text_to_audio_voice', 'alloy'))
     result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
                                                quota_exceed_reply_msg, group_history_use_mode,
-                                               image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model)
+                                               image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
