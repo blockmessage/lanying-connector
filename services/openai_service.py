@@ -438,7 +438,10 @@ def init_chatbot_config(config, msg):
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
             config['chatbot'] = chatbot
-            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id","quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode", "image_generator", "audio"]:
+            for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max",
+                        "message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id",
+                        "quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode",
+                        "image_generator", "image_generator_model", "audio", "audio_to_text_model", "text_to_audio_model"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
         else:
@@ -1390,7 +1393,7 @@ def handle_system_function(config, function_name, function_args):
             "Authorization": f"Bearer {config['access_token']}"
         }
         body = {
-            "model": "dall-e-3",
+            "model": config['image_generator_model'],
             "prompt": prompt,
             "n": 1,
             "size": "1024x1024"
@@ -2902,9 +2905,7 @@ def maybe_add_history(config, msg):
 def is_chatbot_audio_on(config):
     if 'chatbot' in config:
         chatbot = config['chatbot']
-        # if chatbot['audio'] == 'on':
-        #     return True
-        if chatbot.get('preset',{}).get('ext',{}).get('audio', False) == True:
+        if chatbot['audio'] == 'on':
             return True
     return False
 
@@ -2937,7 +2938,7 @@ def speech_to_text(config, audio_filename):
             "Authorization": f"Bearer {config['access_token']}"
         }
         data = {
-            "model": "whisper-1",
+            "model": config['audio_to_text_model'],
             "response_format": "verbose_json"
         }
         files = {'file': ('audio.mp3', open(audio_filename, 'rb'))}
@@ -2976,7 +2977,7 @@ def text_to_speech(config, content, audio_filename):
         "Authorization": f"Bearer {config['access_token']}"
     }
     data = {
-        'model': 'tts-1',
+        'model': config['text_to_audio_model'],
         'input': content,
         'voice': 'alloy',
     }
@@ -3332,7 +3333,16 @@ def create_chatbot():
     quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
     quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
     group_history_use_mode = str(data.get('group_history_use_mode', 'all'))
-    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode)
+    image_generator = str(data.get('image_generator', 'off'))
+    image_generator_model = str(data.get('image_generator_model', 'dall-e-3'))
+    audio = str(data.get('audio', 'off'))
+    audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
+    text_to_audio_model = str(data.get('text_to_audio_model', 'tts-1'))
+    result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link,
+                                            preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
+                                            message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
+                                            quota_exceed_reply_msg, group_history_use_mode,
+                                            image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -3364,7 +3374,16 @@ def configure_chatbot():
     quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
     quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
     group_history_use_mode = str(data.get('group_history_use_mode', 'all'))
-    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link, preset, history_msg_count_max, history_msg_count_min, history_msg_size_max, message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode)
+    image_generator = str(data.get('image_generator', 'off'))
+    image_generator_model = str(data.get('image_generator_model', 'dall-e-3'))
+    audio = str(data.get('audio', 'off'))
+    audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
+    text_to_audio_model = str(data.get('text_to_audio_model', 'tts-1'))
+    result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
+                                               preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
+                                               message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
+                                               quota_exceed_reply_msg, group_history_use_mode,
+                                               image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -4126,8 +4145,7 @@ def add_sync_mode_image_message(config, reply_msg_type, reply_from, reply_to, co
 
 def get_system_functions(config, presetExt):
     functions = []
-    #if config['image_generator'] == 'on':
-    if presetExt.get('image_generator', False) == True:
+    if config['image_generator'] == 'on':
         image_generator_function = {
             "name": "system_create_image",
             "description": "根据提示创建一幅图像。当给出一个纯文本提示以生成图像时，创建一个可用于 dalle 的提示。请遵循以下政策：\n1. 如果用户请求多幅图像，请只返回用户 1 幅图像。",
