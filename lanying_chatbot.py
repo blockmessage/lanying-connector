@@ -502,7 +502,7 @@ def get_chatbot(app_id, chatbot_id):
         if 'image_generator_model' not in dto:
             dto['image_generator_model'] = 'dall-e-3'
         if 'audio' not in dto:
-            dto['audio'] = 'on'
+            dto['audio'] = 'off'
         if 'audio_to_text_model' not in dto:
             dto['audio_to_text_model'] = 'whisper-1'
         if 'text_to_audio_model' not in dto:
