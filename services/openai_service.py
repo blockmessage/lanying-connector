@@ -3963,8 +3963,10 @@ def replyAudioMessageAsync(config, content, ext = {}):
         except Exception as e:
             logging.exception(e)
         duration = round(duration_ms / 1000)
+        file_size = os.path.getsize(audio_filename)
         attachment = {
             'dName': 'voice',
+            "fLen": file_size,
             'duration': duration
         }
         upload_res = lanying_im_api.upload_chat_file(app_id, reply_from, 'mp3', 'audio/mpeg', file_type, to_type, reply_to, audio_filename)
@@ -3999,7 +4001,13 @@ def replyMessageImageAsync(config, url, ext = {}):
             to_type = 1
         else:
             to_type = 2
-        attachment = {'dName':'image.png', 'url': url}
+        attachment = {
+            'dName':'image.png',
+            'url': url,
+            "fLen":0,
+            "width":0,
+            "height":0
+        }
         content = ''
         if 'ai' in ext:
             ext['ai']['request_msg_id'] = request_msg_id
@@ -4008,6 +4016,7 @@ def replyMessageImageAsync(config, url, ext = {}):
             if upload_res['result'] == 'ok':
                 download_url = upload_res['url']
                 attachment['url'] = download_url
+                attachment['fLen'] = upload_res['file_size']
             add_sync_mode_image_message(config, reply_msg_type, reply_from, reply_to, content, attachment, ext)
             return
         extra = {

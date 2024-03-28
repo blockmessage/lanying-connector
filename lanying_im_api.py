@@ -6,6 +6,7 @@ import lanying_file_storage
 import json
 from lanying_async import executor
 import uuid
+import os
 
 def get_user_profile(app_id, user_id):
     config = lanying_config.get_lanying_connector(app_id)
@@ -131,6 +132,7 @@ def download_url_and_upload_to_im(app_id, user_id, url, file_suffix, file_type, 
     temp_filename = f"/tmp/{app_id}_{user_id}_{int(time.time())}_{uuid.uuid4()}.{file_suffix}"
     download_result = lanying_file_storage.download_file_url(url, {}, temp_filename)
     if download_result['result'] == 'ok':
+        file_size = os.path.getsize(temp_filename)
         upload_info = get_user_file_upload_url(app_id, user_id, file_type, to_type, to_id)
         if upload_info and upload_info['code'] == 200:
             upload_info_data = upload_info.get('data', {})
@@ -150,7 +152,7 @@ def download_url_and_upload_to_im(app_id, user_id, url, file_suffix, file_type, 
             response = requests.post(upload_url, headers={}, files=files, data=data)
             logging.info(f"upload to oss result | app_id:{app_id}, user_id:{user_id}, response.status_code:{response.status_code}, response_text:{response.text}")
             if response.status_code == 200:
-                return {'result': 'ok', 'url': download_url}
+                return {'result': 'ok', 'url': download_url, "file_size": file_size}
             else:
                 return {'result': 'error', 'message': 'fail to upload'}
         else:
@@ -203,6 +205,7 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
         logging.info(f"send_message_sync download url upload_res:{upload_res}")
         if upload_res['result'] == 'ok':
             download_url = upload_res['url']
+            attachment['fLen'] = upload_res['file_size']
             attachment['url'] = download_url
     if adminToken:
         msg_config['antispam_prompt'] = message_antispam
