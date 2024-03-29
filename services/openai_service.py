@@ -441,7 +441,7 @@ def init_chatbot_config(config, msg):
             for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max",
                         "message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id",
                         "quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode",
-                        "image_generator", "image_generator_model", "audio", "audio_to_text_model", "text_to_audio_model", "text_to_audio_voice"]:
+                        "audio_to_text", "image_vision", "audio_to_text_model"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
         else:
@@ -2953,10 +2953,10 @@ def maybe_add_history(config, msg):
             history['mention_list'] = mention_list
             addHistory(redis, historyListKey, history)
 
-def is_chatbot_audio_on(config):
+def is_chatbot_audio_to_text_on(config):
     if 'chatbot' in config:
         chatbot = config['chatbot']
-        if chatbot['audio'] == 'on':
+        if chatbot['audio_to_text'] == 'on':
             return True
     return False
 
@@ -2965,7 +2965,7 @@ def maybe_transcription_audio_msg(config, msg):
     ctype = msg.get('ctype')
     from_user_id = str(msg['from']['uid'])
     content = msg.get('content', '')
-    if ctype == 'AUDIO' and content == '' and is_chatbot_audio_on(config):
+    if ctype == 'AUDIO' and content == '' and is_chatbot_audio_to_text_on(config):
         attachment = lanying_utils.safe_json_loads(msg.get('attachment',''))
         url = attachment.get('url', '')
         if len(url) > 0:
@@ -3051,13 +3051,13 @@ def need_add_history(config, msg):
         app_id = msg['appId']
         ctype = msg.get('ctype')
         allow_ctypes = ['TEXT']
-        content = msg.get('content', '')
-        if content == '':
-            return False
-        if is_chatbot_audio_on(config):
+        if is_chatbot_audio_to_text_on(config):
             allow_ctypes.append('AUDIO')
         if ctype not in allow_ctypes:
             logging.info(f"need_add_history skip for ctype not in{allow_ctypes}")
+            return False
+        content = msg.get('content', '')
+        if content == '':
             return False
         if type == 'CHAT':
             is_chatbot = is_chatbot_user_id(app_id, fromUserId, config)
@@ -3384,17 +3384,14 @@ def create_chatbot():
     quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
     quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
     group_history_use_mode = str(data.get('group_history_use_mode', 'all'))
-    image_generator = str(data.get('image_generator', 'off'))
-    image_generator_model = str(data.get('image_generator_model', 'dall-e-3'))
-    audio = str(data.get('audio', 'off'))
+    image_vision = str(data.get('image_vision', 'off'))
+    audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
-    text_to_audio_model = str(data.get('text_to_audio_model', 'tts-1'))
-    text_to_audio_voice = str(data.get('text_to_audio_voice', 'alloy'))
     result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link,
                                             preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                             message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                                             quota_exceed_reply_msg, group_history_use_mode,
-                                            image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice)
+                                            audio_to_text, image_vision, audio_to_text_model)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -3426,17 +3423,14 @@ def configure_chatbot():
     quota_exceed_reply_type = str(data.get('quota_exceed_reply_type', 'capsule'))
     quota_exceed_reply_msg = str(data.get('quota_exceed_reply_msg', ''))
     group_history_use_mode = str(data.get('group_history_use_mode', 'all'))
-    image_generator = str(data.get('image_generator', 'off'))
-    image_generator_model = str(data.get('image_generator_model', 'dall-e-3'))
-    audio = str(data.get('audio', 'off'))
+    image_vision = str(data.get('image_vision', 'off'))
+    audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
-    text_to_audio_model = str(data.get('text_to_audio_model', 'tts-1'))
-    text_to_audio_voice = str(data.get('text_to_audio_voice', 'alloy'))
     result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
                                                quota_exceed_reply_msg, group_history_use_mode,
-                                               image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice)
+                                               audio_to_text, image_vision, audio_to_text_model)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

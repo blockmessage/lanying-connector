@@ -11,7 +11,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
-                   image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice):
+                   audio_to_text, image_vision, audio_to_text_model):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -44,12 +44,9 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "quota_exceed_reply_type": quota_exceed_reply_type,
         "quota_exceed_reply_msg": quota_exceed_reply_msg,
         "group_history_use_mode": group_history_use_mode,
-        "image_generator": image_generator,
-        "image_generator_model": image_generator_model,
-        "audio": audio,
-        "audio_to_text_model": audio_to_text_model,
-        "text_to_audio_model": text_to_audio_model,
-        "text_to_audio_voice": text_to_audio_voice
+        "audio_to_text": audio_to_text,
+        "image_vision": image_vision,
+        "audio_to_text_model": audio_to_text_model
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -117,12 +114,9 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
         name = f"{name}_{timestr}"
     avatar = capsule_chatbot.get('avatar','')
     welcome_message = capsule_chatbot.get('welcome_message','')
-    image_generator = capsule_chatbot.get('image_generator','')
-    image_generator_model = capsule_chatbot.get('image_generator_model','')
-    audio = capsule_chatbot.get('audio','')
-    audio_to_text_model = capsule_chatbot.get('audio_to_text_model','')
-    text_to_audio_model = capsule_chatbot.get('text_to_audio_model','')
-    text_to_audio_voice = capsule_chatbot.get('text_to_audio_voice','')
+    audio_to_text = capsule_chatbot.get('audio_to_text','')
+    image_vision = capsule_chatbot.get('image_vision','')
+    audio_to_text_model = capsule_chatbot.get('audio_to_text_model', '')
     quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
     quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
     group_history_use_mode = capsule_chatbot.get('group_history_use_mode', 'all')
@@ -131,7 +125,7 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice)
+                                   audio_to_text, image_vision, audio_to_text_model)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -190,18 +184,15 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
     quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
     quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
     group_history_use_mode = capsule_chatbot.get('group_history_use_mode', 'all')
-    image_generator = capsule_chatbot.get('image_generator','')
-    image_generator_model = capsule_chatbot.get('image_generator_model','')
-    audio = capsule_chatbot.get('audio','')
-    audio_to_text_model = capsule_chatbot.get('audio_to_text_model','')
-    text_to_audio_model = capsule_chatbot.get('text_to_audio_model','')
-    text_to_audio_voice = capsule_chatbot.get('text_to_audio_voice','')
+    audio_to_text = capsule_chatbot.get('audio_to_text','')
+    image_vision = capsule_chatbot.get('image_vision','')
+    audio_to_text_model = capsule_chatbot.get('audio_to_text_model', '')
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link,
                                    capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'],
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice)
+                                   audio_to_text, image_vision, audio_to_text_model)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -238,7 +229,7 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
                       preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                       message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                       quota_exceed_reply_msg, group_history_use_mode,
-                      image_generator, image_generator_model, audio, audio_to_text_model, text_to_audio_model, text_to_audio_voice):
+                      audio_to_text, image_vision, audio_to_text_model):
     logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -269,12 +260,9 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         "quota_exceed_reply_type": quota_exceed_reply_type,
         "quota_exceed_reply_msg": quota_exceed_reply_msg,
         "group_history_use_mode": group_history_use_mode,
-        "image_generator": image_generator,
-        "image_generator_model": image_generator_model,
-        "audio": audio,
-        "audio_to_text_model": audio_to_text_model,
-        "text_to_audio_model": text_to_audio_model,
-        "text_to_audio_voice": text_to_audio_voice
+        "audio_to_text": audio_to_text,
+        "image_vision": image_vision,
+        "audio_to_text_model": audio_to_text_model
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -501,18 +489,12 @@ def get_chatbot(app_id, chatbot_id):
             dto['wechat_chatbot_id'] = ''
         if 'group_history_use_mode' not in dto:
             dto['group_history_use_mode'] = 'all'
-        if 'image_generator' not in dto:
-            dto['image_generator'] = 'off'
-        if 'image_generator_model' not in dto:
-            dto['image_generator_model'] = 'dall-e-3'
-        if 'audio' not in dto:
-            dto['audio'] = 'off'
+        if 'image_vision' not in dto:
+            dto['image_vision'] = 'off'
+        if 'audio_to_text' not in dto:
+            dto['audio_to_text'] = 'off'
         if 'audio_to_text_model' not in dto:
             dto['audio_to_text_model'] = 'whisper-1'
-        if 'text_to_audio_model' not in dto:
-            dto['text_to_audio_model'] = 'tts-1'
-        if 'text_to_audio_voice' not in dto:
-            dto['text_to_audio_voice'] = 'alloy'
         return dto
     return None
 
