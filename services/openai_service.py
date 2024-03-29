@@ -1082,7 +1082,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     function_call_debug['name'] = function_names[function_name_debug]
             if is_debug:
                 replyMessageAsync(config, f"[LanyingConnector DEBUG] 触发函数：{function_call_debug}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
-            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages)
+            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages, reply_ext)
             function_call_times -= 1
         else:
             break
@@ -1254,10 +1254,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 replyMessageAsync(config, reply, reply_ext)
             else:
                 reply_ext['ai']['stream'] = False
-                if ctype == 'AUDIO':
-                    replyAudioMessageAsync(config, reply, reply_ext)
-                else:
-                    replyMessageAsync(config, reply, reply_ext)
+                replyMessageAsync(config, reply, reply_ext)
     return ''
 
 def is_link_need_ignore(link):
@@ -1265,7 +1262,7 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages):
+def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages, reply_ext):
     function_name = function_call.get('name')
     function_args = json.loads(function_call.get('arguments', '{}'))
     functions = preset.get('functions', [])
@@ -1278,6 +1275,9 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
     system_envs = {
         'admin_token': {
             'value': config.get('lanying_admin_token','')
+        },
+        'api_key': {
+            'value': f"Bearer {config.get('access_token','')}"
         },
         'app_id': {
             'value': app_id
@@ -1297,6 +1297,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
             body = fill_function_args(function_args, lanying_function_call.get('body', {}))
             auth = lanying_function_call.get('auth', {})
+            response_handle_types = lanying_function_call.get('response_handle_types', [])
             if lanying_utils.is_valid_public_url(url):
                 auth_type = auth.get('type', 'none')
                 logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, auth_type:{auth_type}, url:{url}, params:{params}, headers: {headers}, body: {body}")
@@ -1323,6 +1324,12 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                 else:
                     function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (20.0, 40.0))
                 function_content = function_response.text
+                if 'send_image_to_client' in response_handle_types:
+                    result = send_image_to_client(config, reply_ext, function_response)
+                    function_content = json.dumps(result, ensure_ascii=False)
+                elif 'send_audio_to_client' in response_handle_types:
+                    result = send_audio_to_client(config, reply_ext, function_response, function_args)
+                    function_content = json.dumps(result, ensure_ascii=False)
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
                 if is_debug:
                     replyMessageAsync(config, f"[LanyingConnector DEBUG] 函数调用结果：{function_content}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
@@ -1336,13 +1343,22 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     "content": "",
                     "function_call": function_call
                 }
-                append_message(preset, model_config, response_message)
-                append_message(preset, model_config, function_message)
-                function_messages.append(response_message)
-                function_messages.append(function_message)
-                response = lanying_vendor.chat(vendor, prepare_info, preset)
-                logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
-                return response
+                if 'send_audio_to_client' in response_handle_types:
+                    function_messages.append(response_message)
+                    response = {
+                        'result': 'ok',
+                        'reply': ''
+                    }
+                    logging.info(f"send_audio_to_client is set, so skip ai reply message")
+                    return response
+                else:
+                    append_message(preset, model_config, response_message)
+                    append_message(preset, model_config, function_message)
+                    function_messages.append(response_message)
+                    function_messages.append(function_message)
+                    response = lanying_vendor.chat(vendor, prepare_info, preset)
+                    logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+                    return response
         elif function_call_type == 'system':
             logging.info(f"handle system function call:{function_call}")
             function_response = handle_system_function(config, function_name, function_args)
@@ -1384,37 +1400,65 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         return response
     raise Exception('bad_preset_function')
 
-def handle_system_function(config, function_name, function_args):
-    if function_name == 'system_create_image':
-        prompt = function_args.get('prompt', '')
-        url = global_lanying_connector_server + '/v1/images/generations'
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {config['access_token']}"
+def send_image_to_client(config, reply_ext, response):
+    try:
+        response_json = response.json()
+        image_url = response_json['data'][0]['url']
+        replyMessageImageAsync(config, image_url, reply_ext)
+        return {
+            'result': 'success'
         }
-        body = {
-            "model": config['image_generator_model'],
-            "prompt": prompt,
-            "n": 1,
-            "size": "1024x1024"
+    except Exception as e:
+        return {
+            'result': 'error',
+            'message': 'exception'
         }
-        # body = {
-        #     "model": "dall-e-2",
-        #     "prompt": prompt,
-        #     "n": 1,
-        #     "size": "256x256"
-        # }
-        response = requests.post(url, headers=headers, json = body, timeout = (20.0, 40.0))
-        try:
-            response_json = response.json()
-            image_url = response_json['data'][0]['url']
-            ext = {'ai':{'role': 'ai'}}
-            replyMessageImageAsync(config, image_url, ext)
+
+def send_audio_to_client(config, reply_ext, response, function_args):
+    try:
+        content = function_args.get("input", '')
+        audio_filename = f"/tmp/audio_{int(time.time())}_{uuid.uuid4()}.mp3"
+        if response.status_code == 200:
+            with open(audio_filename, 'wb') as f:
+                f.write(response.content)
+            replyAudioMessageAsync(config, content, audio_filename, reply_ext)
+            return {'result':'success'}
+        else:
             return {
-                'result': 'success'
+                'result': 'error',
+                'message': 'fail to transform text to speech'
             }
-        except Exception as e:
-            pass
+    except Exception as e:
+        return {
+            'result': 'error',
+            'message': 'exception'
+        }
+
+def handle_system_function(config, function_name, function_args):
+    # if function_name == 'system_create_image':
+    #     prompt = function_args.get('prompt', '')
+    #     url = global_lanying_connector_server + '/v1/images/generations'
+    #     headers = {
+    #         "Content-Type": "application/json",
+    #         "Authorization": f"Bearer {config['access_token']}"
+    #     }
+    #     body = {
+    #         "model": config['image_generator_model'],
+    #         "prompt": prompt,
+    #         "n": 1,
+    #         "size": "1024x1024"
+    #     }
+    #     response = requests.post(url, headers=headers, json = body, timeout = (20.0, 40.0))
+    #     try:
+    #         response_json = response.json()
+    #         image_url = response_json['data'][0]['url']
+    #         ext = {'ai':{'role': 'ai'}}
+    #         replyMessageImageAsync(config, image_url, ext)
+    #         return {
+    #             'result': 'success'
+    #         }
+    #     except Exception as e:
+    #         pass
     return {'result': 'failed'}
 
 def is_lanying_send_msg_url(url):
@@ -1627,7 +1671,8 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
             if 'function_messages' in history:
                 for function_message in history['function_messages']:
                     nowHistoryList.append(function_message)
-            nowHistoryList.append(assistantMessage)
+            if len(assistantMessage['content']) > 0:
+                nowHistoryList.append(assistantMessage)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
@@ -1705,7 +1750,8 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
             if history['function_messages_owner'] == config['send_from']:
                 for function_message in history['function_messages']:
                     nowHistoryList.append(function_message)
-        nowHistoryList.append(now_message)
+        if len(now_message['content']) > 0:
+            nowHistoryList.append(now_message)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
@@ -3937,7 +3983,7 @@ def replyMessageAsync(config, content, ext = {}):
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
 
-def replyAudioMessageAsync(config, content, ext = {}):
+def replyAudioMessageAsync(config, content, audio_filename, ext = {}):
     add_ai_message_cnt(content)
     if 'reply_msg_type' in config:
         app_id = config['app_id']
@@ -3947,10 +3993,6 @@ def replyAudioMessageAsync(config, content, ext = {}):
         request_msg_id = config['request_msg_id']
         if 'ai' in ext:
             ext['ai']['request_msg_id'] = request_msg_id
-        audio_filename = f"/tmp/audio_{app_id}_{reply_from}_{int(time.time())}_{uuid.uuid4()}.mp3"
-        res = text_to_speech(config, content, audio_filename)
-        if res['result'] == 'error':
-            return replyMessageAsync(config, content, ext)
         file_type = 104
         if reply_msg_type == 'CHAT':
             to_type = 1
@@ -4161,26 +4203,26 @@ def add_sync_mode_image_message(config, reply_msg_type, reply_from, reply_to, co
 
 def get_system_functions(config, presetExt):
     functions = []
-    if config['image_generator'] == 'on':
-        image_generator_function = {
-            "name": "system_create_image",
-            "description": "根据提示创建一幅图像。当给出一个纯文本提示以生成图像时，创建一个可用于 dalle 的提示。请遵循以下政策：\n1. 如果用户请求多幅图像，请只返回用户 1 幅图像。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "图像的提示词，用于大模型 dalle 生成图像，此参数需使用英文，最大长度为 4000 个字符。"
-                    }
-                },
-                "required": [
-                    "prompt"
-                ]
-            },
-            "priority": 0,
-            "function_call":{
-                "type": "system"
-            }
-        }
-        functions.append(image_generator_function)
+    # if config['image_generator'] == 'on':
+    #     image_generator_function = {
+    #         "name": "system_create_image",
+    #         "description": "根据提示创建一幅图像。当给出一个纯文本提示以生成图像时，创建一个可用于 dalle 的提示。请遵循以下政策：\n1. 如果用户请求多幅图像，请只返回用户 1 幅图像。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "prompt": {
+    #                     "type": "string",
+    #                     "description": "图像的提示词，用于大模型 dalle 生成图像，此参数需使用英文，最大长度为 4000 个字符。"
+    #                 }
+    #             },
+    #             "required": [
+    #                 "prompt"
+    #             ]
+    #         },
+    #         "priority": 0,
+    #         "function_call":{
+    #             "type": "system"
+    #         }
+    #     }
+    #     functions.append(image_generator_function)
     return functions
