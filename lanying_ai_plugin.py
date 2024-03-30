@@ -726,7 +726,9 @@ def plugin_import_from_config(app_id, plugin_config):
             pass
     return {'result': 'ok', 'data':{'success':True}}
 
-def plugin_publish(app_id, plugin_id, name, description, order):
+def plugin_publish(app_id, plugin_id, type, name, description, order):
+    if type not in ["normal", "official"]:
+        return {'result':'error', 'message': 'type must be normal or official'}
     export_result = plugin_export(app_id, plugin_id)
     if export_result['result'] == 'error':
         return export_result
@@ -736,6 +738,7 @@ def plugin_publish(app_id, plugin_id, name, description, order):
     info_key = plugin_public_info_key(public_id)
     redis.hmset(info_key, {
         'public_id': public_id,
+        'type': type,
         'name': name,
         'description': description,
         'order': order,
@@ -745,7 +748,7 @@ def plugin_publish(app_id, plugin_id, name, description, order):
     redis.rpush(list_key, public_id)
     return {'result':'ok', 'data':{'success':True, 'public_id':public_id}}
 
-def list_public_plugins():
+def list_public_plugins(type):
     redis = lanying_redis.get_redis_connection()
     list_key = plugin_publish_id_list_key()
     public_ids = lanying_redis.redis_lrange(redis, list_key, 0, -1)
@@ -753,13 +756,16 @@ def list_public_plugins():
     for public_id in public_ids:
         public_plugin_info = get_public_plugin(public_id)
         if public_plugin_info:
-            plugin_info = {
-                'public_id': public_id,
-                'name': public_plugin_info['name'],
-                'description': public_plugin_info['description'],
-                'order': public_plugin_info['order']
-            }
-            plugin_infos.append(plugin_info)
+            now_type = public_plugin_info['type']
+            if type == 'all' or now_type == type:
+                plugin_info = {
+                    'public_id': public_id,
+                    'name': public_plugin_info['name'],
+                    'description': public_plugin_info['description'],
+                    'order': public_plugin_info['order'],
+                    'type': now_type
+                }
+                plugin_infos.append(plugin_info)
     return {'result':'ok', 'data':{'list':plugin_infos}}
 
 def get_public_plugin(public_id):
@@ -767,6 +773,8 @@ def get_public_plugin(public_id):
     info_key = plugin_public_info_key(public_id)
     info = lanying_redis.redis_hgetall(redis, info_key)
     if 'name' in info:
+        if type not in info:
+            info['type'] = 'normal'
         return info
     return None
 

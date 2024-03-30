@@ -1297,7 +1297,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
             body = fill_function_args(function_args, lanying_function_call.get('body', {}))
             auth = lanying_function_call.get('auth', {})
-            response_handle_types = lanying_function_call.get('response_handle_types', [])
+            response_rules = lanying_function_call.get('response_rules', [])
             if lanying_utils.is_valid_public_url(url):
                 auth_type = auth.get('type', 'none')
                 logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, auth_type:{auth_type}, url:{url}, params:{params}, headers: {headers}, body: {body}")
@@ -1324,10 +1324,10 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                 else:
                     function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (20.0, 40.0))
                 function_content = function_response.text
-                if 'send_image_to_client' in response_handle_types:
+                if 'send_image_to_client' in response_rules:
                     result = send_image_to_client(config, reply_ext, function_response)
                     function_content = json.dumps(result, ensure_ascii=False)
-                elif 'send_audio_to_client' in response_handle_types:
+                elif 'send_audio_to_client' in response_rules:
                     result = send_audio_to_client(config, reply_ext, function_response, function_args)
                     function_content = json.dumps(result, ensure_ascii=False)
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
@@ -1343,7 +1343,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     "content": "",
                     "function_call": function_call
                 }
-                if 'send_audio_to_client' in response_handle_types:
+                if 'send_audio_to_client' in response_rules:
                     function_messages.append(response_message)
                     response = {
                         'result': 'ok',
@@ -3353,7 +3353,8 @@ def list_public_plugins():
         return resp
     text = request.get_data(as_text=True)
     data = json.loads(text)
-    result = lanying_ai_plugin.list_public_plugins()
+    type = str(data.get('type', 'normal'))
+    result = lanying_ai_plugin.list_public_plugins(type)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
