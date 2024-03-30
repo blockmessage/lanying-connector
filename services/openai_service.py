@@ -1279,6 +1279,9 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         'api_key': {
             'value': f"Bearer {config.get('access_token','')}"
         },
+        'ai_api_key': {
+            'value': f"Bearer {config.get('access_token','')}"
+        },
         'app_id': {
             'value': app_id
         },
