@@ -461,7 +461,7 @@ def check_message_chatbot_id(config, msg):
         msg_config = lanying_utils.safe_json_loads(msg.get('config'))
         chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, from_user_id, msg_config)
         if chatbot_user_id:
-            return {'result': 'ok', 'chatbot_user_id': to_user_id}
+            return {'result': 'ok', 'chatbot_user_id': chatbot_user_id}
     return {'result': 'error', 'message': 'no chatbot'}
 
 def check_message_need_reply(config, msg):
