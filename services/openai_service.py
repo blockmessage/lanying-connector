@@ -3131,6 +3131,22 @@ def list_ai_plugins():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/openai/notify_ai_plugin_package_changed", methods=["POST"])
+def list_ai_plugins():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    product_id = int(data['product_id'])
+    result = handle_ai_plugin_package_changed(app_id, product_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/openai/list_ai_functions", methods=["POST"])
 def list_ai_functions():
     if not check_access_token_valid():
@@ -3888,6 +3904,17 @@ def plugin_import_by_public_id(app_id, public_id):
         return {'result':'error', 'message': 'plugin not exist'}
     plugin_config = json.loads(plugin_info['config'])
     return lanying_ai_plugin.plugin_import('file', app_id, plugin_config, 'public_id', public_id)
+
+def handle_ai_plugin_package_changed(app_id, product_id):
+    result = lanying_ai_plugin.list_ai_plugins(app_id)
+    if result['result'] == 'ok':
+        if len(result['data']['list']) == 0:
+            for public_id in ["11", "12"]:
+                plugin_info = lanying_ai_plugin.get_public_plugin(public_id)
+                if plugin_info:
+                    plugin_config = json.loads(plugin_info['config'])
+                    lanying_ai_plugin.plugin_import('file', app_id, plugin_config, 'public_id', public_id)
+    return {'result': 'ok'}
 
 def plugin_import_by_url(type, app_id, url):
     config = lanying_config.get_lanying_connector(app_id)
