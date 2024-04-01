@@ -65,7 +65,9 @@ def create_ai_plugin(app_id, plugin_name):
         "embedding_uuid": embedding_uuid,
         "doc_id": doc_id,
         "headers": "{}",
-        "endpoint":""
+        "endpoint":"",
+        "source": "create",
+        "source_detail":""
     })
     redis.rpush(get_ai_plugin_ids_key(app_id), plugin_id)
     return {'result':'ok', 'data':{'id':plugin_id}}
@@ -79,7 +81,7 @@ def list_ai_plugins(app_id):
         info = get_ai_plugin(app_id, plugin_id)
         if info:
             dto = {}
-            for key in ["name", "plugin_id", "create_time", "endpoint", "envs", "headers", "params", "auth"]:
+            for key in ["name", "plugin_id", "create_time", "endpoint", "envs", "headers", "params", "auth", "source", "source_detail"]:
                 if key in info:
                     if key in ["envs", "headers", "params", "auth"]:
                         dto[key] = json.loads(info[key])
@@ -87,6 +89,8 @@ def list_ai_plugins(app_id):
                         dto[key] = info[key]
                 elif key in ["envs", "headers", "params", "auth"]:
                     dto[key] = {}
+                elif key in ["source", "source_detail"]:
+                    dto[key] = ""
             result.append(dto)
     return {'result':'ok', 'data':{'list': result}}
 
@@ -256,6 +260,14 @@ def configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params
         'auth': json.dumps(auth, ensure_ascii=False),
         'endpoint': endpoint
     })
+    return {'result':'ok', 'data':{'success': True}}
+
+def update_ai_plugin_field(app_id, plugin_id, field, value):
+    ai_plugin_info = get_ai_plugin(app_id, plugin_id)
+    if not ai_plugin_info:
+        return {'result':'error', 'message': 'ai plugin not exist'}
+    redis = lanying_redis.get_redis_connection()
+    redis.hset(get_ai_plugin_key(app_id, plugin_id), field, value)
     return {'result':'ok', 'data':{'success': True}}
 
 def delete_ai_plugin(app_id, plugin_id):
@@ -677,23 +689,23 @@ def plugin_export(app_id, plugin_id):
     content = json.dumps(plugin_dto, ensure_ascii=False, indent=2)
     return {'result': 'ok', 'data':{'file':{'name':filename, 'content':content}}}
 
-def plugin_import(type, app_id, config):
+def plugin_import(type, app_id, config, source, source_detail):
     if type == 'file':
-        return plugin_import_from_config(app_id, config)
+        return plugin_import_from_config(app_id, config, source, source_detail)
     elif type == 'swagger':
-        return plugin_import_from_swagger(app_id, config)
+        return plugin_import_from_swagger(app_id, config, source, source_detail)
     return {'result':'error', 'messge':'bad import type'}
 
-def plugin_import_from_swagger(app_id, swagger_config):
+def plugin_import_from_swagger(app_id, swagger_config, source, source_detail):
     function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
     if function_num_limit <= 10:
         return {'result':"error", 'message': 'current package do not support swagger'}
     if 'swagger' not in swagger_config:
         return {'result': 'error', 'message': 'bad swagger file'}
     plugin_config = swagger_json_to_plugin(swagger_config)
-    return plugin_import_from_config(app_id, plugin_config)
+    return plugin_import_from_config(app_id, plugin_config, source, source_detail)
 
-def plugin_import_from_config(app_id, plugin_config):
+def plugin_import_from_config(app_id, plugin_config, source, source_detail):
     if plugin_config.get('type') != 'ai_plugin' or plugin_config.get('version') != 1:
         return {'result': 'error', 'message': 'bad ai plugin config format'}
     function_num_limit = lanying_config.get_lanying_connector_function_num_limit(app_id)
@@ -712,6 +724,8 @@ def plugin_import_from_config(app_id, plugin_config):
     plugin_params = plugin_config.get('params', {})
     plugin_auth = plugin_config.get('auth', {})
     configure_ai_plugin(app_id, plugin_id, plugin_name, endpoint, plugin_headers, plugin_envs, plugin_params, plugin_auth)
+    update_ai_plugin_field(app_id, plugin_id, "source", source)
+    update_ai_plugin_field(app_id, plugin_id, "source_detail", source_detail)
     for function_info in plugin_config.get('functions', []):
         try:
             function_name = function_info['name']
@@ -773,7 +787,7 @@ def get_public_plugin(public_id):
     info_key = plugin_public_info_key(public_id)
     info = lanying_redis.redis_hgetall(redis, info_key)
     if 'name' in info:
-        if type not in info:
+        if 'type' not in info:
             info['type'] = 'normal'
         return info
     return None

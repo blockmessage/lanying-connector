@@ -3887,7 +3887,7 @@ def plugin_import_by_public_id(app_id, public_id):
     if not plugin_info:
         return {'result':'error', 'message': 'plugin not exist'}
     plugin_config = json.loads(plugin_info['config'])
-    return lanying_ai_plugin.plugin_import('file', app_id, plugin_config)
+    return lanying_ai_plugin.plugin_import('file', app_id, plugin_config, 'public_id', public_id)
 
 def plugin_import_by_url(type, app_id, url):
     config = lanying_config.get_lanying_connector(app_id)
@@ -3903,7 +3903,7 @@ def plugin_import_by_url(type, app_id, url):
     with open(filename, 'r', encoding='utf-8') as f:
         content = f.read()
         plugin_config = json.loads(content)
-        return lanying_ai_plugin.plugin_import(type, app_id, plugin_config)
+        return lanying_ai_plugin.plugin_import(type, app_id, plugin_config, 'url', '')
     
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
