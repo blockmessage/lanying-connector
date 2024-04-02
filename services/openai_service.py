@@ -3132,7 +3132,7 @@ def list_ai_plugins():
     return resp
 
 @bp.route("/service/openai/notify_ai_plugin_package_changed", methods=["POST"])
-def list_ai_plugins():
+def notify_ai_plugin_package_changed():
     if not check_access_token_valid():
         resp = make_response({'code':401, 'message':'bad authorization'})
         return resp
@@ -3914,7 +3914,7 @@ def handle_ai_plugin_package_changed(app_id, product_id):
                 if plugin_info:
                     plugin_config = json.loads(plugin_info['config'])
                     lanying_ai_plugin.plugin_import('file', app_id, plugin_config, 'public_id', public_id)
-    return {'result': 'ok'}
+    return {'result': 'ok', 'data':{'success': True}}
 
 def plugin_import_by_url(type, app_id, url):
     config = lanying_config.get_lanying_connector(app_id)
