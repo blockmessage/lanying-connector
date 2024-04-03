@@ -19,6 +19,8 @@ import lanying_utils
 import re
 import lanying_user_router
 import xml.etree.ElementTree as ET
+import uuid
+import lanying_audio
 
 wechat_max_message_size = 3900
 service = 'wechat'
@@ -31,6 +33,14 @@ def service_post_messages(token):
     message = json.loads(text)
     if token == wechat_chatbot_message_token:
         logging.info(f"receive wechat message:{message}")
+        executor.submit(handle_service_post_messages, message)
+    else:
+        logging.info(f"receive invalid wechat message:{message}")
+    resp = make_response({'code':200, 'data':{'success': True}})
+    return resp
+
+def handle_service_post_messages(message):
+    try:
         wc_id = message.get('wcId', '')
         account = message.get('account', '')
         message_type = message.get('messageType', '')
@@ -46,34 +56,40 @@ def service_post_messages(token):
             handle_wechat_group_notify(wc_id, account, data)
         elif message_type == '30000':
             handle_wechat_offline(wc_id, account, data)
-    else:
-        logging.info(f"receive invalid wechat message:{message}")
-    resp = make_response({'code':200, 'data':{'success': True}})
-    return resp
+    except Exception as e:
+        logging.exception(e)
 
 def parse_wechat_message(message_type, data):
     try:
         content = data.get('content','')
         if message_type == '60001':
-            return {'result':'ok', 'type': 'CHAT', 'content': content}
+            return {'result':'ok', 'type': 'CHAT', 'content_type': 'TEXT', 'content': content}
+        elif message_type == '60002':
+            return {'result':'ok', 'type': 'CHAT', 'content_type': 'IMAGE', 'content': content}
+        elif message_type == '60004':
+            return {'result':'ok', 'type': 'CHAT', 'content_type': 'AUDIO', 'content': content}
         elif message_type == '80001':
-            return {'result': 'ok', 'type': 'GROUPCHAT', 'content': content}
+            return {'result': 'ok', 'type': 'GROUPCHAT', 'content_type': 'TEXT', 'content': content}
+        elif message_type == '80002':
+            return {'result':'ok', 'type': 'GROUPCHAT', 'content_type': 'IMAGE', 'content': content}
+        elif message_type == '80004':
+            return {'result':'ok', 'type': 'GROUPCHAT', 'content_type': 'AUDIO', 'content': content}
         elif message_type == '60007': # 私聊链接消息
             new_content = parse_wechat_content(content)
             if new_content is not None:
-                return {'result':'ok', 'type': 'CHAT', 'content': new_content}
+                return {'result':'ok', 'type': 'CHAT', 'content_type': 'TEXT', 'content': new_content}
         elif message_type == '60014': # 私聊引用消息
             new_content = parse_wechat_content(content)
             if new_content is not None:
-                return {'result':'ok', 'type': 'CHAT', 'content': new_content}
+                return {'result':'ok', 'type': 'CHAT', 'content_type': 'TEXT', 'content': new_content}
         elif message_type == '80007': # 群聊链接消息
             new_content = parse_wechat_content(content)
             if new_content is not None:
-                return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content}
+                return {'result':'ok', 'type': 'GROUPCHAT', 'content_type': 'TEXT', 'content': new_content}
         elif message_type == '80014': # 群聊引用消息
             new_content = parse_wechat_content(content)
             if new_content is not None:
-                return {'result':'ok', 'type': 'GROUPCHAT', 'content': new_content}
+                return {'result':'ok', 'type': 'GROUPCHAT', 'content_type': 'TEXT', 'content': new_content}
     except Exception as e:
         logging.info(f"fail to parse_wechat_message | message_type:{message_type}, data:{data}")
     return {'result': 'ignore'}
@@ -250,6 +266,7 @@ def configure_wechat_chatbot():
 def handle_wechat_chat_message(wc_id, account, data, parse_res):
     redis = lanying_redis.get_redis_connection()
     content = parse_res['content']
+    content_type = parse_res['content_type']
     from_user = data['fromUser']
     msg_id = data['msgId']
     new_msg_id = data['newMsgId']
@@ -283,7 +300,7 @@ def handle_wechat_chat_message(wc_id, account, data, parse_res):
         if router_res['result'] == 'ok':
             msg_ext = {'ai':{'role':'user', 'channel':'wechat'}}
             if router_res['msg_type'] == 'CHAT':
-                lanying_message.send_message_async(config, app_id, router_res['from'], router_res['to'],content, msg_ext)
+                transform_wechat_msg_to_im_chat_msg(config, app_id, data, router_res, parse_res, msg_ext)
             else:
                 logging.info(f"handle_wechat_chat_message receive groupchat | router_res:{router_res}")
     else:
@@ -292,6 +309,7 @@ def handle_wechat_chat_message(wc_id, account, data, parse_res):
 def handle_wechat_group_message(wc_id, account, data, parse_res):
     redis = lanying_redis.get_redis_connection()
     content = parse_res['content']
+    content_type = parse_res['content_type']
     from_user = data['fromUser']
     from_group = data['fromGroup']
     msg_id = data['msgId']
@@ -336,11 +354,109 @@ def handle_wechat_group_message(wc_id, account, data, parse_res):
         if router_res['result'] == 'ok':
             msg_ext = {'ai':{'role':'user', 'channel':'wechat'}}
             if router_res['msg_type'] == 'CHAT':
-                lanying_message.send_message_async(config, app_id, router_res['from'], router_res['to'], content, msg_ext)
+                transform_wechat_msg_to_im_chat_msg(config, app_id, data, router_res, parse_res, msg_ext)
             elif router_res['msg_type'] == 'GROUPCHAT':
-                lanying_message.send_group_message_async(config, app_id, router_res['from'], router_res['to'], content, msg_ext, msg_config)
+                transform_wechat_msg_to_im_groupchat_msg(config, app_id, data, router_res, parse_res, msg_ext, msg_config)
     else:
         logging.info(f"handle_wechat_group_message user_id not found: {from_user_id}")
+
+def transform_wechat_msg_to_im_chat_msg(config, app_id, wechat_msg_data, router_res, parse_res, msg_ext):
+    content = parse_res['content']
+    content_type = parse_res['content_type']
+    if content_type == 'TEXT':
+        lanying_message.send_message_async(config, app_id, router_res['from'], router_res['to'], content, msg_ext)
+    elif content_type == 'IMAGE':
+        result = download_wechat_image(config, app_id, wechat_msg_data)
+        if result['result'] == 'ok':
+            image_url = result['url']
+            attachment = {
+                'dName':'image.png',
+                'url': image_url,
+                "fLen":0,
+                "width":0,
+                "height":0
+            }
+            file_type = 102
+            to_type = 1
+            extra = {
+                'attachment': attachment,
+                'ext': msg_ext,
+                'download_args': [app_id, router_res['from'], image_url, 'png', file_type, to_type, router_res['to']]
+            }
+            lanying_im_api.send_message_async(config, app_id, router_res['from'], router_res['to'], 1, 1, '', extra)
+    elif content_type == 'AUDIO':
+        result = download_wechat_audio(config, app_id, wechat_msg_data)
+        if result['result'] == 'ok':
+            audio_url = result['url']
+            silk_audio_filename = f"/tmp/audio_{int(time.time())}_{uuid.uuid4()}.silk"
+            lanying_im_api.download_url(config, app_id, router_res['from'], audio_url, silk_audio_filename)
+            mp3_audio_filename = f"/tmp/audio_{int(time.time())}_{uuid.uuid4()}.mp3"
+            lanying_audio.silk_to_mp3(silk_audio_filename, mp3_audio_filename)
+            attachment = {
+                'dName':'voice',
+                "fLen": os.path.getsize(mp3_audio_filename),
+                "duration": lanying_audio.get_duration(mp3_audio_filename)
+            }
+            file_type = 104
+            to_type = 1
+            result = lanying_im_api.upload_chat_file(app_id, router_res['from'], "mp3", 'audio/mpeg', file_type, to_type, router_res['to'], mp3_audio_filename)
+            if result['result'] == 'ok':
+                attachment['url'] = result['url']
+            extra = {
+                'attachment': attachment,
+                'ext': msg_ext
+            }
+            lanying_im_api.send_message_async(config, app_id, router_res['from'], router_res['to'], 1, 2, '', extra)
+
+def transform_wechat_msg_to_im_groupchat_msg(config, app_id, wechat_msg_data, router_res, parse_res, msg_ext, msg_config):
+    content = parse_res['content']
+    content_type = parse_res['content_type']
+    if content_type == 'TEXT':
+        lanying_message.send_group_message_async(config, app_id, router_res['from'], router_res['to'], content, msg_ext, msg_config)
+    elif content_type == 'IMAGE':
+        result = download_wechat_image(config, app_id, wechat_msg_data)
+        if result['result'] == 'ok':
+            image_url = result['url']
+            attachment = {
+                'dName':'image.png',
+                'url': image_url,
+                "fLen":0,
+                "width":0,
+                "height":0
+            }
+            file_type = 102
+            to_type = 2
+            extra = {
+                'attachment': attachment,
+                'config': msg_config,
+                'ext': msg_ext,
+                'download_args': [app_id, router_res['from'], image_url, 'png', file_type, to_type, router_res['to']]
+            }
+            lanying_im_api.send_message_async(config, app_id, router_res['from'], router_res['to'], 2, 1, '', extra)
+    elif content_type == 'AUDIO':
+        result = download_wechat_audio(config, app_id, wechat_msg_data)
+        if result['result'] == 'ok':
+            audio_url = result['url']
+            silk_audio_filename = f"/tmp/audio_{int(time.time())}_{uuid.uuid4()}.silk"
+            lanying_im_api.download_url(config, app_id, router_res['from'], audio_url, silk_audio_filename)
+            mp3_audio_filename = f"/tmp/audio_{int(time.time())}_{uuid.uuid4()}.mp3"
+            lanying_audio.silk_to_mp3(silk_audio_filename, mp3_audio_filename)
+            attachment = {
+                'dName':'voice',
+                "fLen": os.path.getsize(mp3_audio_filename),
+                "duration": lanying_audio.get_duration(mp3_audio_filename)
+            }
+            file_type = 104
+            to_type = 2
+            result = lanying_im_api.upload_chat_file(app_id, router_res['from'], "mp3", 'audio/mpeg', file_type, to_type, router_res['to'], mp3_audio_filename)
+            if result['result'] == 'ok':
+                attachment['url'] = result['url']
+            extra = {
+                'attachment': attachment,
+                'config': msg_config,
+                'ext': msg_ext
+            }
+            lanying_im_api.send_message_async(config, app_id, router_res['from'], router_res['to'], 2, 2, '', extra)
 
 def transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id):
     if content.startswith('@所有人') and len(atlist) > 0:
@@ -779,6 +895,48 @@ def send_wechat_group_message(config, app_id, message, wechat_group_id, w_id, we
         if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
             logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
             lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
+
+def download_wechat_image(config, app_id, wechat_msg_data):
+    url =  lanying_wechat_chatbot.get_api_server() + "/getMsgImg"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    wid = wechat_msg_data['wId']
+    msgId = wechat_msg_data['msgId']
+    content = wechat_msg_data['content']
+    data = {
+        "wId": wid,
+        "msgId": msgId,
+        "content": content,
+        "type": 1
+    }
+    logging.info(f"wechat_chatbot download_wechat_image start | app_id:{app_id}, data:{data}")
+    response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+    result = response.json()
+    logging.info(f"wechat_chatbot download_wechat_image finish| app_id:{app_id}, result:{result}")
+    if result["code"] == "1000":
+        return {'result':'ok', 'url': result['data']['url']}
+    else:
+        return {'result': 'error', 'message': result}
+
+def download_wechat_audio(config, app_id, wechat_msg_data):
+    url =  lanying_wechat_chatbot.get_api_server() + "/getMsgVoice"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    wid = wechat_msg_data['wId']
+    msgId = wechat_msg_data['msgId']
+    data = {
+        "wId": wid,
+        "msgId": msgId,
+        "length": wechat_msg_data['length'],
+        "bufId": wechat_msg_data['bufId'],
+        "fromUser": wechat_msg_data['fromUser']
+    }
+    logging.info(f"wechat_chatbot download_wechat_audio start | app_id:{app_id}, data:{data}")
+    response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+    result = response.json()
+    logging.info(f"wechat_chatbot download_wechat_audio finish| app_id:{app_id}, result:{result}")
+    if result["code"] == "1000":
+        return {'result':'ok', 'url': result['data']['url']}
+    else:
+        return {'result': 'error', 'message': result}
 
 def replace_at_message(text):
     pattern = re.compile(r'(@[^\s,\u2005]+)[\s\u2005,]+')
