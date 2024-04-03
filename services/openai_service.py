@@ -1406,7 +1406,11 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
 def send_image_to_client(config, reply_ext, response):
     try:
         response_json = response.json()
-        image_url = response_json['data'][0]['url']
+        image_url = ''
+        try:
+            image_url = response_json['data'][0]['url']
+        except Exception as e:
+            return {'result': 'error', 'message': response_json}
         replyMessageImageAsync(config, image_url, reply_ext)
         return {
             'result': 'success'
@@ -2188,7 +2192,10 @@ def check_message_limit(app_id, config, vendor, is_chat):
                 else:
                     return {'result':'error', 'code':'no_quota', 'msg': msgs}
             else:
-                return {'result':'error', 'code':'no_quota', 'msg': lanying_config.get_message_no_quota(app_id)}
+                if quota_pre_check > 0:
+                    return {'result':'error', 'code':'quota_not_enough', 'msg': lanying_config.get_message_quota_not_enough(app_id)}
+                else:
+                    return {'result':'error', 'code':'no_quota', 'msg': lanying_config.get_message_no_quota(app_id)}
     else:
         return {'result':'error', 'code':'internal_error','msg':lanying_config.get_message_404(app_id)}
 

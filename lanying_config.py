@@ -83,6 +83,11 @@ def get_message_no_quota(appId):
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_no_quota', "抱歉，当前应用的本月消息配额已经用完，请联系管理员或者下月重试。")
     return os.getenv('LANYING_CONNECTOR_MESSAGE_NO_QUOTA')
 
+def get_message_quota_not_enough(appId):
+    if mode == 'etcd':
+        return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_quota_not_enough', "抱歉，当前应用的本月消息配额已经不足，请联系管理员或者下月重试。")
+    return os.getenv('LANYING_CONNECTOR_MESSAGE_QUOTA_NOT_ENOUGH')
+
 def get_message_reach_user_message_limit(appId):
     if mode == 'etcd':
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_reach_user_message_limit', "抱歉，您本月消息配额已经用完，请联系管理员或者下月重试。")
