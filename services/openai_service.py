@@ -646,12 +646,16 @@ def handle_chat_message_try(config, msg, retry_times):
         elif ctype == 'AUDIO':
             if content == '':
                 return '对不起，我无法处理语音消息。'
+        elif ctype == 'IMAGE':
+            return '对不起，我无法处理图片消息。'
         else:
             return ''
     else:
         if ctype == 'AUDIO':
             if content == '':
                 return '对不起，我无法处理语音消息。'
+        elif ctype == 'IMAGE':
+            return '对不起，我无法处理图片消息。'
         elif ctype != 'TEXT':
             return ''
     if is_chatbot_mode:
