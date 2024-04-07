@@ -857,6 +857,15 @@ def get_wechat_group_id(app_id, group_id):
     return None
 
 def send_wechat_message(config, app_id, message, to_username, w_id):
+    content_type = message.get('ctype', 'TEXT')
+    if content_type == 'TEXT':
+        send_wechat_message_text(config, app_id, message, to_username, w_id)
+    elif content_type == 'IMAGE':
+        send_wechat_message_image(config, app_id, message, to_username, w_id)
+    elif content_type == 'AUDIO':
+        send_wechat_message_audio(config, app_id, message, to_username, w_id)
+
+def send_wechat_message_text(config, app_id, message, to_username, w_id):
     url =  lanying_wechat_chatbot.get_api_server() + "/sendText"
     headers = lanying_wechat_chatbot.get_headers(app_id)
     content = message['content']
@@ -867,15 +876,81 @@ def send_wechat_message(config, app_id, message, to_username, w_id):
             "wcId": to_username,
             "content": now_content
         }
-        logging.info(f"wechat_chatbot send_wechat_message start | app_id:{app_id}, to_username:{to_username}, content:{now_content}")
+        logging.info(f"wechat_chatbot send_wechat_message_text start | app_id:{app_id}, to_username:{to_username}, content:{now_content}")
         response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
         result = response.json()
-        logging.info(f"wechat_chatbot send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
+        logging.info(f"wechat_chatbot send_wechat_message_text finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
         if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
             logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
             lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
 
+def send_wechat_message_image(config, app_id, message, to_username, w_id):
+    url =  lanying_wechat_chatbot.get_api_server() + "/sendImage"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    attachment = lanying_utils.safe_json_loads(message['attachment'])
+    if 'url' in attachment:
+        attachment_url = attachment['url']
+        user_id = message['from']['uid']
+        extra = {'image_type': "1"}
+        download_url = lanying_im_api.get_attachment_real_download_url(config, app_id, user_id, attachment_url, extra)
+        data = {
+            "wId": w_id,
+            "wcId": to_username,
+            "content": download_url
+        }
+        logging.info(f"wechat_chatbot send_wechat_message_image start | app_id:{app_id}, to_username:{to_username}, download_url:{download_url}")
+        response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+        result = response.json()
+        logging.info(f"wechat_chatbot send_wechat_message_image finish| app_id:{app_id}, to_username:{to_username}, download_url:{download_url}, result:{result}")
+        if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
+            logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
+            lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
+
+def send_wechat_message_audio(config, app_id, message, to_username, w_id):
+    url =  lanying_wechat_chatbot.get_api_server() + "/sendVoice"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    attachment = lanying_utils.safe_json_loads(message['attachment'])
+    if 'url' in attachment:
+        attachment_url = attachment['url']
+        user_id = message['from']['uid']
+        extra = {'format': 'mp3'}
+        file_type = 100
+        to_type = 1
+        to_id = message['to']['uid']
+        file_prefix = f"/tmp/{app_id}_{user_id}_{int(time.time())}_{uuid.uuid4()}"
+        mp3_filename = file_prefix + ".mp3"
+        silk_filename = file_prefix + ".silk"
+        mp3_download_url = lanying_im_api.get_attachment_real_download_url(config, app_id, user_id, attachment_url, extra)
+        result = lanying_im_api.download_url(config, app_id, user_id, mp3_download_url, mp3_filename)
+        if result['result'] == 'ok':
+            lanying_audio.mp3_to_silk(mp3_filename, silk_filename)
+            result = lanying_im_api.upload_chat_file(app_id, user_id, "silk", "audio/silk", file_type, to_type, to_id, silk_filename)
+            if result['result'] == 'ok':
+                download_url = lanying_im_api.get_attachment_real_download_url(config, app_id, user_id, result['url'], {})
+                data = {
+                    "wId": w_id,
+                    "wcId": to_username,
+                    "content": download_url,
+                    "length": int(attachment.get("duration", 0)) * 1000
+                }
+                logging.info(f"wechat_chatbot send_wechat_message_audio start | app_id:{app_id}, to_username:{to_username}, download_url:{download_url}")
+                response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+                result = response.json()
+                logging.info(f"wechat_chatbot send_wechat_message_audio finish| app_id:{app_id}, to_username:{to_username}, download_url:{download_url}, result:{result}")
+                if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
+                    logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
+                    lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
+
 def send_wechat_group_message(config, app_id, message, wechat_group_id, w_id, wechat_at_list):
+    content_type = message.get('ctype', 'TEXT')
+    if content_type == 'TEXT':
+        send_wechat_group_message_text(config, app_id, message, wechat_group_id, w_id, wechat_at_list)
+    elif content_type == 'IMAGE':
+        send_wechat_group_message_image(config, app_id, message, wechat_group_id, w_id, wechat_at_list)
+    elif content_type == 'AUDIO':
+        send_wechat_group_message_audio(config, app_id, message, wechat_group_id, w_id, wechat_at_list)
+
+def send_wechat_group_message_text(config, app_id, message, wechat_group_id, w_id, wechat_at_list):
     url =  lanying_wechat_chatbot.get_api_server() + "/sendText"
     headers = lanying_wechat_chatbot.get_headers(app_id)
     content = message['content']
@@ -888,13 +963,74 @@ def send_wechat_group_message(config, app_id, message, wechat_group_id, w_id, we
         }
         if len(wechat_at_list) > 0:
             data['at'] = ','.join(wechat_at_list)
-        logging.info(f"wechat_chatbot send_wechat_group_message start | app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, wechat_at_list:{wechat_at_list}")
+        logging.info(f"wechat_chatbot send_wechat_group_message_text start | app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, wechat_at_list:{wechat_at_list}")
         response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
         result = response.json()
-        logging.info(f"wechat_chatbot send_wechat_group_message finish| app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, wechat_at_list:{wechat_at_list}, result:{result}")
+        logging.info(f"wechat_chatbot send_wechat_group_message_text finish| app_id:{app_id}, wechat_group_id:{wechat_group_id}, content:{now_content}, wechat_at_list:{wechat_at_list}, result:{result}")
         if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
             logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
             lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
+
+def send_wechat_group_message_image(config, app_id, message, wechat_group_id, w_id, wechat_at_list):
+    url =  lanying_wechat_chatbot.get_api_server() + "/sendImage"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    attachment = lanying_utils.safe_json_loads(message['attachment'])
+    if 'url' in attachment:
+        attachment_url = attachment['url']
+        user_id = message['from']['uid']
+        extra = {'image_type': "1"}
+        download_url = lanying_im_api.get_attachment_real_download_url(config, app_id, user_id, attachment_url, extra)
+        data = {
+            "wId": w_id,
+            "wcId": wechat_group_id,
+            "content": download_url
+        }
+        if len(wechat_at_list) > 0:
+            data['at'] = ','.join(wechat_at_list)
+        logging.info(f"wechat_chatbot send_wechat_group_message_image start | app_id:{app_id}, wechat_group_id:{wechat_group_id}, download_url:{download_url}, wechat_at_list:{wechat_at_list}")
+        response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+        result = response.json()
+        logging.info(f"wechat_chatbot send_wechat_group_message_image finish| app_id:{app_id}, wechat_group_id:{wechat_group_id}, download_url:{download_url}, wechat_at_list:{wechat_at_list}, result:{result}")
+        if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
+            logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
+            lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
+
+def send_wechat_group_message_audio(config, app_id, message, wechat_group_id, w_id, wechat_at_list):
+    url =  lanying_wechat_chatbot.get_api_server() + "/sendVoice"
+    headers = lanying_wechat_chatbot.get_headers(app_id)
+    attachment = lanying_utils.safe_json_loads(message['attachment'])
+    if 'url' in attachment:
+        attachment_url = attachment['url']
+        user_id = message['from']['uid']
+        extra = {'format': 'mp3'}
+        file_type = 100
+        to_type = 2
+        to_id = message['to']['uid']
+        file_prefix = f"/tmp/{app_id}_{user_id}_{int(time.time())}_{uuid.uuid4()}"
+        mp3_filename = file_prefix + ".mp3"
+        silk_filename = file_prefix + ".silk"
+        mp3_download_url = lanying_im_api.get_attachment_real_download_url(config, app_id, user_id, attachment_url, extra)
+        result = lanying_im_api.download_url(config, app_id, user_id, mp3_download_url, mp3_filename)
+        if result['result'] == 'ok':
+            lanying_audio.mp3_to_silk(mp3_filename, silk_filename)
+            result = lanying_im_api.upload_chat_file(app_id, user_id, "silk", "audio/silk", file_type, to_type, to_id, silk_filename)
+            if result['result'] == 'ok':
+                download_url = lanying_im_api.get_attachment_real_download_url(config, app_id, user_id, result['url'], {})
+                data = {
+                    "wId": w_id,
+                    "wcId": wechat_group_id,
+                    "content": download_url,
+                    "length": int(attachment.get("duration", 0)) * 1000
+                }
+                if len(wechat_at_list) > 0:
+                    data['at'] = ','.join(wechat_at_list)
+                logging.info(f"wechat_chatbot send_wechat_group_message_audio start | app_id:{app_id}, wechat_group_id:{wechat_group_id}, download_url:{download_url}, wechat_at_list:{wechat_at_list}")
+                response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+                result = response.json()
+                logging.info(f"wechat_chatbot send_wechat_group_message_audio finish| app_id:{app_id}, wechat_group_id:{wechat_group_id}, download_url:{download_url}, wechat_at_list:{wechat_at_list}, result:{result}")
+                if result["code"] == "1001" and result["message"] == 'wId已注销或二维码失效，请重新登录':
+                    logging.info(f"wechat chatbot wid offline by send message result: wid:{w_id}, result:{result}")
+                    lanying_wechat_chatbot.change_wid_status(app_id, w_id, "offline", 'offline')
 
 def download_wechat_image(config, app_id, wechat_msg_data):
     url =  lanying_wechat_chatbot.get_api_server() + "/getMsgImg"

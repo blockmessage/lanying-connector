@@ -7,6 +7,7 @@ import json
 from lanying_async import executor
 import uuid
 import os
+import lanying_utils
 
 def get_user_profile(app_id, user_id):
     config = lanying_config.get_lanying_connector(app_id)
@@ -88,6 +89,20 @@ def get_avatar_real_download_url(app_id, user_id, avatar_url):
                 return redirected_url
         else:
             return avatar_url
+
+# extra = {'image_type': , 'format': amr/mp3}
+def get_attachment_real_download_url(config, app_id, user_id, attachment_url, extra):
+    adminToken = config['lanying_admin_token']
+    if lanying_utils.is_lanying_url(attachment_url):
+        response = requests.get(attachment_url,
+                                headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(user_id)},
+                                params=extra, allow_redirects=False)
+        if response.status_code == 302:
+            # 处理重定向逻辑，获取重定向的地址等信息
+            redirected_url = response.headers['Location']
+            logging.info(f"get_attachment_real_download_url, app_id={app_id} user_id={user_id}, redirected_url:{redirected_url}")
+            return redirected_url
+    return attachment_url
 
 def set_group_name(app_id, group_id, name):
     config = lanying_config.get_lanying_connector(app_id)
