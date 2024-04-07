@@ -24,6 +24,20 @@ def mp3_to_pcm(mp3_file, pcm_file):
     # 将音频保存为 PCM 文件
     sound.export(pcm_file, format="s16le", parameters=["-ar", "44100", "-ac", "1"])
 
+def speex_to_mp3(input_file, output_file):
+    # 从Speex文件加载音频
+    audio = AudioSegment.from_file(input_file, format="speex")
+
+    # 导出为MP3文件
+    audio.export(output_file, format="mp3")
+
+def amr_to_mp3(input_file, output_file):
+    # 从AMR文件加载音频
+    audio = AudioSegment.from_file(input_file, format="amr")
+
+    # 导出为MP3文件
+    audio.export(output_file, format="mp3")
+
 def get_duration(audio_filename):
     duration_ms = 0
     try:

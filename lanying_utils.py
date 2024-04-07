@@ -4,6 +4,8 @@ from urllib.parse import urlparse
 import logging
 import json
 import hashlib
+import time
+import uuid
 
 def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
@@ -65,3 +67,6 @@ def is_lanying_url(url):
     parsed = urlparse(url)
     host = parsed.netloc.split(':')[0]
     return host.endswith(".maximtop.cn") or host.endswith("api.maximtop.com")
+
+def get_temp_filename(app_id, suffix):
+    return f"/tmp/{app_id}_{int(time.time())}_{uuid.uuid4()}{suffix}"

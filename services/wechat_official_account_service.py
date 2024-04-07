@@ -14,6 +14,8 @@ import time
 import lanying_im_api
 import lanying_utils
 import lanying_user_router
+import uuid
+import lanying_audio
 
 official_account_max_message_size = 600
 service = 'wechat_official_account'
@@ -43,8 +45,10 @@ def service_post_messages(app_id):
             msg_type = xml.find('MsgType').text
             if msg_type == 'text':
                 reply = handle_wechat_msg_text(xml, config, app_id, start_time)
-            if msg_type == 'image':
+            elif msg_type == 'image':
                 reply = handle_wechat_msg_image(xml, config, app_id, start_time)
+            elif msg_type == 'voice':
+                reply = handle_wechat_msg_voice(xml, config, app_id, start_time)
             elif msg_type == 'event':
                 reply = handle_wechat_msg_event(xml, config, app_id, start_time)
             else:
@@ -84,6 +88,8 @@ def handle_wechat_msg_text(xml, config, app_id, start_time):
                     redis.set(last_msg_id_key, msg_id)
                     ext = {
                         'ai':{
+                            'role':'user',
+                            'channel':'wechat_official_account',
                             'feedback':{
                                 'wechat_msg_id':msg_id
                             },
@@ -149,10 +155,12 @@ def handle_wechat_msg_image(xml, config, app_id, start_time):
                 redis.set(last_msg_id_key, msg_id)
                 ext = {
                     'ai':{
+                        'role':'user',
+                        'channel':'wechat_official_account',
                         'feedback':{
                             'wechat_msg_id':msg_id
                         },
-                        'force_stream': True
+                        'force_stream': False
                     }
                 }
                 attachment = {
@@ -200,7 +208,7 @@ def handle_wechat_msg_image(xml, config, app_id, start_time):
                     }
                     file_type = 102
                     extra = {
-                        'ext': ext,
+                        'ext': msg_ext,
                         'attachment': attachment,
                         'download_args': [app_id, router_res['from'], pic_url, 'png', file_type, 1, router_res['to']]
                     }
@@ -212,7 +220,111 @@ def handle_wechat_msg_image(xml, config, app_id, start_time):
         logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
     return reply
 
-
+def handle_wechat_msg_voice(xml, config, app_id, start_time):
+    reply = 'failed'
+    to_user_name = xml.find('ToUserName').text
+    from_user_name = xml.find('FromUserName').text
+    create_time = xml.find('CreateTime').text
+    media_id = xml.find('MediaId').text
+    media_id_16k = xml.find('MediaId16K').text
+    format = xml.find('Format').text
+    msg_id = int(xml.find('MsgId').text)
+    verify_type = config.get('type', 'verified')
+    logging.info(f"got wechat image message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},media_id:{media_id}, media_id_16k:{media_id_16k}, format:{format},msg_id:{msg_id}, verify_type:{verify_type}")
+    user_id = get_or_register_user(app_id, from_user_name)
+    amr_filename = lanying_utils.get_temp_filename(app_id, ".amr")
+    filename = lanying_utils.get_temp_filename(app_id, ".mp3")
+    get_wechat_media(config, app_id, media_id_16k, amr_filename)
+    lanying_audio.amr_to_mp3(amr_filename, filename)
+    if user_id:
+        if verify_type == 'unverified':
+            reply_expire_time = start_time + int(os.getenv("WECHAT_OFFICIAL_ACCOUNT_REPLY_EXPIRE_TIME", "3"))
+            last_msg_id_key = f"wechat_official_account:last_msg_id:{user_id}"
+            key = subscribe_key(user_id, msg_id)
+            redis = lanying_redis.get_redis_connection()
+            keys = [key]
+            if redis.exists(*keys) == 0:
+                redis.hincrby(key, "retry_count", 1)
+                redis.expire(key, 600)
+                redis.set(last_msg_id_key, msg_id)
+                ext = {
+                    'ai':{
+                        'role':'user',
+                        'channel':'wechat_official_account',
+                        'feedback':{
+                            'wechat_msg_id':msg_id
+                        },
+                        'force_stream': False
+                    }
+                }
+                file_size = os.path.getsize(filename)
+                duration = lanying_audio.get_duration(filename)
+                attachment = {
+                    'dName': 'voice',
+                    "fLen": file_size,
+                    'duration': duration
+                }
+                to_user_id = config['lanying_user_id']
+                file_type = 104
+                upload_res = lanying_im_api.upload_chat_file(app_id, user_id, 'mp3', 'audio/mp3', file_type, 1, to_user_id, filename)
+                if upload_res['result'] == 'ok':
+                    download_url = upload_res['url']
+                    attachment['url'] = download_url
+                    extra = {
+                        'ext': ext,
+                        'attachment': attachment
+                    }
+                    lanying_im_api.send_message_async(config, app_id, user_id, to_user_id, 1, 2, '', extra)
+                    lock_value = redis.hincrby(key, 'lock', 1)
+                    reply = wait_reply_msg(app_id, key, reply_expire_time, False, lock_value)
+            else:
+                retry_count = redis.hincrby(key, "retry_count", 1)
+                redis.expire(key, 600)
+                watch_msg_id_str = lanying_redis.redis_hget(redis, key, 'watch_msg_id')
+                if watch_msg_id_str:
+                    key = subscribe_key(user_id, int(watch_msg_id_str))
+                lock_value = redis.hincrby(key, 'lock', 1)
+                reply = wait_reply_msg(app_id, key, reply_expire_time, retry_count >=3, lock_value)
+            if len(reply) > 0:
+                return f"""<xml>
+                        <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                        <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                        <CreateTime>{int(time.time())}</CreateTime>
+                        <MsgType><![CDATA[text]]></MsgType>
+                        <Content><![CDATA[{reply}]]></Content>
+                        </xml>
+                        """
+        else:
+            from_user_id = user_id
+            to_user_id = config['lanying_user_id']
+            router_sub_user_ids = config.get('router_sub_user_ids', [])
+            router_res = lanying_user_router.handle_msg_route_to_im(app_id, service, from_user_id, to_user_id, router_sub_user_ids)
+            if router_res['result'] == 'ok':
+                msg_ext = {'ai':{'role':'user', 'channel':'wechat_official_account'}}
+                if router_res['msg_type'] == 'CHAT':
+                    file_size = os.path.getsize(filename)
+                    duration = lanying_audio.get_duration(filename)
+                    attachment = {
+                        'dName': 'voice',
+                        "fLen": file_size,
+                        'duration': duration
+                    }
+                    file_type = 104
+                    upload_res = lanying_im_api.upload_chat_file(app_id, router_res['from'], 'mp3', 'audio/mp3', file_type, 1, router_res['to'], filename)
+                    if upload_res['result'] == 'ok':
+                        download_url = upload_res['url']
+                        attachment['url'] = download_url
+                        extra = {
+                            'ext': msg_ext,
+                            'attachment': attachment
+                        }
+                        lanying_im_api.send_message_async(config, app_id, router_res['from'], router_res['to'], 1, 2, '', extra)
+                else:
+                    logging.info(f"handle_wechat_msg_text receive groupchat | router_res:{router_res}")
+            reply = 'success'
+    else:
+        logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
+    return reply
 def handle_wechat_msg_event(xml, config, app_id, start_time):
     to_user_name = xml.find('ToUserName').text
     from_user_name = xml.find('FromUserName').text
@@ -419,6 +531,28 @@ def send_wechat_message(config, app_id, message, to_username):
         response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
         result = response.json()
         logging.info(f"send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
+
+def get_wechat_media(config, app_id, media_id, filename):
+    access_token = get_wechat_access_token(config, app_id)
+    logging.info(f"get_wechat_media start | app_id:{app_id}, media_id:{media_id}")
+    server, headers = get_proxy_info()
+    params = {
+        'access_token': access_token,
+        'media_id': str(media_id)
+    }
+    url = f"{server}/cgi-bin/media/get"
+    response = requests.get(url, params=params, headers=headers)
+    if response.status_code == 200:
+        logging.info(f"get_wechat_media got response: app_id:{app_id}, media_id:{media_id}, response_headers:{response.headers}")
+        content_type = response.headers.get('Content-Type')
+        if content_type == 'application/json':
+            logging.info(f"get_wechat_media got error: app_id:{app_id}, media_id:{media_id}, response:{response.text}")
+            return {'result': 'error', 'message': response.text}
+        else:
+            with open(filename, 'wb') as f:
+                f.write(response.content)
+            logging.info(f"get_wechat_media finish| app_id:{app_id}, media_id:{media_id}, filename:{filename}, result: success")
+            return {'result': 'ok'}
 
 def check_token(app_id):
     config = lanying_config.get_service_config(app_id, service)
