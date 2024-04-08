@@ -514,6 +514,15 @@ def check_message_need_send(config, message):
     return {'result':'error', 'msg':''}
 
 def send_wechat_message(config, app_id, message, to_username):
+    content_type = message.get('ctype', 'TEXT')
+    if content_type == 'TEXT':
+        send_wechat_message_text(config, app_id, message, to_username)
+    elif content_type == 'IMAGE':
+        send_wechat_message_image(config, app_id, message, to_username)
+    elif content_type == 'AUDIO':
+        send_wechat_message_audio(config, app_id, message, to_username)
+
+def send_wechat_message_text(config, app_id, message, to_username):
     access_token = get_wechat_access_token(config, app_id)
     content = message['content']
     content_list = split_string_by_size(content, official_account_max_message_size)
@@ -525,12 +534,66 @@ def send_wechat_message(config, app_id, message, to_username):
                 "content": now_content
             }
         }
-        logging.info(f"send_wechat_message start | app_id:{app_id}, to_username:{to_username}, content:{now_content}")
+        logging.info(f"send_wechat_message_text start | app_id:{app_id}, to_username:{to_username}, content:{now_content}")
         server, headers = get_proxy_info()
         url = f"{server}/cgi-bin/message/custom/send?access_token={access_token}"
         response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
         result = response.json()
-        logging.info(f"send_wechat_message finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
+        logging.info(f"send_wechat_message_text finish| app_id:{app_id}, to_username:{to_username}, content:{now_content}, result:{result}")
+
+def send_wechat_message_image(config, app_id, message, to_username):
+    attachment = lanying_utils.safe_json_loads(message.get('attachment', ''))
+    if 'url' in attachment:
+        attachment_url = attachment['url']
+        user_id = message['from']['uid']
+        extra = {'image_type': '1'}
+        filename = lanying_utils.get_temp_filename(app_id, ".png")
+        result = lanying_im_api.download_url(config, app_id, user_id, attachment_url, filename, extra)
+        if result['result'] == 'ok':
+            result = upload_wechat_media(config, app_id, 'image', filename)
+            if result['result'] == 'ok':
+                media_id = result['media_id']
+                access_token = get_wechat_access_token(config, app_id)
+                data = {
+                    "touser": to_username,
+                    "msgtype": "image",
+                    "image": {
+                        "media_id": media_id
+                    }
+                }
+                logging.info(f"send_wechat_message_image start | app_id:{app_id}, to_username:{to_username}, filename:{filename}, media_id:{media_id}")
+                server, headers = get_proxy_info()
+                url = f"{server}/cgi-bin/message/custom/send?access_token={access_token}"
+                response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+                result = response.json()
+                logging.info(f"send_wechat_message_image finish| app_id:{app_id}, to_username:{to_username}, filename:{filename}, media_id:{media_id}, result:{result}")
+
+def send_wechat_message_audio(config, app_id, message, to_username):
+    attachment = lanying_utils.safe_json_loads(message.get('attachment', ''))
+    if 'url' in attachment:
+        attachment_url = attachment['url']
+        user_id = message['from']['uid']
+        extra = {'format': 'mp3'}
+        filename = lanying_utils.get_temp_filename(app_id, ".mp3")
+        result = lanying_im_api.download_url(config, app_id, user_id, attachment_url, filename, extra)
+        if result['result'] == 'ok':
+            result = upload_wechat_media(config, app_id, 'voice', filename)
+            if result['result'] == 'ok':
+                media_id = result['media_id']
+                access_token = get_wechat_access_token(config, app_id)
+                data = {
+                    "touser": to_username,
+                    "msgtype": "voice",
+                    "voice": {
+                        "media_id": media_id
+                    }
+                }
+                logging.info(f"send_wechat_message_audio start | app_id:{app_id}, to_username:{to_username}, filename:{filename}, media_id:{media_id}")
+                server, headers = get_proxy_info()
+                url = f"{server}/cgi-bin/message/custom/send?access_token={access_token}"
+                response = requests.post(url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers)
+                result = response.json()
+                logging.info(f"send_wechat_message_audio finish| app_id:{app_id}, to_username:{to_username}, filename:{filename}, media_id:{media_id}, result:{result}")
 
 def get_wechat_media(config, app_id, media_id, filename):
     access_token = get_wechat_access_token(config, app_id)
@@ -553,6 +616,23 @@ def get_wechat_media(config, app_id, media_id, filename):
                 f.write(response.content)
             logging.info(f"get_wechat_media finish| app_id:{app_id}, media_id:{media_id}, filename:{filename}, result: success")
             return {'result': 'ok'}
+
+def upload_wechat_media(config, app_id, media_type, filename):
+    access_token = get_wechat_access_token(config, app_id)
+    logging.info(f"upload_wechat_media start | app_id:{app_id}, media_type:{media_type}, filename:{filename}")
+    server, headers = get_proxy_info()
+    url = f"{server}/cgi-bin/media/upload"
+    params = {
+        "access_token": access_token,
+        "type": media_type
+    }
+    files = {'media': open(filename, 'rb')}
+    response = requests.post(url, params=params, files=files, headers=headers)
+    response_json = response.json()
+    if 'media_id' in response_json:
+        return {'result': 'ok', 'media_id': response_json['media_id']}
+    else:
+        return {'result': 'error', 'message': response.text}
 
 def check_token(app_id):
     config = lanying_config.get_service_config(app_id, service)

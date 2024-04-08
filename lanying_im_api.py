@@ -137,11 +137,11 @@ def get_user_file_upload_url(app_id, user_id, file_type, to_type, to_id):
         logging.info(f"get_user_file_upload_url, app_id={app_id} user_id={user_id}, params={params}, result:{result}")
         return result
 
-def download_url(config, app_id, user_id, url, filename):
+def download_url(config, app_id, user_id, url, filename, extra = {}):
     headers = {'app_id': app_id,
             'access-token': config['lanying_admin_token'],
             'user_id': str(user_id)}
-    return lanying_file_storage.download_file_url(url, headers, filename)
+    return lanying_file_storage.download_file_url(url, headers, filename, extra)
 
 def download_url_and_upload_to_im(app_id, user_id, url, file_suffix, file_type, to_type, to_id):
     temp_filename = f"/tmp/{app_id}_{user_id}_{int(time.time())}_{uuid.uuid4()}.{file_suffix}"

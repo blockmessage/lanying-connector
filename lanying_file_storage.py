@@ -88,11 +88,11 @@ def download_url(url, headers, filename):
         logging.exception(e)
     return {"result":"error", "message":"fail to download file"}
 
-def download_file_url(url, headers, filename):
+def download_file_url(url, headers, filename, extra = {}):
     try:
         if not lanying_utils.is_lanying_url(url):
             headers = {}
-        response = requests.get(url, headers=headers, stream=True)
+        response = requests.get(url, params=extra, headers=headers, stream=True)
         if response.status_code == 200:
             file_size = int(response.headers.get('Content-Length', "0"))
             if file_size > max_upload_file_size:
