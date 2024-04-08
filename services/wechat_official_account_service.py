@@ -55,6 +55,7 @@ def service_post_messages(app_id):
                 reply = 'success'
         else:
             logging.info(f"config not found:{app_id}, {service}")
+    logging.info(f"handle_wechat_message: reply to wechat:{reply}")
     resp = make_response(reply)
     return resp
 
@@ -107,15 +108,9 @@ def handle_wechat_msg_text(xml, config, app_id, start_time):
                     key = subscribe_key(user_id, int(watch_msg_id_str))
                 lock_value = redis.hincrby(key, 'lock', 1)
                 reply = wait_reply_msg(app_id, key, reply_expire_time, retry_count >=3, lock_value)
-            if len(reply) > 0:
-                return f"""<xml>
-                        <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
-                        <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
-                        <CreateTime>{int(time.time())}</CreateTime>
-                        <MsgType><![CDATA[text]]></MsgType>
-                        <Content><![CDATA[{reply}]]></Content>
-                        </xml>
-                        """
+            reply_xml = transform_reply_to_xml(reply, from_user_name, to_user_name)
+            if len(reply_xml) > 0:
+                return reply_xml
         else:
             from_user_id = user_id
             to_user_id = config['lanying_user_id']
@@ -185,15 +180,9 @@ def handle_wechat_msg_image(xml, config, app_id, start_time):
                     key = subscribe_key(user_id, int(watch_msg_id_str))
                 lock_value = redis.hincrby(key, 'lock', 1)
                 reply = wait_reply_msg(app_id, key, reply_expire_time, retry_count >=3, lock_value)
-            if len(reply) > 0:
-                return f"""<xml>
-                        <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
-                        <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
-                        <CreateTime>{int(time.time())}</CreateTime>
-                        <MsgType><![CDATA[text]]></MsgType>
-                        <Content><![CDATA[{reply}]]></Content>
-                        </xml>
-                        """
+            reply_xml = transform_reply_to_xml(reply, from_user_name, to_user_name)
+            if len(reply_xml) > 0:
+                return reply_xml
         else:
             from_user_id = user_id
             to_user_id = config['lanying_user_id']
@@ -285,15 +274,9 @@ def handle_wechat_msg_voice(xml, config, app_id, start_time):
                     key = subscribe_key(user_id, int(watch_msg_id_str))
                 lock_value = redis.hincrby(key, 'lock', 1)
                 reply = wait_reply_msg(app_id, key, reply_expire_time, retry_count >=3, lock_value)
-            if len(reply) > 0:
-                return f"""<xml>
-                        <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
-                        <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
-                        <CreateTime>{int(time.time())}</CreateTime>
-                        <MsgType><![CDATA[text]]></MsgType>
-                        <Content><![CDATA[{reply}]]></Content>
-                        </xml>
-                        """
+            reply_xml = transform_reply_to_xml(reply, from_user_name, to_user_name)
+            if len(reply_xml) > 0:
+                return reply_xml
         else:
             from_user_id = user_id
             to_user_id = config['lanying_user_id']
@@ -325,6 +308,56 @@ def handle_wechat_msg_voice(xml, config, app_id, start_time):
     else:
         logging.info(f"failed to get user_id | app_id:{app_id}, username:{from_user_name}")
     return reply
+
+def transform_reply_to_xml(reply, from_user_name, to_user_name):
+    if isinstance(reply, dict):
+        if reply['result'] == 'ok':
+            content_type = reply.get('content_type', 'TEXT')
+            if content_type == 'TEXT':
+                content = reply.get('content', '')
+                return f"""<xml>
+                <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                <CreateTime>{int(time.time())}</CreateTime>
+                <MsgType><![CDATA[text]]></MsgType>
+                <Content><![CDATA[{content}]]></Content>
+                </xml>
+                """
+            elif content_type == 'AUDIO':
+                media_id = reply.get('media_id')
+                return f"""<xml>
+                <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                <CreateTime>{int(time.time())}</CreateTime>
+                <MsgType><![CDATA[voice]]></MsgType>
+                <Voice>
+                    <MediaId><![CDATA[{media_id}]]></MediaId>
+                </Voice>
+                </xml>
+                """
+            elif content_type == 'IMAGE':
+                media_id = reply.get('media_id')
+                return f"""<xml>
+                <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                <CreateTime>{int(time.time())}</CreateTime>
+                <MsgType><![CDATA[image]]></MsgType>
+                <Image>
+                    <MediaId><![CDATA[{media_id}]]></MediaId>
+                </Image>
+                </xml>
+                """
+    elif len(reply) > 0:
+        return f"""<xml>
+                <ToUserName><![CDATA[{from_user_name}]]></ToUserName>
+                <FromUserName><![CDATA[{to_user_name}]]></FromUserName>
+                <CreateTime>{int(time.time())}</CreateTime>
+                <MsgType><![CDATA[text]]></MsgType>
+                <Content><![CDATA[{reply}]]></Content>
+                </xml>
+                """
+    return ""
+
 def handle_wechat_msg_event(xml, config, app_id, start_time):
     to_user_name = xml.find('ToUserName').text
     from_user_name = xml.find('FromUserName').text
@@ -369,22 +402,40 @@ def wait_reply_msg(app_id, key, expire_time, is_last, lock_value):
         message = info.get('message', '')
         start = int(info.get('start', '0'))
         if int(info.get('finish', '0')) > 0:
-            message_len = len(message)
-            if message_len > start + official_account_max_message_size:
-                send_len = official_account_max_message_size - len(tip)
-                redis.hset(key, 'start', start+send_len)
-                reply = message[start:start+send_len] + tip
-                logging.info(f"reply wechat finish part message | {reply}")
-                return reply
-            elif message_len > start:
-                redis.hset(key, 'start', message_len)
-                reply = message[start:message_len]
-                logging.info(f"reply wechat finish last part message | {reply}")
-                return reply
-            else:
-                reply = '没有更多消息'
-                logging.info(f"reply wechat nomore message | {reply}")
-                return reply
+            content_type = info.get('content_type', 'TEXT')
+            if content_type == 'TEXT':
+                message_len = len(message)
+                if message_len > start + official_account_max_message_size:
+                    send_len = official_account_max_message_size - len(tip)
+                    redis.hset(key, 'start', start+send_len)
+                    reply = message[start:start+send_len] + tip
+                    logging.info(f"reply wechat finish part message | {reply}")
+                    return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
+                elif message_len > start:
+                    redis.hset(key, 'start', message_len)
+                    reply = message[start:message_len]
+                    logging.info(f"reply wechat finish last part message | {reply}")
+                    return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
+                else:
+                    reply = '没有更多消息'
+                    logging.info(f"reply wechat nomore message | {reply}")
+                    return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
+            elif content_type == 'AUDIO':
+                if info.get('media_finish', '0') == '0':
+                    redis.hset(key, 'media_finish', 1)
+                    return {'result': 'ok', 'content_type': 'AUDIO', 'media_id':info.get('media_id')}
+                else:
+                    reply = '没有更多消息'
+                    logging.info(f"reply wechat nomore message | {reply}")
+                    return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
+            elif content_type == 'IMAGE':
+                if info.get('media_finish', '0') == '0':
+                    redis.hset(key, 'media_finish', 1)
+                    return {'result': 'ok', 'content_type': 'IMAGE', 'media_id':info.get('media_id')}
+                else:
+                    reply = '没有更多消息'
+                    logging.info(f"reply wechat nomore message | {reply}")
+                    return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
         else:
             message_len = len(message)
             if message_len > start + official_account_max_message_size:
@@ -392,7 +443,7 @@ def wait_reply_msg(app_id, key, expire_time, is_last, lock_value):
                 redis.hset(key, 'start', start+send_len)
                 reply = message[start:start+send_len] + tip
                 logging.info(f"reply wechat unfinish part message | {reply}")
-                return reply
+                return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
         now = time.time()
         time.sleep(min(max(0,expire_time-now), 200))
         now = time.time()
@@ -406,14 +457,20 @@ def wait_reply_msg(app_id, key, expire_time, is_last, lock_value):
             reply = message[start:start+send_len] + tip
             logging.info(f"reply wechat getmore message | {reply}")
         else:
-            reply = lanying_config.get_message_404(app_id)
+            no_content_count = int(info.get('no_content_count', '0'))
+            if no_content_count < 3:
+                redis.hincrby(key, 'no_content_count', 1)
+                reply = '服务处理中，回复1继续接收'
+            else:
+                reply = lanying_config.get_message_404(app_id)
             logging.info(f"reply wechat 404 message | {reply}")
-            redis.hset(key, 'start', start+len(reply))
-            redis.hset(key, 'finish', 1)
-        return reply
+            #redis.hset(key, 'start', start+len(reply))
+            #redis.hset(key, 'finish', 1)
+        return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
     else:
         time.sleep(6)
-        return 'wait'
+        reply = 'wait'
+        return {'result': 'ok', 'content_type': 'TEXT', 'content':reply}
 
 def handle_chat_message(config, message):
     from_user_id = message['from']['uid']
@@ -448,10 +505,11 @@ def handle_chat_message(config, message):
             key = subscribe_key(to_user_id, wechat_msg_id)
             sub_info = lanying_redis.redis_hgetall(redis, key)
             ai_info = json_ext.get('ai',{})
+            is_image_description = bool(ai_info.get("is_image_description", False))
             if is_stream:
-                old_seq = int(sub_info.get('seq', '0'))
+                old_seq = int(sub_info.get('seq', '-1'))
                 seq = int(ai_info.get('seq', '0'))
-                if seq > old_seq:
+                if seq > old_seq and not is_image_description:
                     message_content = sub_info.get('message','')
                     if msg_type == 'CHAT' or msg_type == 'APPEND':
                         message_content += message['content']
@@ -466,10 +524,54 @@ def handle_chat_message(config, message):
             else:
                 message_content = sub_info.get('message','')
                 if msg_type == 'CHAT':
-                    message_content = message['content']
-                    message_antispam = lanying_config.get_message_antispam(app_id)
-                    redis.hset(key, "message", message_content)
-                    redis.hset(key, 'finish', 1)
+                    content_type = message.get('ctype', 'TEXT')
+                    if content_type == 'TEXT':
+                        if not is_image_description:
+                            message_content = message['content']
+                            redis.hmset(key, {
+                                "content_type": content_type,
+                                "message": message_content,
+                                "finish": 1
+                            })
+                    elif content_type == 'AUDIO':
+                        if not is_image_description:
+                            message_content = message['content']
+                            attachment = lanying_utils.safe_json_loads(message.get('attachment', ''))
+                            attachment_url = attachment['url']
+                            user_id = message['from']['uid']
+                            extra = {'format': 'mp3'}
+                            filename = lanying_utils.get_temp_filename(app_id, ".mp3")
+                            result = lanying_im_api.download_url(config, app_id, user_id, attachment_url, filename, extra)
+                            if result['result'] == 'ok':
+                                result = upload_wechat_media(config, app_id, 'voice', filename)
+                                if result['result'] == 'ok':
+                                    media_id = result['media_id']
+                                    redis.hmset(key, {
+                                        "content_type": content_type,
+                                        "media_id": media_id,
+                                        "message": message_content,
+                                        "media_finish": 0,
+                                        "finish": 1
+                                    })
+                    elif content_type == 'IMAGE':
+                        message_content = message['content']
+                        attachment = lanying_utils.safe_json_loads(message.get('attachment', ''))
+                        attachment_url = attachment['url']
+                        user_id = message['from']['uid']
+                        extra = {'image_type': '1'}
+                        filename = lanying_utils.get_temp_filename(app_id, ".png")
+                        result = lanying_im_api.download_url(config, app_id, user_id, attachment_url, filename, extra)
+                        if result['result'] == 'ok':
+                            result = upload_wechat_media(config, app_id, 'image', filename)
+                            if result['result'] == 'ok':
+                                media_id = result['media_id']
+                                redis.hmset(key, {
+                                    "content_type": content_type,
+                                    "media_id": media_id,
+                                    "message": message_content,
+                                    "media_finish": 0,
+                                    "finish": 1
+                                })
     else:
         wechat_username = get_wechat_username(app_id, to_user_id)
         if wechat_username:
@@ -630,8 +732,11 @@ def upload_wechat_media(config, app_id, media_type, filename):
     response = requests.post(url, params=params, files=files, headers=headers)
     response_json = response.json()
     if 'media_id' in response_json:
-        return {'result': 'ok', 'media_id': response_json['media_id']}
+        media_id = response_json['media_id']
+        logging.info(f"upload_wechat_media success | app_id:{app_id}, media_type:{media_type}, filename:{filename}, media_id:{media_id}")
+        return {'result': 'ok', 'media_id': media_id}
     else:
+        logging.info(f"upload_wechat_media failed | app_id:{app_id}, media_type:{media_type}, filename:{filename}, reason:{response.text}")
         return {'result': 'error', 'message': response.text}
 
 def check_token(app_id):

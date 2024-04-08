@@ -1329,10 +1329,18 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (20.0, 40.0))
                 function_content = function_response.text
                 if 'send_image_to_client' in response_rules:
-                    result = send_image_to_client(config, reply_ext, function_response)
+                    image_reply_ext = copy.deepcopy(reply_ext)
+                    image_reply_ext['ai']['stream'] = False
+                    image_reply_ext['ai']['finish'] = True
+                    result = send_image_to_client(config, image_reply_ext, function_response)
+                    if result['result'] == 'success':
+                        reply_ext['ai']['is_image_description'] = True
                     function_content = json.dumps(result, ensure_ascii=False)
                 elif 'send_audio_to_client' in response_rules:
-                    result = send_audio_to_client(config, reply_ext, function_response, function_args)
+                    audio_reply_ext = copy.deepcopy(reply_ext)
+                    audio_reply_ext['ai']['stream'] = False
+                    audio_reply_ext['ai']['finish'] = True
+                    result = send_audio_to_client(config, audio_reply_ext, function_response, function_args)
                     function_content = json.dumps(result, ensure_ascii=False)
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
                 if is_debug:
