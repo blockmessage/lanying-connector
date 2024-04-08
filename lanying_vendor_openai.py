@@ -37,7 +37,7 @@ def model_configs():
         {
             "model": 'gpt-4',
             "type": "chat",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 20,
             "token_limit": 8000,
             'order': 4
