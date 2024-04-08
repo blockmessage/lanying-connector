@@ -992,9 +992,6 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     if is_force_stream:
         logging.info("force use stream")
         preset['stream'] = True
-    if ctype == 'AUDIO':
-        if 'stream' in preset:
-            del preset['stream']
     oper_msg_config = {
         'force_callback': True
     }
@@ -1186,7 +1183,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         links.append(link)
                         doc_desc_list.append({'seq':seq, 'doc_id':doc_id, 'link':link, 'metadata': doc_metadata})
             reply_ext['reference'] = doc_desc_list
-        if location == 'body' or location == "both":
+        if len(reply) > 0 and (location == 'body' or location == "both"):
             doc_format = reference.get('style', '{seq}.{doc_id}.{link}')
             seperator = reference.get('seperator', ',')
             prefix = reference.get('prefix', 'reference: ')
@@ -1230,7 +1227,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             if len(doc_desc_list) > 0:
                 reply = reply + "\n" + prefix + seperator.join(doc_desc_list)
     else:
-        if add_reference == 'body' or add_reference == "both":
+        if len(reply) > 0 and (add_reference == 'body' or add_reference == "both"):
             reference_doc_id_list = []
             for doc_id, reference in reference_list:
                 reference_doc_id_list.append(doc_id)
