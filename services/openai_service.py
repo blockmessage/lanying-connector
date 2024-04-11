@@ -444,6 +444,30 @@ def init_chatbot_config(config, msg):
                         "audio_to_text", "image_vision", "audio_to_text_model"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
+            preset = chatbot.get('preset', {})
+            preset_ext = preset.get('ext', {})
+            is_debug = True if 'debug' in preset_ext and preset_ext['debug'] == True else False
+            status_bar = True if 'status_bar' in preset_ext and preset_ext['status_bar'] == True else False
+            config['is_debug'] = is_debug
+            config['status_bar'] = status_bar
+            fromUserId = str(msg['from']['uid'])
+            toUserId = str(msg['to']['uid'])
+            msg_type = msg['type']
+            if msg_type == 'CHAT':
+                config['reply_from'] = toUserId
+                config['reply_to'] = fromUserId
+                config['send_from'] = fromUserId
+                config['send_to'] = toUserId
+                config['reply_msg_type'] = 'CHAT'
+                config['request_msg_id'] = msg['msgId']
+            elif msg_type == 'GROUPCHAT':
+                group_id = toUserId
+                config['reply_from'] = chatbot_user_id
+                config['reply_to'] = group_id
+                config['send_from'] = fromUserId
+                config['send_to'] = group_id
+                config['reply_msg_type'] = 'GROUPCHAT'
+                config['request_msg_id'] = msg['msgId']
         else:
             logging.warning(f"cannot get chatbot info: app_id={app_id}, chatbot_user_id:{chatbot_user_id}, chatbot_id:{chatbot_id}")
 
@@ -472,12 +496,6 @@ def check_message_need_reply(config, msg):
     if msg_type == 'CHAT':
         is_chatbot = is_chatbot_user_id(app_id, toUserId, config)
         if is_chatbot and fromUserId != toUserId:
-            config['reply_from'] = toUserId
-            config['reply_to'] = fromUserId
-            config['send_from'] = fromUserId
-            config['send_to'] = toUserId
-            config['reply_msg_type'] = 'CHAT'
-            config['request_msg_id'] = msg['msgId']
             try:
                 ext = json.loads(msg['ext'])
                 if ext.get('ai',{}).get('role', 'none') == 'ai':
@@ -504,12 +522,6 @@ def check_message_need_reply(config, msg):
         msg_config = lanying_utils.safe_json_loads(msg.get('config'))
         chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, msg_config)
         if chatbot_user_id:
-            config['reply_from'] = chatbot_user_id
-            config['reply_to'] = group_id
-            config['send_from'] = fromUserId
-            config['send_to'] = group_id
-            config['reply_msg_type'] = 'GROUPCHAT'
-            config['request_msg_id'] = msg['msgId']
             try:
                 ext = json.loads(msg['ext'])
                 if ext.get('ai',{}).get('role', 'none') == 'ai':
@@ -556,6 +568,8 @@ def handle_chat_message(config, msg):
         return ''
     try:
         init_chatbot_config(config, msg)
+        maybe_reply_message_read_ack(config, msg)
+        add_debug_message(config, "处理开始")
         maybe_transcription_audio_msg(config, msg)
         maybe_add_history(config, msg)
         reply = handle_chat_message_try(config, msg, 3)
@@ -605,6 +619,8 @@ def handle_chat_message(config, msg):
                 addHistory(redis, historyListKey, history)
             if len(reply_list) > 0:
                 time.sleep(0.5)
+    time.sleep(0.5)
+    add_debug_message(config, "处理完成", True)
 
 def handle_chat_message_try(config, msg, retry_times):
     app_id = msg['appId']
@@ -614,7 +630,6 @@ def handle_chat_message_try(config, msg, retry_times):
         return checkres['msg']
     chatbot_user_id = checkres['chatbot_user_id']
     config['chatbot_user_id'] = chatbot_user_id
-    reply_message_read_ack(config, msg)
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
     preset = copy.deepcopy(config.get('preset',{}))
@@ -740,9 +755,7 @@ def handle_chat_message_try(config, msg, retry_times):
     if 'ext' in preset:
         presetExt = copy.deepcopy(preset['ext'])
         del preset['ext']
-    is_debug = 'debug' in presetExt and presetExt['debug'] == True
-    if is_debug:
-        replyMessageAsync(config, f"[蓝莺AI] 当前预设为: {preset_name}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
+    add_debug_message(config, f"当前预设为: {preset_name}")
     logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
     vendor = config.get('vendor', 'openai')
     if 'vendor' in preset:
@@ -795,7 +808,6 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     elif msg_type == 'GROUPCHAT':
         historyListKey = historyListGroupKey(app_id, toUserId)
     redis = lanying_redis.get_redis_connection()
-    is_debug = 'debug' in presetExt and presetExt['debug'] == True
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
@@ -862,7 +874,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             embedding_content = first_preset_embedding_info.get('embedding_content', "请严格按照下面的知识回答我之后的所有问题:")
             embedding_content_type = presetExt.get('embedding_content_type', 'text')
             embedding_history_num = presetExt.get('embedding_history_num', 0)
-            embedding_query_text = calc_embedding_query_text(config, content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config)
+            embedding_query_text = calc_embedding_query_text(config, content, historyListKey, embedding_history_num, app_id, toUserId, fromUserId, model_config)
             ask_message = {"role": "user", "content": content}
             embedding_message =  {"role": embedding_role, "content": embedding_content}
             history_msg_size_max = config.get('history_msg_size_max', 1024)
@@ -892,8 +904,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     ## qa_text = f"<QUESTION>\n{doc.question}\n</QUESTION>\n<ANSWER>\n{doc.text}\n</ANSWER>"
                     ## qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
                     context = context + segment_begin + qa_text + segment_end
-                    if is_debug:
-                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"
                 elif hasattr(doc, 'function') and doc.function != "":
                     function_info = json.loads(doc.function)
                     if 'priority' not in function_info:
@@ -927,12 +938,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     user_functions.append(function_info)
                 elif embedding_content_type == 'summary':
                     context = context + segment_begin + doc.summary + segment_end + "\n\n"
-                    if is_debug:
-                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.summary + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.summary + "\n\n"
                 else:
                     context = context + segment_begin + doc.text + segment_end+ "\n\n"
-                    if is_debug:
-                        context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.text + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
                 if last_embedding_name != embedding_names_str or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
                     embedding_info['last_embedding_name'] = embedding_names_str
@@ -951,14 +960,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 messages.append({'role':embedding_role, 'content':context_with_prompt})
             if len(user_functions) > 0:
                 user_functions = sort_functions(user_functions)
-                if is_debug:
-                    for function_info in user_functions:
-                        functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
-            if is_debug:
-                if is_use_old_embeddings:
-                    replyMessageAsync(config, f"[蓝莺AI] 使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
-                else:
-                    replyMessageAsync(config, f"[蓝莺AI] prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n",{'ai':{'role': 'ai', 'is_debug_msg': True}})
+                for function_info in user_functions:
+                    functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
+            if is_use_old_embeddings:
+                add_debug_message(config, f"使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
+            else:
+                add_debug_message(config, f"prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n")
     if msg_type == 'CHAT':
         history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
@@ -1081,9 +1088,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 function_name_debug = function_call_debug['name']
                 if function_name_debug in function_names:
                     function_call_debug['name'] = function_names[function_name_debug]
-            if is_debug:
-                replyMessageAsync(config, f"[蓝莺AI] 触发函数：{function_call_debug}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
-            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages, reply_ext)
+            add_debug_message(config, f"触发函数：{function_call_debug}")
+            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, reply_ext)
             function_call_times -= 1
         else:
             break
@@ -1101,8 +1107,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         except Exception as e:
             pass
     if command:
-        if is_debug:
-            replyMessageAsync(config, f"[蓝莺AI]收到如下JSON:\n{reply}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
+        add_debug_message(config, f"收到如下JSON:\n{reply}")
         if 'preset_welcome' in command:
             reply = command['preset_welcome']
     if command and 'ai_generate' in command and command['ai_generate'] == True:
@@ -1263,7 +1268,7 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, is_debug, function_messages, reply_ext):
+def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, reply_ext):
     function_name = function_call.get('name')
     function_args = json.loads(function_call.get('arguments', '{}'))
     functions = preset.get('functions', [])
@@ -1343,8 +1348,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     result = send_audio_to_client(config, audio_reply_ext, function_response, function_args)
                     function_content = json.dumps(result, ensure_ascii=False)
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
-                if is_debug:
-                    replyMessageAsync(config, f"[蓝莺AI] 函数调用结果：{function_content}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
+                add_debug_message(config, f"函数调用结果：{function_content}")
                 function_message = {
                     "role": "function",
                     "name": function_name,
@@ -1968,10 +1972,10 @@ def get_preset_self_auth_info(config, vendor):
             }
     return auth_info
 
-def reply_message_read_ack(config, msg):
+def maybe_reply_message_read_ack(config, msg):
     msg_type = msg['type']
     is_sync_mode = get_is_sync_mode(config)
-    if msg_type == 'CHAT' and not is_sync_mode:
+    if msg_type == 'CHAT' and not is_sync_mode and 'chatbot' in config:
         fromUserId = config['from_user_id']
         toUserId = config['to_user_id']
         msgId = config['msg_id']
@@ -2754,7 +2758,7 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
 def text_byte_size(text):
     return len(text.encode('utf-8'))
 
-def calc_embedding_query_text(config, content, historyListKey, embedding_history_num, is_debug, app_id, toUserId, fromUserId, model_config):
+def calc_embedding_query_text(config, content, historyListKey, embedding_history_num, app_id, toUserId, fromUserId, model_config):
     if embedding_history_num <= 0:
         return content
     result = [content]
@@ -2788,8 +2792,7 @@ def calc_embedding_query_text(config, content, historyListKey, embedding_history
             else:
                 break
     embedding_query_text = '\n'.join(result)
-    if is_debug:
-        replyMessageAsync(config, f"[蓝莺AI] 使用问题历史算向量:\n{embedding_query_text}",{'ai':{'role': 'ai', 'is_debug_msg': True}})
+    add_debug_message(config, f"使用问题历史算向量:\n{embedding_query_text}")
     return embedding_query_text
 
 def handle_chat_file(msg, config):
@@ -4024,6 +4027,65 @@ def replyMessageAsync(config, content, ext = {}):
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
 
+def add_debug_message(config, content, is_last_msg = False):
+    if 'reply_msg_type' in config:
+        is_debug = config.get('is_debug', False)
+        status_bar = config.get('status_bar', False)
+        if not is_debug and not status_bar:
+            return
+        if get_is_sync_mode(config):
+            return
+        timestr = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        app_id = config['app_id']
+        reply_msg_type = config['reply_msg_type']
+        reply_from = config['reply_from']
+        reply_to = config['reply_to']
+        request_msg_id = config['request_msg_id']
+        ext = {
+            'ai':{
+                'role': 'ai',
+                'is_debug_msg': True,
+                'request_msg_id': request_msg_id
+            }
+        }
+        send_msg_type = 1 if reply_msg_type == 'CHAT' else 2
+        last_debug_msg_id = config.get('last_debug_msg_id')
+        if is_debug:
+            final_content = '' if content == '' else f'[蓝莺AI][{timestr}] {content}\n\n'
+            if last_debug_msg_id is None:
+                extra = {
+                    'ext': ext
+                }
+                msg_id = lanying_im_api.send_message_sync(config, app_id, reply_from, reply_to, send_msg_type, 0, final_content, extra)
+                if msg_id > 0:
+                    config['last_debug_msg_id'] = msg_id
+            else:
+                extra = {
+                    'ext': ext,
+                    'related_mid': last_debug_msg_id,
+                    'online_only': False if is_last_msg else True
+                }
+                lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 11, final_content, extra)
+        elif status_bar:
+            trunc_size = 150
+            final_content = '' if content == '' else f'[蓝莺AI] {content}'
+            if len(final_content) > trunc_size:
+                final_content = final_content[:trunc_size-3] + "..."
+            if last_debug_msg_id is None:
+                extra = {
+                    'ext': ext
+                }
+                msg_id = lanying_im_api.send_message_sync(config, app_id, reply_from, reply_to, send_msg_type, 0, final_content, extra)
+                if msg_id > 0:
+                    config['last_debug_msg_id'] = msg_id
+            else:
+                extra = {
+                    'ext': ext,
+                    'related_mid': last_debug_msg_id,
+                    'online_only': False if is_last_msg else True
+                }
+                lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_content, extra)
+
 def replyAudioMessageAsync(config, content, audio_filename, ext = {}):
     add_ai_message_cnt(content)
     if 'reply_msg_type' in config:
@@ -4147,7 +4209,7 @@ def replyMessageOperAsync(config, stream_msg_id, oper_type, content, ext, msg_co
     else:
         logging.info(f"Skip replyMessageOperAsync for config:{config}")
 
-def is_debug_message(ext):
+def is_add_debug_message(ext):
     try:
         return ext['ai']['is_debug_msg'] == True
     except Exception as e:
@@ -4175,7 +4237,7 @@ def is_stream_msg_not_finish(ext):
     return False
 
 def add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext, msg_config={}):
-    if is_debug_message(ext):
+    if is_add_debug_message(ext):
         return
     if is_stream_msg_not_finish(ext):
         return
@@ -4197,7 +4259,7 @@ def add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content,
     config['sync_mode_messages'].append(message)
 
 def add_sync_mode_audio_message(config, reply_msg_type, reply_from, reply_to, content, ext, msg_config, attachment):
-    if is_debug_message(ext):
+    if is_add_debug_message(ext):
         return
     if is_stream_msg_not_finish(ext):
         return
@@ -4220,7 +4282,7 @@ def add_sync_mode_audio_message(config, reply_msg_type, reply_from, reply_to, co
     config['sync_mode_messages'].append(message)
 
 def add_sync_mode_image_message(config, reply_msg_type, reply_from, reply_to, content, attachment, ext, msg_config={}):
-    if is_debug_message(ext):
+    if is_add_debug_message(ext):
         return
     if is_stream_msg_not_finish(ext):
         return

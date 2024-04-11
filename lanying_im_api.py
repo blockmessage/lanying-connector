@@ -247,4 +247,4 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
                     return msg_ids[0]
         except Exception as e:
             pass
-        return 0
+    return 0
