@@ -912,6 +912,7 @@ def get_menu(app_id):
     server, headers = get_proxy_info()
     url = f'{server}/cgi-bin/get_current_selfmenu_info?access_token={access_token}'
     result = json.loads(requests.get(url, headers=headers).content)
+    logging.info(f"get_menu:{app_id}, result:{result}")
     if 'errmsg' in result and result['errmsg'] != "ok":
         return {'result': 'error', 'message':result['errmsg']}
     return {'result': 'ok', 'data': format_menu(result)}
@@ -922,13 +923,18 @@ def set_menu(app_id, menu):
     config = lanying_config.get_service_config(app_id, service)
     access_token = get_wechat_access_token(config, app_id)
     server, headers = get_proxy_info()
-    url = f'{server}/cgi-bin/menu/create?access_token={access_token}'
+    if isinstance(menu, dict) and 'button' in menu and len(menu['button']) == 0:
+        url = f'{server}/cgi-bin/menu/delete?access_token={access_token}'
+    else:
+        url = f'{server}/cgi-bin/menu/create?access_token={access_token}'
     response = requests.post(url, data=json.dumps(menu, ensure_ascii=False).encode('utf-8'), headers=headers)
     result = json.loads(response.content)
+    logging.info(f"set_menu:{app_id}, menu:{menu}, result:{result}")
     if 'errmsg' in result and result['errmsg'] != "ok":
         return {'result': 'error', 'message':result['errmsg']}
     save_menu_history(app_id, old_menu, menu)
     return {'result': 'ok', 'data': result} 
+
 
 def format_menu(obj):
     if isinstance(obj, dict):
@@ -936,6 +942,11 @@ def format_menu(obj):
         for k,v in obj.items():
             if k == 'sub_button' and isinstance(v, dict) and 'list' in v:
                 ret[k] = format_menu(v['list'])
+            elif k == 'selfmenu_info':
+                if 'is_menu_open' in obj and obj['is_menu_open'] == 0:
+                    ret[k] = {'button':[]}
+                else:
+                    ret[k] = format_menu(v)
             else:
                 ret[k] = format_menu(v)
         return ret
