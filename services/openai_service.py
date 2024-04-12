@@ -1328,10 +1328,14 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                                 add_ai_message_cnt(send_message_content)
                         except Exception as e:
                             pass
+                plugin_request_connect_timeout = 20.0
+                plugin_request_read_timeout = 40.0
+                if 'send_image_to_client' in response_rules or 'send_audio_to_client' in response_rules:
+                    plugin_request_read_timeout = 60.0
                 if method == 'get':
-                    function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (20.0, 40.0))
+                    function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 else:
-                    function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (20.0, 40.0))
+                    function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 function_content = function_response.text
                 if 'send_image_to_client' in response_rules:
                     image_reply_ext = copy.deepcopy(reply_ext)
