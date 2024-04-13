@@ -615,6 +615,7 @@ def handle_chat_message(config, msg):
                 history['from'] =  config['reply_from']
                 if 'send_from' in config:
                     history['mention_list'] = [int(config['send_from'])]
+                add_group_history_metadata(history, make_metadata_for_text())
                 historyListKey = historyListGroupKey(app_id, config['reply_to'])
                 addHistory(redis, historyListKey, history)
             if len(reply_list) > 0:
@@ -824,6 +825,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['assistant'] = ''
             history['uid'] = fromUserId
             history['type'] = 'ask'
+            add_user_history_metadata(history, make_metadata_from_msg(msg), make_metadata_for_text())
             addHistory(redis, historyListKey, history)
         return ''
     if content == '/reset_prompt' or content == "/reset":
@@ -847,6 +849,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             preset_embedding_infos.append(now_embedding_info)
         for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings_by_capsule_id(linked_capsule_id):
             preset_embedding_infos.append(now_embedding_info)
+    ask_message_content = content
+    ask_message_metadata = make_metadata_from_msg(msg)
+    ask_message_content,_ = format_content_and_metadata(content, ask_message_metadata)
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
@@ -875,7 +880,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             embedding_content_type = presetExt.get('embedding_content_type', 'text')
             embedding_history_num = presetExt.get('embedding_history_num', 0)
             embedding_query_text = calc_embedding_query_text(config, content, historyListKey, embedding_history_num, app_id, toUserId, fromUserId, model_config)
-            ask_message = {"role": "user", "content": content}
+            ask_message = {"role": "user", "content": ask_message_content}
             embedding_message =  {"role": embedding_role, "content": embedding_content}
             history_msg_size_max = config.get('history_msg_size_max', 1024)
             history_reserved = min(512, history_msg_size_max)
@@ -974,7 +979,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         for userHistory in userHistoryList:
             logging.info(f'userHistory:{userHistory}')
             messages.append(userHistory)
-        messages.append({"role": "user", "content": content})
+        messages.append({"role": "user", "content": ask_message_content})
     else:
         history_result = loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
@@ -1118,6 +1123,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['assistant'] = reply
             history['uid'] = fromUserId
             history['function_messages'] = function_messages
+            add_user_history_metadata(history, make_metadata_from_msg(msg), make_metadata_for_text())
             addHistory(redis, historyListKey, history)
         elif msg_type == 'GROUPCHAT':
             history['type'] = 'group'
@@ -1128,6 +1134,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['function_messages_owner'] = config['send_from']
             if 'send_from' in config:
                 history['mention_list'] = [int(config['send_from'])]
+            add_group_history_metadata(history, make_metadata_for_text())
             addHistory(redis, historyListKey, history)
     if msg_type == 'CHAT' and command:
         if 'reset_prompt' in command:
@@ -1873,12 +1880,76 @@ def historyListChatGPTKey(app_id, fromUserId, toUserId):
 def historyListGroupKey(app_id, groupId):
     return "lanying:connector:history:list:group:" + app_id + ":" + groupId
 
+# KEYS:
+
+# time, type=group, content, group_id, from=reply_from, mention_list=[send_from]
+# time, type=group, content, group_id=reply_to, from=reply_from, mention_list=send_from, function_messages, function_messages_owner=send_from
+# time, type=group, content, group_id, from=from_user_id, mention_list
+
+# time, type=None/both, user, assistant, uid=fromUserId, function_messages
+# time, type=ask, user, assistant='', uid=fromUserId
+# time, type=reply, user='', assistant, uid=to_user_id(AI)
+
+# time, list=[History]
+
+# EXTRA_KEYS:
+# metadata = {type:text}
+# metadata = {type:audio}
+# metadata = {type:image}
+
 def addHistory(redis, historyListKey, history):
+    if 'user' in history and 'user_metadata' in history:
+        history['user'], history['user_metadata'] = format_content_and_metadata(history['user'], history['user_metadata'])
+    if 'assistant' in history and 'assistant_metadata' in history:
+        history['assistant'], history['assistant_metadata'] = format_content_and_metadata(history['assistant'], history['assistant_metadata'])
+    if 'content' in history and 'metadata' in history:
+        history['content'], history['metadata'] = format_content_and_metadata(history['content'], history['metadata'])
+    logging.info(f"Add History to Redis: historyKey:{historyListKey}, history:{history}")
     if redis:
         Count = redis.rpush(historyListKey, json.dumps(history))
         redis.expire(historyListKey, expireSeconds)
         if Count > maxUserHistoryLen:
             redis.lpop(historyListKey)
+
+def add_group_history_metadata(history, metadata):
+    history['metadata'] = metadata
+
+def add_user_history_metadata(history, user_metadata, assistant_metadata):
+    history['user_metadata'] = user_metadata
+    history['assistant_metadata'] = assistant_metadata
+
+def make_metadata_from_msg(msg):
+    ctype = msg.get('ctype', 'TEXT')
+    return {
+        'ctype': ctype
+    }
+
+def make_metadata_for_audio():
+    return {
+        'ctype': 'AUDIO'
+    }
+
+def make_metadata_for_text():
+    return {
+        'ctype': 'TEXT'
+    }
+
+def format_content_and_metadata(content, metadata):
+    if metadata is None:
+        return content, metadata
+    if 'prefix_size' in metadata:
+        return content, metadata
+    ctype = metadata.get('ctype', 'TEXT')
+    if ctype == 'AUDIO':
+        prefix = '[语音] '
+    elif ctype == 'IMAGE':
+        prefix = '[图片] '
+    else:
+        prefix = ''
+    prefix_size = len(prefix)
+    metadata['prefix_size'] = prefix_size
+    new_content = prefix + content
+    return new_content, metadata
 
 def getHistoryList(redis, historyListKey):
     if redis:
@@ -2965,6 +3036,7 @@ def maybe_add_history(config, msg):
             history['assistant'] = content
             history['uid'] = human_user_id
             history['type'] = 'reply'
+            add_user_history_metadata(history, make_metadata_for_text(), make_metadata_from_msg(msg))
             addHistory(redis, historyListKey, history)
         elif msg_type == 'GROUPCHAT':
             from_user_id = msg['from']['uid']
@@ -2977,6 +3049,7 @@ def maybe_add_history(config, msg):
             msg_config = lanying_utils.safe_json_loads(msg.get('config'))
             mention_list = msg_config.get('mentionList', [])
             history['mention_list'] = mention_list
+            add_group_history_metadata(history, make_metadata_from_msg(msg))
             addHistory(redis, historyListKey, history)
 
 def is_chatbot_audio_to_text_on(config):
