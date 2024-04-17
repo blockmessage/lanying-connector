@@ -11,6 +11,7 @@ import copy
 import lanying_vendor
 import lanying_ai_capsule
 from lanying_chatbot import get_chatbot
+import lanying_utils
 
 def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor, model):
     embedding_name = maybe_create_function_embedding(app_id)
@@ -1064,7 +1065,10 @@ def make_property_info(definitions, swagger_property_info):
         logging.info(f'skip for unknown property:{swagger_property_info}')
 
 def plugin_publish_id_list_key():
-    return f"lanying-connector:public-plugin:list"
+    if lanying_utils.is_preview_server():
+        return f"lanying-connector-preview:public-plugin:list"
+    else:
+        return f"lanying-connector:public-plugin:list"
 
 def plugin_public_info_key(public_id):
     return f"lanying-connector:public-plugin:info:{public_id}"

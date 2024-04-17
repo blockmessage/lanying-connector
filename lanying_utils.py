@@ -6,6 +6,7 @@ import json
 import hashlib
 import time
 import uuid
+import os
 
 def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
@@ -70,3 +71,7 @@ def is_lanying_url(url):
 
 def get_temp_filename(app_id, suffix):
     return f"/tmp/{app_id}_{int(time.time())}_{uuid.uuid4()}{suffix}"
+
+def is_preview_server():
+    server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
+    return 'preview' in server
