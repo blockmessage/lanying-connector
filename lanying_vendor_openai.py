@@ -43,6 +43,15 @@ def model_configs():
             'order': 4
         },
         {
+            "model": 'gpt-4-turbo',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 10,
+            "token_limit": 128000,
+            "support_vision": True,
+            'order': 3.5
+        },
+        {
             "model": 'gpt-3.5-turbo-1106',
             "type": "chat",
             "is_prefix": False,

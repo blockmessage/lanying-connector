@@ -8,7 +8,7 @@ def model_configs():
         {
             "model": 'gpt-4-32k',
             "type": "chat",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 40,
             "token_limit": 32000,
             'order': 4,
@@ -17,7 +17,7 @@ def model_configs():
         {
             "model": 'gpt-4',
             "type": "chat",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 20,
             "token_limit": 8000,
             'order': 3,
@@ -26,7 +26,7 @@ def model_configs():
         {
             "model": 'gpt-35-turbo-16k',
             "type": "chat",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 2,
             "token_limit": 16000,
             'order': 2,
@@ -35,7 +35,7 @@ def model_configs():
         {
             "model": 'gpt-35-turbo',
             "type": "chat",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 1,
             "token_limit": 4000,
             'order': 1,

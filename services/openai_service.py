@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import uuid
 from pydub import AudioSegment
 import math
+import lanying_image
 from lanying_async import executor
 
 service = 'openai_service'
@@ -663,7 +664,11 @@ def handle_chat_message_try(config, msg, retry_times):
             if content == '':
                 return '对不起，我无法处理语音消息。'
         elif ctype == 'IMAGE':
-            return '对不起，我无法处理图片消息。'
+            chatbot = config['chatbot']
+            if chatbot['image_vision'] != 'on':
+                return '对不起，我无法处理图片消息。'
+            else:
+                save_im_message(msg)
         else:
             return ''
     else:
@@ -671,7 +676,11 @@ def handle_chat_message_try(config, msg, retry_times):
             if content == '':
                 return '对不起，我无法处理语音消息。'
         elif ctype == 'IMAGE':
-            return '对不起，我无法处理图片消息。'
+            chatbot = config['chatbot']
+            if chatbot['image_vision'] != 'on':
+                return '对不起，我无法处理图片消息。'
+            else:
+                save_im_message(msg)
         elif ctype != 'TEXT':
             return ''
     if is_chatbot_mode:
@@ -1335,6 +1344,13 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                                 add_ai_message_cnt(send_message_content)
                         except Exception as e:
                             pass
+                if 'image_vision' in response_rules:
+                    image_ids = function_args.get("image_ids", [])
+                    vision_messages = transform_to_vision_messages(config, app_id, preset, image_ids)
+                    body['messages'] = vision_messages
+                    if 'image_ids' in body:
+                        del body['image_ids']
+                    logging.info(f"image_vision body: {json.dumps(body, ensure_ascii=False, indent = 2)}")
                 plugin_request_connect_timeout = 20.0
                 plugin_request_read_timeout = 40.0
                 if 'send_image_to_client' in response_rules or 'send_audio_to_client' in response_rules:
@@ -1358,6 +1374,13 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     audio_reply_ext['ai']['finish'] = True
                     result = send_audio_to_client(config, audio_reply_ext, function_response, function_args)
                     function_content = json.dumps(result, ensure_ascii=False)
+                elif 'image_vision' in response_rules:
+                    try:
+                        function_content_json = json.loads(function_content)
+                        if 'choices' in function_content_json:
+                            function_content = json.dumps(function_content_json['choices'], ensure_ascii=False)
+                    except Exception as e:
+                        pass
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
                 add_debug_message(config, f"函数调用结果：{function_content}")
                 function_message = {
@@ -1920,8 +1943,10 @@ def add_user_history_metadata(history, user_metadata, assistant_metadata):
 
 def make_metadata_from_msg(msg):
     ctype = msg.get('ctype', 'TEXT')
+    msg_id = msg.get('msgId', '')
     return {
-        'ctype': ctype
+        'ctype': ctype,
+        'msg_id': msg_id
     }
 
 def make_metadata_for_audio():
@@ -1943,7 +1968,8 @@ def format_content_and_metadata(content, metadata):
     if ctype == 'AUDIO':
         prefix = '[语音] '
     elif ctype == 'IMAGE':
-        prefix = '[图片] '
+        msg_id = metadata.get('msg_id', 'None')
+        prefix = f'[图片][image_id:{msg_id}] '
     else:
         prefix = ''
     prefix_size = len(prefix)
@@ -1995,6 +2021,18 @@ def calcMessagesTokens(messages, model, vendor):
                 if isinstance(value, dict):
                     for k,v in value.items():
                         num_tokens += len(encoding.encode(v, disallowed_special=()))
+                elif isinstance(value, list):
+                    for sub_msg in value:
+                        sub_msg_type = sub_msg.get('type', 'text')
+                        if sub_msg_type == 'text':
+                            sub_msg_text = sub_msg.get('text', '')
+                            num_tokens += len(encoding.encode(sub_msg_text, disallowed_special=())) + 4
+                        elif sub_msg_type == 'image_url':
+                            image_url = sub_msg.get('image_url', {}).get('url', '')
+                            detail = sub_msg.get('image_url', {}).get('detail', 'auto')
+                            num_tokens += lanying_image.calculate_tokens(image_url, detail)
+                        else:
+                            logging.info(f"calcMessagesTokens unknown sub msg: {sub_msg}")
                 else:
                     num_tokens += len(encoding.encode(value, disallowed_special=()))
                 if key == "name":
@@ -2831,7 +2869,15 @@ def check_can_manage_embedding(app_id, embedding_name, from_user_id):
     return {'result':'error', 'message':f'知识库不存在，或者你（ID：{from_user_id}）没有这个知识库的权限'}
 
 def text_byte_size(text):
-    return len(text.encode('utf-8'))
+    if isinstance(text, list):
+        size = 0
+        for sub_content in text:
+            if 'type' in sub_content and sub_content['type'] == 'text':
+                sub_text = sub_content.get('text', '')
+                size += len(sub_text.encode('utf-8'))
+        return size
+    else:
+        return len(text.encode('utf-8'))
 
 def calc_embedding_query_text(config, content, historyListKey, embedding_history_num, app_id, toUserId, fromUserId, model_config):
     if embedding_history_num <= 0:
@@ -4406,3 +4452,65 @@ def get_system_functions(config, presetExt):
     #     }
     #     functions.append(image_generator_function)
     return functions
+
+def save_im_message(msg):
+    msg_id = msg.get('msgId')
+    if msg_id:
+        redis = lanying_redis.get_redis_connection()
+        msg_json = json.dumps(msg, ensure_ascii=False)
+        redis.setex(im_message_key(msg_id), expireSeconds + 300, msg_json)
+
+def get_im_message(msg_id):
+    redis = lanying_redis.get_redis_connection()
+    result = lanying_redis.redis_get(redis, im_message_key(msg_id))
+    if result is not None:
+        return json.loads(result)
+    return None
+
+def im_message_key(msg_id):
+    return f"lanying-connector:im:msg_id:{msg_id}"
+
+def transform_to_vision_messages(config, app_id, preset, image_ids):
+    messages = copy.deepcopy(preset.get('messages', []))
+    result = []
+    for message in messages:
+        content = message.get('content', '')
+        if content.startswith('[图片][image_id:'):
+            fields = re.split('[\[\]:]',content)
+            if len(fields) >= 5:
+                msg_id = fields[4]
+                logging.info(f"transform_to_vision_messages found msg_id:{msg_id}, msg_ids:{image_ids}")
+                if msg_id in image_ids:
+                    im_message = get_im_message(msg_id)
+                    if im_message:
+                        message_send_from = im_message['from']['uid']
+                        message_send_to = im_message['to']['uid']
+                        send_from = config['send_from']
+                        send_to = config['send_to']
+                        logging.info(f"transform_to_vision_messages check sender | message_send_from:{message_send_from}, message_send_to:{message_send_to}, send_from:{send_from}, send_to:{send_to}")
+                        if message_send_from == send_from or message_send_from == send_to or message_send_to == send_from or message_send_to == send_to:
+                            attachment = lanying_utils.safe_json_loads(im_message.get('attachment', ''))
+                            if 'url' in attachment:
+                                attachment_url = attachment['url']
+                                extra = {'image_type': "1"}
+                                image_url = lanying_im_api.get_attachment_real_download_url(config, app_id, send_from, attachment_url, extra)
+                                new_content = [
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": image_url
+                                        }
+                                    }
+                                ]
+                                logging.info(f"transform_to_vision_messages add image message | old_content:{content}, new_content:{new_content}")
+                                message['content'] = new_content
+                            else:
+                                logging.info(f"transform_to_vision_messages skip url not found")
+                        else:
+                            logging.info(f"transform_to_vision_messages check sender failed | message_send_from:{message_send_from}, message_send_to:{message_send_to}, send_from:{send_from}, send_to:{send_to}")
+                    else:
+                        logging.info(f"transform_to_vision_messages skip not_found msg body | msg_id:{msg_id}")
+                else:
+                    logging.info(f"transform_to_vision_messages skip msg_id | msg_id:{msg_id}, msg_ids:{image_ids}")
+        result.append(message)
+    return result
