@@ -1016,7 +1016,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     oper_msg_config = {
         'force_callback': True
     }
-    response = lanying_vendor.chat(vendor, prepare_info, preset)
+    preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
+    response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
     stream_msg_id = 0
     reply_ext = {
@@ -1089,7 +1090,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 logging.info("stream got error")
                 logging.exception(e)
             reply += ''.join(content_collect)
-            stream_reponse = stream_lines_to_response(preset, reply, vendor, stream_usage, stream_function_name, stream_function_args)
+            stream_reponse = stream_lines_to_response(preset_maybe_vision, reply, vendor, stream_usage, stream_function_name, stream_function_args)
             response['reply'] = reply
             response['usage'] = stream_reponse['usage']
             if 'function_call' in stream_reponse:
@@ -1406,7 +1407,8 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     append_message(preset, model_config, function_message)
                     function_messages.append(response_message)
                     function_messages.append(function_message)
-                    response = lanying_vendor.chat(vendor, prepare_info, preset)
+                    preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
+                    response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
                     logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
                     return response
         elif function_call_type == 'system':
@@ -1426,7 +1428,8 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             append_message(preset, model_config, function_message)
             function_messages.append(response_message)
             function_messages.append(function_message)
-            response = lanying_vendor.chat(vendor, prepare_info, preset)
+            preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
+            response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
             logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
             return response
     else:
@@ -1445,7 +1448,8 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         append_message(preset, model_config, function_message)
         function_messages.append(response_message)
         function_messages.append(function_message)
-        response = lanying_vendor.chat(vendor, prepare_info, preset)
+        preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
+        response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
         logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
         return response
     raise Exception('bad_preset_function')
@@ -4469,6 +4473,55 @@ def get_im_message(msg_id):
 
 def im_message_key(msg_id):
     return f"lanying-connector:im:msg_id:{msg_id}"
+
+def maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset):
+    support_vision = model_config.get('support_vision', False)
+    logging.info(f"maybe_transform_preset_to_vision_preset start | support_vision:{support_vision}")
+    if support_vision == True:
+        new_preset = copy.deepcopy(preset)
+        messages = new_preset.get('messages', [])
+        new_messages = []
+        for message in messages:
+            content = message.get('content', '')
+            if content.startswith('[图片][image_id:'):
+                fields = re.split('[\[\]:]',content)
+                if len(fields) >= 5:
+                    msg_id = fields[4]
+                    logging.info(f"transform_preset_to_vision_preset found msg_id:{msg_id}")
+                    im_message = get_im_message(msg_id)
+                    if im_message:
+                        message_send_from = im_message['from']['uid']
+                        message_send_to = im_message['to']['uid']
+                        send_from = config['send_from']
+                        send_to = config['send_to']
+                        logging.info(f"transform_preset_to_vision_preset check sender | message_send_from:{message_send_from}, message_send_to:{message_send_to}, send_from:{send_from}, send_to:{send_to}")
+                        if message_send_from == send_from or message_send_from == send_to or message_send_to == send_from or message_send_to == send_to:
+                            attachment = lanying_utils.safe_json_loads(im_message.get('attachment', ''))
+                            if 'url' in attachment:
+                                attachment_url = attachment['url']
+                                extra = {'image_type': "1"}
+                                image_url = lanying_im_api.get_attachment_real_download_url(config, app_id, send_from, attachment_url, extra)
+                                new_content = [
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": image_url
+                                        }
+                                    }
+                                ]
+                                logging.info(f"transform_preset_to_vision_preset add image message | old_content:{content}, new_content:{new_content}")
+                                message['content'] = new_content
+                            else:
+                                logging.info(f"transform_to_vision_messages skip url not found")
+                        else:
+                            logging.info(f"transform_to_vision_messages check sender failed | message_send_from:{message_send_from}, message_send_to:{message_send_to}, send_from:{send_from}, send_to:{send_to}")
+                    else:
+                        logging.info(f"transform_to_vision_messages skip not_found msg body | msg_id:{msg_id}")
+            new_messages.append(message)
+        new_preset['messages'] = new_messages
+        return new_preset
+    else:
+        return preset
 
 def transform_to_vision_messages(config, app_id, preset, image_ids):
     messages = copy.deepcopy(preset.get('messages', []))

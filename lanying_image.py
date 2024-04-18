@@ -34,7 +34,7 @@ def calculate_tokens(image_path, detail='auto'):
         # 计算总 tokens 数量
         tokens = 170 * num_tiles + 85
 
-    logging.info(f"calculate_image_tokens: image size finish | file: {image_info}, width: {width}, height: {height}, tokens:{tokens}, detail:{detail}")
+    logging.info(f"calculate_image_tokens: image size finish | file: {image_info}, width: {width}, height: {height}, detail:{detail}, tokens:{tokens}")
     return tokens
 
 def resize(width, height):
