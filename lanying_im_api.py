@@ -8,6 +8,7 @@ from lanying_async import executor
 import uuid
 import os
 import lanying_utils
+import lanying_redis
 
 def get_user_profile(app_id, user_id):
     config = lanying_config.get_lanying_connector(app_id)
@@ -103,6 +104,16 @@ def get_attachment_real_download_url(config, app_id, user_id, attachment_url, ex
             logging.info(f"get_attachment_real_download_url, app_id={app_id} user_id={user_id}, redirected_url:{redirected_url}")
             return redirected_url
     return attachment_url
+
+def get_attachment_real_download_url_with_cache(config, app_id, user_id, attachment_url, extra):
+    redis = lanying_redis.get_redis_connection()
+    cache_key = f"get_attachment_real_download_url_with_cache:{app_id}:{user_id}:{attachment_url}"
+    info = lanying_redis.redis_get(redis, cache_key)
+    if info is None:
+        result = get_attachment_real_download_url(config, app_id, user_id, attachment_url, extra)
+        redis.setex(cache_key, 25 * 60, result)
+        return result
+    return info
 
 def set_group_name(app_id, group_id, name):
     config = lanying_config.get_lanying_connector(app_id)

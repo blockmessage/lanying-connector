@@ -572,6 +572,7 @@ def handle_chat_message(config, msg):
         maybe_reply_message_read_ack(config, msg)
         add_debug_message(config, "处理开始")
         maybe_transcription_audio_msg(config, msg)
+        maybe_save_image_msg(config, msg)
         maybe_add_history(config, msg)
         reply = handle_chat_message_try(config, msg, 3)
     except Exception as e:
@@ -1032,6 +1033,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     is_stream = False
     stream_msg_last_send_time = 0
     function_messages = []
+    subsequent_messages = []
     while True:
         is_stream = ('reply_generator' in response)
         if is_stream:
@@ -1104,7 +1106,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 if function_name_debug in function_names:
                     function_call_debug['name'] = function_names[function_name_debug]
             add_debug_message(config, f"触发函数：{function_call_debug}")
-            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, reply_ext)
+            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext)
             function_call_times -= 1
         else:
             break
@@ -1133,6 +1135,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['assistant'] = reply
             history['uid'] = fromUserId
             history['function_messages'] = function_messages
+            history['subsequent_messages'] = subsequent_messages
             add_user_history_metadata(history, make_metadata_from_msg(msg), make_metadata_for_text())
             addHistory(redis, historyListKey, history)
         elif msg_type == 'GROUPCHAT':
@@ -1144,6 +1147,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['function_messages_owner'] = config['send_from']
             if 'send_from' in config:
                 history['mention_list'] = [int(config['send_from'])]
+            history['subsequent_messages'] = subsequent_messages
+            history['subsequent_messages_owner'] = config['send_from']
             add_group_history_metadata(history, make_metadata_for_text())
             addHistory(redis, historyListKey, history)
     if msg_type == 'CHAT' and command:
@@ -1285,7 +1290,7 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, reply_ext):
+def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext):
     function_name = function_call.get('name')
     function_args = json.loads(function_call.get('arguments', '{}'))
     functions = preset.get('functions', [])
@@ -1365,9 +1370,18 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     image_reply_ext = copy.deepcopy(reply_ext)
                     image_reply_ext['ai']['stream'] = False
                     image_reply_ext['ai']['finish'] = True
+                    client_msg_id = f"{int(time.time()*1000000)}{random.randint(1,100000000)}"
+                    image_reply_ext['ai']['msg_client_id'] = client_msg_id
                     result = send_image_to_client(config, image_reply_ext, function_response)
                     if result['result'] == 'success':
                         reply_ext['ai']['is_image_description'] = True
+                        subsequent_message_metadata = make_metadata_for_image_from_client_msg_id(client_msg_id)
+                        subsequent_message_new_content, _ = format_content_and_metadata('', subsequent_message_metadata)
+                        subsequent_message = {
+                            'role': 'assistant',
+                            'content': subsequent_message_new_content
+                        }
+                        subsequent_messages.append(subsequent_message)
                     function_content = json.dumps(result, ensure_ascii=False)
                 elif 'send_audio_to_client' in response_rules:
                     audio_reply_ext = copy.deepcopy(reply_ext)
@@ -1731,6 +1745,9 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
                     nowHistoryList.append(function_message)
             if len(assistantMessage['content']) > 0:
                 nowHistoryList.append(assistantMessage)
+            if 'subsequent_messages' in history:
+                for subsequent_message in history['subsequent_messages']:
+                    nowHistoryList.append(subsequent_message)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
@@ -1810,6 +1827,10 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
                     nowHistoryList.append(function_message)
         if len(now_message['content']) > 0:
             nowHistoryList.append(now_message)
+        if 'subsequent_messages' in history  and 'subsequent_messages_owner' in history:
+            if history['subsequent_messages_owner'] == config['send_from']:
+                for subsequent_message in history['subsequent_messages']:
+                    nowHistoryList.append(subsequent_message)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
@@ -1957,6 +1978,13 @@ def make_metadata_for_audio():
     return {
         'ctype': 'AUDIO'
     }
+
+def make_metadata_for_image_from_client_msg_id(client_msg_id):
+    return {
+        'ctype': 'IMAGE',
+        'msg_id': client_msg_id
+    }
+    
 
 def make_metadata_for_text():
     return {
@@ -3069,6 +3097,17 @@ def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name,
         }
     logging.info(f"stream_lines_to_response | response:{response}")
     return response
+
+def maybe_save_image_msg(config, msg):
+    ctype = msg.get('ctype', 'TEXT')
+    if ctype == 'IMAGE':
+        ext = lanying_utils.safe_json_loads(msg.get('ext', ''))
+        ai = ext.get('ai', {})
+        if 'role' in ai and ai['role'] == 'ai' and 'msg_client_id' in ai:
+            client_id = ai['msg_client_id']
+            msg_id = msg['msgId']
+            save_im_message(msg)
+            save_im_message_client_id(client_id, msg_id)
 
 def maybe_add_history(config, msg):
     if need_add_history(config, msg):
@@ -4469,10 +4508,28 @@ def get_im_message(msg_id):
     result = lanying_redis.redis_get(redis, im_message_key(msg_id))
     if result is not None:
         return json.loads(result)
+    server_id = get_im_message_from_client_id(msg_id)
+    if server_id is not None:
+        result = lanying_redis.redis_get(redis, im_message_key(server_id))
+        if result is not None:
+            return json.loads(result)
     return None
 
 def im_message_key(msg_id):
     return f"lanying-connector:im:msg_id:{msg_id}"
+
+def get_im_message_from_client_id(client_id):
+    key = im_message_client_id_key(client_id)
+    redis = lanying_redis.get_redis_connection()
+    return lanying_redis.redis_get(redis, key)
+
+def save_im_message_client_id(client_id, server_id):
+    key = im_message_client_id_key(client_id)
+    redis = lanying_redis.get_redis_connection()
+    redis.set(key, server_id)
+    
+def im_message_client_id_key(client_id):
+    return f"lanying-connector:im:msg_client_id:{client_id}"
 
 def maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset):
     support_vision = model_config.get('support_vision', False)
@@ -4487,6 +4544,7 @@ def maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset
                 fields = re.split('[\[\]:]',content)
                 if len(fields) >= 5:
                     msg_id = fields[4]
+                    is_bad_msg = True
                     logging.info(f"transform_preset_to_vision_preset found msg_id:{msg_id}")
                     im_message = get_im_message(msg_id)
                     if im_message:
@@ -4500,7 +4558,7 @@ def maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset
                             if 'url' in attachment:
                                 attachment_url = attachment['url']
                                 extra = {'image_type': "1"}
-                                image_url = lanying_im_api.get_attachment_real_download_url(config, app_id, send_from, attachment_url, extra)
+                                image_url = lanying_im_api.get_attachment_real_download_url_with_cache(config, app_id, send_from, attachment_url, extra)
                                 new_content = [
                                     {
                                         "type": "image_url",
@@ -4511,12 +4569,15 @@ def maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset
                                 ]
                                 logging.info(f"transform_preset_to_vision_preset add image message | old_content:{content}, new_content:{new_content}")
                                 message['content'] = new_content
+                                is_bad_msg = False
                             else:
                                 logging.info(f"transform_to_vision_messages skip url not found")
                         else:
                             logging.info(f"transform_to_vision_messages check sender failed | message_send_from:{message_send_from}, message_send_to:{message_send_to}, send_from:{send_from}, send_to:{send_to}")
                     else:
                         logging.info(f"transform_to_vision_messages skip not_found msg body | msg_id:{msg_id}")
+                    if is_bad_msg:
+                        message['content'] = '[图片]'
             new_messages.append(message)
         new_preset['messages'] = new_messages
         return new_preset
@@ -4532,6 +4593,7 @@ def transform_to_vision_messages(config, app_id, preset, image_ids):
             fields = re.split('[\[\]:]',content)
             if len(fields) >= 5:
                 msg_id = fields[4]
+                is_bad_msg = True
                 logging.info(f"transform_to_vision_messages found msg_id:{msg_id}, msg_ids:{image_ids}")
                 if msg_id in image_ids:
                     im_message = get_im_message(msg_id)
@@ -4546,7 +4608,7 @@ def transform_to_vision_messages(config, app_id, preset, image_ids):
                             if 'url' in attachment:
                                 attachment_url = attachment['url']
                                 extra = {'image_type': "1"}
-                                image_url = lanying_im_api.get_attachment_real_download_url(config, app_id, send_from, attachment_url, extra)
+                                image_url = lanying_im_api.get_attachment_real_download_url_with_cache(config, app_id, send_from, attachment_url, extra)
                                 new_content = [
                                     {
                                         "type": "image_url",
@@ -4557,6 +4619,7 @@ def transform_to_vision_messages(config, app_id, preset, image_ids):
                                 ]
                                 logging.info(f"transform_to_vision_messages add image message | old_content:{content}, new_content:{new_content}")
                                 message['content'] = new_content
+                                is_bad_msg = False
                             else:
                                 logging.info(f"transform_to_vision_messages skip url not found")
                         else:
@@ -4565,5 +4628,7 @@ def transform_to_vision_messages(config, app_id, preset, image_ids):
                         logging.info(f"transform_to_vision_messages skip not_found msg body | msg_id:{msg_id}")
                 else:
                     logging.info(f"transform_to_vision_messages skip msg_id | msg_id:{msg_id}, msg_ids:{image_ids}")
+                if is_bad_msg:
+                    message['content'] = '[图片]'
         result.append(message)
     return result

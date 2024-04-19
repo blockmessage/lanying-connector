@@ -3,7 +3,7 @@ import openai
 import tiktoken
 import os
 import types
-from openai.error import APIError
+from openai.error import APIError, InvalidRequestError
 import time
 import json
 
@@ -212,6 +212,21 @@ def chat(prepare_info, preset):
                 except Exception as ee:
                     pass
                 time.sleep(2)
+        except InvalidRequestError as e:
+            if e.user_message == 'Invalid image.':
+                if i == retry_times - 1:
+                    logging.info(f"chat complete stop retry: task_id:{task_id}, {i}/{retry_times}, invalid image error")
+                    raise e
+                else:
+                    logging.info(f"chat complete got exception: task_id:{task_id}, {i}/{retry_times}, invalid image error")
+                    logging.exception(e)
+                    try:
+                        logging.info(dir(e))
+                    except Exception as ee:
+                        pass
+                    time.sleep(0.1)
+            else:
+                raise e
     logging.info(f"vendor openai chat response: task_id:{task_id}, {response}")
     if isinstance(response, types.GeneratorType):
         def generator():
