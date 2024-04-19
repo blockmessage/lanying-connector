@@ -1359,7 +1359,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                 if method == 'get':
                     function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 else:
-                    function_response = requests.post(url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
+                    function_response = requests.request(method, url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 function_content = function_response.text
                 if 'send_image_to_client' in response_rules:
                     image_reply_ext = copy.deepcopy(reply_ext)
