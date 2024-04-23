@@ -1327,6 +1327,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             params = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('params', {})))
             headers = ensure_value_is_string(fill_function_args(function_args, lanying_function_call.get('headers', {})))
             body = fill_function_args(function_args, lanying_function_call.get('body', {}))
+            files = None
             auth = lanying_function_call.get('auth', {})
             response_rules = lanying_function_call.get('response_rules', [])
             if lanying_utils.is_valid_public_url(url):
@@ -1357,10 +1358,13 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     if 'image_ids' in body:
                         del body['image_ids']
                     logging.info(f"image_vision body: {json.dumps(body, ensure_ascii=False, indent = 2)}")
+                if 'image_edit' in response_rules:
+                    image_edit_check_image_and_mask(config, app_id, function_args)
                 plugin_request_connect_timeout = 20.0
                 plugin_request_read_timeout = 40.0
-                if 'send_image_to_client' in response_rules or 'send_audio_to_client' in response_rules:
-                    plugin_request_read_timeout = 60.0
+                for rule in response_rules:
+                    if rule in ['send_image_to_client', 'send_audio_to_client', 'image_edit', 'image_vision']:
+                        plugin_request_read_timeout = 60.0
                 if method == 'get':
                     function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 else:
@@ -4632,3 +4636,25 @@ def transform_to_vision_messages(config, app_id, preset, image_ids):
                     message['content'] = '[图片]'
         result.append(message)
     return result
+
+def image_edit_check_image_and_mask(config, app_id, function_args):
+    image_id = function_args.get('image_id')
+    modification_area = function_args.get('modification_area', {})
+    im_message = get_im_message(image_id)
+    if im_message:
+        message_send_from = im_message['from']['uid']
+        message_send_to = im_message['to']['uid']
+        send_from = config['send_from']
+        send_to = config['send_to']
+        logging.info(f"fill_image_edit_body check sender | message_send_from:{message_send_from}, message_send_to:{message_send_to}, send_from:{send_from}, send_to:{send_to}")
+        if message_send_from == send_from or message_send_from == send_to or message_send_to == send_from or message_send_to == send_to:
+            attachment = lanying_utils.safe_json_loads(im_message.get('attachment', ''))
+            if 'url' in attachment:
+                attachment_url = attachment['url']
+                filename = lanying_utils.get_temp_filename(app_id, ".png")
+                extra = {'image_type': '1'}
+                result = lanying_im_api.download_url(config, app_id, send_from, attachment_url, filename, extra)
+                if result['result'] == 'ok':
+                    result = lanying_image.make_png_image_and_mask(filename, modification_area)
+                    return result
+    return {'result': 'error', 'message': 'fail to get image from image_id'}

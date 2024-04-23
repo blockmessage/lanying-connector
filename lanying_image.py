@@ -12,7 +12,7 @@ def calculate_tokens(image_path, detail='auto'):
     # 获取图像尺寸
     width, height = get_image_size_with_cache(image_path)
     logging.info(f"calculate_image_tokens image size start | file: {image_info}, width: {width}, height: {height}, detail:{detail}")
-    
+
     # 根据规则判断细节参数是否为自动
     if detail == 'auto':
         # 根据图像尺寸判断使用低分辨率还是高分辨率模式
@@ -20,7 +20,7 @@ def calculate_tokens(image_path, detail='auto'):
             detail = 'high'
         else:
             detail = 'low'
-    
+
     # 根据细节参数计算 tokens 数量
     if detail == 'low':
         tokens = 85
@@ -48,7 +48,7 @@ def resize(width, height):
     else:
         new_width = width
         new_height = height
-    
+
     # 将最短边缩放为 768px
     if min(new_width, new_height) > 768:
         if new_width < new_height:
@@ -119,3 +119,50 @@ def encode_image(image_path):
   with open(image_path, "rb") as image_file:
     base64_image = base64.b64encode(image_file.read()).decode('utf-8')
     return f"data:image/jpeg;base64,{base64_image}"
+
+def create_mask_image(transparency_area, image_size):
+    # 创建一个新的空白图像，大小与原始图像相同，初始化为完全不透明
+    mask_image = Image.new("RGBA", image_size, (255, 255, 255, 255))
+
+    # 获取透明区域的位置和大小
+    x_percent = transparency_area.get("x_percent", 0)
+    y_percent = transparency_area.get("y_percent", 0)
+    width_percent = transparency_area.get("width_percent", 0)
+    height_percent = transparency_area.get("height_percent", 0)
+
+    # 计算透明区域在图像中的具体位置
+    x = int(image_size[0] * x_percent / 100)
+    y = int(image_size[1] * y_percent / 100)
+    width = int(image_size[0] * width_percent / 100)
+    height = int(image_size[1] * height_percent / 100)
+
+    # 将透明区域设置为透明
+    mask_image.paste((0, 0, 0, 0), (x, y, x + width, y + height))
+
+    return mask_image
+
+def make_png_image_and_mask(image_path, transparency_area, max_dimension=1024):
+    try:
+        input_image = Image.open(image_path)
+        width, height = input_image.size
+        if width > max_dimension or height > max_dimension:
+            if width > height:
+                new_width = max_dimension
+                new_height = int(height * (max_dimension / width))
+            else:
+                new_height = max_dimension
+                new_width = int(width * (max_dimension / height))
+            input_image = input_image.resize((new_width, new_height), Image.ANTIALIAS)
+        rgba_image = input_image.convert("RGBA")
+
+        # 创建一个新的空白图像，大小与原始图像相同，初始化为完全不透明
+        png_image = Image.new("RGBA", rgba_image.size, (255, 255, 255, 255))
+
+        # 将原始图像合成到新图像中，保留透明通道
+        png_image.paste(rgba_image, (0, 0), rgba_image)
+        mask_image = create_mask_image(transparency_area, png_image.size)
+        return {'result': 'ok', 'png_image': png_image, 'mask_image': mask_image}
+    except Exception as e:
+        logging.exception(e)
+        logging.info(f"fail to make_png_image_and_mask | image_path:{image_path}, transparency_area:{transparency_area}, max_dimension:{max_dimension}")
+        return {'result': 'error', 'message': 'fail to transform image'}
