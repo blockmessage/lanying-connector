@@ -1018,7 +1018,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         'force_callback': True
     }
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-    response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
+    response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
     stream_msg_id = 0
     reply_ext = {
@@ -1426,7 +1426,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     function_messages.append(response_message)
                     function_messages.append(function_message)
                     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-                    response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
+                    response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
                     logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
                     return response
         elif function_call_type == 'system':
@@ -1447,7 +1447,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             function_messages.append(response_message)
             function_messages.append(function_message)
             preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-            response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
+            response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
             logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
             return response
     else:
@@ -1467,7 +1467,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         function_messages.append(response_message)
         function_messages.append(function_message)
         preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-        response = lanying_vendor.chat(vendor, prepare_info, preset_maybe_vision)
+        response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
         logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
         return response
     raise Exception('bad_preset_function')
@@ -2238,6 +2238,9 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
             logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, openai_key_type:{openai_key_type}, model_config:{model_config}")
     
     elif 'usage' in response:
+        if 'no_cost' in response:
+            logging.info(f"skip message statistic for no cost | app_id={app_id}")
+            return
         usage = response['usage']
         completion_tokens = usage.get('completion_tokens',0)
         prompt_tokens = usage.get('prompt_tokens', 0)
@@ -3368,7 +3371,8 @@ def add_ai_function_to_ai_plugin():
     parameters = dict(data['parameters'])
     function_call = dict(data['function_call'])
     priority = int(data.get('priority', 10))
-    result = lanying_ai_plugin.add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call, priority)
+    force_call = bool(data.get('force_call', False))
+    result = lanying_ai_plugin.add_ai_function_to_ai_plugin(app_id, plugin_id, name, description, parameters, function_call, priority, force_call)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -3441,11 +3445,12 @@ def configure_ai_function():
     plugin_id = str(data['plugin_id'])
     function_id = str(data['function_id'])
     priority = int(data.get('priority', 10))
+    force_call = bool(data.get('force_call', False))
     name = str(data['name'])
     description = str(data['description'])
     parameters = dict(data['parameters'])
     function_call = dict(data['function_call'])
-    result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call, priority)
+    result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call, priority, force_call)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -4658,3 +4663,30 @@ def image_edit_check_image_and_mask(config, app_id, function_args):
                     result = lanying_image.make_png_image_and_mask(filename, modification_area)
                     return result
     return {'result': 'error', 'message': 'fail to get image from image_id'}
+
+def chat_or_force_function_call(config, vendor, prepare_info, preset):
+    force_call_finish_list = config.get('force_call_finish_list', [])
+    functions = preset.get('functions', [])
+    for function in functions:
+        force_call = function.get('force_call', False)
+        if force_call:
+            name = function.get('name')
+            if name not in force_call_finish_list:
+                force_call_finish_list.append(name)
+                config['force_call_finish_list'] = force_call_finish_list
+                function_call = {
+                    "name": name,
+                    "arguments": "{}"
+                }
+                return {
+                    'result': 'ok',
+                    'reply' : '',
+                    'function_call': function_call,
+                    'no_cost': True,
+                    'usage' : {
+                        'completion_tokens' : 0,
+                        'prompt_tokens' : 0,
+                        'total_tokens' : 0
+                    }
+                }
+    return lanying_vendor.chat(vendor, prepare_info, preset)
