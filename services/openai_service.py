@@ -1359,7 +1359,16 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                         del body['image_ids']
                     logging.info(f"image_vision body: {json.dumps(body, ensure_ascii=False, indent = 2)}")
                 if 'image_edit' in response_rules:
-                    image_edit_check_image_and_mask(config, app_id, function_args)
+                    result = image_edit_check_image_and_mask(config, app_id, function_args)
+                    if 'modification_area' in body:
+                        del body['modification_area']
+                    if 'image_id' in body:
+                        del body['image_id']
+                    if result['result'] == 'ok':
+                        files = {
+                            'image' : ('image.png', lanying_image.image_to_byte_io(result['png_image']), 'image/png'),
+                            'mask': ('mask.png', lanying_image.image_to_byte_io(result['mask_image']), 'image/png')
+                        }
                 plugin_request_connect_timeout = 20.0
                 plugin_request_read_timeout = 40.0
                 for rule in response_rules:
@@ -1367,10 +1376,12 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                         plugin_request_read_timeout = 60.0
                 if method == 'get':
                     function_response = requests.get(url, params=params, headers=headers, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
+                elif files is not None:
+                    function_response = requests.request(method, url, params=params, headers=headers, data = body, files = files, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 else:
                     function_response = requests.request(method, url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 function_content = function_response.text
-                if 'send_image_to_client' in response_rules:
+                if 'send_image_to_client' in response_rules or 'image_edit' in response_rules:
                     image_reply_ext = copy.deepcopy(reply_ext)
                     image_reply_ext['ai']['stream'] = False
                     image_reply_ext['ai']['finish'] = True
@@ -1399,6 +1410,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                         if 'choices' in function_content_json:
                             function_content = json.dumps(function_content_json['choices'], ensure_ascii=False)
                     except Exception as e:
+                        logging.exception(e)
                         pass
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
                 add_debug_message(config, f"函数调用结果：{function_content}")
@@ -1485,6 +1497,7 @@ def send_image_to_client(config, reply_ext, response):
             'result': 'success'
         }
     except Exception as e:
+        logging.exception(e)
         return {
             'result': 'error',
             'message': 'exception'
@@ -4661,7 +4674,11 @@ def image_edit_check_image_and_mask(config, app_id, function_args):
                 result = lanying_im_api.download_url(config, app_id, send_from, attachment_url, filename, extra)
                 if result['result'] == 'ok':
                     result = lanying_image.make_png_image_and_mask(filename, modification_area)
-                    return result
+                    return {
+                        'result': 'ok',
+                        'png_image': result['png_image'],
+                        'mask_image': result['mask_image']
+                    }
     return {'result': 'error', 'message': 'fail to get image from image_id'}
 
 def chat_or_force_function_call(config, vendor, prepare_info, preset):

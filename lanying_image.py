@@ -129,6 +129,10 @@ def create_mask_image(transparency_area, image_size):
     y_percent = transparency_area.get("y_percent", 0)
     width_percent = transparency_area.get("width_percent", 0)
     height_percent = transparency_area.get("height_percent", 0)
+    if width_percent == 0:
+        width_percent = 100
+    if height_percent == 0:
+        height_percent = 100
 
     # 计算透明区域在图像中的具体位置
     x = int(image_size[0] * x_percent / 100)
@@ -166,3 +170,9 @@ def make_png_image_and_mask(image_path, transparency_area, max_dimension=1024):
         logging.exception(e)
         logging.info(f"fail to make_png_image_and_mask | image_path:{image_path}, transparency_area:{transparency_area}, max_dimension:{max_dimension}")
         return {'result': 'error', 'message': 'fail to transform image'}
+
+def image_to_byte_io(image):
+    image_bytes = BytesIO()
+    image.save(image_bytes, format='PNG')
+    image_bytes.seek(0)
+    return image_bytes
