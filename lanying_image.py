@@ -147,6 +147,7 @@ def create_mask_image(transparency_area, image_size):
 
 def make_png_image_and_mask(image_path, transparency_area, max_dimension=1024):
     try:
+        logging.info(f"make_png_image_and_mask | image_path:{image_path}")
         input_image = Image.open(image_path)
         width, height = input_image.size
         if width > max_dimension or height > max_dimension:
@@ -165,6 +166,8 @@ def make_png_image_and_mask(image_path, transparency_area, max_dimension=1024):
         # 将原始图像合成到新图像中，保留透明通道
         png_image.paste(rgba_image, (0, 0), rgba_image)
         mask_image = create_mask_image(transparency_area, png_image.size)
+        png_image.save(image_path + ".resize.png")
+        mask_image.save(image_path + ".mask.png")
         return {'result': 'ok', 'png_image': png_image, 'mask_image': mask_image}
     except Exception as e:
         logging.exception(e)
