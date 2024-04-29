@@ -16,6 +16,7 @@ import lanying_url_loader
 import io
 import json
 import lanying_ai_plugin
+import lanying_grow_ai
 
 normal_queue = Celery('normal_queue',
              backend=lanying_redis.get_task_redis_server(),
@@ -428,6 +429,15 @@ def delete_doc_data(app_id, embedding_name, doc_id, embedding_index, last_total,
 def process_function_embeddings(app_id, plugin_id, function_ids):
     for function_id in function_ids:
         lanying_ai_plugin.process_function_embedding(app_id, plugin_id, function_id)
+
+global_grow_ai_max_retries = 2
+@slow_queue.task(bind=True, max_retries=global_grow_ai_max_retries)
+def grow_ai_run_task(self, app_id, task_run_id):
+    has_retry_times = (self.request.retries != global_grow_ai_max_retries)
+    try:
+        lanying_grow_ai.do_run_task(app_id, task_run_id, has_retry_times)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=5)
 
 def task_error(message):
     logging.error(message)

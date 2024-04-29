@@ -48,7 +48,8 @@ import openai_service
 app.register_blueprint(openai_service.bp)
 import wechat_service
 app.register_blueprint(wechat_service.bp)
-
+import grow_ai_service
+app.register_blueprint(grow_ai_service.bp)
 
 @app.route("/", methods=["GET"])
 def index():

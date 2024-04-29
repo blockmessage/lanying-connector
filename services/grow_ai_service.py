@@ -1,0 +1,188 @@
+from flask import Blueprint, request, make_response, send_file
+import logging
+import os
+import json
+import lanying_grow_ai
+service = 'grow_ai'
+bp = Blueprint(service, __name__)
+
+
+@bp.route("/service/grow_ai/create_task", methods=["POST"])
+def create_task():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    name = str(data['name'])
+    note = str(data['note'])
+    chatbot_id = str(data['chatbot_id'])
+    prompt = str(data['prompt'])
+    keywords = str(data['keywords'])
+    word_count_min = int(data['word_count_min'])
+    word_count_max = int(data['word_count_max'])
+    image_count = int(data['image_count'])
+    article_count = int(data['article_count'])
+    cycle_type = str(data['cycle_type'])
+    cycle_interval = int(data['cycle_interval'])
+    task_setting = lanying_grow_ai.TaskSetting(
+        app_id = app_id,
+        name = name,
+        note = note,
+        chatbot_id = chatbot_id,
+        prompt = prompt,
+        keywords = keywords,
+        word_count_min = word_count_min,
+        word_count_max = word_count_max,
+        image_count = image_count,
+        article_count = article_count,
+        cycle_type = cycle_type,
+        cycle_interval = cycle_interval
+    )
+    result = lanying_grow_ai.create_task(task_setting)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/configure_task", methods=["POST"])
+def configure_task():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_id = str(data['task_id'])
+    name = str(data['name'])
+    note = str(data['note'])
+    chatbot_id = str(data['chatbot_id'])
+    prompt = str(data['prompt'])
+    keywords = str(data['keywords'])
+    word_count_min = int(data['word_count_min'])
+    word_count_max = int(data['word_count_max'])
+    image_count = int(data['image_count'])
+    article_count = int(data['article_count'])
+    cycle_type = str(data['cycle_type'])
+    cycle_interval = int(data['cycle_interval'])
+    task_setting = lanying_grow_ai.TaskSetting(
+        app_id = app_id,
+        name = name,
+        note = note,
+        chatbot_id = chatbot_id,
+        prompt = prompt,
+        keywords = keywords,
+        word_count_min = word_count_min,
+        word_count_max = word_count_max,
+        image_count = image_count,
+        article_count = article_count,
+        cycle_type = cycle_type,
+        cycle_interval = cycle_interval
+    )
+    result = lanying_grow_ai.configure_task(task_id, task_setting)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/get_task_list", methods=["POST"])
+def get_task_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_grow_ai.get_task_list(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/get_task_run_list", methods=["POST"])
+def get_task_run_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_id = str(data['task_id'])
+    result = lanying_grow_ai.get_task_run_list(app_id, task_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/task_run_retry", methods=["POST"])
+def task_run_retry():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_run_id = str(data['task_run_id'])
+    result = lanying_grow_ai.task_run_retry(app_id, task_run_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/get_task_run_result_list", methods=["POST"])
+def get_task_run_result_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_run_id = str(data['task_run_id'])
+    result = lanying_grow_ai.get_task_run_result_list(app_id, task_run_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route('/service/grow_ai/file/download', methods=['GET'])
+def download_file():
+    file_sign = request.args.get('file_sign')
+    result = lanying_grow_ai.get_download_file(file_sign)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+        return resp
+    else:
+        file_path = result['data']['file_path']
+        object_name = result['data']['object_name']
+        return send_file(file_path, as_attachment=True, download_name=object_name)
+
+@bp.route("/service/grow_ai/download_task_run_result", methods=["POST"])
+def download_task_run_result():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_run_id = str(data['task_run_id'])
+    result = lanying_grow_ai.download_task_run_result(app_id, task_run_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+def check_access_token_valid():
+    headerToken = request.headers.get('access-token', "")
+    accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
+    if accessToken and accessToken == headerToken:
+        return True
+    else:
+        return False

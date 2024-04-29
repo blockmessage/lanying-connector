@@ -43,6 +43,9 @@ def redis_zrange(redis, key, start, end):
 def redis_hkeys(redis, key):
     return [bytes.decode('utf-8') for bytes in redis.hkeys(key)]
 
+def redis_hvals(redis, key):
+    return [bytes.decode('utf-8') for bytes in redis.hvals(key)]
+
 def redis_hgetall(redis, key):
     kvs = redis.hgetall(key)
     ret = {}
