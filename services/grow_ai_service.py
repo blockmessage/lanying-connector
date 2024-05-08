@@ -7,6 +7,56 @@ service = 'grow_ai'
 bp = Blueprint(service, __name__)
 
 
+@bp.route("/service/grow_ai/open_service", methods=["POST"])
+def open_service():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    product_id = int(data['product_id'])
+    price = int(data['price'])
+    article_num = int(data['article_num'])
+    storage_size = int(data['storage_size'])
+    result = lanying_grow_ai.open_service(app_id, product_id, price, article_num, storage_size)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/close_service", methods=["POST"])
+def close_service():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    product_id = int(data['product_id'])
+    result = lanying_grow_ai.close_service(app_id, product_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/get_service_usage", methods=["POST"])
+def get_service_usage():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_grow_ai.get_service_usage(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/grow_ai/create_task", methods=["POST"])
 def create_task():
     if not check_access_token_valid():
@@ -82,6 +132,38 @@ def configure_task():
         cycle_interval = cycle_interval
     )
     result = lanying_grow_ai.configure_task(task_id, task_setting)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/run_task", methods=["POST"])
+def run_task():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_id = str(data['task_id'])
+    result = lanying_grow_ai.run_task(app_id, task_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/delete_task", methods=["POST"])
+def delete_task():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_id = str(data['task_id'])
+    result = lanying_grow_ai.delete_task(app_id, task_id)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

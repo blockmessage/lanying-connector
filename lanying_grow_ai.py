@@ -15,6 +15,8 @@ import re
 import zipfile
 import uuid
 import random
+from dateutil.relativedelta import relativedelta
+import os
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval):
@@ -46,6 +48,115 @@ class TaskSetting:
             'cycle_type': self.cycle_type,
             'cycle_interval': self.cycle_interval
         }
+
+def open_service(app_id, product_id, price, article_num, storage_size):
+    service_status_key = get_service_status_key(app_id)
+    redis = lanying_redis.get_redis_connection()
+    now_datetime = datetime.now()
+    if price > 0:
+        pay_start_date = now_datetime.strftime('%Y-%m-%d')
+    else:
+        month_start_date = datetime(now_datetime.year, now_datetime.month, 1)
+        pay_start_date = month_start_date.strftime('%Y-%m-%d')
+    redis.hmset(service_status_key, {
+        'app_id': app_id,
+        'create_time': int(time.time()),
+        'status': 'normal',
+        'pay_start_date': pay_start_date,
+        'product_id': product_id,
+        'price': price,
+        'article_num': article_num,
+        'storage_size': storage_size
+    })
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True
+        }
+    }
+
+def close_service(app_id, product_id):
+    service_status_key = get_service_status_key(app_id)
+    redis = lanying_redis.get_redis_connection()
+    article_num = 0
+    storage_size = 0
+    redis.hmset(service_status_key,{
+        'status': 'stopped',
+        'article_num': article_num,
+        'storage_size': storage_size
+        })
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True
+        }
+    }
+
+def get_service_status(app_id):
+    service_status_key = get_service_status_key(app_id)
+    redis = lanying_redis.get_redis_connection()
+    info = lanying_redis.redis_hgetall(redis, service_status_key)
+    if 'create_time' in info:
+        dto = {}
+        for key,value in info.items():
+            if key in ['create_time', 'product_id', 'article_num', 'storage_size']:
+                dto[key] = int(value)
+            else:
+                dto[key] = value
+        return dto
+    return None
+
+def get_service_status_key(app_id):
+    return f"lanying-connector:grow_ai:service_status:{app_id}"
+
+def get_service_usage(app_id):
+    article_num_key = get_service_statistic_key_list(app_id, 'article_num')[0]
+    storage_size_key = get_service_statistic_key_list(app_id, 'storage_size')[0]
+    redis = lanying_redis.get_redis_connection()
+    article_num = redis.incrby(article_num_key, 0)
+    storage_size = redis.incrby(storage_size_key, 0)
+    return {
+        'result': 'ok',
+        'data':{
+            'article_num': article_num,
+            'storage_size': storage_size
+        }
+}
+
+def incrby_service_usage(app_id, field, value):
+    logging.info(f"incrby_service_usage | app_id:{app_id}, field:{field}, value:{value}")
+    redis = lanying_redis.get_redis_connection()
+    key_list = get_service_statistic_key_list(app_id, field)
+    for key in key_list:
+        redis.incrby(key, value)
+
+def get_service_statistic_key_list(app_id, field):
+    if field == 'storage_size':
+        return [
+            f'lanying-connector:grow_ai:staistic:{field}:{app_id}'
+        ]
+    now = datetime.now()
+    service_status = get_service_status(app_id)
+    month_start_date = datetime(now.year, now.month, 1)
+    if service_status:
+        pay_start_date = datetime.strptime(service_status['pay_start_date'], '%Y-%m-%d')
+        product_id = service_status['product_id']
+    else:
+        pay_start_date = month_start_date
+        product_id = 0
+    while now >= pay_start_date:
+        end_date = pay_start_date + relativedelta(months=1)
+        if now >= pay_start_date and now < end_date:
+            break
+        else:
+            pay_start_date = end_date
+    pay_start_date_str = pay_start_date.strftime('%Y-%m-%d')
+    now_date_str = now.strftime('%Y-%m-%d')
+    return [
+        f'lanying-connector:grow_ai:staistic:{field}:pay_start_date:{app_id}:{product_id}:{pay_start_date_str}',
+        f'lanying-connector:grow_ai:staistic:{field}:month_start_date:{app_id}:{product_id}:{month_start_date}',
+        f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}'
+    ]
 
 def create_task(task_setting: TaskSetting):
     now = int(time.time())
@@ -88,7 +199,7 @@ def configure_task(task_id, task_setting: TaskSetting):
 
 def get_task_list(app_id):
     redis = lanying_redis.get_redis_connection()
-    task_ids = lanying_redis.redis_lrange(redis, get_task_list_key(app_id), 0, -1)
+    task_ids = reversed(lanying_redis.redis_lrange(redis, get_task_list_key(app_id), 0, -1))
     task_list = []
     for task_id in task_ids:
         task_info = get_task(app_id, task_id)
@@ -130,6 +241,22 @@ def generate_task_id():
     redis = lanying_redis.get_redis_connection()
     return redis.incrby("lanying_connector:grow_ai:task_id_generator", 1)
 
+def delete_task(app_id, task_id):
+    logging.info(f"delete task start | app_id:{app_id}, task_id:{task_id}")
+    task_info = get_task(app_id, task_id)
+    if task_info is None:
+        return {'result': 'error', 'message': 'task_id not exist'}
+    result = get_task_run_list(app_id, task_id)
+    task_run_list = result['data']['list']
+    for task_run in task_run_list:
+        task_run_id = task_run['task_run_id']
+        delete_task_run(app_id, task_run_id)
+    redis = lanying_redis.get_redis_connection()
+    task_key = get_task_key(app_id, task_id)
+    task_list_key = get_task_list_key(app_id)
+    redis.lrem(task_list_key, 1, task_id)
+    redis.delete(task_key)
+
 ## TASK RUN
 
 def run_task(app_id, task_id):
@@ -169,6 +296,18 @@ def run_task(app_id, task_id):
         logging.exception(e)
         return {'result': 'error', 'message': 'internal error'}
 
+def delete_task_run(app_id, task_run_id):
+    task_run = get_task_run(app_id, task_run_id)
+    if task_run is None:
+        return {'result': 'ok', 'data':{'success': True}}
+    task_id = task_run['task_id']
+    redis = lanying_redis.get_redis_connection()
+    task_run_list_key = get_task_run_list_key(app_id, task_id)
+    redis.lrem(task_run_list_key, 1, task_run_id)
+    task_run_key = get_task_run_key(app_id, task_run_id)
+    redis.delete(task_run_key)
+    return {'result': 'ok', 'data':{'success': True}}
+
 def do_run_task(app_id, task_run_id, has_retry_times):
     try:
         update_task_run_field(app_id, task_run_id, "status", "running")
@@ -176,11 +315,16 @@ def do_run_task(app_id, task_run_id, has_retry_times):
         if result['result'] == 'error':
             increase_task_run_field(app_id, task_run_id, "fail_times", 1)
             update_task_run_field(app_id, task_run_id, "error_message", result['message'])
-            if has_retry_times:
-                update_task_run_field(app_id, task_run_id, "status", "retry")
+            retry = result.get('retry', True)
+            if retry:
+                if has_retry_times:
+                    update_task_run_field(app_id, task_run_id, "status", "retry")
+                else:
+                    update_task_run_field(app_id, task_run_id, "status", "error")
+                raise Exception(result['message'])
             else:
                 update_task_run_field(app_id, task_run_id, "status", "error")
-            raise Exception(result['message'])
+                return result
         elif result['result'] == 'ok':
             increase_task_run_field(app_id, task_run_id, "success_times", 1)
             update_task_run_field(app_id, task_run_id, "status", "success")
@@ -199,6 +343,9 @@ def do_run_task(app_id, task_run_id, has_retry_times):
         else:
             update_task_run_field(app_id, task_run_id, "status", "error")
         raise e
+
+def get_article_limit(app_id):
+    return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_article_number')
 
 def do_run_task_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"do_run_task start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
@@ -219,8 +366,13 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     article_cursor = task_run['article_cursor']
     keywords = parse_keywords(task['keywords'])
     run_result_key = get_task_run_result_key(app_id, task_run_id)
+    article_limit = get_article_limit(app_id)
     for i in range(article_count):
         logging.info(f"do_run_task_internal for article | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_cursor:{article_cursor}, i:{i}, article_cursor_type:{type(article_cursor)}")
+        usage = get_service_usage(app_id)
+        now_article_num = usage['data']['article_num']
+        if now_article_num + 1 > article_limit:
+            return {'result': 'error', 'message': 'article_num not enough', 'retry': False}
         article_id = f'{task_run_id}_{i+1}'
         if redis.hexists(run_result_key, article_id):
             continue
@@ -232,6 +384,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         article_info = result['article_info']
         redis.hset(run_result_key, article_id, json.dumps(article_info, ensure_ascii=False))
         increase_task_run_field(app_id, task_run_id, "article_success_count", 1)
+        incrby_service_usage(app_id, 'article_num', 1)
     result = make_task_run_result_zip_file(app_id, task_run_id)
     if result['result'] == 'error':
         return result
@@ -263,10 +416,13 @@ def make_task_run_result_zip_file(app_id, task_run_id):
                     result = lanying_file_storage.download(image_objectname, image_filename)
                     if result['result'] == 'ok':
                         zipf.write(image_filename, arcname=image_objectname)
+        file_size = os.path.getsize(zip_filename)
         zip_object_name = f"{task_run_id}_{now}.zip"
         result = lanying_file_storage.upload(zip_object_name, zip_filename)
         if result['result'] == 'ok':
             update_task_run_field(app_id, task_run_id, "zip_file", zip_object_name)
+            update_task_run_field(app_id, task_run_id, "file_size", file_size)
+            incrby_service_usage(app_id, 'storage_size', file_size)
             return {'result': 'ok'}
         else:
             return {'result': 'error', 'message': 'fail to make zip file'}
@@ -406,7 +562,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         if result['result'] == 'error':
             return result
         article_info['image_file'] = image_object_name
-        article_text = article_text.replace(image_placeholder_text, f'[]({image_object_name})')
+        article_text = article_text.replace(image_placeholder_text, f'![]({image_object_name})')
     markdown_filename = lanying_utils.get_temp_filename(app_id, ".md")
     with open(markdown_filename, 'w') as file:
         file.write(article_text)
@@ -473,7 +629,7 @@ def get_task_run(app_id, task_run_id):
 
 def get_task_run_list(app_id, task_id):
     redis = lanying_redis.get_redis_connection()
-    task_run_ids = lanying_redis.redis_lrange(redis, get_task_run_list_key(app_id, task_id), 0, -1)
+    task_run_ids = reversed(lanying_redis.redis_lrange(redis, get_task_run_list_key(app_id, task_id), 0, -1))
     task_run_list = []
     for task_run_id in task_run_ids:
         task_run_info = get_task_run(app_id, task_run_id)

@@ -182,4 +182,4 @@ def image_to_byte_io(image):
 
 def png_to_jpg(png_filename, jpg_filename):
     png_image = Image.open(png_filename)
-    png_image.convert('RGB').save(jpg_filename, quality=95)
+    png_image.convert('RGB').save(jpg_filename, quality=85)

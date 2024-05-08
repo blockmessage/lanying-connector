@@ -2,6 +2,7 @@ import etcd3
 import logging
 import json
 import os
+import lanying_redis
 
 prefix = os.getenv('LANYING_CONNECTOR_APP_CONFIG_PREFIX')
 configs = {}
@@ -190,3 +191,11 @@ def is_show_info_page():
 
 def get_embedding_auth_secret():
     return os.getenv('EMBEDDING_AUTH_SECRET')
+
+def get_app_config_int_from_redis(app_id, key):
+    redis = lanying_redis.get_redis_stack_connection()
+    name = get_redis_app_config_key(app_id)
+    return redis.hincrby(name, key, 0)
+
+def get_redis_app_config_key(app_id):
+    return f"embedding:app_config:{app_id}"

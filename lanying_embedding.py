@@ -1709,7 +1709,7 @@ def get_app_config_int(app_id, key):
     return redis.hincrby(name, key, 0)
 
 def get_app_config_key(app_id):
-    return f"embedding:app_config:{app_id}"
+    return lanying_config.get_redis_app_config_key(app_id)
 
 def get_embedding_uuid_from_doc_id(doc_id):
     fields = doc_id.split('-')
