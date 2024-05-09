@@ -6,7 +6,7 @@ import lanying_utils
 from datetime import datetime
 import json
 
-def share_capsule(app_id, chatbot_id, name, desc, link, password, month_price, year_price):
+def share_capsule(app_id, chatbot_id, name, desc, link, password, month_price, year_price, preset_protect):
     from lanying_chatbot import get_chatbot
     logging.info(f"start set capsule: app_id:{app_id}, chatbot_id:{chatbot_id}, type:{type}, name:{name}, desc:{desc}, link:{link},  month_price:{month_price}, year_price:{year_price}")
     now = int(time.time())
@@ -38,7 +38,8 @@ def share_capsule(app_id, chatbot_id, name, desc, link, password, month_price, y
         "password": password,
         "month_price": month_price,
         "year_price": year_price,
-        "status": "normal"
+        "status": "normal",
+        "preset_protect": preset_protect
     })
     redis.hset(get_capsule_ids(app_id), capsule_id, chatbot_id)
     return {'result':'ok', 'data':{'capsule_id':capsule_id}}
@@ -161,6 +162,7 @@ def list_publish_capsules(page_num, page_size):
                 capsule['link'] = share_capsule['link']
                 capsule['month_price'] = share_capsule['month_price']
                 capsule['year_price'] = share_capsule['year_price']
+                capsule['preset_protect'] = share_capsule['preset_protect']
             dto = {}
             for k,v in capsule.items():
                 if k not in ["app_id", "chatbot_id"]:
@@ -199,6 +201,8 @@ def get_capsule(capsule_id):
             dto['month_price'] = 0
         if 'year_price' not in dto:
             dto['year_price'] = 0
+        if 'preset_protect' not in dto:
+            dto['preset_protect'] = 'off'
         return dto
     return None
 

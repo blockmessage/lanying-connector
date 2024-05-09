@@ -11,7 +11,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
-                   audio_to_text, image_vision, audio_to_text_model):
+                   audio_to_text, image_vision, audio_to_text_model, preset_protect = 'off'):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -46,7 +46,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "group_history_use_mode": group_history_use_mode,
         "audio_to_text": audio_to_text,
         "image_vision": image_vision,
-        "audio_to_text_model": audio_to_text_model
+        "audio_to_text_model": audio_to_text_model,
+        "preset_protect": preset_protect
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -120,12 +121,16 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
     quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
     quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
     group_history_use_mode = capsule_chatbot.get('group_history_use_mode', 'all')
+    preset_protect = capsule['preset_protect']
+    preset = capsule_chatbot['preset']
+    if preset_protect == 'on':
+        preset['messages'] = []
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link,
-                                   capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'],
+                                   preset, capsule_chatbot['history_msg_count_max'],
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model)
+                                   audio_to_text, image_vision, audio_to_text_model, preset_protect)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -187,12 +192,16 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
     audio_to_text = capsule_chatbot.get('audio_to_text','')
     image_vision = capsule_chatbot.get('image_vision','')
     audio_to_text_model = capsule_chatbot.get('audio_to_text_model', '')
+    preset_protect = capsule['preset_protect']
+    preset = capsule_chatbot['preset']
+    if preset_protect == 'on':
+        preset['messages'] = []
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link,
-                                   capsule_chatbot['preset'], capsule_chatbot['history_msg_count_max'],
+                                   preset, capsule_chatbot['history_msg_count_max'],
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model)
+                                   audio_to_text, image_vision, audio_to_text_model, preset_protect)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -495,6 +504,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['audio_to_text'] = 'off'
         if 'audio_to_text_model' not in dto:
             dto['audio_to_text_model'] = 'whisper-1'
+        if 'preset_protect' not in dto:
+            dto['preset_protect'] = 'off'
         return dto
     return None
 

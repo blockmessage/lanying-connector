@@ -510,11 +510,14 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_count_min = task['word_count_min']
     word_count_max = task['word_count_max']
     from_user_id = task_run['user_id']
+    task_prompt = task['prompt']
+    action_prompt = "请生成一篇markdown格式的文章，不要生成图片：\n\n"
+    word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n\n'
     image_placeholder_text = '[插图]'
-    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记（使用 {image_placeholder_text} 表示）\n' if image_count > 0 else ''
-    word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
-    keyword_prompt = f'文章标题关键词为：{keyword}\n'
-    text_prompt = f'请生成一篇markdown格式的文章，不要生成图片：\n{word_prompt}{image_placeholder_prompt}{keyword_prompt}'
+    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记（使用 {image_placeholder_text} 表示）\n\n' if image_count > 0 else ''
+    subject_prompt = '' if task_prompt == '' else f'文章主题或产品和公司介绍为：{task_prompt}\n\n' 
+    keyword_prompt = f'文章标题关键词为：{keyword}\n\n'
+    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{keyword_prompt}{subject_prompt}'
     reset_prompt_ext = {'ai':{'reset_prompt': True}}
     clean_user_message_count(app_id, from_user_id)
     text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, reset_prompt_ext)

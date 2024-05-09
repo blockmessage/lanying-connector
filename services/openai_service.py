@@ -442,7 +442,7 @@ def init_chatbot_config(config, msg):
             for key in ["history_msg_count_max", "history_msg_count_min","history_msg_size_max",
                         "message_per_month_per_user", "linked_capsule_id", "linked_publish_capsule_id",
                         "quota_exceed_reply_type","quota_exceed_reply_msg", "chatbot_id", "group_history_use_mode",
-                        "audio_to_text", "image_vision", "audio_to_text_model"]:
+                        "audio_to_text", "image_vision", "audio_to_text_model", "preset_protect"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
             preset = chatbot.get('preset', {})
@@ -853,12 +853,26 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             preset_embedding_infos.append(now_embedding_info)
         for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings_by_publish_capsule_id(linked_publish_capsule_id):
             preset_embedding_infos.append(now_embedding_info)
+        capsule_info = lanying_ai_capsule.get_publish_capsule(linked_capsule_id)
+        if capsule_info:
+            capsule_app_id = capsule_info['app_id']
+            capsule_chatbot_id = capsule_info['chatbot_id']
+            capsule_chatbot = lanying_chatbot.get_chatbot(capsule_app_id, capsule_chatbot_id)
+            if capsule_chatbot:
+                messages[:0] = capsule_chatbot['preset'].get('messages',[])
     if 'linked_capsule_id' in config:
         linked_capsule_id = config['linked_capsule_id']
         for now_embedding_info in lanying_embedding.get_preset_embedding_infos_by_capsule_id(linked_capsule_id):
             preset_embedding_infos.append(now_embedding_info)
         for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings_by_capsule_id(linked_capsule_id):
             preset_embedding_infos.append(now_embedding_info)
+        capsule_info = lanying_ai_capsule.get_capsule(linked_capsule_id)
+        if capsule_info:
+            capsule_app_id = capsule_info['app_id']
+            capsule_chatbot_id = capsule_info['chatbot_id']
+            capsule_chatbot = lanying_chatbot.get_chatbot(capsule_app_id, capsule_chatbot_id)
+            if capsule_chatbot:
+                messages[:0] = capsule_chatbot['preset'].get('messages',[])
     ask_message_content = content
     ask_message_metadata = make_metadata_from_msg(msg)
     ask_message_content,_ = format_content_and_metadata(content, ask_message_metadata)
@@ -3850,7 +3864,10 @@ def share_capsule():
     password = str(data['password'])
     month_price = int(data.get('month_price', '0'))
     year_price = int(data.get('year_price', '0'))
-    result = lanying_ai_capsule.share_capsule(app_id, chatbot_id, name, desc, link, password, month_price, year_price)
+    preset_protect = str(data.get('preset_protect', 'off'))
+    if preset_protect not in ['on', 'off']:
+        preset_protect = 'off'
+    result = lanying_ai_capsule.share_capsule(app_id, chatbot_id, name, desc, link, password, month_price, year_price, preset_protect)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
