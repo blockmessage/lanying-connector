@@ -319,6 +319,7 @@ def run_task(app_id, task_id, countdown=0):
         now = int(time.time())
         redis = lanying_redis.get_redis_connection()
         article_count = task_info['article_count']
+        cycle_type = task_info['cycle_type']
         task_run_id = generate_task_run_id(task_id)
         user_id = generate_dummy_user_id()
         redis.hmset(get_task_run_key(app_id, task_run_id),{
@@ -327,7 +328,8 @@ def run_task(app_id, task_id, countdown=0):
             'create_time': now,
             'task_id': task_id,
             'user_id': user_id,
-            'article_count': article_count
+            'article_count': article_count,
+            'cycle_type': cycle_type
         })
         redis.rpush(get_task_run_list_key(app_id, task_id), task_run_id)
         set_admin_token(app_id)
@@ -452,6 +454,11 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     chatbot_user_id = chatbot_info['user_id']
     redis = lanying_redis.get_redis_connection()
     keywords = parse_keywords(task['keywords'])
+    cycle_type = task_run.get('cycle_type', 'none')
+    if cycle_type == 'none':
+        article_count = len(keywords)
+        update_task_run_field(app_id, task_run_id, "article_count", article_count)
+        logging.info(f"use new article_count | {article_count}")
     run_result_key = get_task_run_result_key(app_id, task_run_id)
     article_limit = get_article_limit(app_id)
     for i in range(article_count):
@@ -465,7 +472,10 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
             return {'result': 'error', 'message': 'article_num not enough', 'retry': False}
         result = find_title(app_id, task_id, task_run_id, keywords)
         if result['result'] == 'error':
-            return result
+            if cycle_type == 'none' and result['message'] == 'article titles are exhausted' and i > 0:
+                break
+            else:
+                return result
         keyword = result['data']['title']
         result = do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword)
         if result['result'] == 'error':
