@@ -17,6 +17,7 @@ import uuid
 import random
 from dateutil.relativedelta import relativedelta
 import os
+import lanying_schedule
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval):
@@ -48,6 +49,14 @@ class TaskSetting:
             'cycle_type': self.cycle_type,
             'cycle_interval': self.cycle_interval
         }
+
+def handle_schedule(schedule_info):
+    logging.info(f"grow_ai handle_schedule start | {schedule_info}")
+    module = schedule_info['module']
+    args = schedule_info['args']
+    if module == 'lanying_grow_ai':
+        logging.info(f"grow_ai handle_schedule run task| {schedule_info}")
+        run_task(args['app_id'], args['task_id'])
 
 def open_service(app_id, product_id, price, article_num, storage_size):
     service_status_key = get_service_status_key(app_id)
@@ -172,8 +181,15 @@ def create_task(task_setting: TaskSetting):
     redis.rpush(get_task_list_key(app_id), task_id)
     task_info = get_task(app_id, task_id)
     logging.info(f"create task finish | app_id:{app_id}, task_info:{task_info}")
+    cycle_type = task_info['cycle_type']
+    cycle_interval = task_info['cycle_interval']
+    if cycle_type == 'cycle':
+        result = lanying_schedule.create_schedule(cycle_interval, 'lanying_grow_ai', {'app_id':app_id, 'task_id':task_id})
+        schedule_id = result['data']['schedule_id']
+        update_task_field(app_id, task_id, "schedule_id", schedule_id)
     if task_info['cycle_type'] == 'none':
         executor.submit(run_task, app_id, task_id)
+    set_admin_token(app_id)
     return {
         'result': 'ok',
         'data': {
@@ -182,6 +198,7 @@ def create_task(task_setting: TaskSetting):
     }
 
 def configure_task(task_id, task_setting: TaskSetting):
+    now = int(time.time())
     app_id = task_setting.app_id
     task_info = get_task(app_id, task_id)
     if task_info is None:
@@ -190,6 +207,30 @@ def configure_task(task_id, task_setting: TaskSetting):
     fields = task_setting.to_hmset_fields()
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
     redis.hmset(get_task_key(app_id, task_id), fields)
+    new_task_info = get_task(app_id, task_id)
+    if new_task_info['prompt'] != task_info['prompt'] or new_task_info['keywords'] != task_info['keywords']:
+        update_task_field(app_id, task_id, "article_cursor", 0)
+    if new_task_info['cycle_type'] != task_info['cycle_type'] or new_task_info['cycle_interval'] != task_info['cycle_interval']:
+        schedule_id = new_task_info.get('schedule_id', '')
+        if new_task_info['cycle_type'] != 'cycle':
+            if schedule_id != '':
+                schedule_info = lanying_schedule.get_schedule(schedule_id)
+                if schedule_info:
+                    lanying_schedule.delete_schedule(schedule_id)
+                update_task_field(app_id, task_id, 'schedule_id', '')
+        else:
+            if schedule_id != '':
+                schedule_info = lanying_schedule.get_schedule(schedule_id)
+            else:
+                schedule_info = None
+            if schedule_info:
+                lanying_schedule.update_schedule_field(schedule_id, 'interval', new_task_info['cycle_interval'])
+                lanying_schedule.update_schedule_field(schedule_id, 'last_time', now)
+            else:
+                result = lanying_schedule.create_schedule(new_task_info['cycle_interval'], 'lanying_grow_ai', {'app_id':app_id, 'task_id':task_id})
+                schedule_id = result['data']['schedule_id']
+                update_task_field(app_id, task_id, "schedule_id", schedule_id)
+    set_admin_token(app_id)
     return {
         'result': 'ok',
         'data': {
@@ -227,6 +268,10 @@ def get_task(app_id, task_id):
         return dto
     return None
 
+def update_task_field(app_id, task_id, field, value):
+    redis = lanying_redis.get_redis_connection()
+    redis.hset(get_task_key(app_id, task_id), field, value)
+
 def increase_task_field(app_id, task_id, field, value):
     redis = lanying_redis.get_redis_connection()
     return redis.hincrby(get_task_key(app_id, task_id), field, value)
@@ -251,6 +296,12 @@ def delete_task(app_id, task_id):
     for task_run in task_run_list:
         task_run_id = task_run['task_run_id']
         delete_task_run(app_id, task_run_id)
+    
+    schedule_id = task_info.get('schedule_id', '')
+    if schedule_id != '':
+        schedule_info = lanying_schedule.get_schedule(schedule_id)
+        if schedule_info:
+            lanying_schedule.delete_schedule(schedule_id)
     redis = lanying_redis.get_redis_connection()
     task_key = get_task_key(app_id, task_id)
     task_list_key = get_task_list_key(app_id)
@@ -259,7 +310,7 @@ def delete_task(app_id, task_id):
 
 ## TASK RUN
 
-def run_task(app_id, task_id):
+def run_task(app_id, task_id, countdown=0):
     logging.info(f"run task start | app_id:{app_id}, task_id:{task_id}")
     task_info = get_task(app_id, task_id)
     if task_info is None:
@@ -268,8 +319,6 @@ def run_task(app_id, task_id):
         now = int(time.time())
         redis = lanying_redis.get_redis_connection()
         article_count = task_info['article_count']
-        article_cursor = task_info.get('article_cursor', 0)
-        increase_task_field(app_id, task_id, "article_cursor", article_count)
         task_run_id = generate_task_run_id(task_id)
         user_id = generate_dummy_user_id()
         redis.hmset(get_task_run_key(app_id, task_run_id),{
@@ -278,13 +327,12 @@ def run_task(app_id, task_id):
             'create_time': now,
             'task_id': task_id,
             'user_id': user_id,
-            'article_cursor': article_cursor,
             'article_count': article_count
         })
         redis.rpush(get_task_run_list_key(app_id, task_id), task_run_id)
         set_admin_token(app_id)
         from lanying_tasks import grow_ai_run_task
-        grow_ai_run_task.apply_async(args = [app_id, task_run_id])
+        grow_ai_run_task.apply_async(args = [app_id, task_run_id], countdown=countdown)
         logging.info(f"run task finish | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}")
         return {
             'result': 'ok',
@@ -296,10 +344,15 @@ def run_task(app_id, task_id):
         logging.exception(e)
         return {'result': 'error', 'message': 'internal error'}
 
+def run_cycle_task(app_id, task_id):
+    logging.info(f"run_cycle_task run | app_id:{app_id}, task_id:{task_id}")
+
 def delete_task_run(app_id, task_run_id):
     task_run = get_task_run(app_id, task_run_id)
     if task_run is None:
         return {'result': 'ok', 'data':{'success': True}}
+    file_size = task_run.get('file_size', 0)
+    incrby_service_usage(app_id, 'storage_size', -file_size)
     task_id = task_run['task_id']
     redis = lanying_redis.get_redis_connection()
     task_run_list_key = get_task_run_list_key(app_id, task_id)
@@ -313,6 +366,7 @@ def do_run_task(app_id, task_run_id, has_retry_times):
         update_task_run_field(app_id, task_run_id, "status", "running")
         result = do_run_task_internal(app_id, task_run_id, has_retry_times)
         if result['result'] == 'error':
+            logging.info(f"do_run_task result | {result}")
             increase_task_run_field(app_id, task_run_id, "fail_times", 1)
             update_task_run_field(app_id, task_run_id, "error_message", result['message'])
             retry = result.get('retry', True)
@@ -347,6 +401,40 @@ def do_run_task(app_id, task_run_id, has_retry_times):
 def get_article_limit(app_id):
     return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_article_number')
 
+def find_title(app_id, task_id, task_run_id, keywords):
+    article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 0)
+    max = len(keywords)
+    while article_cursor < max:
+        title = keywords[article_cursor]
+        if is_article_title_used(app_id, task_id, title):
+            article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 1)
+        else:
+            set_article_title_used(app_id, task_id, title, task_run_id)
+            return {
+                'result': 'ok',
+                'data':{
+                    'title': title
+                }
+            }
+    return {
+        'result': 'error',
+        'message': 'article titles are exhausted',
+        'retry': False
+    }
+
+def set_article_title_used(app_id, task_id, title, task_run_id):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_used_key(app_id, task_id)
+    redis.hset(key, title, task_run_id)
+
+def is_article_title_used(app_id, task_id, title):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_used_key(app_id, task_id)
+    return redis.hexists(key, title)
+
+def article_title_used_key(app_id, task_id):
+    return f'lanying_connector:grow_ai:article_title_used:{app_id}:{task_id}'
+
 def do_run_task_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"do_run_task start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     task_run = get_task_run(app_id, task_run_id)
@@ -363,20 +451,22 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         return {'result': 'error', 'message': 'chatbot not exist'}
     chatbot_user_id = chatbot_info['user_id']
     redis = lanying_redis.get_redis_connection()
-    article_cursor = task_run['article_cursor']
     keywords = parse_keywords(task['keywords'])
     run_result_key = get_task_run_result_key(app_id, task_run_id)
     article_limit = get_article_limit(app_id)
     for i in range(article_count):
-        logging.info(f"do_run_task_internal for article | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_cursor:{article_cursor}, i:{i}, article_cursor_type:{type(article_cursor)}")
+        logging.info(f"do_run_task_internal for article | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, i:{i}")
+        article_id = f'{task_run_id}_{i+1}'
+        if redis.hexists(run_result_key, article_id):
+            continue
         usage = get_service_usage(app_id)
         now_article_num = usage['data']['article_num']
         if now_article_num + 1 > article_limit:
             return {'result': 'error', 'message': 'article_num not enough', 'retry': False}
-        article_id = f'{task_run_id}_{i+1}'
-        if redis.hexists(run_result_key, article_id):
-            continue
-        keyword = keywords[(article_cursor+i) % len(keywords)]
+        result = find_title(app_id, task_id, task_run_id, keywords)
+        if result['result'] == 'error':
+            return result
+        keyword = result['data']['title']
         result = do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword)
         if result['result'] == 'error':
             logging.info(f"do_run_task error | app_id:{app_id}, task_run_id:{task_run_id}, article_id:{article_id}, keyword:{keyword}, result:{result}")
@@ -623,7 +713,7 @@ def get_task_run(app_id, task_run_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            if key in ['create_time', 'article_cursor', 'article_count']:
+            if key in ['create_time', 'article_cursor', 'article_count', 'file_size']:
                 dto[key] = int(value)
             else:
                 dto[key] = value
@@ -684,8 +774,9 @@ def clean_user_message_count(app_id, from_user_id):
 def set_admin_token(app_id):
     redis = lanying_redis.get_redis_connection()
     config = lanying_config.get_lanying_connector(app_id)
-    key = admin_token_key(app_id)
-    redis.set(key, config.get('lanying_admin_token', ''))
+    if config:
+        key = admin_token_key(app_id)
+        redis.set(key, config.get('lanying_admin_token', ''))
 
 def get_admin_token(app_id):
     redis = lanying_redis.get_redis_connection()

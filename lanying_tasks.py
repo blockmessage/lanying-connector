@@ -17,6 +17,8 @@ import io
 import json
 import lanying_ai_plugin
 import lanying_grow_ai
+import lanying_schedule
+from celery.schedules import crontab
 
 normal_queue = Celery('normal_queue',
              backend=lanying_redis.get_task_redis_server(),
@@ -24,6 +26,12 @@ normal_queue = Celery('normal_queue',
 slow_queue = Celery('slow_queue',
              backend=lanying_redis.get_slow_task_redis_server(),
              broker=lanying_redis.get_slow_task_redis_server())
+slow_queue.conf.beat_schedule = {
+    'lanying_schedule_task': {
+        'task': 'lanying_tasks.lanying_schedule_task',
+        'schedule': crontab(minute='*/10')
+    }
+}
 download_dir = os.getenv("EMBEDDING_DOWNLOAD_DIR", "/data/download")
 embedding_doc_dir = os.getenv("EMBEDDING_DOC_DIR", "embedding-doc")
 os.makedirs(download_dir, exist_ok=True)
@@ -442,3 +450,7 @@ def grow_ai_run_task(self, app_id, task_run_id):
 def task_error(message):
     logging.error(message)
     raise Exception(message)
+
+@slow_queue.task
+def lanying_schedule_task():
+    lanying_schedule.run_all_schedules()
