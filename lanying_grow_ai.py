@@ -574,9 +574,11 @@ def task_run_retry(app_id, task_run_id):
         return {'result': 'error', 'message': 'task_run not exist'}
     if task_run['status'] != 'error':
         return {'result': 'error', 'message': 'task_run status cannot retry'}
+    update_task_run_field(app_id, task_run_id, "status", "wait")
+    update_task_run_field(app_id, task_run_id, "update_time", now)
     set_admin_token(app_id)
     from lanying_tasks import grow_ai_run_task
-    grow_ai_run_task.apply_async(args = [app_id, task_run_id])
+    grow_ai_run_task.apply_async(args = [app_id, task_run_id], countdown=2)
     return {'result': 'ok', 'data':{'success': True}}
 
 def get_download_file(file_sign):
@@ -636,7 +638,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     action_prompt = "请生成一篇markdown格式的文章，不要生成图片：\n"
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
-    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记（使用 {image_placeholder_text} 表示）\n' if image_count > 0 else ''
+    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
     subject_prompt = '' if task_prompt == '' else f'文章主题或产品和公司介绍为：{task_prompt}\n'
     keyword_prompt = f'文章标题关键词为：{keyword}\n'
     text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{keyword_prompt}{subject_prompt}'
@@ -667,7 +669,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
                 return {'result': 'error', 'message': 'article text is blocked'}
             else:
                 return {'result': 'error', 'message': 'article text too short'}
-    if image_count > 0 and image_placeholder_text in article_text:
+    if image_count > 0:
         image_prompt = '请为这篇文章生成一幅精美的插图。'
         image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, {})
         image_attachment = lanying_utils.safe_json_loads(image_result['data']['messages'][0]['attachment'])
@@ -687,7 +689,13 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         if result['result'] == 'error':
             return result
         article_info['image_file'] = image_object_name
-        article_text = article_text.replace(image_placeholder_text, f'![]({image_object_name})')
+        image_str = f'![]({image_object_name})'
+        if image_placeholder_text in article_text:
+            article_text = article_text.replace(f"***{image_placeholder_text}***", image_placeholder_text)
+            article_text = article_text.replace(image_placeholder_text, image_str, 1)
+            article_text = article_text.replace(image_placeholder_text, '')
+        else:
+            article_text = f"{article_text}\n{image_str}\n"
     markdown_filename = lanying_utils.get_temp_filename(app_id, ".md")
     with open(markdown_filename, 'w') as file:
         file.write(article_text)
