@@ -154,6 +154,23 @@ def run_task():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/grow_ai/set_task_schedule", methods=["POST"])
+def set_task_schedule():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_id = str(data['task_id'])
+    schedule = str(data['schedule'])
+    result = lanying_grow_ai.set_task_schedule(app_id, task_id, schedule)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/grow_ai/delete_task", methods=["POST"])
 def delete_task():
     if not check_access_token_valid():

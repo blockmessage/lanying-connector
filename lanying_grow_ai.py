@@ -56,7 +56,23 @@ def handle_schedule(schedule_info):
     args = schedule_info['args']
     if module == 'lanying_grow_ai':
         logging.info(f"grow_ai handle_schedule run task| {schedule_info}")
-        run_task(args['app_id'], args['task_id'])
+        app_id = args['app_id']
+        task_id = args['task_id']
+        task_info = get_task(app_id, task_id)
+        if task_info:
+            schedule = task_info['schedule']
+            if schedule == 'on':
+                run_task(app_id, task_id)
+            else:
+                logging.info(f"not run task for no schedule: app_id:{app_id}, task_id:{task_id}")
+
+def set_task_schedule(app_id, task_id, schedule, message='manual'):
+    logging.info(f"change task schedule {schedule} | app_id:{app_id}, task_id:{task_id}, message:{message}")
+    task_info = get_task(app_id, task_id)
+    if task_info and schedule in ["on", "off"]:
+        update_task_field(app_id, task_id, "schedule", schedule)
+        update_task_field(app_id, task_id, "schedule_message", message)
+    return {'result': "ok", "data": {"success": True}}
 
 def open_service(app_id, product_id, price, article_num, storage_size):
     service_status_key = get_service_status_key(app_id)
@@ -176,6 +192,7 @@ def create_task(task_setting: TaskSetting):
     fields['status'] = 'normal'
     fields['create_time'] = now
     fields['task_id'] = task_id
+    fields['schedule'] = 'on'
     logging.info(f"create task start | app_id:{app_id}, task_info:{fields}")
     redis.hmset(get_task_key(app_id, task_id), fields)
     redis.rpush(get_task_list_key(app_id), task_id)
@@ -207,6 +224,7 @@ def configure_task(task_id, task_setting: TaskSetting):
     fields = task_setting.to_hmset_fields()
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
     redis.hmset(get_task_key(app_id, task_id), fields)
+    set_task_schedule(app_id, task_id, "on")
     new_task_info = get_task(app_id, task_id)
     if new_task_info['prompt'] != task_info['prompt'] or new_task_info['keywords'] != task_info['keywords']:
         update_task_field(app_id, task_id, "article_cursor", 0)
@@ -265,6 +283,8 @@ def get_task(app_id, task_id):
                 dto[key] = int(value)
             else:
                 dto[key] = value
+        if 'schedule' not in info:
+            dto['schedule'] = 'on'
         return dto
     return None
 
@@ -472,10 +492,12 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
             return {'result': 'error', 'message': 'article_num not enough', 'retry': False}
         result = find_title(app_id, task_id, task_run_id, keywords)
         if result['result'] == 'error':
-            if cycle_type == 'none' and result['message'] == 'article titles are exhausted' and i > 0:
-                break
-            else:
-                return result
+            if result['message'] == 'article titles are exhausted':
+                if cycle_type == 'none' and i > 0:
+                    break
+                elif cycle_type == 'cycle':
+                    set_task_schedule(app_id, task_id, "off", result['message'])
+            return result
         keyword = result['data']['title']
         result = do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword)
         if result['result'] == 'error':
@@ -611,12 +633,12 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_count_max = task['word_count_max']
     from_user_id = task_run['user_id']
     task_prompt = task['prompt']
-    action_prompt = "请生成一篇markdown格式的文章，不要生成图片：\n\n"
-    word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n\n'
+    action_prompt = "请生成一篇markdown格式的文章，不要生成图片：\n"
+    word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
-    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记（使用 {image_placeholder_text} 表示）\n\n' if image_count > 0 else ''
-    subject_prompt = '' if task_prompt == '' else f'文章主题或产品和公司介绍为：{task_prompt}\n\n' 
-    keyword_prompt = f'文章标题关键词为：{keyword}\n\n'
+    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记（使用 {image_placeholder_text} 表示）\n' if image_count > 0 else ''
+    subject_prompt = '' if task_prompt == '' else f'文章主题或产品和公司介绍为：{task_prompt}\n'
+    keyword_prompt = f'文章标题关键词为：{keyword}\n'
     text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{keyword_prompt}{subject_prompt}'
     reset_prompt_ext = {'ai':{'reset_prompt': True}}
     clean_user_message_count(app_id, from_user_id)
