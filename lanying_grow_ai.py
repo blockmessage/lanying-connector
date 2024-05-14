@@ -18,9 +18,10 @@ import random
 from dateutil.relativedelta import relativedelta
 import os
 import lanying_schedule
+import lanying_chatbot
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -33,6 +34,7 @@ class TaskSetting:
         self.article_count = article_count
         self.cycle_type = cycle_type
         self.cycle_interval = cycle_interval
+        self.file_list = file_list
 
     def to_hmset_fields(self):
         return {
@@ -47,7 +49,8 @@ class TaskSetting:
             'image_count': self.image_count,
             'article_count': self.article_count,
             'cycle_type': self.cycle_type,
-            'cycle_interval': self.cycle_interval
+            'cycle_interval': self.cycle_interval,
+            'file_list': json.dumps(self.file_list, ensure_ascii=False)
         }
 
 def handle_schedule(schedule_info):
@@ -187,6 +190,9 @@ def create_task(task_setting: TaskSetting):
     now = int(time.time())
     app_id = task_setting.app_id
     task_id = generate_task_id()
+    result = handle_task_file_list(app_id, task_id, task_setting.file_list)
+    if result['result'] == 'error':
+        return result
     redis = lanying_redis.get_redis_connection()
     fields = task_setting.to_hmset_fields()
     fields['status'] = 'normal'
@@ -220,13 +226,16 @@ def configure_task(task_id, task_setting: TaskSetting):
     task_info = get_task(app_id, task_id)
     if task_info is None:
         return {'result': 'error', 'message': 'task_id not exist'}
+    result = handle_task_file_list(app_id, task_id, task_setting.file_list)
+    if result['result'] == 'error':
+        return result
     redis = lanying_redis.get_redis_connection()
     fields = task_setting.to_hmset_fields()
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
     redis.hmset(get_task_key(app_id, task_id), fields)
     set_task_schedule(app_id, task_id, "on")
     new_task_info = get_task(app_id, task_id)
-    if new_task_info['prompt'] != task_info['prompt'] or new_task_info['keywords'] != task_info['keywords']:
+    if new_task_info['prompt'] != task_info['prompt'] or new_task_info['keywords'] != task_info['keywords'] or new_task_info['file_list'] != task_info['file_list']:
         update_task_field(app_id, task_id, "article_cursor", 0)
     if new_task_info['cycle_type'] != task_info['cycle_type'] or new_task_info['cycle_interval'] != task_info['cycle_interval']:
         schedule_id = new_task_info.get('schedule_id', '')
@@ -256,6 +265,56 @@ def configure_task(task_id, task_setting: TaskSetting):
         }
     }
 
+def handle_task_file_list(app_id, task_id, file_list):
+    if len(file_list) > 1:
+        return {'result': 'error', 'message': 'file_list len must less than or equal to 1'}
+    for file in file_list:
+        if 'url' in file:
+            url = file['url']
+            file_info = get_task_file_info(app_id, task_id, url)
+            if file_info is None:
+                logging.info(f"handle_task_file_list found new file:{file}")
+                filename = lanying_utils.get_temp_filename(app_id, ".txt")
+                config = get_dummy_lanying_connector(app_id)
+                extra = {}
+                user_id = lanying_chatbot.get_default_user_id(app_id)
+                url = file['url']
+                result = lanying_im_api.download_url(config, app_id, user_id, url, filename, extra)
+                if result['result'] == 'error':
+                    return {'result':'error', 'message': 'fail to download url'}
+                else:
+                    object_name = generate_task_file_object_name(app_id, task_id)
+                    result = lanying_file_storage.upload(object_name, filename)
+                    if result['result'] == 'error':
+                        return {'result':'error', 'message': 'fail to upload url'}
+                    else:
+                        file_info = {
+                            'app_id': app_id,
+                            'task_id': task_id,
+                            'object_name': object_name
+                        }
+                        logging.info(f"handle_task_file_list save file info | file_info:{file_info}")
+                        set_task_file_info(app_id, task_id, url, file_info)
+        else:
+            return {'result':'error', 'message': 'bad file_list item'}
+    return {'result': 'ok'}
+
+def get_task_file_info(app_id, task_id, url):
+    redis = lanying_redis.get_redis_connection()
+    key = get_task_file_info_key(app_id, task_id)
+    result = lanying_redis.redis_hget(redis, key, url)
+    if result:
+        return json.loads(result)
+    return None
+
+def set_task_file_info(app_id, task_id, url, value):
+    redis = lanying_redis.get_redis_connection()
+    key = get_task_file_info_key(app_id, task_id)
+    redis.hset(key, url, json.dumps(value, ensure_ascii=False))
+    
+def get_task_file_info_key(app_id, task_id):
+    return f"lanying_connector:grow_ai:task_file:{app_id}:{task_id}"
+
 def get_task_list(app_id):
     redis = lanying_redis.get_redis_connection()
     task_ids = reversed(lanying_redis.redis_lrange(redis, get_task_list_key(app_id), 0, -1))
@@ -281,10 +340,14 @@ def get_task(app_id, task_id):
         for key,value in info.items():
             if key in ['word_count_min', 'word_count_max', 'image_count', 'article_count', 'cycle_interval', 'create_time', 'article_cursor']:
                 dto[key] = int(value)
+            elif key in ['file_list']:
+                dto[key] = json.loads(value)
             else:
                 dto[key] = value
         if 'schedule' not in info:
             dto['schedule'] = 'on'
+        if 'file_list' not in info:
+            dto['file_list'] = []
         return dto
     return None
 
@@ -305,6 +368,11 @@ def get_task_list_key(app_id):
 def generate_task_id():
     redis = lanying_redis.get_redis_connection()
     return redis.incrby("lanying_connector:grow_ai:task_id_generator", 1)
+
+def generate_task_file_object_name(app_id, task_id):
+    redis = lanying_redis.get_redis_connection()
+    file_id = redis.incrby("lanying_connector:grow_ai:task_file_id_generator", 1)
+    return f"grow_ai/task_file/{app_id}/{task_id}/{file_id}_{int(time.time())}.txt"
 
 def delete_task(app_id, task_id):
     logging.info(f"delete task start | app_id:{app_id}, task_id:{task_id}")
@@ -457,6 +525,29 @@ def is_article_title_used(app_id, task_id, title):
 def article_title_used_key(app_id, task_id):
     return f'lanying_connector:grow_ai:article_title_used:{app_id}:{task_id}'
 
+def parse_file_keywords(app_id, task_id, file_list):
+    keywords = []
+    for file in file_list:
+        if 'url' in file:
+            try:
+                url = file['url']
+                file_info = get_task_file_info(app_id, task_id, url)
+                if file_info:
+                    object_name = file_info['object_name']
+                    filename = lanying_utils.get_temp_filename(app_id, ".txt")
+                    result = lanying_file_storage.download(object_name, filename)
+                    if result['result'] == 'ok':
+                        with open(filename, 'r') as fd:
+                            # 使用 len() 函数获取文件行数
+                            lines = fd.readlines()
+                            for line in lines:
+                                if len(line) > 0 and len(line) < 1000 and not line.isspace():
+                                    keywords.append(line)
+            except Exception as e:
+                logging.exception(e)
+    logging.info(f"parse_file_keywords finish | app_id:{app_id}, task_id:{task_id}, file_list:{file_list}, keyword count:{len(keywords)}")
+    return keywords
+
 def do_run_task_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"do_run_task start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     task_run = get_task_run(app_id, task_run_id)
@@ -474,6 +565,10 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     chatbot_user_id = chatbot_info['user_id']
     redis = lanying_redis.get_redis_connection()
     keywords = parse_keywords(task['keywords'])
+    file_keywords = parse_file_keywords(app_id, task_id, task['file_list'])
+    keywords.extend(file_keywords)
+    if len(keywords) == 0:
+        return {'result': 'error', 'message': 'article title not exist', 'retry': False}
     cycle_type = task_run.get('cycle_type', 'none')
     if cycle_type == 'none':
         article_count = len(keywords)
