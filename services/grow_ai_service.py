@@ -77,6 +77,7 @@ def create_task():
     cycle_type = str(data['cycle_type'])
     cycle_interval = int(data['cycle_interval'])
     file_list = list(data.get('file_list', []))
+    deploy = dict(data.get('deploy', {'type': 'none'}))
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
         name = name,
@@ -90,7 +91,8 @@ def create_task():
         article_count = article_count,
         cycle_type = cycle_type,
         cycle_interval = cycle_interval,
-        file_list = file_list
+        file_list = file_list,
+        deploy = deploy
     )
     result = lanying_grow_ai.create_task(task_setting)
     if result['result'] == 'error':
@@ -120,6 +122,7 @@ def configure_task():
     cycle_type = str(data['cycle_type'])
     cycle_interval = int(data['cycle_interval'])
     file_list = list(data.get('file_list', []))
+    deploy = dict(data.get('deploy', {'type': 'none'}))
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
         name = name,
@@ -133,7 +136,8 @@ def configure_task():
         article_count = article_count,
         cycle_type = cycle_type,
         cycle_interval = cycle_interval,
-        file_list = file_list
+        file_list = file_list,
+        deploy = deploy
     )
     result = lanying_grow_ai.configure_task(task_id, task_setting)
     if result['result'] == 'error':

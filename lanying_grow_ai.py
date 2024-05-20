@@ -19,9 +19,10 @@ from dateutil.relativedelta import relativedelta
 import os
 import lanying_schedule
 import lanying_chatbot
+import base64
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -50,7 +51,8 @@ class TaskSetting:
             'article_count': self.article_count,
             'cycle_type': self.cycle_type,
             'cycle_interval': self.cycle_interval,
-            'file_list': json.dumps(self.file_list, ensure_ascii=False)
+            'file_list': json.dumps(self.file_list, ensure_ascii=False),
+            'deploy': json.dumps(self.deploy, ensure_ascii=False)
         }
 
 def handle_schedule(schedule_info):
@@ -340,7 +342,7 @@ def get_task(app_id, task_id):
         for key,value in info.items():
             if key in ['word_count_min', 'word_count_max', 'image_count', 'article_count', 'cycle_interval', 'create_time', 'article_cursor']:
                 dto[key] = int(value)
-            elif key in ['file_list']:
+            elif key in ['file_list', 'deploy']:
                 dto[key] = json.loads(value)
             else:
                 dto[key] = value
@@ -348,6 +350,8 @@ def get_task(app_id, task_id):
             dto['schedule'] = 'on'
         if 'file_list' not in info:
             dto['file_list'] = []
+        if 'deploy' not in info:
+            dto['deploy'] = {'type': 'none'}
         return dto
     return None
 
@@ -661,6 +665,195 @@ def get_task_run_result_list(app_id, task_run_id):
         }
     }
 
+def deploy_task_run(app_id, task_run_id):
+    task_run = get_task_run(app_id, task_run_id)
+    if task_run is None:
+        return {'result': 'error', 'message': 'task_run not exist'}
+    if task_run['status'] != 'success':
+        return {'result': 'error', 'message': 'task_run status cannot deploy'}
+    if task_run['deploy_status'] not in ["wait", "error"]:
+        return {'result': 'error', 'message': 'task_run deploy_status cannot deploy'}
+    if 'zip_file' not in task_run:
+        return {'result': 'error', 'message': 'zip file not exist'}
+    from lanying_tasks import grow_ai_deply_task_run
+    grow_ai_deply_task_run.apply_async(args = [app_id, task_run_id])
+    return {'result': 'ok', 'data':{
+        'success': True
+    }}
+
+def do_deploy_task_run(app_id, task_run_id, has_retry_times):
+    try:
+        update_task_run_field(app_id, task_run_id, "deploy_status", "running")
+        result = do_deploy_task_run_internal(app_id, task_run_id, has_retry_times)
+        if result['result'] == 'error':
+            logging.info(f"do_deploy_task_run result | {result}")
+            increase_task_run_field(app_id, task_run_id, "deploy_fail_times", 1)
+            update_task_run_field(app_id, task_run_id, "deploy_error_message", result['message'])
+            retry = result.get('retry', True)
+            if retry:
+                if has_retry_times:
+                    update_task_run_field(app_id, task_run_id, "deploy_status", "retry")
+                else:
+                    update_task_run_field(app_id, task_run_id, "deploy_status", "error")
+                raise Exception(result['message'])
+            else:
+                update_task_run_field(app_id, task_run_id, "deploy_status", "error")
+                return result
+        elif result['result'] == 'ok':
+            increase_task_run_field(app_id, task_run_id, "deploy_success_times", 1)
+            update_task_run_field(app_id, task_run_id, "deploy_status", "success")
+            update_task_run_field(app_id, task_run_id, "deploy_error_message", '')
+        return result
+    except Exception as e:
+        increase_task_run_field(app_id, task_run_id, "deploy_fail_times", 1)
+        error_msg = 'internal error'
+        try:
+            error_msg = str(e.args[0])[:100]
+        except Exception as ee:
+            pass
+        update_task_run_field(app_id, task_run_id, "deploy_error_message", error_msg)
+        if has_retry_times:
+            update_task_run_field(app_id, task_run_id, "deploy_status", "retry")
+        else:
+            update_task_run_field(app_id, task_run_id, "deploy_status", "error")
+        raise e
+
+def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
+    logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
+    timestr = datetime.now().strftime('%Y%m%d%H%M%S')
+    datestr = datetime.now().strftime('%Y%m%d')
+    task_run = get_task_run(app_id, task_run_id)
+    if task_run is None:
+        return {'result': 'error', 'message': 'task_run not exist'}
+    if task_run['status'] != 'success':
+        return {'result': 'error', 'message': 'task_run status cannot deploy'}
+    if 'zip_file' not in task_run:
+        return {'result': 'error', 'message': 'zip file not exist'}
+    task_id = task_run['task_id']
+    task = get_task(app_id, task_id)
+    if task is None:
+        return {'result': 'error', 'message': 'task not exist'}
+    deploy = task['deploy']
+    deploy_type = deploy.get('type', 'none')
+    if deploy_type not in ["gitbook"]:
+        return {'result': 'error', 'message': 'deploy type not support', 'retry': False}
+    github_url = deploy.get('github_url', '')
+    fields = github_url.split("/")
+    if len(fields) < 5 or fields[2] != 'github.com':
+        return {'result': 'error', 'message': 'deploy config is bad'}
+    github_owner = fields[3]
+    github_repo = fields[4]
+    github_token = deploy.get('token', '')
+    if len(github_token) == 0:
+        return {'result': 'error', 'message': 'deploy token is bad'}
+    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
+    base_branch = deploy.get('base_branch', 'master')
+    base_dir = deploy.get('base_dir', '/').strip("/")
+    target_dir = deploy.get('target_dir', '/').strip("/")
+    new_branch = f"grow-ai-{task_run_id}-{timestr}"
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    # 获取基础分支的最后一次提交SHA
+    response = requests.get(f"{github_api_url}/git/refs/heads/{base_branch}", headers=headers)
+    if response.status_code != 200:
+        return {'result': 'error', 'message': 'github get branch info failed'}
+    commit_sha = response.json()["object"]["sha"]
+    zip_object_name = task_run['zip_file']
+    zip_filename = lanying_utils.get_temp_filename(app_id, ".zip")
+    result = lanying_file_storage.download(zip_object_name, zip_filename)
+    if result['result'] == 'error':
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'fail to download zip file'}
+    # 创建新分支
+    data = {
+        "ref": f"refs/heads/{new_branch}",
+        "sha": commit_sha
+    }
+    response = requests.post(f"{github_api_url}/git/refs", headers=headers, json=data)
+    if response.status_code != 201:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github create branch failed'}
+    # 获取基础分支的树对象SHA
+    response = requests.get(f"{github_api_url}/git/trees/{commit_sha}", headers=headers)
+    if response.status_code != 200:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github get sha failed'}
+    base_tree_sha = response.json()["sha"]
+    tree = []
+    with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
+        file_list = zip_ref.namelist()
+        for filename in file_list:
+            with zip_ref.open(filename) as file:
+                content = base64.b64encode(file.read()).decode()
+                blob_data = {
+                    "content": content,
+                    "encoding": "base64"
+                }
+                response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+                if response.status_code != 201:
+                    logging.info(f"github response | {response.content}")
+                    return {'result': 'error', 'message': 'github fail to add blobs'}
+                blob_sha = response.json()["sha"]
+                github_path = os.path.join(target_dir, datestr, filename)
+                logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{github_path}")
+                tree.append({
+                    "path": github_path,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": blob_sha
+                })
+    # 创建新的树对象
+    data = {
+        "base_tree": base_tree_sha,
+        "tree": tree
+    }
+    response = requests.post(f"{github_api_url}/git/trees", headers=headers, json=data)
+    if response.status_code != 201:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to create new tree object'}
+    new_tree_sha = response.json()["sha"]
+    # 创建新的提交对象
+    commit_message = f"Grow AI deploy: {task_run_id}"
+    data = {
+        "message": commit_message,
+        "parents": [commit_sha],
+        "tree": new_tree_sha
+    }
+    response = requests.post(f"{github_api_url}/git/commits", headers=headers, json=data)
+    if response.status_code != 201:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to create commit'}
+    new_commit_sha = response.json()["sha"]
+    # 更新新分支的引用，使其指向新的提交
+    data = {
+        "sha": new_commit_sha
+    }
+    response = requests.patch(f"{github_api_url}/git/refs/heads/{new_branch}", headers=headers, json=data)
+    if response.status_code != 200:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to move commit'}
+    # 提交Pull Request
+    title = f"Grow AI PR: {task_run_id}"
+    body = f"Grow AI PR: {task_run_id}"
+    pr_data = {
+        "title": title,
+        "body": body,
+        "head": new_branch,
+        "base": base_branch
+    }
+    response = requests.post(f"{github_api_url}/pulls", headers=headers, json=pr_data)
+    if response.status_code != 201:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to commit PR'}
+    pr_url = response.json().get("html_url")
+    update_task_run_field(app_id, task_run_id, "pr_url", pr_url)
+    logging.info(f"deploy task_run success | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}, pr_url:{pr_url}")
+    return {'result': 'ok', 'data':{
+        'pr_url': pr_url
+    }}
+
 def task_run_retry(app_id, task_run_id):
     logging.info(f"task_run_retry start | app_id:{app_id}, task_run_id:{task_run_id}")
     now = int(time.time())
@@ -852,6 +1045,8 @@ def get_task_run(app_id, task_run_id):
                 dto[key] = int(value)
             else:
                 dto[key] = value
+        if 'deploy_status' not in dto:
+            dto['deploy_status'] = 'wait'
         return dto
     return None
 
