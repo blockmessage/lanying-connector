@@ -750,6 +750,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     base_branch = deploy.get('base_branch', 'master')
     base_dir = deploy.get('base_dir', '/').strip("/")
     target_dir = deploy.get('target_dir', '/').strip("/")
+    target_relative_dir = os.path.relpath(target_dir,base_dir)
     new_branch = f"grow-ai-{task_run_id}-{timestr}"
     headers = {
         "Authorization": f"token {github_token}",
@@ -766,6 +767,14 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     if result['result'] == 'error':
         logging.info(f"github response | {response.content}")
         return {'result': 'error', 'message': 'fail to download zip file'}
+    summary_url = f"https://api.github.com/repos/{github_owner}/{github_repo}/contents/{base_dir}/SUMMARY.md?ref={commit_sha}"
+    # 发送 GET 请求获取文件内容
+    response = requests.get(summary_url, headers=headers)
+    if response.status_code != 200:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github SUMMARY.md not found'}
+    file_info = response.json()
+    summary_text = base64.b64decode(file_info['content']).decode('utf-8')
     # 创建新分支
     data = {
         "ref": f"refs/heads/{new_branch}",
@@ -782,13 +791,15 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         return {'result': 'error', 'message': 'github get sha failed'}
     base_tree_sha = response.json()["sha"]
     tree = []
+    summary_link_list = []
     with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
         file_list = zip_ref.namelist()
         for filename in file_list:
             with zip_ref.open(filename) as file:
-                content = base64.b64encode(file.read()).decode()
+                bytes = file.read()
+                base64_content = base64.b64encode(bytes).decode()
                 blob_data = {
-                    "content": content,
+                    "content": base64_content,
                     "encoding": "base64"
                 }
                 response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
@@ -797,13 +808,78 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                     return {'result': 'error', 'message': 'github fail to add blobs'}
                 blob_sha = response.json()["sha"]
                 github_path = os.path.join(target_dir, datestr, filename)
+                link_path = os.path.join(target_relative_dir, datestr, filename)
                 logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{github_path}")
+                if filename.endswith(".md"):
+                    content = bytes.decode()
+                    title = content.splitlines()[0].strip().lstrip('#').strip()
+                    summary_link_list.append(f"    * [{title}]({link_path})")
                 tree.append({
                     "path": github_path,
                     "mode": "100644",
                     "type": "blob",
                     "sha": blob_sha
                 })
+    title1 = os.path.join(target_relative_dir, "README.md")
+    title2 = os.path.join(target_relative_dir, datestr, "README.md")
+    summary_list = summary_text.splitlines()
+    found_title1 = False
+    for line in summary_list:
+        if title1 in line:
+            found_title1 = True
+    if not found_title1:
+        summary_list.append(f"  * [{target_relative_dir}]({title1})")
+    found_title2 = False
+    for line in summary_list:
+        if title2 in line:
+            found_title2 = True
+    if not found_title2:
+        summary_list_new = []
+        found_title1 = False
+        for line in summary_list:
+            if not found_title1:
+                if title1 in line:
+                    found_title1 = True
+                    summary_list_new.append(line)
+                    summary_list_new.append(f"  * [{datestr}]({title2})")
+                else:
+                    summary_list_new.append(line)
+            else:
+                summary_list_new.append(line)
+        summary_list = summary_list_new
+    found_title1 = False
+    found_title2 = False
+    summary_result = []
+    for line in summary_list:
+        summary_result.append(line)
+        if not found_title1:
+            if title1 in line:
+                found_title1 = True
+        elif not found_title2:
+            if title2 in line:
+                found_title2 = True
+                for link in summary_link_list:
+                    summary_result.append(link)
+    new_summary_content = '\n'.join(summary_result)
+    # logging.info(f"new_summary_content: {new_summary_content}")
+    new_summary_content_base64 = base64.b64encode(new_summary_content.encode()).decode()
+    blob_data = {
+                    "content": new_summary_content_base64,
+                    "encoding": "base64"
+    }
+    response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+    if response.status_code != 201:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to add summary blobs'}
+    blob_sha = response.json()["sha"]
+    github_path = f"{base_dir}/SUMMARY.md"
+    logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{github_path}")
+    tree.append({
+        "path": github_path,
+        "mode": "100644",
+        "type": "blob",
+        "sha": blob_sha
+    })
     # 创建新的树对象
     data = {
         "base_tree": base_tree_sha,
