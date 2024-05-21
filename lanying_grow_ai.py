@@ -671,7 +671,7 @@ def deploy_task_run(app_id, task_run_id):
         return {'result': 'error', 'message': 'task_run not exist'}
     if task_run['status'] != 'success':
         return {'result': 'error', 'message': 'task_run status cannot deploy'}
-    if task_run['deploy_status'] not in ["wait", "error"]:
+    if task_run['deploy_status'] not in ["wait", "error", "success"]:
         return {'result': 'error', 'message': 'task_run deploy_status cannot deploy'}
     if 'zip_file' not in task_run:
         return {'result': 'error', 'message': 'zip file not exist'}
@@ -809,7 +809,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                 blob_sha = response.json()["sha"]
                 github_path = os.path.join(target_dir, datestr, filename)
                 link_path = os.path.join(target_relative_dir, datestr, filename)
-                logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{github_path}")
+                logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
                 if filename.endswith(".md"):
                     content = bytes.decode()
                     title = content.splitlines()[0].strip().lstrip('#').strip()
@@ -842,6 +842,25 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                     found_title1 = True
                     summary_list_new.append(line)
                     summary_list_new.append(f"  * [{datestr}]({title2})")
+                    readme_content = f"# {datestr}"
+                    readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
+                    blob_data = {
+                    "content": readme_content_base64,
+                    "encoding": "base64"
+                    }
+                    response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+                    if response.status_code != 201:
+                        logging.info(f"github response | {response.content}")
+                        return {'result': 'error', 'message': 'github fail to add date blobs'}
+                    blob_sha = response.json()["sha"]
+                    github_path = f"{target_dir}/{datestr}/README.md"
+                    logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
+                    tree.append({
+                        "path": github_path,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": blob_sha
+                    })
                 else:
                     summary_list_new.append(line)
             else:
@@ -873,7 +892,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         return {'result': 'error', 'message': 'github fail to add summary blobs'}
     blob_sha = response.json()["sha"]
     github_path = f"{base_dir}/SUMMARY.md"
-    logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{github_path}")
+    logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
     tree.append({
         "path": github_path,
         "mode": "100644",
