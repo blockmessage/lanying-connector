@@ -36,6 +36,7 @@ class TaskSetting:
         self.cycle_type = cycle_type
         self.cycle_interval = cycle_interval
         self.file_list = file_list
+        self.deploy = deploy
 
     def to_hmset_fields(self):
         return {
@@ -610,6 +611,11 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     if result['result'] == 'error':
         return result
     logging.info(f"do_run_task finish | app_id:{app_id}, task_run_id:{task_run_id}")
+    deploy = task['deploy']
+    deploy_type = deploy.get('type', 'none')
+    if deploy_type != "none":
+        from lanying_tasks import grow_ai_deply_task_run
+        grow_ai_deply_task_run.apply_async(args = [app_id, task_run_id], countdown=5)
     return {'result': 'ok'}
 
 def make_task_run_result_zip_file(app_id, task_run_id):
@@ -737,19 +743,19 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     deploy_type = deploy.get('type', 'none')
     if deploy_type not in ["gitbook"]:
         return {'result': 'error', 'message': 'deploy type not support', 'retry': False}
-    github_url = deploy.get('github_url', '')
+    github_url = deploy.get('gitbook_url', '')
     fields = github_url.split("/")
     if len(fields) < 5 or fields[2] != 'github.com':
         return {'result': 'error', 'message': 'deploy config is bad'}
     github_owner = fields[3]
     github_repo = fields[4]
-    github_token = deploy.get('token', '')
+    github_token = deploy.get('gitbook_token', '')
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
-    base_branch = deploy.get('base_branch', 'master')
-    base_dir = deploy.get('base_dir', '/').strip("/")
-    target_dir = deploy.get('target_dir', '/').strip("/")
+    base_branch = deploy.get('gitbook_base_branch', 'master')
+    base_dir = deploy.get('gitbook_base_dir', '/').strip("/")
+    target_dir = deploy.get('gitbook_target_dir', '/').strip("/")
     target_relative_dir = os.path.relpath(target_dir,base_dir)
     new_branch = f"grow-ai-{task_run_id}-{timestr}"
     headers = {
