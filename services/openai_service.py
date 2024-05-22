@@ -259,7 +259,7 @@ def handle_request(request, request_type):
                 try:
                     reply_generator = response.get('reply_generator')
                     for delta in reply_generator:
-                        logging.info(f"forward request other vendor: vendor:{vendor}, delta:{delta}")
+                        #logging.info(f"forward request other vendor: vendor:{vendor}, delta:{delta}")
                         if 'content' in delta:
                             content = delta['content']
                         else:

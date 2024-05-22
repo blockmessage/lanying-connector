@@ -343,6 +343,8 @@ def get_task(app_id, task_id):
         for key,value in info.items():
             if key in ['word_count_min', 'word_count_max', 'image_count', 'article_count', 'cycle_interval', 'create_time', 'article_cursor']:
                 dto[key] = int(value)
+            elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
+                dto[key] = float(value)
             elif key in ['file_list', 'deploy']:
                 dto[key] = json.loads(value)
             else:
@@ -353,6 +355,10 @@ def get_task(app_id, task_id):
             dto['file_list'] = []
         if 'deploy' not in info:
             dto['deploy'] = {'type': 'none'}
+        if 'text_message_quota_usage' not in dto:
+            dto['text_message_quota_usage'] = 0.0
+        if 'image_message_quota_usage' not in dto:
+            dto['image_message_quota_usage'] = 0.0
         return dto
     return None
 
@@ -363,6 +369,10 @@ def update_task_field(app_id, task_id, field, value):
 def increase_task_field(app_id, task_id, field, value):
     redis = lanying_redis.get_redis_connection()
     return redis.hincrby(get_task_key(app_id, task_id), field, value)
+
+def increase_task_field_by_float(app_id, task_id, field, value):
+    redis = lanying_redis.get_redis_connection()
+    return redis.hincrbyfloat(get_task_key(app_id, task_id), field, value)
 
 def get_task_key(app_id, task_id):
     return f"lanying_connector:grow_ai:task:{app_id}:{task_id}"
@@ -1017,7 +1027,9 @@ def parse_keywords(keywords):
     return keyword_list
 
 def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword):
-    logging.info(f"do_run_task_article start | app_id:{app_id}, task_id:{task_run['task_id']}, task_run_id:{task_run['task_run_id']}, article_id:{article_id}, chatbot_user_id:{chatbot_user_id}, keyword:{keyword}")
+    task_run_id = task_run['task_run_id']
+    task_id = task['task_id']
+    logging.info(f"do_run_task_article start | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_id:{article_id}, chatbot_user_id:{chatbot_user_id}, keyword:{keyword}")
     now = int(time.time())
     image_count = task['image_count']
     word_count_min = task['word_count_min']
@@ -1036,11 +1048,15 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, reset_prompt_ext)
     if text_result['result'] == 'error':
         return {'result':'error', 'message': 'failed to generate article text'}
+    article_text_message_quota_usage = text_result['data']['message_quota_usage']
+    increase_task_run_field_by_float(app_id, task_run_id, "text_message_quota_usage", article_text_message_quota_usage)
+    increase_task_field_by_float(app_id, task_id, "text_message_quota_usage", article_text_message_quota_usage)
     article_info = {
         'create_time': now,
         'article_id': article_id,
         'from_user_id': from_user_id,
-        'to_user_id': chatbot_user_id
+        'to_user_id': chatbot_user_id,
+        'text_message_quota_usage': article_text_message_quota_usage
     }
     article_text = text_result['data']['messages'][0]['content']
     if len(article_text) < 100:
@@ -1061,6 +1077,11 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     if image_count > 0:
         image_prompt = '请为这篇文章生成一幅精美的插图。'
         image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, {})
+        if image_result['result'] == 'error':
+            return {'result':'error', 'message': 'failed to generate image'}
+        article_image_message_quota_usage = image_result['data']['message_quota_usage']
+        increase_task_run_field_by_float(app_id, task_run_id, "image_message_quota_usage", article_image_message_quota_usage)
+        increase_task_field_by_float(app_id, task_id, "image_message_quota_usage", article_image_message_quota_usage)
         image_attachment = lanying_utils.safe_json_loads(image_result['data']['messages'][0]['attachment'])
         if 'url' not in image_attachment:
             return {'result': 'error', 'message': 'failed to generate image'}
@@ -1078,6 +1099,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         if result['result'] == 'error':
             return result
         article_info['image_file'] = image_object_name
+        article_info['image_message_quota_usage'] = article_image_message_quota_usage
         image_str = f'![]({image_object_name})'
         if image_placeholder_text in article_text:
             article_text = article_text.replace(f"***{image_placeholder_text}***", image_placeholder_text)
@@ -1135,6 +1157,10 @@ def increase_task_run_field(app_id, task_run_id, field, value):
     redis = lanying_redis.get_redis_connection()
     return redis.hincrby(get_task_run_key(app_id, task_run_id), field, value)
 
+def increase_task_run_field_by_float(app_id, task_run_id, field, value):
+    redis = lanying_redis.get_redis_connection()
+    return redis.hincrbyfloat(get_task_run_key(app_id, task_run_id), field, value)
+
 def get_task_run(app_id, task_run_id):
     redis = lanying_redis.get_redis_connection()
     key = get_task_run_key(app_id, task_run_id)
@@ -1144,10 +1170,16 @@ def get_task_run(app_id, task_run_id):
         for key,value in info.items():
             if key in ['create_time', 'article_cursor', 'article_count', 'file_size']:
                 dto[key] = int(value)
+            elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
+                dto[key] = float(value)
             else:
                 dto[key] = value
         if 'deploy_status' not in dto:
             dto['deploy_status'] = 'wait'
+        if 'text_message_quota_usage' not in dto:
+            dto['text_message_quota_usage'] = 0.0
+        if 'image_message_quota_usage' not in dto:
+            dto['image_message_quota_usage'] = 0.0
         return dto
     return None
 
