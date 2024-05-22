@@ -35,6 +35,7 @@ from pydub import AudioSegment
 import math
 import lanying_image
 from lanying_async import executor
+import lanying_message_quota_usage
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -134,6 +135,9 @@ def handle_request(request, request_type):
         logging.info(f"check_message_deduct_failed deny: app_id={app_id}, msg={deduct_res['msg']}")
         return deduct_res
     maybe_init_preset_default_model(preset, path)
+    message_quota_trace_id = request.headers.get('message-quota-trace-id')
+    if message_quota_trace_id:
+        config['message_quota_trace_id'] = message_quota_trace_id
     vendor = request.headers.get('vendor')
     model = preset['model']
     model_config = lanying_vendor.get_chat_model_config(vendor, model)
@@ -1344,6 +1348,8 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             files = None
             auth = lanying_function_call.get('auth', {})
             response_rules = lanying_function_call.get('response_rules', [])
+            if 'message_quota_trace_id' in config:
+                headers['message-quota-trace-id'] = config['message_quota_trace_id']
             if lanying_utils.is_valid_public_url(url):
                 auth_type = auth.get('type', 'none')
                 logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, auth_type:{auth_type}, url:{url}, params:{params}, headers: {headers}, body: {body}")
@@ -2210,6 +2216,14 @@ def check_speech_to_text_quota(model_config, preset, request):
     logging.info(f"check_speech_to_text_quota | audio_file_path:{audio_file_path}, duration_ms:{duration_ms}, duration: {duration}, quota:{quota}")
     return {'result':'ok', 'quota': quota, 'duration_ms': duration_ms, 'duration': duration, 'file_info': file_info}
 
+def maybe_trace_message_quota_usage(config, message_count_quota):
+    try:
+        if 'message_quota_trace_id' in config:
+            message_quota_trace_id = config['message_quota_trace_id']
+            lanying_message_quota_usage.incr_usage(message_quota_trace_id, message_count_quota)
+    except Exception as e:
+        logging.exception(e)
+
 def add_message_statistic(app_id, config, preset, response, openai_key_type, model_config):
     model_type = model_config.get('type', '')
     if model_type == 'image':
@@ -2230,6 +2244,7 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
                 new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
                 if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+            maybe_trace_message_quota_usage(config, message_count_quota)
             # try:
             #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
             # except Exception as e:
@@ -2257,6 +2272,7 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
                 new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
                 if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+            maybe_trace_message_quota_usage(config, message_count_quota)
             # try:
             #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
             # except Exception as e:
@@ -2295,6 +2311,7 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
                 new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
                 if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+            maybe_trace_message_quota_usage(config, message_count_quota)
             try:
                 maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
             except Exception as e:
@@ -3214,6 +3231,8 @@ def speech_to_text(config, audio_filename):
             "model": config['audio_to_text_model'],
             "response_format": "verbose_json"
         }
+        if 'message_quota_trace_id' in config:
+            headers['message-quota-trace-id'] = config['message_quota_trace_id']
         files = {'file': ('audio.mp3', open(audio_filename, 'rb'))}
         url = global_lanying_connector_server + '/v1/audio/transcriptions'
         response = requests.post(url, headers=headers, data=data, files=files)
@@ -4113,9 +4132,12 @@ def sync_messages():
         newConfig['ext'] = msg.get('ext', '')
         newConfig['app_id'] = msg['appId']
         newConfig['msg_id'] = msg['msgId']
+        message_quota_trace_id = lanying_message_quota_usage.generate_trace_id()
+        newConfig['message_quota_trace_id'] = message_quota_trace_id
         messages = handle_sync_messages(newConfig, msg)
+        message_quota_usage = lanying_message_quota_usage.get_usage(message_quota_trace_id)
         logging.info(f"receive sync messages finish | msg:{msg}, messages:{messages}")
-        resp = make_response({'code':200, 'data':{'messages': messages}})
+        resp = make_response({'code':200, 'data':{'messages': messages, 'message_quota_usage': message_quota_usage}})
         return resp
     except Exception as e:
         logging.exception(e)
