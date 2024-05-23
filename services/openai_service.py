@@ -515,7 +515,7 @@ def check_message_need_reply(config, msg):
                 limit = 3
                 if round == limit:
                     logging.info(f"soft stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
-                    return {'result':'error', 'msg':'您发消息速度过快，请稍后再试。'}
+                    return {'result':'error', 'code':'rate_limit_reached', 'msg':'您发消息速度过快，请稍后再试。'}
                 elif round > limit:
                     logging.info(f"hard stop message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
                     return {'result':'error', 'msg':''}
@@ -541,7 +541,7 @@ def check_message_need_reply(config, msg):
                 limit = 3
                 if round == limit:
                     logging.info(f"soft stop group message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
-                    return {'result':'error', 'msg':'您发消息速度过快，请稍后再试。'}
+                    return {'result':'error', 'code':'rate_limit_reached', 'msg':'您发消息速度过快，请稍后再试。'}
                 elif round > limit:
                     logging.info(f"hard stop group message reply for round limit reached | round:{round}/{limit}, msg:{msg}")
                     return {'result':'error', 'msg':''}
@@ -582,9 +582,28 @@ def handle_chat_message(config, msg):
     except Exception as e:
         logging.error("fail to handle_chat_message:")
         logging.exception(e)
-        reply = lanying_config.get_message_404(app_id)
+        reply = {
+            'result': 'error',
+            'code': 'internal_error',
+            'message': lanying_config.get_message_404(app_id)
+        }
+    error_code = ''
+    error_message = ''
     if isinstance(reply, list):
+        logging.info(f"got list reply | {reply}")
         reply_list = reply
+    elif isinstance(reply, dict):
+        if 'result' in reply and reply['result'] == 'error':
+            error_code = reply.get('code', '')
+            error_message = reply.get('msg', '')
+            if error_message == '':
+                error_message = reply.get('message', '')
+            if 'msg_list' in reply:
+                reply_list = reply['msg_list']
+            else:
+                reply_list = [error_message]
+        else:
+            reply_list = []
     else:
         reply_list = [reply]
     cnt = 0
@@ -604,7 +623,9 @@ def handle_chat_message(config, msg):
                 'ai': {
                     'stream': False,
                     'role': 'ai',
-                    'result': 'error'
+                    'result': 'error',
+                    'error_code': error_code,
+                    'error_message': now_reply if error_message == '' else error_message
                 }
             }
             if 'feedback' in lcExt:
@@ -634,7 +655,7 @@ def handle_chat_message_try(config, msg, retry_times):
     msg_type = msg['type']
     checkres = check_message_need_reply(config, msg)
     if checkres['result'] == 'error':
-        return checkres['msg']
+        return checkres
     chatbot_user_id = checkres['chatbot_user_id']
     config['chatbot_user_id'] = chatbot_user_id
     fromUserId = config['from_user_id']
@@ -643,10 +664,10 @@ def handle_chat_message_try(config, msg, retry_times):
     is_chatbot_mode = lanying_chatbot.is_chatbot_mode(app_id)
     checkres = check_message_deduct_failed(msg['appId'], config)
     if checkres['result'] == 'error':
-        return checkres['msg']
+        return checkres
     checkres = check_product_id(msg['appId'], config)
     if checkres['result'] == 'error':
-        return checkres['msg']
+        return checkres
     ctype = msg['ctype']
     content = msg.get('content','')
     command_ext = {}
@@ -694,7 +715,7 @@ def handle_chat_message_try(config, msg, retry_times):
             preset = chatbot['preset']
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
-        return checkres['msg']
+        return checkres
     lcExt = {}
     presetExt = {}
     redis = lanying_redis.get_redis_connection()
@@ -779,7 +800,11 @@ def handle_chat_message_try(config, msg, retry_times):
     if model_config:
         return handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
     else:
-        return f'不支持模型：{preset["model"]}'
+        return {
+            'result': 'error',
+            'code': 'model_not_support',
+            'msg': f'不支持模型：{preset["model"]}'
+        }
 
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
@@ -788,7 +813,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     check_res = check_message_limit(app_id, config, vendor, True)
     if check_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={check_res['msg']}")
-        return check_res['msg']
+        return check_res
     openai_key_type = check_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
     doc_id = ""
@@ -1002,7 +1027,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     if msg_type == 'CHAT':
         history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
-            return history_result['message']
+            return history_result
         userHistoryList = history_result['data']
         for userHistory in userHistoryList:
             logging.info(f'userHistory:{userHistory}')
@@ -1011,7 +1036,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     else:
         history_result = loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
-            return history_result['message']
+            return history_result
         userHistoryList = history_result['data']
         for userHistory in userHistoryList:
             logging.info(f'GroupHistory:{userHistory}')
@@ -1401,6 +1426,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                 else:
                     function_response = requests.request(method, url, params=params, headers=headers, json = body, auth = auth_opts, timeout = (plugin_request_connect_timeout, plugin_request_read_timeout))
                 function_content = function_response.text
+                maybe_update_plugin_error_msg(reply_ext, function_response)
                 if 'send_image_to_client' in response_rules or 'image_edit' in response_rules:
                     image_reply_ext = copy.deepcopy(reply_ext)
                     image_reply_ext['ai']['stream'] = False
@@ -1503,6 +1529,19 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
         logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
         return response
     raise Exception('bad_preset_function')
+
+def maybe_update_plugin_error_msg(reply_ext, function_response):
+    try:
+        response_json = function_response.json()
+        code = response_json['error']['code']
+        error_message = response_json['error']['message']
+        if isinstance(code, str) and isinstance(error_message, str):
+            if 'ai' in reply_ext:
+                reply_ext['ai']['result'] = 'error'
+                reply_ext['ai']['error_code'] = code
+                reply_ext['ai']['error_message'] = error_message
+    except Exception as e:
+        pass
 
 def send_image_to_client(config, reply_ext, response):
     try:
@@ -1765,7 +1804,7 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
     nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
-        return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
+        return {'result':'error', 'code': 'message_too_long', 'msg': lanying_config.get_message_too_long(app_id)}
     res = []
     history_bytes = 0
     history_count = 0
@@ -1829,7 +1868,7 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
     nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
-        return {'result':'error', 'message': lanying_config.get_message_too_long(app_id)}
+        return {'result':'error', 'code': 'message_too_long', 'msg': lanying_config.get_message_too_long(app_id)}
     res = []
     history_bytes = 0
     history_count = 0
@@ -2399,7 +2438,7 @@ def check_message_limit(app_id, config, vendor, is_chat):
                 if len(msgs) == 1:
                     return {'result':'error', 'code':'no_quota', 'msg': msgs[0]}
                 else:
-                    return {'result':'error', 'code':'no_quota', 'msg': msgs}
+                    return {'result':'error', 'code':'no_quota', 'msg_list': msgs}
             else:
                 if quota_pre_check > 0:
                     return {'result':'error', 'code':'quota_not_enough', 'msg': lanying_config.get_message_quota_not_enough(app_id)}
@@ -2433,9 +2472,9 @@ def check_message_per_month_per_user(msg, config):
                     if share_text != '':
                         msgs.append(share_text)
                 if len(msgs) == 1:
-                    return {'result':'error', 'msg': msgs[0]}
+                    return {'result':'error', 'code': 'message_per_month_per_user_limit_reached', 'msg': msgs[0]}
                 else:
-                    return {'result':'error', 'msg': msgs}
+                    return {'result':'error', 'code': 'message_per_month_per_user_limit_reached', 'msg_list': msgs}
     return {'result':'ok'}
 
 def check_message_deduct_failed(app_id, config):
@@ -2449,7 +2488,7 @@ def check_product_id(app_id, config):
         productId = config['product_id']
     if productId == 0:
         logging.info(f"service is expired: app_id={app_id}")
-        return {'result':'error', 'msg':'service is expired'}
+        return {'result':'error', 'code':'service_is_expired', 'msg':'service is expired'}
     return {'result':'ok'}
 
 def get_message_limit_state(app_id):
