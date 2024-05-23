@@ -1095,6 +1095,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             stream_usage = {}
             stream_function_name = ""
             stream_function_args = ""
+            stream_finish_reason = ""
             try:
                 for delta in reply_generator:
                     # logging.info(f"KKK:delta:{delta}")
@@ -1111,6 +1112,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                                 stream_function_args = delta["function_call"]["arguments"]
                             else:
                                 stream_function_args += delta["function_call"]["arguments"]
+                    if 'finish_reason' in delta:
+                        stream_finish_reason = delta['finish_reason']
                     content_count += len(delta_content)
                     content_collect.append(delta_content)
                     collect_now = time.time()
@@ -1137,6 +1140,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             reply += ''.join(content_collect)
             stream_reponse = stream_lines_to_response(preset_maybe_vision, reply, vendor, stream_usage, stream_function_name, stream_function_args)
             response['reply'] = reply
+            response['finish_reason'] = stream_finish_reason
             response['usage'] = stream_reponse['usage']
             if 'function_call' in stream_reponse:
                 response['function_call'] = stream_reponse['function_call']
@@ -1154,6 +1158,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         else:
             break
     reply = response['reply']
+    finish_reason = response.get('finish_reason', '')
+    reply_ext['ai']['finish_reason'] = finish_reason
     command = None
     try:
         command = json.loads(reply)['ai']

@@ -231,7 +231,11 @@ def chat(prepare_info, preset):
     if isinstance(response, types.GeneratorType):
         def generator():
             for chunk in response:
-                yield chunk['choices'][0]['delta']
+                choice = chunk['choices'][0]
+                delta = choice['delta']
+                if 'finish_reason' in choice and choice['finish_reason'] is not None:
+                    delta['finish_reason'] = choice['finish_reason']
+                yield delta
         return {
             'result': 'ok',
             'reply' : '',
@@ -245,6 +249,7 @@ def chat(prepare_info, preset):
     try:
         usage = response.get('usage',{})
         response_message = response['choices'][0]['message']
+        finish_reason = response['choices'][0].get('finish_reason', '')
         reply = response_message.get('content', "")
         if reply:
             reply = reply.strip()
@@ -254,6 +259,7 @@ def chat(prepare_info, preset):
         return {
             'result': 'ok',
             'reply' : reply,
+            'finish_reason': finish_reason,
             'function_call': function_call,
             'usage' : {
                 'completion_tokens' : usage.get('completion_tokens',0),
