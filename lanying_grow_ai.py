@@ -182,10 +182,11 @@ def get_service_statistic_key_list(app_id, field):
         else:
             pay_start_date = end_date
     pay_start_date_str = pay_start_date.strftime('%Y-%m-%d')
+    month_start_date_str = month_start_date.strftime('%Y-%m-%d')
     now_date_str = now.strftime('%Y-%m-%d')
     return [
         f'lanying-connector:grow_ai:staistic:{field}:pay_start_date:{app_id}:{product_id}:{pay_start_date_str}',
-        f'lanying-connector:grow_ai:staistic:{field}:month_start_date:{app_id}:{product_id}:{month_start_date}',
+        f'lanying-connector:grow_ai:staistic:{field}:month_start_date:{app_id}:{product_id}:{month_start_date_str}',
         f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}'
     ]
 
