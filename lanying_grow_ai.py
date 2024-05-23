@@ -533,6 +533,11 @@ def set_article_title_used(app_id, task_id, title, task_run_id):
     key = article_title_used_key(app_id, task_id)
     redis.hset(key, title, task_run_id)
 
+def del_article_title_used(app_id, task_id, title):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_used_key(app_id, task_id)
+    redis.hdel(key, title)
+
 def is_article_title_used(app_id, task_id, title):
     redis = lanying_redis.get_redis_connection()
     key = article_title_used_key(app_id, task_id)
@@ -1027,6 +1032,17 @@ def parse_keywords(keywords):
             keyword_list.append(keyword)
     return keyword_list
 
+def handle_ai_response_error(result, default_error_message, app_id, task_id, title):
+    message = result['message']
+    if message in ["rate_limit_reached", "no_quota", "quota_not_enough", "message_per_month_per_user_limit_reached", "deduct_failed", "service_is_expired"]:
+        del_article_title_used(app_id, task_id, title)
+    retry = True
+    if message in ["rate_limit_reached", "no_quota", "quota_not_enough", "message_per_month_per_user_limit_reached", "deduct_failed", "service_is_expired"]:
+        retry = False
+    if message in ["no_quota", "quota_not_enough"]:
+        return {"result":"error", "message": "quota_not_enough", "retry": retry}
+    return {'result': 'error', 'message': default_error_message, "retry": retry}
+
 def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword):
     task_run_id = task_run['task_run_id']
     task_id = task['task_id']
@@ -1048,7 +1064,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     clean_user_message_count(app_id, from_user_id)
     text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, reset_prompt_ext)
     if text_result['result'] == 'error':
-        return {'result':'error', 'message': 'failed to generate article text'}
+        return handle_ai_response_error(text_result, 'failed to generate article text', app_id, task_id, keyword)
     article_text_message_quota_usage = text_result['data']['message_quota_usage']
     increase_task_run_field_by_float(app_id, task_run_id, "text_message_quota_usage", article_text_message_quota_usage)
     increase_task_field_by_float(app_id, task_id, "text_message_quota_usage", article_text_message_quota_usage)
@@ -1061,25 +1077,14 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     }
     article_text = text_result['data']['messages'][0]['content']
     if len(article_text) < 100:
-        article_ext = lanying_utils.safe_json_loads(text_result['data']['messages'][0]['ext'])
-        has_error = False
-        try:
-            has_error = article_ext['ai']['result'] == 'error'
-        except Exception as e:
-            pass
-        if has_error:
-            return {'result': 'error', 'message': article_text}
-        else:
-            antispam_message = lanying_config.get_message_antispam(app_id)
-            if article_text == antispam_message:
-                return {'result': 'error', 'message': 'article text is blocked'}
-            else:
-                return {'result': 'error', 'message': 'article text too short'}
+        antispam_message = lanying_config.get_message_antispam(app_id)
+        if article_text == antispam_message:
+            return {'result': 'error', 'message': 'article text is blocked'}
     if image_count > 0:
         image_prompt = '请为这篇文章生成一幅精美的插图。'
         image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, {})
         if image_result['result'] == 'error':
-            return {'result':'error', 'message': 'failed to generate image'}
+            return handle_ai_response_error(image_result, 'failed to generate image', app_id, task_id, keyword)
         article_image_message_quota_usage = image_result['data']['message_quota_usage']
         increase_task_run_field_by_float(app_id, task_run_id, "image_message_quota_usage", article_image_message_quota_usage)
         increase_task_field_by_float(app_id, task_id, "image_message_quota_usage", article_image_message_quota_usage)
@@ -1142,13 +1147,26 @@ def request_to_ai(app_id, from_user_id, to_user_id, content, ext = {}):
             logging.info(f"request_ai finish | response_text: {sendResponse.text}")
             result = sendResponse.json()
             if result['code'] == 200:
-                return {'result': 'ok', 'data': result['data']}
+                return format_ai_message_result(result)
             else:
                 return {'result': 'error', 'message': result['message']}
         except Exception as e:
             logging.exception(e)
             pass
     return {'result': 'error', 'message': 'internal error'}
+
+def format_ai_message_result(result):
+    try:
+        ext = lanying_utils.safe_json_loads(result['data']['messages'][0]['ext'])
+        ai = ext['ai']
+        if 'result' in ai and ai['result'] == 'error':
+            error_code = ai['error_code']
+            error_message = ai['error_message']
+            logging.info(f"format_ai_message_result got error | code: {error_code}, message: {error_message}")
+            return {'result': 'error', 'message': error_code if error_code != '' else error_message}
+    except Exception as e:
+        pass
+    return {'result': 'ok', 'data': result['data']}
 
 def update_task_run_field(app_id, task_run_id, field, value):
     redis = lanying_redis.get_redis_connection()
