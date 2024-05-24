@@ -1049,7 +1049,7 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
     message_quota_usage = 0.0
     word_count_expect_min = word_count_min
     word_count_expect_max = word_count_max
-    for i in range(2):
+    for i in range(3):
         clean_user_message_count(app_id, from_user_id)
         logging.info(f"generate_article start | i={i}, app_id:{app_id}, task_run_id:{task_run_id}")
         text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, reset_prompt_ext)
@@ -1070,7 +1070,7 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
                 return {'result': 'error', 'message': 'article text is blocked'}
         now_article_text += article_text
         now_article_len = len(now_article_text)
-        if finish_reason != 'length':
+        if finish_reason not in ['length', 'max_tokens']:
             break
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len

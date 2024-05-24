@@ -88,7 +88,11 @@ def chat(prepare_info, preset):
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
-                                yield data['choices'][0]['delta']
+                                choice = data['choices'][0]
+                                delta = choice['delta']
+                                if 'finish_reason' in choice and choice['finish_reason'] is not None:
+                                    delta['finish_reason'] = choice['finish_reason']
+                                yield delta
                             except Exception as e:
                                 pass
                 return {
@@ -125,9 +129,15 @@ def chat(prepare_info, preset):
             else:
                 reply = ''
             function_call = response_message.get('function_call')
+            finish_reason = ''
+            try:
+                finish_reason = res['choices'][0]['finish_reason']
+            except Exception as e:
+                pass
             return {
                 'result': 'ok',
                 'reply' : reply,
+                'finish_reason': finish_reason,
                 'function_call': function_call,
                 'usage' : {
                     'completion_tokens' : usage.get('completion_tokens',0),

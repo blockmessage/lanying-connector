@@ -1112,7 +1112,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                                 stream_function_args = delta["function_call"]["arguments"]
                             else:
                                 stream_function_args += delta["function_call"]["arguments"]
-                    if 'finish_reason' in delta:
+                    if 'finish_reason' in delta and delta['finish_reason'] is not None and len(delta['finish_reason']) > 0:
                         stream_finish_reason = delta['finish_reason']
                     content_count += len(delta_content)
                     content_collect.append(delta_content)

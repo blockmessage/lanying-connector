@@ -163,6 +163,8 @@ def chat(prepare_info, preset):
                                         'name': data['function_call'].get('name'),
                                         'arguments': data['function_call'].get('arguments'),
                                     }
+                                if 'finish_reason' in data:
+                                    chunk_info['finish_reason'] = data['finish_reason']
                                 yield chunk_info
                             except Exception as e:
                                 pass
@@ -218,6 +220,7 @@ def chat(prepare_info, preset):
                 'result': 'ok',
                 'reply': res['result'],
                 'function_call': function_call,
+                'finish_reason': res.get('finish_reason', ''),
                 'usage': {
                     'completion_tokens' : usage.get('completion_tokens',0),
                     'prompt_tokens' : usage.get('prompt_tokens', 0),

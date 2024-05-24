@@ -93,7 +93,12 @@ def chat(prepare_info, preset):
                             try:
                                 data = json.loads(line_str[5:])
                                 if 'usage' in data:
-                                    yield {'usage': data['usage']}
+                                    finish_reason = ''
+                                    try:
+                                        finish_reason = data['choices'][0]['finish_reason']
+                                    except Exception as e:
+                                        pass
+                                    yield {'usage': data['usage'], 'finish_reason': finish_reason}
                                 elif 'function_call' in data['choices'][0]['messages'][0]:
                                     yield {'function_call': data['choices'][0]['messages'][0]['function_call'], 'arguments_merge_type': 'replace'}
                                 else:
@@ -131,9 +136,15 @@ def chat(prepare_info, preset):
             status_code = base_resp.get('status_code', 0)
             if status_code == 0:
                 usage = res.get('usage',{})
+                finish_reason = ''
+                try:
+                    finish_reason = res['choices'][0]['finish_reason']
+                except Exception as e:
+                    pass
                 return {
                     'result': 'ok',
                     'reply': res['reply'],
+                    'finish_reason': finish_reason,
                     'function_call': res.get('function_call'),
                     'usage': {
                         'completion_tokens' : usage.get('completion_tokens',0),

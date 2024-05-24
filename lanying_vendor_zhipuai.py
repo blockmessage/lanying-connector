@@ -93,6 +93,12 @@ def chat(prepare_info, preset):
                             'prompt_tokens' : chunk.usage.prompt_tokens,
                             'total_tokens' : chunk.usage.total_tokens
                         }
+                    finish_reason = ''
+                    try:
+                        finish_reason = chunk.choices[0].finish_reason
+                        chunk_info['finish_reason'] = finish_reason
+                    except Exception as e:
+                        pass
                     yield chunk_info
             return {
                 'result': 'ok',
@@ -121,9 +127,15 @@ def chat(prepare_info, preset):
                         'arguments': message.tool_calls[0].function.arguments,
                         'id': message.tool_calls[0].id
                     }
+            finish_reason = ''
+            try:
+                finish_reason = response.choices[0].finish_reason
+            except Exception as e:
+                pass
             return {
                 'result': 'ok',
                 'reply' : reply,
+                'finish_reason': finish_reason,
                 'function_call': function_call,
                 'usage' : {
                     'completion_tokens' : usage.completion_tokens,

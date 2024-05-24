@@ -98,6 +98,12 @@ def chat(prepare_info, preset):
                             usage['completion_tokens'] = chunk.usage['output_tokens']
                             usage['total_tokens'] = usage['prompt_tokens'] + usage['completion_tokens']
                             chunk_reply['usage'] = usage
+                            finish_reason = ''
+                            try:
+                                finish_reason = str(chunk.delta.stop_reason)
+                                chunk_reply['finish_reason'] = finish_reason
+                            except Exception as e:
+                                pass
                 elif isinstance(chunk, MessageStartEvent):
                     if chunk.message.usage:
                         if 'input_tokens' in chunk.message.usage:
@@ -131,9 +137,15 @@ def chat(prepare_info, preset):
             reply = reply.strip()
         else:
             reply = ''
+        finish_reason = ''
+        try:
+            finish_reason = str(response.stop_reason)
+        except Exception as e:
+            pass
         return {
             'result': 'ok',
             'reply' : reply,
+            'finish_reason': finish_reason,
             'usage' : {
                 'completion_tokens' : usage.get('output_tokens', 0),
                 'prompt_tokens' : usage.get('input_tokens', 0),
