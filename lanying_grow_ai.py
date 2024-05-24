@@ -22,7 +22,7 @@ import lanying_chatbot
 import base64
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -37,6 +37,7 @@ class TaskSetting:
         self.cycle_interval = cycle_interval
         self.file_list = file_list
         self.deploy = deploy
+        self.title_reuse = title_reuse
 
     def to_hmset_fields(self):
         return {
@@ -53,7 +54,8 @@ class TaskSetting:
             'cycle_type': self.cycle_type,
             'cycle_interval': self.cycle_interval,
             'file_list': json.dumps(self.file_list, ensure_ascii=False),
-            'deploy': json.dumps(self.deploy, ensure_ascii=False)
+            'deploy': json.dumps(self.deploy, ensure_ascii=False),
+            'title_reuse': self.title_reuse
         }
 
 def handle_schedule(schedule_info):
@@ -240,7 +242,8 @@ def configure_task(task_id, task_setting: TaskSetting):
     set_task_schedule(app_id, task_id, "on")
     new_task_info = get_task(app_id, task_id)
     if new_task_info['prompt'] != task_info['prompt'] or new_task_info['keywords'] != task_info['keywords'] or new_task_info['file_list'] != task_info['file_list']:
-        update_task_field(app_id, task_id, "article_cursor", 0)
+        if new_task_info['title_reuse'] == 'off':
+            update_task_field(app_id, task_id, "article_cursor", 0)
     if new_task_info['cycle_type'] != task_info['cycle_type'] or new_task_info['cycle_interval'] != task_info['cycle_interval']:
         schedule_id = new_task_info.get('schedule_id', '')
         if new_task_info['cycle_type'] != 'cycle':
@@ -360,6 +363,8 @@ def get_task(app_id, task_id):
             dto['text_message_quota_usage'] = 0.0
         if 'image_message_quota_usage' not in dto:
             dto['image_message_quota_usage'] = 0.0
+        if 'title_reuse' not in dto:
+            dto['title_reuse'] = 'off'
         return dto
     return None
 
@@ -507,26 +512,40 @@ def do_run_task(app_id, task_run_id, has_retry_times):
 def get_article_limit(app_id):
     return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_article_number')
 
-def find_title(app_id, task_id, task_run_id, keywords):
+def find_title(app_id, task_id, task_run_id, keywords, title_reuse):
     article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 0)
     max = len(keywords)
-    while article_cursor < max:
+    if title_reuse == 'off':
+        while article_cursor < max:
+            title = keywords[article_cursor]
+            if is_article_title_used(app_id, task_id, title):
+                article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 1)
+            else:
+                set_article_title_used(app_id, task_id, title, task_run_id)
+                return {
+                    'result': 'ok',
+                    'data':{
+                        'title': title
+                    }
+                }
+        return {
+            'result': 'error',
+            'message': 'article titles are exhausted',
+            'retry': False
+        }
+    else:
+        if article_cursor >= max:
+            update_task_field(app_id, task_id, "article_cursor", 0)
+            article_cursor = 0
         title = keywords[article_cursor]
-        if is_article_title_used(app_id, task_id, title):
-            article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 1)
-        else:
-            set_article_title_used(app_id, task_id, title, task_run_id)
-            return {
+        set_article_title_used(app_id, task_id, title, task_run_id)
+        increase_task_field(app_id, task_id, 'article_cursor', 1)
+        return {
                 'result': 'ok',
                 'data':{
                     'title': title
                 }
             }
-    return {
-        'result': 'error',
-        'message': 'article titles are exhausted',
-        'retry': False
-    }
 
 def set_article_title_used(app_id, task_id, title, task_run_id):
     redis = lanying_redis.get_redis_connection()
@@ -606,7 +625,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         now_article_num = usage['data']['article_num']
         if now_article_num + 1 > article_limit:
             return {'result': 'error', 'message': 'article_num not enough', 'retry': False}
-        result = find_title(app_id, task_id, task_run_id, keywords)
+        result = find_title(app_id, task_id, task_run_id, keywords, task['title_reuse'])
         if result['result'] == 'error':
             if result['message'] == 'article titles are exhausted':
                 if cycle_type == 'none' and i > 0:
@@ -1104,7 +1123,8 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         'article_id': article_id,
         'from_user_id': from_user_id,
         'to_user_id': chatbot_user_id,
-        'text_message_quota_usage': text_result['message_quota_usage']
+        'text_message_quota_usage': text_result['message_quota_usage'],
+        'title': keyword
     }
     article_text = text_result['article_text']
     if image_count > 0:
