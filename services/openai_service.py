@@ -287,7 +287,7 @@ def handle_request(request, request_type):
                         if 'function_call' in delta:
                             delta_response['choices'][0]['delta']['function_call'] = delta.get('function_call')
                         delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"
-                        logging.info(f"delta_line:{delta_line}")
+                        #logging.info(f"delta_line:{delta_line}")
                         yield delta_line
                 finally:
                     delta_response = {
@@ -306,7 +306,7 @@ def handle_request(request, request_type):
                             'usage': usage
                         }
                     delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"
-                    logging.info(f"delta_line:{delta_line}")
+                    #logging.info(f"delta_line:{delta_line}")
                     yield delta_line
                     yield 'data: [DONE]\n'
                     reply = ''.join(contents)
