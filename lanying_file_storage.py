@@ -12,7 +12,7 @@ accesskey = os.getenv("FILE_STORAGE_ACCESS_KEY")
 screctkey = os.getenv("FILE_STORAGE_SCRECT_KEY")
 secure = os.getenv("FILE_STORAGE_SECURE", "false").lower() == "true"
 bucket_name = os.getenv("FILE_STORAGE_BUCKET_NAME", "embedding-file")
-max_upload_file_size = int(os.getenv("FILE_STORAGE_MAX_UPLOAD_FILE_SIZE", "10737418240"))
+max_upload_file_size = int(os.getenv("FILE_STORAGE_MAX_UPLOAD_FILE_SIZE", "52428800"))
 client = None
 if server:
     if accesskey:

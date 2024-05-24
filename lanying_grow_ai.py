@@ -1043,6 +1043,41 @@ def handle_ai_response_error(result, default_error_message, app_id, task_id, tit
         return {"result":"error", "message": "quota_not_enough", "retry": retry}
     return {'result': 'error', 'message': default_error_message, "retry": retry}
 
+def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max):
+    now_article_text = ''
+    reset_prompt_ext = {'ai':{'reset_prompt': True}}
+    message_quota_usage = 0.0
+    word_count_expect_min = word_count_min
+    word_count_expect_max = word_count_max
+    for i in range(2):
+        clean_user_message_count(app_id, from_user_id)
+        logging.info(f"generate_article start | i={i}, app_id:{app_id}, task_run_id:{task_run_id}")
+        text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, reset_prompt_ext)
+        if text_result['result'] == 'error':
+            return text_result
+        article_text_message_quota_usage = text_result['data']['message_quota_usage']
+        message_quota_usage += article_text_message_quota_usage
+        increase_task_run_field_by_float(app_id, task_run_id, "text_message_quota_usage", article_text_message_quota_usage)
+        increase_task_field_by_float(app_id, task_id, "text_message_quota_usage", article_text_message_quota_usage)
+        article_text = text_result['data']['messages'][0]['content']
+        ext = lanying_utils.safe_json_loads(text_result['data']['messages'][0].get('ext',''))
+        ai = ext.get('ai', {})
+        finish_reason = ai.get('finish_reason', '')
+        logging.info(f"generate_article got article_text | finish_reason: {finish_reason}, i={i}, app_id:{app_id}, task_run_id:{task_run_id}, article_text_len={len(article_text)}, word_count_expect_min:{word_count_expect_min}, word_count_expect_max:{word_count_expect_max}")
+        if len(article_text) < 100:
+            antispam_message = lanying_config.get_message_antispam(app_id)
+            if article_text == antispam_message:
+                return {'result': 'error', 'message': 'article text is blocked'}
+        now_article_text += article_text
+        now_article_len = len(now_article_text)
+        if finish_reason != 'length':
+            break
+        word_count_expect_min = word_count_min - now_article_len
+        word_count_expect_max = word_count_max - now_article_len
+        text_prompt = f"请接着上次的回答继续生成，字数范围 {word_count_expect_min} - {word_count_expect_max} 字。"
+        reset_prompt_ext = {}
+    return {'result': 'ok', 'article_text': now_article_text, "message_quota_usage": message_quota_usage}
+
 def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword):
     task_run_id = task_run['task_run_id']
     task_id = task['task_id']
@@ -1060,26 +1095,18 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     subject_prompt = '' if task_prompt == '' else f'文章主题或产品和公司介绍为：{task_prompt}\n'
     keyword_prompt = f'文章标题关键词为：{keyword}\n'
     text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{keyword_prompt}{subject_prompt}'
-    reset_prompt_ext = {'ai':{'reset_prompt': True}}
     clean_user_message_count(app_id, from_user_id)
-    text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, reset_prompt_ext)
+    text_result = generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max)
     if text_result['result'] == 'error':
         return handle_ai_response_error(text_result, 'failed to generate article text', app_id, task_id, keyword)
-    article_text_message_quota_usage = text_result['data']['message_quota_usage']
-    increase_task_run_field_by_float(app_id, task_run_id, "text_message_quota_usage", article_text_message_quota_usage)
-    increase_task_field_by_float(app_id, task_id, "text_message_quota_usage", article_text_message_quota_usage)
     article_info = {
         'create_time': now,
         'article_id': article_id,
         'from_user_id': from_user_id,
         'to_user_id': chatbot_user_id,
-        'text_message_quota_usage': article_text_message_quota_usage
+        'text_message_quota_usage': text_result['message_quota_usage']
     }
-    article_text = text_result['data']['messages'][0]['content']
-    if len(article_text) < 100:
-        antispam_message = lanying_config.get_message_antispam(app_id)
-        if article_text == antispam_message:
-            return {'result': 'error', 'message': 'article text is blocked'}
+    article_text = text_result['article_text']
     if image_count > 0:
         image_prompt = '请为这篇文章生成一幅精美的插图。'
         image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, {})
