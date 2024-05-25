@@ -646,6 +646,9 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         result = do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword)
         if result['result'] == 'error':
             logging.info(f"do_run_task error | app_id:{app_id}, task_run_id:{task_run_id}, article_id:{article_id}, keyword:{keyword}, result:{result}")
+            if result['message'] == 'quota_not_enough':
+                if cycle_type == 'cycle':
+                    set_task_schedule(app_id, task_id, "off", result['message'])
             return result
         article_info = result['article_info']
         redis.hset(run_result_key, article_id, json.dumps(article_info, ensure_ascii=False))
