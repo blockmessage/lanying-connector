@@ -189,7 +189,8 @@ def get_service_statistic_key_list(app_id, field):
     return [
         f'lanying-connector:grow_ai:staistic:{field}:pay_start_date:{app_id}:{product_id}:{pay_start_date_str}',
         f'lanying-connector:grow_ai:staistic:{field}:month_start_date:{app_id}:{product_id}:{month_start_date_str}',
-        f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}'
+        f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}',
+        f'lanying-connector:grow_ai:staistic:{field}:app:{app_id}'
     ]
 
 def create_task(task_setting: TaskSetting):
@@ -345,7 +346,8 @@ def get_task(app_id, task_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            if key in ['word_count_min', 'word_count_max', 'image_count', 'article_count', 'cycle_interval', 'create_time', 'article_cursor']:
+            if key in ['word_count_min', 'word_count_max', 'image_count', 'article_count',
+                       'cycle_interval', 'create_time', 'article_cursor', "total_article_num"]:
                 dto[key] = int(value)
             elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
                 dto[key] = float(value)
@@ -642,6 +644,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         redis.hset(run_result_key, article_id, json.dumps(article_info, ensure_ascii=False))
         increase_task_run_field(app_id, task_run_id, "article_success_count", 1)
         incrby_service_usage(app_id, 'article_num', 1)
+        increase_task_field(app_id, task_id, "total_article_num", 1)
     result = make_task_run_result_zip_file(app_id, task_run_id)
     if result['result'] == 'error':
         return result
