@@ -20,6 +20,10 @@ import lanying_grow_ai
 import lanying_schedule
 from celery.schedules import crontab
 
+download_dir = os.getenv("EMBEDDING_DOWNLOAD_DIR", "/data/download")
+embedding_doc_dir = os.getenv("EMBEDDING_DOC_DIR", "embedding-doc")
+os.makedirs(download_dir, exist_ok=True)
+
 normal_queue = Celery('normal_queue',
              backend=lanying_redis.get_task_redis_server(),
              broker=lanying_redis.get_task_redis_server())
@@ -32,9 +36,9 @@ slow_queue.conf.beat_schedule = {
         'schedule': crontab(minute='*/10')
     }
 }
-download_dir = os.getenv("EMBEDDING_DOWNLOAD_DIR", "/data/download")
-embedding_doc_dir = os.getenv("EMBEDDING_DOC_DIR", "embedding-doc")
-os.makedirs(download_dir, exist_ok=True)
+# normal_queue.conf.update(
+#     task_acks_late=True,
+# )
 
 @normal_queue.task
 def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file', limit=-1, opts = {}):

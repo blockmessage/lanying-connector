@@ -492,6 +492,10 @@ def do_run_task(app_id, task_run_id, has_retry_times):
             else:
                 update_task_run_field(app_id, task_run_id, "status", "error")
                 return result
+        elif result['result'] == 'continue':
+            from lanying_tasks import grow_ai_run_task
+            grow_ai_run_task.apply_async(args = [app_id, task_run_id], countdown=1)
+            return result
         elif result['result'] == 'ok':
             increase_task_run_field(app_id, task_run_id, "success_times", 1)
             update_task_run_field(app_id, task_run_id, "status", "success")
@@ -618,7 +622,10 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         logging.info(f"use new article_count | {article_count}")
     run_result_key = get_task_run_result_key(app_id, task_run_id)
     article_limit = get_article_limit(app_id)
-    for i in range(article_count):
+    article_generate_num = 0
+    max_article_generate_num = 5
+    start_from = task_run['start_from']
+    for i in range(start_from, article_count):
         logging.info(f"do_run_task_internal for article | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, i:{i}")
         article_id = f'{task_run_id}_{i+1}'
         if redis.hexists(run_result_key, article_id):
@@ -645,6 +652,11 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         increase_task_run_field(app_id, task_run_id, "article_success_count", 1)
         incrby_service_usage(app_id, 'article_num', 1)
         increase_task_field(app_id, task_id, "total_article_num", 1)
+        article_generate_num += 1
+        if article_generate_num >= max_article_generate_num and i < article_count - 1:
+            logging.info(f"do_run_task_internal partially finish | app_id:{app_id}, task_run_id:{task_run_id}, progress:{i+1}/{article_count}")
+            update_task_run_field(app_id, task_run_id, "start_from", i+1)
+            return {'result': 'continue'}
     result = make_task_run_result_zip_file(app_id, task_run_id)
     if result['result'] == 'error':
         return result
@@ -1237,7 +1249,7 @@ def get_task_run(app_id, task_run_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            if key in ['create_time', 'article_cursor', 'article_count', 'file_size']:
+            if key in ['create_time', 'article_cursor', 'article_count', 'file_size', 'start_from']:
                 dto[key] = int(value)
             elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
                 dto[key] = float(value)
@@ -1249,6 +1261,8 @@ def get_task_run(app_id, task_run_id):
             dto['text_message_quota_usage'] = 0.0
         if 'image_message_quota_usage' not in dto:
             dto['image_message_quota_usage'] = 0.0
+        if 'start_from' not in dto:
+            dto['start_from'] = 0
         return dto
     return None
 
