@@ -27,6 +27,7 @@ import lanying_chatbot
 import lanying_config
 import lanying_ai_capsule
 import lanying_vendor
+from pptx import Presentation
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -664,6 +665,8 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                 process_docx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".xlsx", ".xls"]:
                 process_xlsx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+            elif ext in [".pptx"]:
+                process_pptx(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
         except Exception as e:
             increase_embedding_doc_field(redis, embedding_uuid, doc_id, "fail_count", 1)
             raise e
@@ -812,6 +815,62 @@ def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+
+def process_pptx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
+    logging.info(f"start process_pptx: embedding_uuid={embedding_uuid}, filename={filename}, origin_filename:{origin_filename}")
+    redis = lanying_redis.get_redis_stack_connection()
+    all_texts = extract_text_from_pptx(filename)
+    max_block_size = get_max_token_count(config)
+    now_texts = []
+    now_tokens = 0
+    threshold = 10
+    total_tokens = 0
+    total_blocks = 0
+    for text in all_texts:
+        tokens = num_of_tokens(text)
+        if tokens + now_tokens + threshold > max_block_size:
+            now_texts_str = '\n'.join(now_texts)
+            block_tokens, block_blocks = process_block(config, now_texts_str)
+            total_tokens += block_tokens
+            total_blocks += len(block_blocks)
+            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+            insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+            now_texts = [text]
+            now_tokens = tokens
+        else:
+            now_texts.append(text)
+            now_tokens += tokens
+    if now_tokens > 0:
+        now_texts_str = '\n'.join(now_texts)
+        block_tokens, block_blocks = process_block(config, now_texts_str)
+        total_tokens += block_tokens
+        total_blocks += len(block_blocks)
+        update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+        insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+
+def extract_text_from_pptx(pptx_path):
+    # 加载PPTX文件
+    presentation = Presentation(pptx_path)
+    all_texts = []
+
+    # 遍历每一张幻灯片
+    for slide in presentation.slides:
+        slide_texts = []
+        
+        # 遍历每一个形状
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                # 提取形状中的文本
+                text = ''
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        text += run.text
+                    text += '\n'
+                slide_texts.append(text)
+        
+        all_texts.append('\n'.join(slide_texts))
+
+    return all_texts
 
 def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     logging.info(f"start process_csv: embedding_uuid={embedding_uuid}, filename={filename}")
@@ -1723,7 +1782,7 @@ def sha256(text):
     return value
 
 def allow_exts():
-    return [".html", ".htm", ".csv", ".txt", ".md", ".pdf", ".docx", ".doc", ".xlsx", ".xls"]
+    return [".html", ".htm", ".csv", ".txt", ".md", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx"]
 
 def parse_file_ext(filename):
     if is_file_url(filename):
