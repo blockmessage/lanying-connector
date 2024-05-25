@@ -7,6 +7,9 @@ import hashlib
 import time
 import uuid
 import os
+import random
+import string
+
 
 def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
@@ -75,3 +78,8 @@ def get_temp_filename(app_id, suffix):
 def is_preview_server():
     server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
     return 'preview' in server
+
+def generate_random_text(size_in_bytes):
+    characters = string.ascii_letters + string.digits + string.punctuation + ' '  # 包含所有可能的字符
+    random_text = ''.join(random.choices(characters, k=size_in_bytes))  # 生成随机文本
+    return random_text
