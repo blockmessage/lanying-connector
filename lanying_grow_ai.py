@@ -826,7 +826,8 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     if result['result'] == 'error':
         logging.info(f"github response | {response.content}")
         return {'result': 'error', 'message': 'fail to download zip file'}
-    summary_url = f"https://api.github.com/repos/{github_owner}/{github_repo}/contents/{base_dir}/SUMMARY.md?ref={commit_sha}"
+    summary_file = os.path.join(base_dir, "SUMMARY.md")
+    summary_url = f"https://api.github.com/repos/{github_owner}/{github_repo}/contents/{summary_file}?ref={commit_sha}"
     # 发送 GET 请求获取文件内容
     response = requests.get(summary_url, headers=headers)
     if response.status_code != 200:
@@ -887,7 +888,26 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         if title1 in line:
             found_title1 = True
     if not found_title1:
-        summary_list.append(f"  * [{target_relative_dir}]({title1})")
+        summary_list.append(f"* [{target_relative_dir}]({title1})")
+        readme_content = f"# {target_dir}"
+        readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
+        blob_data = {
+        "content": readme_content_base64,
+        "encoding": "base64"
+        }
+        response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+        if response.status_code != 201:
+            logging.info(f"github response | {response.content}")
+            return {'result': 'error', 'message': 'github fail to add target_dir blobs'}
+        blob_sha = response.json()["sha"]
+        github_path = os.path.join(target_dir, "README.md")
+        logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
+        tree.append({
+            "path": github_path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": blob_sha
+        })
     found_title2 = False
     for line in summary_list:
         if title2 in line:
@@ -912,8 +932,8 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                         logging.info(f"github response | {response.content}")
                         return {'result': 'error', 'message': 'github fail to add date blobs'}
                     blob_sha = response.json()["sha"]
-                    github_path = f"{target_dir}/{datestr}/README.md"
-                    logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
+                    github_path = os.path.join(target_dir, datestr, "README.md")
+                    logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
                     tree.append({
                         "path": github_path,
                         "mode": "100644",
@@ -950,7 +970,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         logging.info(f"github response | {response.content}")
         return {'result': 'error', 'message': 'github fail to add summary blobs'}
     blob_sha = response.json()["sha"]
-    github_path = f"{base_dir}/SUMMARY.md"
+    github_path = os.path.join(base_dir, "SUMMARY.md")
     logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
     tree.append({
         "path": github_path,
@@ -1111,7 +1131,7 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
             break
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len
-        text_prompt = f"请接着上次的回答继续生成，字数范围 {word_count_expect_min} - {word_count_expect_max} 字。"
+        text_prompt = f"请接着上次的回答继续生成，直接输出内容，保持文章连贯，不要有多余内容。"
         reset_prompt_ext = {}
     return {'result': 'ok', 'article_text': now_article_text, "message_quota_usage": message_quota_usage}
 
@@ -1131,7 +1151,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
-    keyword_prompt = f'文章标题关键词为：{keyword}\n'
+    keyword_prompt = f'文章标题必须为：{keyword}\n'
     text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{keyword_prompt}{subject_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
