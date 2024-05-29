@@ -79,7 +79,16 @@ def is_preview_server():
     server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
     return 'preview' in server
 
+def get_internet_connector_server():
+    server = os.getenv("LANYING_CONNECTOR_INTERNET_SERVER", "https://connector.lanyingim.com")
+    return server
+
 def generate_random_text(size_in_bytes):
     characters = string.ascii_letters + string.digits + string.punctuation + ' '  # 包含所有可能的字符
+    random_text = ''.join(random.choices(characters, k=size_in_bytes))  # 生成随机文本
+    return random_text
+
+def generate_random_letters(size_in_bytes):
+    characters = string.ascii_lowercase # 包含所有可能的字符
     random_text = ''.join(random.choices(characters, k=size_in_bytes))  # 生成随机文本
     return random_text

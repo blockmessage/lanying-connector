@@ -194,6 +194,7 @@ def get_service_statistic_key_list(app_id, field):
     ]
 
 def create_task(task_setting: TaskSetting):
+    check_github_config(task_setting.deploy)
     now = int(time.time())
     app_id = task_setting.app_id
     task_id = generate_task_id()
@@ -219,6 +220,7 @@ def create_task(task_setting: TaskSetting):
         update_task_field(app_id, task_id, "schedule_id", schedule_id)
     if task_info['cycle_type'] == 'none':
         executor.submit(run_task, app_id, task_id)
+    maybe_register_github(app_id, task_id, task_info['deploy'])
     set_admin_token(app_id)
     return {
         'result': 'ok',
@@ -233,6 +235,9 @@ def configure_task(task_id, task_setting: TaskSetting):
     task_info = get_task(app_id, task_id)
     if task_info is None:
         return {'result': 'error', 'message': 'task_id not exist'}
+    result = maybe_check_github_config(task_info['deploy'], task_setting.deploy)
+    if result['result'] == 'error':
+        return result
     result = handle_task_file_list(app_id, task_id, task_setting.file_list)
     if result['result'] == 'error':
         return result
@@ -265,6 +270,7 @@ def configure_task(task_id, task_setting: TaskSetting):
                 result = lanying_schedule.create_schedule(new_task_info['cycle_interval'], 'lanying_grow_ai', {'app_id':app_id, 'task_id':task_id})
                 schedule_id = result['data']['schedule_id']
                 update_task_field(app_id, task_id, "schedule_id", schedule_id)
+    maybe_register_github(app_id, task_id, new_task_info['deploy'])
     set_admin_token(app_id)
     return {
         'result': 'ok',
@@ -272,6 +278,75 @@ def configure_task(task_id, task_setting: TaskSetting):
             'success': True
         }
     }
+
+def maybe_check_github_config(old_deploy, deploy):
+    if deploy.get('type') == 'gitbook':
+        if deploy.get('type') == old_deploy.get('type') and deploy.get('gitbook_url') == old_deploy.get('gitbook_url') and deploy.get('gitbook_token') == old_deploy.get('gitbook_token'):
+            return {'result': 'ok'}
+        else:
+            return check_github_config(deploy)
+    else:
+        return {'result': 'ok'}
+
+def check_github_config(deploy):
+    deploy_type = deploy.get('type', 'none')
+    if deploy_type not in ["gitbook"]:
+        return {'result': 'ok'}
+    github_url = deploy.get('gitbook_url', '')
+    result = parse_github_url(github_url)
+    if result['result'] == 'error':
+        return result
+    github_owner = result['github_owner']
+    github_repo = result['github_repo']
+    github_token = deploy.get('gitbook_token', '')
+    if len(github_token) == 0:
+        return {'result': 'error', 'message': 'github token is bad'}
+    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
+    base_branch = deploy.get('gitbook_base_branch', 'master')
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    # 获取基础分支的最后一次提交SHA
+    response = requests.get(f"{github_api_url}/git/refs/heads/{base_branch}", headers=headers)
+    if response.status_code != 200:
+        return {'result': 'error', 'message': 'github token is bad'}
+    return {'result': 'ok'}
+
+def maybe_register_github(app_id, task_id, deploy):
+    deploy_type = deploy.get('type', 'none')
+    if deploy_type == 'gitbook':
+        github_url = deploy.get('gitbook_url', '')
+        result = parse_github_url(github_url)
+        if result['result'] == 'error':
+            return result
+        github_owner = result['github_owner']
+        github_repo = result['github_repo']
+        redis = lanying_redis.get_redis_connection()
+        key = github_register_key(github_owner, github_repo)
+        redis.hset(key, task_id, app_id)
+        get_github_site(github_owner, github_repo)
+
+def maybe_unregister_github(app_id, task_id, deploy):
+    deploy_type = deploy.get('type', 'none')
+    if deploy_type == 'gitbook':
+        github_url = deploy.get('gitbook_url', '')
+        result = parse_github_url(github_url)
+        if result['result'] == 'error':
+            return result
+        github_owner = result['github_owner']
+        github_repo = result['github_repo']
+        redis = lanying_redis.get_redis_connection()
+        key = github_register_key(github_owner, github_repo)
+        redis.hdel(key, task_id)
+
+def get_github_task_list(github_owner, github_repo):
+    redis = lanying_redis.get_redis_connection()
+    key = github_register_key(github_owner, github_repo)
+    return lanying_redis.redis_hgetall(redis, key)
+
+def github_register_key(github_owner, github_repo):
+    return f"lanying_connector:grow_ai:github_repo:{github_owner}:{github_repo}"
 
 def handle_task_file_list(app_id, task_id, file_list):
     if len(file_list) > 1:
@@ -330,6 +405,7 @@ def get_task_list(app_id):
     for task_id in task_ids:
         task_info = get_task(app_id, task_id)
         if task_info:
+            maybe_add_site_fields(task_info)
             task_list.append(task_info)
     return {
         'result': 'ok',
@@ -338,6 +414,18 @@ def get_task_list(app_id):
                 'list': task_list
             }
     }
+
+def maybe_add_site_fields(task_info):
+    deploy = task_info['deploy']
+    if deploy.get('type', 'none') == 'gitbook':
+        github_url = deploy.get('gitbook_url', '')
+        result = parse_github_url(github_url)
+        if result['result'] == 'ok':
+            github_owner = result['github_owner']
+            github_repo = result['github_repo']
+            site_name = get_github_site(github_owner, github_repo)
+            site_url = make_site_full_url(site_name)
+            task_info['site_url'] = site_url
 
 def get_task(app_id, task_id):
     redis = lanying_redis.get_redis_connection()
@@ -413,6 +501,7 @@ def delete_task(app_id, task_id):
         schedule_info = lanying_schedule.get_schedule(schedule_id)
         if schedule_info:
             lanying_schedule.delete_schedule(schedule_id)
+    maybe_unregister_github(app_id, task_id, task_info['deploy'])
     redis = lanying_redis.get_redis_connection()
     task_key = get_task_key(app_id, task_id)
     task_list_key = get_task_list_key(app_id)
@@ -797,11 +886,11 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     if deploy_type not in ["gitbook"]:
         return {'result': 'error', 'message': 'deploy type not support', 'retry': False}
     github_url = deploy.get('gitbook_url', '')
-    fields = github_url.split("/")
-    if len(fields) < 5 or fields[2] != 'github.com':
-        return {'result': 'error', 'message': 'deploy config is bad'}
-    github_owner = fields[3]
-    github_repo = fields[4]
+    result = parse_github_url(github_url)
+    if result['result'] == 'error':
+        return result
+    github_owner = result['github_owner']
+    github_repo = result['github_repo']
     github_token = deploy.get('gitbook_token', '')
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
@@ -1382,3 +1471,135 @@ def get_dummy_lanying_connector(app_id):
 
 def admin_token_key(app_id):
     return f"lanying_connector:grow_ai:admin_token:{app_id}"
+
+def release_finish(repository, release):
+    logging.info(f"release_finish | repository={repository}, release:{release}")
+    fields = repository.split('/')
+    if len(fields) < 2:
+        return {'result': 'error', 'message': 'bad repository'}
+    github_owner = fields[0]
+    github_repo = fields[1]
+    task_list = get_github_task_list(github_owner, github_repo)
+    for task_id, app_id in task_list.items():
+        task = get_task(app_id, task_id)
+        if task:
+            deploy = task['deploy']
+            if deploy.get('type', 'none') == 'gitbook':
+                github_url = deploy.get('gitbook_url', '')
+                result = parse_github_url(github_url)
+                if result['result'] == 'error':
+                    continue
+                if result['github_owner'] == github_owner and result['github_repo'] == github_repo:
+                    return start_deploy_github_action(app_id, task_id, github_owner, github_repo, release)
+    return {'result': 'error', 'message': 'deploy not found'}
+
+def start_deploy_github_action(app_id, task_id, github_owner, github_repo, release):
+    deploy_repo_owner = 'maxim-top'
+    deploy_repo_name = 'im.gitbook'
+    deploy_workflow_id = 'deploy_sub_site.yml'
+    deploy_github_token = os.getenv('GROW_AI_GITHUB_TOKEN', '')
+    site_name = get_github_site(github_owner, github_repo)
+    deploy_code = f"{uuid.uuid4()}-{int(time.time()*1000000)}"
+    set_deploy_code(deploy_code, {
+        'app_id': app_id,
+        'task_id': task_id,
+        'github_owner': github_owner,
+        'github_repo': github_repo
+    })
+    connector_server = lanying_utils.get_internet_connector_server()
+    # 构建请求头和请求URL
+    headers = {
+        'Authorization': f'token {deploy_github_token}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
+    url = f'https://api.github.com/repos/{deploy_repo_owner}/{deploy_repo_name}/actions/workflows/{deploy_workflow_id}/dispatches'
+
+    # 请求体内容
+    data = {
+        'ref': 'master',
+        'inputs': {
+            'book_url': f'https://github.com/{github_owner}/{github_repo}/releases/download/{release}/book.tar.gz',
+            'oss_path': f'/{site_name}',
+            'cdn_url': make_site_full_url(site_name),
+            'callback_url': f'{connector_server}/grow_ai/deploy_finish?code={deploy_code}'
+        }
+    }
+    logging.info(f"start_deploy_github_action | url={url}, data={data}")
+
+    # 发送POST请求
+    response = requests.post(url, headers=headers, data=json.dumps(data))
+
+    if response.status_code == 204:
+        logging.info('Workflow dispatched successfully')
+        return {'result': 'ok', 'data':{'success': True}}
+    else:
+        logging.info(f'Failed to dispatch workflow: {response.status_code}')
+        logging.info(response.json())
+        return {'result': 'error', 'message': 'failed to dispatch workflow'}
+
+def make_site_full_url(site_name):
+    return f'https://{site_name}.site.chatai101.com/'
+
+def set_deploy_code(deploy_code, info):
+    redis = lanying_redis.get_redis_connection()
+    key = deploy_code_key(deploy_code)
+    redis.setex(key, 3600, json.dumps(info, ensure_ascii=False))
+
+def get_deploy_code(deploy_code):
+    redis = lanying_redis.get_redis_connection()
+    key = deploy_code_key(deploy_code)
+    info = lanying_redis.redis_get(redis, key)
+    if info:
+        return json.loads(info)
+    return None
+
+def deploy_code_key(deploy_code):
+    return f"lanying_connector:grow_ai:deploy_code:{deploy_code}"
+
+def deploy_finish(deploy_code, deploy_result):
+    logging.info(f"deploy_finish | deploy_code={deploy_code}, deploy_result:{deploy_result}")
+    code_info = get_deploy_code(deploy_code)
+    logging.info(f"deploy_finish code info:{code_info}")
+    return {'result':'ok', 'data':{'success': True}}
+
+def get_github_site(github_owner, github_repo):
+    key = github_site_key(github_owner, github_repo)
+    redis = lanying_redis.get_redis_connection()
+    result = lanying_redis.redis_get(redis, key)
+    if result:
+        return result
+    site_name_key = github_site_name_key()
+    for i in range(1000):
+        site_name = lanying_utils.generate_random_letters(6)
+        result = redis.hsetnx(site_name_key, site_name, f'{github_owner}/{github_repo}')
+        if result > 0:
+            redis.set(key, site_name)
+            return site_name
+    raise Exception('fail to get github site')
+
+def github_site_key(github_owner, github_repo):
+    return f"lanying_connector:grow_ai:github_site:{github_owner}:{github_repo}"
+
+def github_site_name_key():
+    return f"lanying_connector:grow_ai:github_site_name"
+
+def parse_github_url(github_url):
+    if github_url.startswith("https://github.com/"):
+        fields = github_url.split("/")
+        if len(fields) < 5 or fields[2] != 'github.com':
+            return {'result': 'error', 'message': 'github_url is bad'}
+        github_owner = fields[3]
+        github_repo = fields[4]
+        if github_repo.endswith(".git"):
+            github_repo = github_repo[:-4]
+        return {'result': 'ok', 'github_owner': github_owner, "github_repo": github_repo}
+    elif github_url.startswith("git@github.com:"):
+        fields = re.split("[:/]{1,}", github_url)
+        if len(fields) < 3:
+            return {'result': 'error', 'message': 'github_url is bad'}
+        github_owner = fields[1]
+        github_repo = fields[2]
+        if github_repo.endswith(".git"):
+            github_repo = github_repo[:-4]
+        return {'result': 'ok', 'github_owner': github_owner, "github_repo": github_repo}
+    return {'result': 'error', 'message': 'github_url is bad'}

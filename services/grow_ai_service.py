@@ -312,6 +312,32 @@ def download_task_run_result():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/grow_ai/release_finish", methods=["POST"])
+def release_finish():
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    repository = str(data['repository'])
+    release = str(data['release'])
+    result = lanying_grow_ai.release_finish(repository, release)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/grow_ai/deploy_finish", methods=["POST"])
+def deploy_finish():
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    code = request.args.get('code')
+    deploy_result = str(data['status'])
+    result = lanying_grow_ai.deploy_finish(code, deploy_result)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
     accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
