@@ -852,6 +852,17 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
         del_embedding_info(redis, fromUserId, toUserId)
+    if 'history_msg_size_max' in lcExt:
+        expect_history_msg_size_max = int(lcExt['history_msg_size_max'])
+        expect_history_msg_size_max = max(config.get('history_msg_size_max', 1024), expect_history_msg_size_max)
+        logging.info(f"Using history_msg_size_max in AI Ext | old:{config.get('history_msg_size_max', 'None')} new:{expect_history_msg_size_max}")
+        config['history_msg_size_max'] = expect_history_msg_size_max
+    if 'max_tokens' in lcExt:
+        expect_max_tokens = int(lcExt['max_tokens'])
+        token_limit = model_token_limit(model_config)
+        expect_max_tokens = max(preset.get('max_tokens', 1024), min(token_limit, max(0,expect_max_tokens)))
+        logging.info(f"Using max_tokens in AI Ext | old:{preset.get('max_tokens', 'None')} new:{expect_max_tokens}")
+        preset['max_tokens'] = expect_max_tokens
     if msg_type == 'CHAT' and 'prompt_ext' in lcExt and lcExt['prompt_ext']:
         customHistoryList = []
         for customHistory in lcExt['prompt_ext']:
@@ -1861,9 +1872,6 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
     history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
     history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
     history_msg_size_max = config.get('history_msg_size_max', 4096)
-    history_msg_count_min = ensure_even(presetExt.get('history_msg_count_min', history_msg_count_min))
-    history_msg_count_max = ensure_even(presetExt.get('history_msg_count_max', history_msg_count_max))
-    history_msg_size_max = presetExt.get('history_msg_size_max', history_msg_size_max)
     completionTokens = preset.get('max_tokens', 1024)
     model = preset['model']
     token_limit = model_token_limit(model_config)

@@ -1191,14 +1191,28 @@ def handle_ai_response_error(result, default_error_message, app_id, task_id, tit
 
 def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max):
     now_article_text = ''
-    reset_prompt_ext = {'ai':{'reset_prompt': True}}
     message_quota_usage = 0.0
     word_count_expect_min = word_count_min
     word_count_expect_max = word_count_max
     for i in range(3):
+        if i == 0:
+            prompt_ext = {
+                'ai': {
+                    "history_msg_size_max": 4096,
+                    "max_tokens": 4096,
+                    'reset_prompt': True
+                }
+            }
+        else:
+            prompt_ext = {
+                'ai': {
+                    "history_msg_size_max": 4096,
+                    "max_tokens": 4096
+                }
+            }
         clean_user_message_count(app_id, from_user_id)
         logging.info(f"generate_article start | i={i}, app_id:{app_id}, task_run_id:{task_run_id}")
-        text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, reset_prompt_ext)
+        text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, prompt_ext)
         if text_result['result'] == 'error':
             return text_result
         article_text_message_quota_usage = text_result['data']['message_quota_usage']
@@ -1221,7 +1235,6 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len
         text_prompt = f"请接着上次的回答继续生成，直接输出内容，保持文章连贯，不要有多余内容。"
-        reset_prompt_ext = {}
     return {'result': 'ok', 'article_text': now_article_text, "message_quota_usage": message_quota_usage}
 
 def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword):
@@ -1279,7 +1292,12 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
                 }
             }
         else:
-            image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, {})
+            image_prompt_ext = {
+                'ai': {
+                    "history_msg_size_max": 4096
+                }
+            }
+            image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, image_prompt_ext)
         if image_result['result'] == 'error':
             return handle_ai_response_error(image_result, 'failed to generate image', app_id, task_id, keyword)
         article_image_message_quota_usage = image_result['data']['message_quota_usage']
