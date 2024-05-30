@@ -281,7 +281,7 @@ def configure_task(task_id, task_setting: TaskSetting):
 
 def maybe_check_github_config(old_deploy, deploy):
     if deploy.get('type') == 'gitbook':
-        if deploy.get('type') == old_deploy.get('type') and deploy.get('gitbook_url') == old_deploy.get('gitbook_url') and deploy.get('gitbook_token') == old_deploy.get('gitbook_token'):
+        if deploy == old_deploy:
             return {'result': 'ok'}
         else:
             return check_github_config(deploy)
@@ -296,6 +296,9 @@ def check_github_config(deploy):
     result = parse_github_url(github_url)
     if result['result'] == 'error':
         return result
+    target_dir = deploy.get('gitbook_target_dir', '/').strip("/").strip()
+    if target_dir == "":
+        return {'result': 'error', 'message': 'target_dir is bad'}
     github_owner = result['github_owner']
     github_repo = result['github_repo']
     github_token = deploy.get('gitbook_token', '')
