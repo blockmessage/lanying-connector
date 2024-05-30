@@ -58,6 +58,31 @@ class TaskSetting:
             'title_reuse': self.title_reuse
         }
 
+class SiteSetting:
+    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link):
+        self.app_id = app_id
+        self.name = name
+        self.type = type
+        self.github_url = github_url
+        self.github_token = github_token
+        self.github_base_branch = github_base_branch
+        self.github_base_dir = github_base_dir
+        self.footer_note = footer_note
+        self.lanying_link = lanying_link
+
+    def to_hmset_fields(self):
+        return {
+            'app_id': self.app_id,
+            'name': self.name,
+            'type': self.type,
+            'github_url': self.github_url,
+            'github_token': self.github_token,
+            'github_base_branch': self.github_base_branch,
+            'github_base_dir': self.github_base_dir,
+            'footer_note': self.footer_note,
+            'lanying_link': self.lanying_link
+        }
+
 def handle_schedule(schedule_info):
     logging.info(f"grow_ai handle_schedule start | {schedule_info}")
     module = schedule_info['module']
@@ -194,7 +219,9 @@ def get_service_statistic_key_list(app_id, field):
     ]
 
 def create_task(task_setting: TaskSetting):
-    check_github_config(task_setting.deploy)
+    result = check_github_config(task_setting.deploy)
+    if result['result'] == 'error':
+        return result
     now = int(time.time())
     app_id = task_setting.app_id
     task_id = generate_task_id()
@@ -1624,3 +1651,140 @@ def parse_github_url(github_url):
             github_repo = github_repo[:-4]
         return {'result': 'ok', 'github_owner': github_owner, "github_repo": github_repo}
     return {'result': 'error', 'message': 'github_url is bad'}
+
+
+def create_site(site_setting: SiteSetting):
+    now = int(time.time())
+    result = check_site_setting(site_setting)
+    if result['result'] == 'error':
+        return result
+    app_id = site_setting.app_id
+    site_id = generate_site_id()
+    redis = lanying_redis.get_redis_connection()
+    fields = site_setting.to_hmset_fields()
+    fields['status'] = 'normal'
+    fields['create_time'] = now
+    fields['site_id'] = site_id
+    logging.info(f"create site start | app_id:{app_id}, site_info:{fields}")
+    redis.hmset(get_site_key(app_id, site_id), fields)
+    redis.rpush(get_site_list_key(app_id), site_id)
+    site_info = get_site(app_id, site_id)
+    logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
+    maybe_register_github(app_id, site_info)
+    return {
+        'result': 'ok',
+        'data': {
+            'site_id': site_id
+        }
+    }
+
+def configure_site(site_id, site_setting: SiteSetting):
+    result = check_site_setting(site_setting)
+    if result['result'] == 'error':
+        return result
+    app_id = site_setting.app_id
+    site_info = get_site(app_id, site_id)
+    if site_info is None:
+        return {'result': 'error', 'message': 'site_id not exist'}
+    redis = lanying_redis.get_redis_connection()
+    fields = site_setting.to_hmset_fields()
+    logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
+    redis.hmset(get_site_key(app_id, site_id), fields)
+    new_site_info = get_site(app_id, site_id)
+    maybe_register_github(app_id, new_site_info)
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True
+        }
+    }
+
+def get_site_list(app_id):
+    redis = lanying_redis.get_redis_connection()
+    site_ids = reversed(lanying_redis.redis_lrange(redis, get_site_list_key(app_id), 0, -1))
+    site_list = []
+    for site_id in site_ids:
+        site_info = get_site(app_id, site_id)
+        if site_info:
+            maybe_add_site_url(site_info)
+            site_list.append(site_info)
+    return {
+        'result': 'ok',
+        'data':
+            {
+                'list': site_list
+            }
+    }
+
+def maybe_add_site_url(site_info):
+    if site_info['type'] == 'gitbook':
+        github_url = site_info['github_url']
+        result = parse_github_url(github_url)
+        if result['result'] == 'ok':
+            github_owner = result['github_owner']
+            github_repo = result['github_repo']
+            site_name = get_github_site(github_owner, github_repo)
+            site_url = make_site_full_url(site_name)
+            site_info['site_url'] = site_url
+
+def get_site(app_id, site_id):
+    redis = lanying_redis.get_redis_connection()
+    key = get_site_key(app_id, site_id)
+    info = lanying_redis.redis_hgetall(redis, key)
+    if "create_time" in info:
+        dto = {}
+        for key,value in info.items():
+            dto[key] = value
+        return dto
+    return None
+
+def generate_site_id():
+    redis = lanying_redis.get_redis_connection()
+    return redis.incrby("lanying_connector:grow_ai:site_id_generator", 1)
+
+def get_site_key(app_id, site_id):
+    return f"lanying_connector:grow_ai:site:{app_id}:{site_id}"
+
+def get_site_list_key(app_id):
+    return f"lanying_connector:grow_ai:site_list:{app_id}"
+
+def check_site_setting(site_setting: SiteSetting):
+    if site_setting.type not in ["gitbook"]:
+        return {'result': 'error', 'message': 'invalid site type'}
+    github_url = site_setting.github_url
+    result = parse_github_url(github_url)
+    if result['result'] == 'error':
+        return result
+    github_owner = result['github_owner']
+    github_repo = result['github_repo']
+    github_token = site_setting.github_token
+    if len(github_token) == 0:
+        return {'result': 'error', 'message': 'github token is bad'}
+    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
+    base_branch = site_setting.github_base_branch
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    # 获取基础分支的最后一次提交SHA
+    response = requests.get(f"{github_api_url}/git/refs/heads/{base_branch}", headers=headers)
+    if response.status_code != 200:
+        return {'result': 'error', 'message': 'github token is bad'}
+    return {'result': 'ok'}
+
+def maybe_register_github_site(app_id, site_info):
+    if site_info['type'] == 'gitbook':
+        site_id = site_info['site_id']
+        github_url = site_info['github_url']
+        result = parse_github_url(github_url)
+        if result['result'] == 'error':
+            return result
+        github_owner = result['github_owner']
+        github_repo = result['github_repo']
+        redis = lanying_redis.get_redis_connection()
+        key = github_register_site_key(github_owner, github_repo)
+        redis.hset(key, site_id, app_id)
+        get_github_site(github_owner, github_repo)
+
+def github_register_site_key(github_owner, github_repo):
+    return f"lanying_connector:grow_ai:github_repo_site:{github_owner}:{github_repo}"

@@ -338,6 +338,91 @@ def deploy_finish():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+
+@bp.route("/service/grow_ai/create_site", methods=["POST"])
+def create_site():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    name = str(data['name'])
+    type = str(data['type'])
+    github_url = str(data['github_url'])
+    github_token = str(data['github_token'])
+    github_base_branch = str(data['github_base_branch'])
+    github_base_dir = str(data['github_base_dir'])
+    footer_note = str(data['footer_note'])
+    lanying_link = str(data['lanying_link'])
+    site_setting = lanying_grow_ai.SiteSetting(
+        app_id = app_id,
+        name = name,
+        type = type,
+        github_url = github_url,
+        github_token = github_token,
+        github_base_branch = github_base_branch,
+        github_base_dir = github_base_dir,
+        footer_note = footer_note,
+        lanying_link = lanying_link
+    )
+    result = lanying_grow_ai.create_site(site_setting)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/configure_site", methods=["POST"])
+def configure_site():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    site_id = str(data['site_id'])
+    name = str(data['name'])
+    type = str(data['type'])
+    github_url = str(data['github_url'])
+    github_token = str(data['github_token'])
+    github_base_branch = str(data['github_base_branch'])
+    github_base_dir = str(data['github_base_dir'])
+    footer_note = str(data['footer_note'])
+    lanying_link = str(data['lanying_link'])
+    site_setting = lanying_grow_ai.SiteSetting(
+        app_id = app_id,
+        name = name,
+        type = type,
+        github_url = github_url,
+        github_token = github_token,
+        github_base_branch = github_base_branch,
+        github_base_dir = github_base_dir,
+        footer_note = footer_note,
+        lanying_link = lanying_link
+    )
+    result = lanying_grow_ai.configure_site(site_id, site_setting)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/get_site_list", methods=["POST"])
+def get_site_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_grow_ai.get_site_list(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
     accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
