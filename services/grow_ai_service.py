@@ -82,6 +82,15 @@ def create_task():
     file_list = list(data.get('file_list', []))
     deploy = dict(data.get('deploy', {'type': 'none'}))
     title_reuse = str(data.get('title_reuse', 'off'))
+    site_id_list = list(data.get('site_id_list', []))
+    if 'target_dir' in data:
+        target_dir = str(data.get('target_dir')).strip()
+    else:
+        target_dir = deploy.get('gitbook_target_dir', '/articles').strip()
+    if 'commit_type' in data:
+        commit_type = str(data.get('commit_type')).strip()
+    else:
+        commit_type = deploy.get('gitbook_commit_type', 'pull_request').strip()
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
         name = name,
@@ -97,7 +106,10 @@ def create_task():
         cycle_interval = cycle_interval,
         file_list = file_list,
         deploy = deploy,
-        title_reuse = title_reuse
+        title_reuse = title_reuse,
+        site_id_list = site_id_list,
+        target_dir = target_dir,
+        commit_type = commit_type
     )
     result = lanying_grow_ai.create_task(task_setting)
     if result['result'] == 'error':
@@ -132,6 +144,15 @@ def configure_task():
     file_list = list(data.get('file_list', []))
     deploy = dict(data.get('deploy', {'type': 'none'}))
     title_reuse = str(data.get('title_reuse', 'off'))
+    site_id_list = list(data.get('site_id_list', []))
+    if 'target_dir' in data:
+        target_dir = str(data.get('target_dir')).strip()
+    else:
+        target_dir = deploy.get('gitbook_target_dir', '/articles').strip()
+    if 'commit_type' in data:
+        commit_type = str(data.get('commit_type')).strip()
+    else:
+        commit_type = deploy.get('gitbook_commit_type', 'pull_request').strip()
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
         name = name,
@@ -147,7 +168,10 @@ def configure_task():
         cycle_interval = cycle_interval,
         file_list = file_list,
         deploy = deploy,
-        title_reuse = title_reuse
+        title_reuse = title_reuse,
+        site_id_list = site_id_list,
+        target_dir = target_dir,
+        commit_type = commit_type
     )
     result = lanying_grow_ai.configure_task(task_id, task_setting)
     if result['result'] == 'error':

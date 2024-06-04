@@ -22,7 +22,7 @@ import lanying_chatbot
 import base64
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -38,6 +38,9 @@ class TaskSetting:
         self.file_list = file_list
         self.deploy = deploy
         self.title_reuse = title_reuse
+        self.site_id_list = site_id_list
+        self.target_dir = target_dir
+        self.commit_type = commit_type
 
     def to_hmset_fields(self):
         return {
@@ -55,7 +58,10 @@ class TaskSetting:
             'cycle_interval': self.cycle_interval,
             'file_list': json.dumps(self.file_list, ensure_ascii=False),
             'deploy': json.dumps(self.deploy, ensure_ascii=False),
-            'title_reuse': self.title_reuse
+            'title_reuse': self.title_reuse,
+            'site_id_list': json.dumps(self.site_id_list, ensure_ascii=False),
+            'target_dir': self.target_dir,
+            'commit_type': self.commit_type
         }
 
 class SiteSetting:
@@ -436,6 +442,11 @@ def get_task_list(app_id):
         task_info = get_task(app_id, task_id)
         if task_info:
             maybe_add_site_fields(task_info)
+            if len(task_info['site_id_list']) > 0:
+                site_id = task_info['site_id_list'][0]
+                site = get_site(app_id, site_id)
+                if site and 'site_url' in site and len(site['site_url']) > 0:
+                    task_info['site_url'] = site['site_url']
             task_list.append(task_info)
     return {
         'result': 'ok',
@@ -469,7 +480,7 @@ def get_task(app_id, task_id):
                 dto[key] = int(value)
             elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
                 dto[key] = float(value)
-            elif key in ['file_list', 'deploy']:
+            elif key in ['file_list', 'deploy', 'site_id_list']:
                 dto[key] = json.loads(value)
             else:
                 dto[key] = value
@@ -485,6 +496,12 @@ def get_task(app_id, task_id):
             dto['image_message_quota_usage'] = 0.0
         if 'title_reuse' not in dto:
             dto['title_reuse'] = 'off'
+        if 'site_id_list' not in dto:
+            dto['site_id_list'] = []
+        if 'target_dir' not in dto:
+            dto['target_dir'] = dto.get('deploy',{}).get('gitbook_target_dir', '/articles')
+        if 'commit_type' not in dto:
+            dto['commit_type'] = dto.get('deploy',{}).get('commit_type', 'pull_request')
         return dto
     return None
 
@@ -783,9 +800,8 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     if result['result'] == 'error':
         return result
     logging.info(f"do_run_task finish | app_id:{app_id}, task_run_id:{task_run_id}")
-    deploy = task['deploy']
-    deploy_type = deploy.get('type', 'none')
-    if deploy_type != "none":
+    site_list = get_task_site_list(task)
+    if site_list != []:
         from lanying_tasks import grow_ai_deply_task_run
         grow_ai_deply_task_run.apply_async(args = [app_id, task_run_id], countdown=5)
     return {'result': 'ok'}
@@ -896,6 +912,30 @@ def do_deploy_task_run(app_id, task_run_id, has_retry_times):
             update_task_run_field(app_id, task_run_id, "deploy_status", "error")
         raise e
 
+def get_task_site_list(task):
+    if task['site_id_list'] == []:
+        if 'deploy' in task:
+            deploy = task['deploy']
+            deploy_type = deploy.get('type', 'none')
+            if deploy_type == "gitbook":
+                site = {
+                    'github_url': deploy.get('gitbook_url', ''),
+                    'github_token': deploy.get('gitbook_token', ''),
+                    'github_base_branch': deploy.get('gitbook_base_branch', 'master'),
+                    'github_base_dir': deploy.get('gitbook_base_dir', '/')
+                }
+                return [site]
+            else:
+                return []
+    else:
+        site_id_list = task['site_id_list']
+        site_list = []
+        for site_id in site_id_list:
+            site = get_site(task['app_id'], site_id)
+            if site:
+                site_list.append(site)
+        return site_list
+
 def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     timestr = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -911,23 +951,23 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     task = get_task(app_id, task_id)
     if task is None:
         return {'result': 'error', 'message': 'task not exist'}
-    deploy = task['deploy']
-    deploy_type = deploy.get('type', 'none')
-    if deploy_type not in ["gitbook"]:
-        return {'result': 'error', 'message': 'deploy type not support', 'retry': False}
-    github_url = deploy.get('gitbook_url', '')
+    site_list = get_task_site_list(task)
+    if site_list == []:
+        return {'result': 'error', 'message': 'no site to deploy', 'retry': False}
+    site = site_list[0]
+    github_url = site.get('github_url', '')
     result = parse_github_url(github_url)
     if result['result'] == 'error':
         return result
     github_owner = result['github_owner']
     github_repo = result['github_repo']
-    github_token = deploy.get('gitbook_token', '')
+    github_token = site.get('github_token', '')
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
-    base_branch = deploy.get('gitbook_base_branch', 'master')
-    base_dir = deploy.get('gitbook_base_dir', '/').strip("/")
-    target_dir = deploy.get('gitbook_target_dir', '/').strip("/")
+    base_branch = site.get('github_base_branch', 'master')
+    base_dir = site.get('github_base_dir', '/').strip("/")
+    target_dir = task['target_dir'].strip("/")
     target_relative_dir = os.path.relpath(target_dir,base_dir)
     new_branch = f"grow-ai-{task_run_id}-{timestr}"
     headers = {
@@ -1527,21 +1567,34 @@ def release_finish(repository, release):
         return {'result': 'error', 'message': 'bad repository'}
     github_owner = fields[0]
     github_repo = fields[1]
-    task_list = get_github_task_list(github_owner, github_repo)
-    for task_id, app_id in task_list.items():
-        task = get_task(app_id, task_id)
-        if task:
-            deploy = task['deploy']
-            if deploy.get('type', 'none') == 'gitbook':
-                github_url = deploy.get('gitbook_url', '')
+    site_id_list = get_github_site_id_list(github_owner, github_repo)
+    if len(site_id_list) == 0:
+        task_list = get_github_task_list(github_owner, github_repo)
+        for task_id, app_id in task_list.items():
+            task = get_task(app_id, task_id)
+            if task:
+                site_list = get_task_site_list(task)
+                if site_list != []:
+                    site = site_list[0]
+                    github_url = site.get('github_url', '')
+                    result = parse_github_url(github_url)
+                    if result['result'] == 'error':
+                        continue
+                    if result['github_owner'] == github_owner and result['github_repo'] == github_repo:
+                        return start_deploy_github_action(app_id, task_id, '', github_owner, github_repo, release)
+    else:
+        for site_id, app_id in site_id_list.items():
+            site = get_site(app_id, site_id)
+            if site:
+                github_url = site.get('github_url', '')
                 result = parse_github_url(github_url)
                 if result['result'] == 'error':
                     continue
                 if result['github_owner'] == github_owner and result['github_repo'] == github_repo:
-                    return start_deploy_github_action(app_id, task_id, github_owner, github_repo, release)
+                    return start_deploy_github_action(app_id, '', site_id, github_owner, github_repo, release)
     return {'result': 'error', 'message': 'deploy not found'}
 
-def start_deploy_github_action(app_id, task_id, github_owner, github_repo, release):
+def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release):
     deploy_repo_owner = 'maxim-top'
     deploy_repo_name = 'im.gitbook'
     deploy_workflow_id = 'deploy_sub_site.yml'
@@ -1551,6 +1604,7 @@ def start_deploy_github_action(app_id, task_id, github_owner, github_repo, relea
     set_deploy_code(deploy_code, {
         'app_id': app_id,
         'task_id': task_id,
+        'site_id': site_id,
         'github_owner': github_owner,
         'github_repo': github_repo
     })
@@ -1670,7 +1724,7 @@ def create_site(site_setting: SiteSetting):
     redis.rpush(get_site_list_key(app_id), site_id)
     site_info = get_site(app_id, site_id)
     logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
-    maybe_register_github(app_id, site_info)
+    maybe_register_github_site(app_id, site_info)
     return {
         'result': 'ok',
         'data': {
@@ -1691,7 +1745,7 @@ def configure_site(site_id, site_setting: SiteSetting):
     logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
     new_site_info = get_site(app_id, site_id)
-    maybe_register_github(app_id, new_site_info)
+    maybe_register_github_site(app_id, new_site_info)
     return {
         'result': 'ok',
         'data': {
@@ -1706,7 +1760,6 @@ def get_site_list(app_id):
     for site_id in site_ids:
         site_info = get_site(app_id, site_id)
         if site_info:
-            maybe_add_site_url(site_info)
             site_list.append(site_info)
     return {
         'result': 'ok',
@@ -1735,6 +1788,7 @@ def get_site(app_id, site_id):
         dto = {}
         for key,value in info.items():
             dto[key] = value
+        maybe_add_site_url(dto)
         return dto
     return None
 
@@ -1786,5 +1840,23 @@ def maybe_register_github_site(app_id, site_info):
         redis.hset(key, site_id, app_id)
         get_github_site(github_owner, github_repo)
 
+def get_github_site_id_list(github_owner, github_repo):
+    redis = lanying_redis.get_redis_connection()
+    key = github_register_site_key(github_owner, github_repo)
+    return lanying_redis.redis_hgetall(redis, key)
+
 def github_register_site_key(github_owner, github_repo):
     return f"lanying_connector:grow_ai:github_repo_site:{github_owner}:{github_repo}"
+
+def all_task():
+    redis = lanying_redis.get_redis_connection()
+    prefix = "lanying_connector:grow_ai:task:"
+    keys = lanying_redis.redis_keys(redis, f"{prefix}*")
+    for key in keys:
+        fields = str(key)[len(prefix):].split(':')
+        if len(fields) == 2:
+            app_id = fields[0]
+            task_id = fields[1]
+            task = get_task(app_id, task_id)
+            if task:
+                print(task)
