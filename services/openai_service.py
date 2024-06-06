@@ -19,7 +19,7 @@ import lanying_command
 import lanying_url_loader
 import lanying_vendor
 import lanying_utils
-from flask import Blueprint, request, make_response, Response
+from flask import Blueprint, request, make_response
 import lanying_ai_plugin
 import random
 import lanying_file_storage
@@ -36,7 +36,6 @@ import math
 import lanying_image
 from lanying_async import executor
 import lanying_message_quota_usage
-from concurrent.futures import Future
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -4188,33 +4187,15 @@ def sync_messages():
         newConfig['msg_id'] = msg['msgId']
         message_quota_trace_id = lanying_message_quota_usage.generate_trace_id()
         newConfig['message_quota_trace_id'] = message_quota_trace_id
-        future = executor.submit(handle_sync_messages, newConfig, msg)
-        return Response(wait_sync_messages(future, msg, message_quota_trace_id), content_type='application/json')
+        messages = handle_sync_messages(newConfig, msg)
+        message_quota_usage = lanying_message_quota_usage.get_usage(message_quota_trace_id)
+        logging.info(f"receive sync messages finish | msg:{msg}, messages:{messages}")
+        resp = make_response({'code':200, 'data':{'messages': messages, 'message_quota_usage': message_quota_usage}})
+        return resp
     except Exception as e:
         logging.exception(e)
         resp = make_response({'code':500, 'message':'server internal error'})
         return resp
-
-def wait_sync_messages(future: Future, msg, message_quota_trace_id):
-    # send heartbeat for aliyun SLB idel timeout 60s
-    heartbeat = '{"code": 200, "data": {"messages":'
-    heartbeat_cnt = 0
-    cnt = 0
-    while not future.done():
-        cnt += 1
-        if cnt > 300:
-            break
-        if cnt % 40 == 0:
-            logging.info("send heart beat")
-            yield heartbeat[heartbeat_cnt]
-            heartbeat_cnt += 1
-        time.sleep(1)
-    messages = future.result()
-    message_quota_usage = lanying_message_quota_usage.get_usage(message_quota_trace_id)
-    logging.info(f"receive sync messages finish | msg:{msg}, messages:{messages}")
-    result = {'code':200, 'data':{'messages': messages, 'message_quota_usage': message_quota_usage}}
-    json_str = json.dumps(result)
-    yield json_str[heartbeat_cnt:]
 
 def plugin_import_by_public_id(app_id, public_id):
     plugin_info = lanying_ai_plugin.get_public_plugin(public_id)
