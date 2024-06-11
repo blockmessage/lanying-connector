@@ -707,6 +707,29 @@ def is_article_title_used(app_id, task_id, title):
 def article_title_used_key(app_id, task_id):
     return f'lanying_connector:grow_ai:article_title_used:{app_id}:{task_id}'
 
+def set_article_title_statistic(app_id, task_id, type, title, value):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_statistic_key(app_id, task_id, type)
+    redis.hset(key, title, value)
+
+def incr_article_title_statistic(app_id, task_id, type, title, value):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_statistic_key(app_id, task_id, type)
+    return redis.hincrby(key, title, value)
+
+def del_article_title_statistic(app_id, task_id, type, title):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_statistic_key(app_id, task_id, type)
+    redis.hdel(key, title)
+
+def get_article_title_statistic(app_id, task_id, type, title):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_statistic_key(app_id, task_id, type)
+    return lanying_redis.redis_hget(redis, key, title)
+
+def article_title_statistic_key(app_id, task_id, type):
+    return f'lanying_connector:grow_ai:article_title_{type}:{app_id}:{task_id}'
+
 def parse_file_keywords(app_id, task_id, file_list):
     keywords = []
     for file in file_list:
@@ -1254,6 +1277,13 @@ def handle_ai_response_error(result, default_error_message, app_id, task_id, tit
         del_article_title_used(app_id, task_id, title)
     elif 'http_request_fail' in result and result['http_request_fail']:
         del_article_title_used(app_id, task_id, title)
+    else:
+        failed_times = incr_article_title_statistic(app_id, task_id, "failed_times", title, 1)
+        if failed_times <= 3:
+            logging.info(f"handle_ai_response_error | failed_times:{failed_times}, app_id:{app_id}, task_id:{task_id}, title:{title}, so retry title")
+            del_article_title_used(app_id, task_id, title)
+        else:
+            logging.info(f"handle_ai_response_error | failed_times:{failed_times}, app_id:{app_id}, task_id:{task_id}, title:{title}, so delete title")
     retry = True
     if message in ["rate_limit_reached", "no_quota", "quota_not_enough", "message_per_month_per_user_limit_reached", "deduct_failed", "service_is_expired"]:
         retry = False
@@ -1409,6 +1439,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         return result
     article_info['markdown_file'] = markdown_object_name
     article_info['summary'] = article_text[:100]
+    incr_article_title_statistic(app_id, task_id, "success_times", keyword, 1)
     logging.info(f"do_run_task_article success | app_id:{app_id}, task_id:{task_run['task_id']}, task_run_id:{task_run['task_run_id']}, article_id:{article_id}, chatbot_user_id:{chatbot_user_id}, keyword:{keyword}, article_info:{article_info}")
     return {'result': 'ok', 'article_info': article_info}
 
