@@ -1252,6 +1252,8 @@ def handle_ai_response_error(result, default_error_message, app_id, task_id, tit
     message = result['message']
     if message in ["rate_limit_reached", "no_quota", "quota_not_enough", "message_per_month_per_user_limit_reached", "deduct_failed", "service_is_expired"]:
         del_article_title_used(app_id, task_id, title)
+    elif 'http_request_fail' in result and result['http_request_fail']:
+        del_article_title_used(app_id, task_id, title)
     retry = True
     if message in ["rate_limit_reached", "no_quota", "quota_not_enough", "message_per_month_per_user_limit_reached", "deduct_failed", "service_is_expired"]:
         retry = False
@@ -1434,10 +1436,10 @@ def request_to_ai(app_id, from_user_id, to_user_id, content, ext = {}):
             if result['code'] == 200:
                 return format_ai_message_result(result)
             else:
-                return {'result': 'error', 'message': result['message']}
+                return {'result': 'error', 'message': result['message'], 'http_request_fail': True}
         except Exception as e:
             logging.exception(e)
-            pass
+            return {'result': 'error', 'message': 'internal error', 'http_request_fail': True}
     return {'result': 'error', 'message': 'internal error'}
 
 def format_ai_message_result(result):
