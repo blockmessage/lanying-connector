@@ -113,7 +113,7 @@ def set_task_schedule(app_id, task_id, schedule, message='manual'):
         update_task_field(app_id, task_id, "schedule_message", message)
     return {'result': "ok", "data": {"success": True}}
 
-def open_service(app_id, product_id, price, article_num, storage_size):
+def open_service(app_id, product_id, price, website_storage_limit, website_traffic_limit):
     service_status_key = get_service_status_key(app_id)
     redis = lanying_redis.get_redis_connection()
     now_datetime = datetime.now()
@@ -129,8 +129,8 @@ def open_service(app_id, product_id, price, article_num, storage_size):
         'pay_start_date': pay_start_date,
         'product_id': product_id,
         'price': price,
-        'article_num': article_num,
-        'storage_size': storage_size
+        'website_storage_limit': website_storage_limit,
+        'website_traffic_limit': website_traffic_limit
     })
     return {
         'result': 'ok',
@@ -163,10 +163,14 @@ def get_service_status(app_id):
     if 'create_time' in info:
         dto = {}
         for key,value in info.items():
-            if key in ['create_time', 'product_id', 'article_num', 'storage_size']:
+            if key in ['create_time', 'product_id', 'article_num', 'storage_size', 'website_storage_limit', 'website_traffic_limit']:
                 dto[key] = int(value)
             else:
                 dto[key] = value
+            if 'website_storage_limit' not in dto:
+                dto['website_storage_limit'] = 0
+            if 'website_traffic_limit' not in dto:
+                dto['website_traffic_limit'] = 0
         return dto
     return None
 
@@ -176,14 +180,20 @@ def get_service_status_key(app_id):
 def get_service_usage(app_id):
     article_num_key = get_service_statistic_key_list(app_id, 'article_num')[0]
     storage_size_key = get_service_statistic_key_list(app_id, 'storage_size')[0]
+    website_storage_key = get_service_statistic_key_list(app_id, 'website_storage')[0]
+    website_traffic_key = get_service_statistic_key_list(app_id, 'website_traffic')[0]
     redis = lanying_redis.get_redis_connection()
     article_num = redis.incrby(article_num_key, 0)
     storage_size = redis.incrby(storage_size_key, 0)
+    website_storage = redis.incrby(website_storage_key, 0)
+    website_traffic = redis.incrby(website_traffic_key, 0)
     return {
         'result': 'ok',
         'data':{
             'article_num': article_num,
-            'storage_size': storage_size
+            'storage_size': storage_size,
+            'website_storage': website_storage,
+            'website_traffic': website_traffic
         }
 }
 
@@ -194,8 +204,15 @@ def incrby_service_usage(app_id, field, value):
     for key in key_list:
         redis.incrby(key, value)
 
+def set_service_usage(app_id, field, value):
+    logging.info(f"set_service_usage | app_id:{app_id}, field:{field}, value:{value}")
+    redis = lanying_redis.get_redis_connection()
+    key_list = get_service_statistic_key_list(app_id, field)
+    for key in key_list:
+        redis.set(key, value)
+
 def get_service_statistic_key_list(app_id, field):
-    if field == 'storage_size':
+    if field in ['storage_size']:
         return [
             f'lanying-connector:grow_ai:staistic:{field}:{app_id}'
         ]
@@ -217,12 +234,18 @@ def get_service_statistic_key_list(app_id, field):
     pay_start_date_str = pay_start_date.strftime('%Y-%m-%d')
     month_start_date_str = month_start_date.strftime('%Y-%m-%d')
     now_date_str = now.strftime('%Y-%m-%d')
-    return [
-        f'lanying-connector:grow_ai:staistic:{field}:pay_start_date:{app_id}:{product_id}:{pay_start_date_str}',
-        f'lanying-connector:grow_ai:staistic:{field}:month_start_date:{app_id}:{product_id}:{month_start_date_str}',
-        f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}',
-        f'lanying-connector:grow_ai:staistic:{field}:app:{app_id}'
-    ]
+    if field in ['website_storage']:
+        return [
+            f'lanying-connector:grow_ai:staistic:{field}:app:{app_id}',
+            f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}'
+        ]
+    else:
+        return [
+            f'lanying-connector:grow_ai:staistic:{field}:pay_start_date:{app_id}:{product_id}:{pay_start_date_str}',
+            f'lanying-connector:grow_ai:staistic:{field}:month_start_date:{app_id}:{product_id}:{month_start_date_str}',
+            f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}',
+            f'lanying-connector:grow_ai:staistic:{field}:app:{app_id}'
+        ]
 
 def create_task(task_setting: TaskSetting):
     result = check_github_config(task_setting.deploy)
@@ -651,8 +674,11 @@ def do_run_task(app_id, task_run_id, has_retry_times):
             update_task_run_field(app_id, task_run_id, "status", "error")
         raise e
 
-def get_article_limit(app_id):
-    return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_article_number')
+def get_website_storage_limit(app_id):
+    return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_website_storage_limit')
+
+def get_website_traffic_limit(app_id):
+    return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_website_traffic_limit')
 
 def find_title(app_id, task_id, task_run_id, keywords, title_reuse):
     article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 0)
@@ -780,7 +806,6 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         update_task_run_field(app_id, task_run_id, "article_count", article_count)
         logging.info(f"use new article_count | {article_count}")
     run_result_key = get_task_run_result_key(app_id, task_run_id)
-    article_limit = get_article_limit(app_id)
     article_generate_num = 0
     max_article_generate_num = 5
     start_from = task_run['start_from']
@@ -789,10 +814,6 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         article_id = f'{task_run_id}_{i+1}'
         if redis.hexists(run_result_key, article_id):
             continue
-        usage = get_service_usage(app_id)
-        now_article_num = usage['data']['article_num']
-        if now_article_num + 1 > article_limit:
-            return {'result': 'error', 'message': 'article_num not enough', 'retry': False}
         result = find_title(app_id, task_id, task_run_id, keywords, task['title_reuse'])
         if result['result'] == 'error':
             if result['message'] == 'article titles are exhausted':

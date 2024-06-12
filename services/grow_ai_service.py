@@ -17,9 +17,9 @@ def open_service():
     app_id = str(data['app_id'])
     product_id = int(data['product_id'])
     price = int(data['price'])
-    article_num = int(data['article_num'])
-    storage_size = int(data['storage_size'])
-    result = lanying_grow_ai.open_service(app_id, product_id, price, article_num, storage_size)
+    website_storage_limit = int(data.get('website_storage_limit', '0'))
+    website_traffic_limit = int(data.get('website_traffic_limit', '0'))
+    result = lanying_grow_ai.open_service(app_id, product_id, price, website_storage_limit, website_traffic_limit)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
