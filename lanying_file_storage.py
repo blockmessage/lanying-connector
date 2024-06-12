@@ -98,6 +98,9 @@ def download_file_url(url, headers, filename, extra = {}):
             if file_size > max_upload_file_size:
                 logging.info(f"Download {filename} failed, for file_size:{file_size}")
                 return {"result":"error", "message":"file too large"}
+            if response.text == '{"code":402,"message":"Operation rejected"}':
+                logging.info(f"Download {filename} failed, Operation rejected")
+                return {"result":"error", "message":"fail to download file"}
             logging.info(f"Download {filename} started, file_size:{file_size}")
             with open(filename, 'wb') as f:
                 f.write(response.content)
