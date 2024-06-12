@@ -230,6 +230,7 @@ def create_task(task_setting: TaskSetting):
         return result
     now = int(time.time())
     app_id = task_setting.app_id
+    set_admin_token(app_id)
     task_id = generate_task_id()
     result = handle_task_file_list(app_id, task_id, task_setting.file_list)
     if result['result'] == 'error':
@@ -254,7 +255,6 @@ def create_task(task_setting: TaskSetting):
     if task_info['cycle_type'] == 'none':
         executor.submit(run_task, app_id, task_id)
     maybe_register_github(app_id, task_id, task_info['deploy'])
-    set_admin_token(app_id)
     return {
         'result': 'ok',
         'data': {
@@ -265,6 +265,7 @@ def create_task(task_setting: TaskSetting):
 def configure_task(task_id, task_setting: TaskSetting):
     now = int(time.time())
     app_id = task_setting.app_id
+    set_admin_token(app_id)
     task_info = get_task(app_id, task_id)
     if task_info is None:
         return {'result': 'error', 'message': 'task_id not exist'}
@@ -304,7 +305,6 @@ def configure_task(task_id, task_setting: TaskSetting):
                 schedule_id = result['data']['schedule_id']
                 update_task_field(app_id, task_id, "schedule_id", schedule_id)
     maybe_register_github(app_id, task_id, new_task_info['deploy'])
-    set_admin_token(app_id)
     return {
         'result': 'ok',
         'data': {
