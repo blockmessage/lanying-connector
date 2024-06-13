@@ -248,9 +248,6 @@ def get_service_statistic_key_list(app_id, field):
         ]
 
 def create_task(task_setting: TaskSetting):
-    result = check_github_config(task_setting.deploy)
-    if result['result'] == 'error':
-        return result
     now = int(time.time())
     app_id = task_setting.app_id
     set_admin_token(app_id)
@@ -277,7 +274,6 @@ def create_task(task_setting: TaskSetting):
         update_task_field(app_id, task_id, "schedule_id", schedule_id)
     if task_info['cycle_type'] == 'none':
         executor.submit(run_task, app_id, task_id)
-    maybe_register_github(app_id, task_id, task_info['deploy'])
     return {
         'result': 'ok',
         'data': {
@@ -292,9 +288,6 @@ def configure_task(task_id, task_setting: TaskSetting):
     task_info = get_task(app_id, task_id)
     if task_info is None:
         return {'result': 'error', 'message': 'task_id not exist'}
-    result = maybe_check_github_config(task_info['deploy'], task_setting.deploy)
-    if result['result'] == 'error':
-        return result
     result = handle_task_file_list(app_id, task_id, task_setting.file_list)
     if result['result'] == 'error':
         return result
@@ -327,85 +320,12 @@ def configure_task(task_id, task_setting: TaskSetting):
                 result = lanying_schedule.create_schedule(new_task_info['cycle_interval'], 'lanying_grow_ai', {'app_id':app_id, 'task_id':task_id})
                 schedule_id = result['data']['schedule_id']
                 update_task_field(app_id, task_id, "schedule_id", schedule_id)
-    maybe_register_github(app_id, task_id, new_task_info['deploy'])
     return {
         'result': 'ok',
         'data': {
             'success': True
         }
     }
-
-def maybe_check_github_config(old_deploy, deploy):
-    if deploy.get('type') == 'gitbook':
-        if deploy == old_deploy:
-            return {'result': 'ok'}
-        else:
-            return check_github_config(deploy)
-    else:
-        return {'result': 'ok'}
-
-def check_github_config(deploy):
-    deploy_type = deploy.get('type', 'none')
-    if deploy_type not in ["gitbook"]:
-        return {'result': 'ok'}
-    github_url = deploy.get('gitbook_url', '')
-    result = parse_github_url(github_url)
-    if result['result'] == 'error':
-        return result
-    target_dir = deploy.get('gitbook_target_dir', '/').strip("/").strip()
-    if target_dir == "":
-        return {'result': 'error', 'message': 'target_dir is bad'}
-    github_owner = result['github_owner']
-    github_repo = result['github_repo']
-    github_token = deploy.get('gitbook_token', '')
-    if len(github_token) == 0:
-        return {'result': 'error', 'message': 'github token is bad'}
-    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
-    base_branch = deploy.get('gitbook_base_branch', 'master')
-    headers = {
-        "Authorization": f"token {github_token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    # 获取基础分支的最后一次提交SHA
-    response = requests.get(f"{github_api_url}/git/refs/heads/{base_branch}", headers=headers)
-    if response.status_code != 200:
-        return {'result': 'error', 'message': 'github token is bad'}
-    return {'result': 'ok'}
-
-def maybe_register_github(app_id, task_id, deploy):
-    deploy_type = deploy.get('type', 'none')
-    if deploy_type == 'gitbook':
-        github_url = deploy.get('gitbook_url', '')
-        result = parse_github_url(github_url)
-        if result['result'] == 'error':
-            return result
-        github_owner = result['github_owner']
-        github_repo = result['github_repo']
-        redis = lanying_redis.get_redis_connection()
-        key = github_register_key(github_owner, github_repo)
-        redis.hset(key, task_id, app_id)
-        get_github_site(github_owner, github_repo)
-
-def maybe_unregister_github(app_id, task_id, deploy):
-    deploy_type = deploy.get('type', 'none')
-    if deploy_type == 'gitbook':
-        github_url = deploy.get('gitbook_url', '')
-        result = parse_github_url(github_url)
-        if result['result'] == 'error':
-            return result
-        github_owner = result['github_owner']
-        github_repo = result['github_repo']
-        redis = lanying_redis.get_redis_connection()
-        key = github_register_key(github_owner, github_repo)
-        redis.hdel(key, task_id)
-
-def get_github_task_list(github_owner, github_repo):
-    redis = lanying_redis.get_redis_connection()
-    key = github_register_key(github_owner, github_repo)
-    return lanying_redis.redis_hgetall(redis, key)
-
-def github_register_key(github_owner, github_repo):
-    return f"lanying_connector:grow_ai:github_repo:{github_owner}:{github_repo}"
 
 def handle_task_file_list(app_id, task_id, file_list):
     if len(file_list) > 1:
@@ -464,7 +384,6 @@ def get_task_list(app_id):
     for task_id in task_ids:
         task_info = get_task(app_id, task_id)
         if task_info:
-            maybe_add_site_fields(task_info)
             if len(task_info['site_id_list']) > 0:
                 site_id = task_info['site_id_list'][0]
                 site = get_site(app_id, site_id)
@@ -478,18 +397,6 @@ def get_task_list(app_id):
                 'list': task_list
             }
     }
-
-def maybe_add_site_fields(task_info):
-    deploy = task_info['deploy']
-    if deploy.get('type', 'none') == 'gitbook':
-        github_url = deploy.get('gitbook_url', '')
-        result = parse_github_url(github_url)
-        if result['result'] == 'ok':
-            github_owner = result['github_owner']
-            github_repo = result['github_repo']
-            site_name = get_github_site(github_owner, github_repo)
-            site_url = make_site_full_url(site_name)
-            task_info['site_url'] = site_url
 
 def get_task(app_id, task_id):
     redis = lanying_redis.get_redis_connection()
@@ -571,7 +478,6 @@ def delete_task(app_id, task_id):
         schedule_info = lanying_schedule.get_schedule(schedule_id)
         if schedule_info:
             lanying_schedule.delete_schedule(schedule_id)
-    maybe_unregister_github(app_id, task_id, task_info['deploy'])
     redis = lanying_redis.get_redis_connection()
     task_key = get_task_key(app_id, task_id)
     task_list_key = get_task_list_key(app_id)
@@ -957,28 +863,13 @@ def do_deploy_task_run(app_id, task_run_id, has_retry_times):
         raise e
 
 def get_task_site_list(task):
-    if task['site_id_list'] == []:
-        if 'deploy' in task:
-            deploy = task['deploy']
-            deploy_type = deploy.get('type', 'none')
-            if deploy_type == "gitbook":
-                site = {
-                    'github_url': deploy.get('gitbook_url', ''),
-                    'github_token': deploy.get('gitbook_token', ''),
-                    'github_base_branch': deploy.get('gitbook_base_branch', 'master'),
-                    'github_base_dir': deploy.get('gitbook_base_dir', '/')
-                }
-                return [site]
-            else:
-                return []
-    else:
-        site_id_list = task['site_id_list']
-        site_list = []
-        for site_id in site_id_list:
-            site = get_site(task['app_id'], site_id)
-            if site:
-                site_list.append(site)
-        return site_list
+    site_id_list = task['site_id_list']
+    site_list = []
+    for site_id in site_id_list:
+        site = get_site(task['app_id'], site_id)
+        if site:
+            site_list.append(site)
+    return site_list
 
 def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
@@ -1622,30 +1513,15 @@ def release_finish(repository, release):
     github_owner = fields[0]
     github_repo = fields[1]
     site_id_list = get_github_site_id_list(github_owner, github_repo)
-    if len(site_id_list) == 0:
-        task_list = get_github_task_list(github_owner, github_repo)
-        for task_id, app_id in task_list.items():
-            task = get_task(app_id, task_id)
-            if task:
-                site_list = get_task_site_list(task)
-                if site_list != []:
-                    site = site_list[0]
-                    github_url = site.get('github_url', '')
-                    result = parse_github_url(github_url)
-                    if result['result'] == 'error':
-                        continue
-                    if result['github_owner'] == github_owner and result['github_repo'] == github_repo:
-                        return start_deploy_github_action(app_id, task_id, '', github_owner, github_repo, release)
-    else:
-        for site_id, app_id in site_id_list.items():
-            site = get_site(app_id, site_id)
-            if site:
-                github_url = site.get('github_url', '')
-                result = parse_github_url(github_url)
-                if result['result'] == 'error':
-                    continue
-                if result['github_owner'] == github_owner and result['github_repo'] == github_repo:
-                    return start_deploy_github_action(app_id, '', site_id, github_owner, github_repo, release)
+    for site_id, app_id in site_id_list.items():
+        site = get_site(app_id, site_id)
+        if site:
+            github_url = site.get('github_url', '')
+            result = parse_github_url(github_url)
+            if result['result'] == 'error':
+                continue
+            if result['github_owner'] == github_owner and result['github_repo'] == github_repo:
+                return start_deploy_github_action(app_id, '', site_id, github_owner, github_repo, release)
     return {'result': 'error', 'message': 'deploy not found'}
 
 def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release):
