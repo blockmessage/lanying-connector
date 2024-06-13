@@ -349,6 +349,19 @@ def release_finish():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/grow_ai/check_deploy", methods=["POST"])
+def check_deploy():
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    code = request.args.get('code')
+    release_size = int(data['release_size'])
+    result = lanying_grow_ai.check_deploy(code, release_size)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/grow_ai/deploy_finish", methods=["POST"])
 def deploy_finish():
     text = request.get_data(as_text=True)

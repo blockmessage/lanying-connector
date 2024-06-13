@@ -1513,6 +1513,8 @@ def release_finish(repository, release):
     github_owner = fields[0]
     github_repo = fields[1]
     site_id_list = get_github_site_id_list(github_owner, github_repo)
+    owner_site_id = None
+    owner_time = 0
     for site_id, app_id in site_id_list.items():
         site = get_site(app_id, site_id)
         if site:
@@ -1521,10 +1523,16 @@ def release_finish(repository, release):
             if result['result'] == 'error':
                 continue
             if result['github_owner'] == github_owner and result['github_repo'] == github_repo:
-                return start_deploy_github_action(app_id, '', site_id, github_owner, github_repo, release)
+                update_time = site['update_time']
+                if update_time > owner_time:
+                    owner_time = update_time
+                    owner_site_id = site_id
+    if owner_site_id is not None:
+        return start_deploy_github_action(app_id, '', owner_site_id, github_owner, github_repo, release)
     return {'result': 'error', 'message': 'deploy not found'}
 
 def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release):
+    logging.info(f"start_deploy_github_action | app_id:{app_id}, task_id:{task_id}, site_id:{site_id}, github_owner:{github_owner}, github_repo:{github_repo}, release:{release}")
     deploy_repo_owner = 'maxim-top'
     deploy_repo_name = 'im.gitbook'
     deploy_workflow_id = 'deploy_sub_site.yml'
@@ -1553,6 +1561,7 @@ def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_re
             'book_url': f'https://github.com/{github_owner}/{github_repo}/releases/download/{release}/book.tar.gz',
             'oss_path': f'/{site_name}',
             'cdn_url': make_site_full_url(site_name),
+            'check_url': f'{connector_server}/grow_ai/check_deploy?code={deploy_code}',
             'callback_url': f'{connector_server}/grow_ai/deploy_finish?code={deploy_code}'
         }
     }
@@ -1588,10 +1597,66 @@ def get_deploy_code(deploy_code):
 def deploy_code_key(deploy_code):
     return f"lanying_connector:grow_ai:deploy_code:{deploy_code}"
 
+def check_deploy(deploy_code, release_size):
+    logging.info(f"check_deploy | deploy_code={deploy_code}, release_size:{release_size}")
+    code_info = get_deploy_code(deploy_code)
+    logging.info(f"deploy_finish code info:{code_info}")
+    if code_info is None:
+        return {'result': 'error', 'message': 'code not found'}
+    app_id = code_info['app_id']
+    site_id = code_info['site_id']
+    site = get_site(app_id, site_id)
+    if site is None:
+        update_site_field(app_id, site_id, "deploy_result", "failed")
+        update_site_field(app_id, site_id, "deploy_failed_reason", "site not found")
+        return {'result': 'error', 'message': 'site not found'}
+    service_status = get_service_status(app_id)
+    if service_status is None:
+        update_site_field(app_id, site_id, "deploy_result", "failed")
+        update_site_field(app_id, site_id, "deploy_failed_reason", "service status not found")
+        return {'result': 'error', 'message': 'service status not found'}
+    website_storage_limit = service_status['website_storage_limit']
+    product_id = service_status['product_id']
+    if product_id == 9805:
+        update_site_storage(app_id, site_id, release_size)
+        return {'result': 'ok', 'data': {'success': True}}
+    old_website_storage = site['website_storage']
+    total_website_storage = get_app_total_website_storage(app_id)
+    new_website_storage = total_website_storage - old_website_storage + release_size
+    new_website_storage_mb = new_website_storage / 1024 / 1024
+    logging.info(f"check_deploy calc website_storage | old_website_storage:{old_website_storage}, total_website_storage:{total_website_storage}, new_website_storage_mb:{new_website_storage_mb}")
+    if new_website_storage_mb >= website_storage_limit:
+        update_site_field(app_id, site_id, "deploy_result", "failed")
+        update_site_field(app_id, site_id, "deploy_failed_reason", "website storage limit reached")
+        return {'result': 'error', 'message': f'website storage limit reached : {new_website_storage_mb}/{website_storage_limit}'}
+    else:
+        update_site_storage(app_id, site_id, release_size)
+        return {'result': 'ok', 'data': {'success': True}}
+
+def update_site_storage(app_id, site_id, website_storage):
+    update_site_field(app_id, site_id, 'website_storage', website_storage)
+    total_website_storage = get_app_total_website_storage(app_id)
+    set_service_usage(app_id, 'website_storage', total_website_storage)
+
+def get_app_total_website_storage(app_id):
+    site_list = get_site_list(app_id)['data']['list']
+    total_website_storage = 0
+    for site in site_list:
+        total_website_storage += site['website_storage']
+    return total_website_storage
+
 def deploy_finish(deploy_code, deploy_result):
     logging.info(f"deploy_finish | deploy_code={deploy_code}, deploy_result:{deploy_result}")
     code_info = get_deploy_code(deploy_code)
     logging.info(f"deploy_finish code info:{code_info}")
+    if code_info is None:
+        return {'result': 'error', 'message': 'code not found'}
+    app_id = code_info['app_id']
+    site_id = code_info['site_id']
+    site = get_site(app_id, site_id)
+    if site is None:
+        return {'result': 'error', 'message': 'site not found'}
+    update_site_field(app_id, site_id, "deploy_result", "success")
     return {'result':'ok', 'data':{'success': True}}
 
 def get_github_site(github_owner, github_repo):
@@ -1663,6 +1728,7 @@ def create_site(site_setting: SiteSetting):
     }
 
 def configure_site(site_id, site_setting: SiteSetting):
+    now = int(time.time())
     result = check_site_setting(site_setting)
     if result['result'] == 'error':
         return result
@@ -1672,6 +1738,7 @@ def configure_site(site_id, site_setting: SiteSetting):
         return {'result': 'error', 'message': 'site_id not exist'}
     redis = lanying_redis.get_redis_connection()
     fields = site_setting.to_hmset_fields()
+    fields['update_time'] = now
     logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
     new_site_info = get_site(app_id, site_id)
@@ -1717,10 +1784,21 @@ def get_site(app_id, site_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            dto[key] = value
+            if key in ['create_time', 'update_time', 'website_storage']:
+                dto[key] = int(value)
+            else:
+                dto[key] = value
+        if 'update_time' not in dto:
+            dto['update_time'] = dto['create_time']
+        if 'website_storage' not in dto:
+            dto['website_storage'] = 0
         maybe_add_site_url(dto)
         return dto
     return None
+
+def update_site_field(app_id, site_id, field, value):
+    redis = lanying_redis.get_redis_connection()
+    redis.hset(get_site_key(app_id, site_id), field, value)
 
 def generate_site_id():
     redis = lanying_redis.get_redis_connection()
