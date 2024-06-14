@@ -20,6 +20,7 @@ import os
 import lanying_schedule
 import lanying_chatbot
 import base64
+import copy
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type):
@@ -65,7 +66,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link):
+    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url):
         self.app_id = app_id
         self.name = name
         self.type = type
@@ -75,6 +76,12 @@ class SiteSetting:
         self.github_base_dir = github_base_dir
         self.footer_note = footer_note
         self.lanying_link = lanying_link
+        self.title = title
+        self.copyright = copyright
+        self.canonical_link = canonical_link
+        self.meta_keywords = meta_keywords
+        self.baidu_token = baidu_token
+        self.official_website_url = official_website_url
 
     def to_hmset_fields(self):
         return {
@@ -86,7 +93,13 @@ class SiteSetting:
             'github_base_branch': self.github_base_branch,
             'github_base_dir': self.github_base_dir,
             'footer_note': self.footer_note,
-            'lanying_link': self.lanying_link
+            'lanying_link': self.lanying_link,
+            'title': self.title,
+            'copyright': self.copyright,
+            'canonical_link': self.canonical_link,
+            'meta_keywords': self.meta_keywords,
+            'baidu_token': self.baidu_token,
+            'official_website_url': self.official_website_url
         }
 
 def handle_schedule(schedule_info):
@@ -1720,6 +1733,7 @@ def create_site(site_setting: SiteSetting):
     site_info = get_site(app_id, site_id)
     logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
     maybe_register_github_site(app_id, site_info)
+    maybe_sync_to_github({}, site_info)
     return {
         'result': 'ok',
         'data': {
@@ -1743,12 +1757,118 @@ def configure_site(site_id, site_setting: SiteSetting):
     redis.hmset(get_site_key(app_id, site_id), fields)
     new_site_info = get_site(app_id, site_id)
     maybe_register_github_site(app_id, new_site_info)
+    maybe_sync_to_github(site_info, new_site_info)
     return {
         'result': 'ok',
         'data': {
             'success': True
         }
     }
+
+def maybe_sync_to_github(old_site, site):
+    try:
+        executor.submit(sync_to_github, site)
+    except Exception as e:
+        pass
+
+def sync_to_github(site):
+    github_url = site.get('github_url', '')
+    github_token = site.get('github_token', '')
+    result = parse_github_url(github_url)
+    if result['result'] == 'error':
+        return result
+    github_owner = result['github_owner']
+    github_repo = result['github_repo']
+    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
+    base_branch = site.get('github_base_branch', 'master')
+    base_dir = site.get('github_base_dir', '/').strip("/")
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    book_file = os.path.join(base_dir, "book.json")
+    book_url = f"{github_api_url}/contents/{book_file}"
+    # 发送 GET 请求获取文件内容
+    response = requests.get(book_url, headers=headers)
+    if response.status_code != 200:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github book.json not found'}
+    file_info = response.json()
+    sha = file_info['sha']
+    book_text = base64.b64decode(file_info['content']).decode('utf-8')
+    try:
+        book_json = json.loads(book_text)
+    except Exception as e:
+        return {'result': 'error', 'message': 'book.json is not json'}
+    new_book_json = transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch)
+    if new_book_json == book_json:
+        return {'result': 'ok'}
+    new_book_text = json.dumps(new_book_json, ensure_ascii=False, indent=4) + "\n"
+    new_book_base64 = base64.b64encode(new_book_text.encode()).decode()
+    update_data = {
+        "message": "Update book.json from LanyingIM Console",
+        "content": new_book_base64,
+        "encoding": "base64",
+        "sha": sha
+    }
+    response = requests.put(book_url, headers=headers, json=update_data)
+    if response.status_code != 200:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to commit'}
+    return {'result': 'ok'}
+
+def transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch):
+    new_book_json = copy.deepcopy(book_json)
+    for field in ['title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link']:
+        try:
+            if field == 'title':
+                title = site.get('title', '')
+                if len(title) > 0:
+                    new_book_json['title'] = title
+            elif field == 'github_buttons':
+                new_book_json['pluginsConfig']['github-buttons']['repo'] = f'{github_owner}/{github_repo}'
+            elif field == 'copyright':
+                copyright = site.get('copyright', '')
+                if len(copyright) > 0:
+                    official_website_url = site.get('official_website_url', '')
+                    if len(official_website_url) > 0:
+                        site_url = official_website_url
+                    else:
+                        site_url = '/'
+                    new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' style='text-decoration:none!important;'>官网</a>"
+            elif field == 'edit_link':
+                new_book_json['pluginsConfig']['edit-link']['base'] = f'https://github.com/{github_owner}/{github_repo}/blob/{base_branch}'
+            elif field == 'logo_site_url':
+                official_website_url = site.get('official_website_url', '')
+                if len(official_website_url) > 0:
+                    site_url = official_website_url
+                else:
+                    site_url = '/'
+                new_book_json['pluginsConfig']['logo']['url'] = site_url
+            elif field == 'canonical_link':
+                canonical_link = site.get('canonical_link','')
+                if len(canonical_link) > 0:
+                    new_book_json['pluginsConfig']['canonical-link']['baseURL'] = canonical_link
+            elif field == 'meta_keywords':
+                meta_keywords = site.get('meta_keywords', '')
+                if len(meta_keywords) > 0:
+                    new_book_json['pluginsConfig']['meta']['data'][0]['content'] = meta_keywords
+            elif field == 'baidu_token':
+                baidu_token = site.get('baidu_token', '')
+                if len(baidu_token) > 0:
+                    new_book_json['pluginsConfig']['3-ba']['token'] = baidu_token
+            elif field == 'footer_note':
+                footer_note = site.get('footer_note', '')
+                if len(footer_note) > 0:
+                    new_book_json['pluginsConfig']['lanying-grow-ai']['footer_note'] = footer_note
+            elif field == 'lanying_link':
+                lanying_link = site.get('lanying_link', '')
+                if len(lanying_link) > 0:
+                    new_book_json['pluginsConfig']['lanying-grow-ai']['lanying_link'] = lanying_link
+        except Exception as e:
+            pass
+    logging.info(f"transform_site_to_book_json | site:{site}, book_json:{book_json}, new_book_json:{new_book_json}")
+    return new_book_json
 
 def get_site_list(app_id):
     redis = lanying_redis.get_redis_connection()
@@ -1792,6 +1912,18 @@ def get_site(app_id, site_id):
             dto['update_time'] = dto['create_time']
         if 'website_storage' not in dto:
             dto['website_storage'] = 0
+        if 'title' not in dto:
+            dto['title'] = ''
+        if 'copyright' not in dto:
+            dto['copyright'] = ''
+        if 'canonical_link' not in dto:
+            dto['canonical_link'] = ''
+        if 'meta_keywords' not in dto:
+            dto['meta_keywords'] = ''
+        if 'baidu_token' not in dto:
+            dto['baidu_token'] = ''
+        if 'official_website_url' not in dto:
+            dto['official_website_url'] = ''
         maybe_add_site_url(dto)
         return dto
     return None

@@ -408,6 +408,12 @@ def create_site():
     github_base_dir = str(data['github_base_dir'])
     footer_note = str(data['footer_note'])
     lanying_link = str(data['lanying_link'])
+    title = str(data.get('title', ''))
+    copyright = str(data.get('copyright', ''))
+    canonical_link = str(data.get('canonical_link', ''))
+    meta_keywords = str(data.get('meta_keywords', ''))
+    baidu_token = str(data.get('baidu_token', ''))
+    official_website_url = str(data.get('official_website_url', ''))
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,
@@ -417,7 +423,13 @@ def create_site():
         github_base_branch = github_base_branch,
         github_base_dir = github_base_dir,
         footer_note = footer_note,
-        lanying_link = lanying_link
+        lanying_link = lanying_link,
+        title = title,
+        copyright = copyright,
+        canonical_link = canonical_link,
+        meta_keywords = meta_keywords,
+        baidu_token = baidu_token,
+        official_website_url = official_website_url
     )
     result = lanying_grow_ai.create_site(site_setting)
     if result['result'] == 'error':
@@ -443,6 +455,12 @@ def configure_site():
     github_base_dir = str(data['github_base_dir'])
     footer_note = str(data['footer_note'])
     lanying_link = str(data['lanying_link'])
+    title = str(data.get('title', ''))
+    copyright = str(data.get('copyright', ''))
+    canonical_link = str(data.get('canonical_link', ''))
+    meta_keywords = str(data.get('meta_keywords', ''))
+    baidu_token = str(data.get('baidu_token', ''))
+    official_website_url = str(data.get('official_website_url', ''))
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,
@@ -452,7 +470,13 @@ def configure_site():
         github_base_branch = github_base_branch,
         github_base_dir = github_base_dir,
         footer_note = footer_note,
-        lanying_link = lanying_link
+        lanying_link = lanying_link,
+        title = title,
+        copyright = copyright,
+        canonical_link = canonical_link,
+        meta_keywords = meta_keywords,
+        baidu_token = baidu_token,
+        official_website_url = official_website_url
     )
     result = lanying_grow_ai.configure_site(site_id, site_setting)
     if result['result'] == 'error':
