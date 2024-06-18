@@ -1819,7 +1819,7 @@ def sync_to_github(site):
 
 def transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch):
     new_book_json = copy.deepcopy(book_json)
-    for field in ['title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link']:
+    for field in ['title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname']:
         try:
             if field == 'title':
                 title = site.get('title', '')
@@ -1847,8 +1847,20 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                 new_book_json['pluginsConfig']['logo']['url'] = site_url
             elif field == 'canonical_link':
                 canonical_link = site.get('canonical_link','')
+                if len(canonical_link) == 0:
+                    site_name = get_github_site(github_owner, github_repo)
+                    canonical_link = make_site_full_url(site_name)
+                new_canonical_link = canonical_link.rstrip('/')
+                new_book_json['pluginsConfig']['canonical-link']['baseURL'] = new_canonical_link
+            elif field == 'sitemap_hostname':
+                canonical_link = site.get('canonical_link','')
                 if len(canonical_link) > 0:
-                    new_book_json['pluginsConfig']['canonical-link']['baseURL'] = canonical_link
+                    sitemap_hostname = canonical_link
+                else:
+                    site_name = get_github_site(github_owner, github_repo)
+                    site_url = make_site_full_url(site_name)
+                    sitemap_hostname = site_url
+                new_book_json['pluginsConfig']['lanying-grow-ai']['sitemap_hostname'] = sitemap_hostname
             elif field == 'meta_keywords':
                 meta_keywords = site.get('meta_keywords', '')
                 if len(meta_keywords) > 0:
