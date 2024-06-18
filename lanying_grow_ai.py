@@ -912,12 +912,16 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     github_token = site.get('github_token', '')
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
+    commit_type = task.get('commit_type', 'pull_request')
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
     base_branch = site.get('github_base_branch', 'master')
     base_dir = site.get('github_base_dir', '/').strip("/")
     target_dir = task['target_dir'].strip("/")
     target_relative_dir = os.path.relpath(target_dir,base_dir)
-    new_branch = f"grow-ai-{task_run_id}-{timestr}"
+    if commit_type == 'pull_request':
+        new_branch = f"grow-ai-{task_run_id}-{timestr}"
+    else:
+        new_branch = base_branch
     headers = {
         "Authorization": f"token {github_token}",
         "Accept": "application/vnd.github.v3+json"
@@ -942,15 +946,16 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         return {'result': 'error', 'message': 'github SUMMARY.md not found'}
     file_info = response.json()
     summary_text = base64.b64decode(file_info['content']).decode('utf-8')
-    # 创建新分支
-    data = {
-        "ref": f"refs/heads/{new_branch}",
-        "sha": commit_sha
-    }
-    response = requests.post(f"{github_api_url}/git/refs", headers=headers, json=data)
-    if response.status_code != 201:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github create branch failed'}
+    if commit_type == 'pull_request':
+        # 创建新分支
+        data = {
+            "ref": f"refs/heads/{new_branch}",
+            "sha": commit_sha
+        }
+        response = requests.post(f"{github_api_url}/git/refs", headers=headers, json=data)
+        if response.status_code != 201:
+            logging.info(f"github response | {response.content}")
+            return {'result': 'error', 'message': 'github create branch failed'}
     # 获取基础分支的树对象SHA
     response = requests.get(f"{github_api_url}/git/trees/{commit_sha}", headers=headers)
     if response.status_code != 200:
@@ -1115,21 +1120,24 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     if response.status_code != 200:
         logging.info(f"github response | {response.content}")
         return {'result': 'error', 'message': 'github fail to move commit'}
-    # 提交Pull Request
-    title = f"Grow AI PR: {task_run_id}"
-    body = f"Grow AI PR: {task_run_id}"
-    pr_data = {
-        "title": title,
-        "body": body,
-        "head": new_branch,
-        "base": base_branch
-    }
-    response = requests.post(f"{github_api_url}/pulls", headers=headers, json=pr_data)
-    if response.status_code != 201:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github fail to commit PR'}
-    pr_url = response.json().get("html_url")
-    update_task_run_field(app_id, task_run_id, "pr_url", pr_url)
+    if commit_type == 'pull_request':
+        # 提交Pull Request
+        title = f"Grow AI PR: {task_run_id}"
+        body = f"Grow AI PR: {task_run_id}"
+        pr_data = {
+            "title": title,
+            "body": body,
+            "head": new_branch,
+            "base": base_branch
+        }
+        response = requests.post(f"{github_api_url}/pulls", headers=headers, json=pr_data)
+        if response.status_code != 201:
+            logging.info(f"github response | {response.content}")
+            return {'result': 'error', 'message': 'github fail to commit PR'}
+        pr_url = response.json().get("html_url")
+        update_task_run_field(app_id, task_run_id, "pr_url", pr_url)
+    else:
+        pr_url = ''
     logging.info(f"deploy task_run success | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}, pr_url:{pr_url}")
     return {'result': 'ok', 'data':{
         'pr_url': pr_url
