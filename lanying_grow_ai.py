@@ -66,7 +66,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url):
+    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token):
         self.app_id = app_id
         self.name = name
         self.type = type
@@ -82,6 +82,7 @@ class SiteSetting:
         self.meta_keywords = meta_keywords
         self.baidu_token = baidu_token
         self.official_website_url = official_website_url
+        self.google_token = google_token
 
     def to_hmset_fields(self):
         return {
@@ -99,7 +100,8 @@ class SiteSetting:
             'canonical_link': self.canonical_link,
             'meta_keywords': self.meta_keywords,
             'baidu_token': self.baidu_token,
-            'official_website_url': self.official_website_url
+            'official_website_url': self.official_website_url,
+            'google_token': self.google_token
         }
 
 def handle_schedule(schedule_info):
@@ -966,7 +968,8 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     summary_link_list = []
     with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
         file_list = zip_ref.namelist()
-        for filename in file_list:
+        sorted_file_list = sorted(file_list, key=lambda x: int(x.split('_')[3]))
+        for filename in sorted_file_list:
             with zip_ref.open(filename) as file:
                 bytes = file.read()
                 base64_content = base64.b64encode(bytes).decode()
@@ -1827,7 +1830,7 @@ def sync_to_github(site):
 
 def transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch):
     new_book_json = copy.deepcopy(book_json)
-    for field in ['title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname']:
+    for field in ['title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname', 'google_token']:
         try:
             if field == 'title':
                 title = site.get('title', '')
@@ -1877,6 +1880,10 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                 baidu_token = site.get('baidu_token', '')
                 if len(baidu_token) > 0:
                     new_book_json['pluginsConfig']['3-ba']['token'] = baidu_token
+            elif field == 'google_token':
+                google_token = site.get('google_token', '')
+                if len(google_token) > 0:
+                    new_book_json['pluginsConfig']['ga4']['tag'] = google_token
             elif field == 'footer_note':
                 footer_note = site.get('footer_note', '')
                 if len(footer_note) > 0:
@@ -1944,6 +1951,8 @@ def get_site(app_id, site_id):
             dto['baidu_token'] = ''
         if 'official_website_url' not in dto:
             dto['official_website_url'] = ''
+        if 'google_token' not in dto:
+            dto['google_token'] = ''
         maybe_add_site_url(dto)
         return dto
     return None
