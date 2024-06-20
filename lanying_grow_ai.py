@@ -1846,7 +1846,7 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                         site_url = official_website_url
                     else:
                         site_url = '/'
-                    new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' style='text-decoration:none!important;'>官网</a>"
+                    new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' style='text-decoration:none!important;'>官网</a> | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>网站地图</a>"
             elif field == 'edit_link':
                 new_book_json['pluginsConfig']['edit-link']['base'] = f'https://github.com/{github_owner}/{github_repo}/blob/{base_branch}'
             elif field == 'logo_site_url':
