@@ -10,29 +10,30 @@ import json
 def model_configs():
     return [
         {
-            "model": 'gpt-4-32k',
+            "model": 'gpt-3.5-turbo',
             "type": "chat",
-            "is_prefix": True,
-            "quota": 40,
-            "token_limit": 32000,
-            'order': 7,
-            'hidden': True
+            "is_prefix": False,
+            "quota": 0.5,
+            "token_limit": 16000,
+            'order': 1
         },
         {
-            "model": 'gpt-4-1106-preview',
+            "model": 'gpt-4o',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 6,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 2
+        },
+        {
+            "model": 'gpt-4-turbo',
             "type": "chat",
             "is_prefix": False,
             "quota": 10,
             "token_limit": 128000,
-            'order': 6
-        },
-        {
-            "model": 'gpt-4-0125-preview',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 10,
-            "token_limit": 128000,
-            'order': 5
+            "support_vision": True,
+            'order': 3
         },
         {
             "model": 'gpt-4',
@@ -43,13 +44,12 @@ def model_configs():
             'order': 4
         },
         {
-            "model": 'gpt-4-turbo',
+            "model": 'gpt-3.5-turbo-0125',
             "type": "chat",
             "is_prefix": False,
-            "quota": 10,
-            "token_limit": 128000,
-            "support_vision": True,
-            'order': 3.5
+            "quota": 0.5,
+            "token_limit": 16000,
+            'order': 5
         },
         {
             "model": 'gpt-3.5-turbo-1106',
@@ -57,24 +57,59 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 16000,
-            'order': 3
+            'order': 6
+        },
+        {
+            "model": 'gpt-4o-2024-05-13',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 6,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 7
+        },
+        {
+            "model": 'gpt-4-turbo-2024-04-09',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 10,
+            "token_limit": 128000,
+            "support_vision": True,
+            'order': 8
+        },
+        {
+            "model": 'gpt-4-1106-preview',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 10,
+            "token_limit": 128000,
+            'order': 9
+        },
+        {
+            "model": 'gpt-4-0125-preview',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 10,
+            "token_limit": 128000,
+            'order': 10
         },
         {
             "model": 'gpt-3.5-turbo-16k',
             "type": "chat",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 2,
             "token_limit": 16000,
             'order': 2,
             'hidden': True
         },
         {
-            "model": 'gpt-3.5-turbo',
+            "model": 'gpt-4-32k',
             "type": "chat",
-            "is_prefix": True,
-            "quota": 1,
-            "token_limit": 16000,
-            'order': 1
+            "is_prefix": False,
+            "quota": 40,
+            "token_limit": 32000,
+            'order': 7,
+            'hidden': True
         },
         {
             "model": 'text-embedding-ada-002',

@@ -44,7 +44,7 @@ def model_configs():
         {
             "model": 'text-embedding-ada-002',
             "type": "embedding",
-            "is_prefix": True,
+            "is_prefix": False,
             "quota": 0.05,
             "token_limit": 8000,
             'order': 1000,
