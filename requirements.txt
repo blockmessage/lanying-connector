@@ -64,7 +64,7 @@ mypy-extensions==1.0.0
 numexpr==2.8.4
 numpy==1.23.5
 openai==0.27.2
-openai-token-counter==1.0.2
+openai-token-counter @ git+https://github.com/blockmessage/openai-token-counter.git@9ec98b831d094fdba8dfa28e87788cbedf54c723
 openapi-schema-pydantic==1.2.4
 openpyxl==3.0.10
 packaging==23.0
@@ -104,7 +104,7 @@ soupsieve==2.4
 SQLAlchemy==2.0.17
 tenacity==8.1.0
 threadpoolctl==3.1.0
-tiktoken==0.5.1
+tiktoken==0.7.0
 tokenizers==0.15.1
 toml==0.10.2
 tomli==2.0.1
