@@ -1852,10 +1852,7 @@ def calc_functions_tokens(functions, model, vendor):
         return 0
     try:
         if vendor == 'openai':
-            if model in ["text-embedding-3-large", "text-embedding-3-small"]:
-                token_cnt = openai_token_counter(messages=[], functions=functions, model='text-embedding-ada-002') - openai_token_counter(messages=[])
-            else:
-                token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[])
+            token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[], model=model)
         else:
             token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
         return token_cnt
