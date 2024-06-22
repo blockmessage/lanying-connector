@@ -91,6 +91,7 @@ def create_task():
         commit_type = str(data.get('commit_type')).strip()
     else:
         commit_type = deploy.get('gitbook_commit_type', 'pull_request').strip()
+    target_title = str(data.get('target_title', ''))
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
         name = name,
@@ -109,7 +110,8 @@ def create_task():
         title_reuse = title_reuse,
         site_id_list = site_id_list,
         target_dir = target_dir,
-        commit_type = commit_type
+        commit_type = commit_type,
+        target_title = target_title
     )
     result = lanying_grow_ai.create_task(task_setting)
     if result['result'] == 'error':
@@ -153,6 +155,7 @@ def configure_task():
         commit_type = str(data.get('commit_type')).strip()
     else:
         commit_type = deploy.get('gitbook_commit_type', 'pull_request').strip()
+    target_title = str(data.get('target_title', ''))
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
         name = name,
@@ -171,7 +174,8 @@ def configure_task():
         title_reuse = title_reuse,
         site_id_list = site_id_list,
         target_dir = target_dir,
-        commit_type = commit_type
+        commit_type = commit_type,
+        target_title = target_title
     )
     result = lanying_grow_ai.configure_task(task_id, task_setting)
     if result['result'] == 'error':

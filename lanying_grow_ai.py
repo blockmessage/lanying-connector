@@ -23,7 +23,7 @@ import base64
 import copy
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_title):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -42,6 +42,7 @@ class TaskSetting:
         self.site_id_list = site_id_list
         self.target_dir = target_dir
         self.commit_type = commit_type
+        self.target_title = target_title
 
     def to_hmset_fields(self):
         return {
@@ -62,7 +63,8 @@ class TaskSetting:
             'title_reuse': self.title_reuse,
             'site_id_list': json.dumps(self.site_id_list, ensure_ascii=False),
             'target_dir': self.target_dir,
-            'commit_type': self.commit_type
+            'commit_type': self.commit_type,
+            'target_title': self.target_title
         }
 
 class SiteSetting:
@@ -449,6 +451,8 @@ def get_task(app_id, task_id):
             dto['target_dir'] = dto.get('deploy',{}).get('gitbook_target_dir', '/articles')
         if 'commit_type' not in dto:
             dto['commit_type'] = dto.get('deploy',{}).get('commit_type', 'pull_request')
+        if 'target_title' not in dto:
+            dto['target_title'] = ''
         return dto
     return None
 
