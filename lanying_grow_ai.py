@@ -886,10 +886,17 @@ def get_task_site_list(task):
             site_list.append(site)
     return site_list
 
+def parse_dir(dir, base_dir):
+    new_dir = dir.strip('').rstrip('/')
+    if os.path.isabs(new_dir):
+        return new_dir, new_dir.lstrip('/')
+    else:
+        new_dir = os.path.join(base_dir, new_dir)
+        return new_dir, new_dir.lstrip('/')
+
 def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     timestr = datetime.now().strftime('%Y%m%d%H%M%S')
-    datestr = datetime.now().strftime('%Y%m%d')
     task_run = get_task_run(app_id, task_run_id)
     if task_run is None:
         return {'result': 'error', 'message': 'task_run not exist'}
@@ -905,6 +912,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     if site_list == []:
         return {'result': 'error', 'message': 'no site to deploy', 'retry': False}
     site = site_list[0]
+    max_latest_num = site['max_latest_num']
     github_url = site.get('github_url', '')
     result = parse_github_url(github_url)
     if result['result'] == 'error':
@@ -917,9 +925,12 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     commit_type = task.get('commit_type', 'pull_request')
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
     base_branch = site.get('github_base_branch', 'master')
-    base_dir = site.get('github_base_dir', '/').strip("/")
-    target_dir = task['target_dir'].strip("/")
-    target_relative_dir = os.path.relpath(target_dir,base_dir)
+    abs_base_dir, base_dir = parse_dir(site.get('github_base_dir', '/'), '/')
+    abs_target_dir, target_dir = parse_dir(task['target_dir'], abs_base_dir)
+    target_relative_dir = os.path.relpath(abs_target_dir,abs_base_dir)
+    if target_relative_dir == '.':
+        target_relative_dir = ''
+    logging.info(f"do_deploy_task_run_internal dir: abs_base_dir:{abs_base_dir}, abs_target_dir:{abs_target_dir}, target_relative_dir:{target_relative_dir}")
     if commit_type == 'pull_request':
         new_branch = f"grow-ai-{task_run_id}-{timestr}"
     else:
@@ -982,28 +993,24 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                     logging.info(f"github response | {response.content}")
                     return {'result': 'error', 'message': 'github fail to add blobs'}
                 blob_sha = response.json()["sha"]
-                github_path = os.path.join(target_dir, datestr, filename)
-                link_path = os.path.join(target_relative_dir, datestr, filename)
+                github_path = os.path.join(target_dir, filename)
+                link_path = os.path.join(target_relative_dir, filename)
                 logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
                 if filename.endswith(".md"):
                     content = bytes.decode()
                     title = content.splitlines()[0].strip().lstrip('#').strip()
-                    summary_link_list.append(f"    * [{title}]({link_path})")
+                    summary_link_list.append({'title': title, 'link': link_path})
+                    # summary_link_list.append(f"    * [{title}]({link_path})")
                 tree.append({
                     "path": github_path,
                     "mode": "100644",
                     "type": "blob",
                     "sha": blob_sha
                 })
-    title1 = os.path.join(target_relative_dir, "README.md")
-    title2 = os.path.join(target_relative_dir, datestr, "README.md")
-    summary_list = summary_text.splitlines()
-    found_title1 = False
-    for line in summary_list:
-        if title1 in line:
-            found_title1 = True
-    if not found_title1:
-        summary_list.append(f"* [{target_relative_dir}]({title1})")
+    target_link = os.path.join(target_relative_dir, "README.md")
+    summary = GitBookSummary(summary_text = summary_text)
+    if not summary.has_link(target_link):
+        summary.append_summary(target_relative_dir, target_link)
         readme_content = f"# {target_dir}"
         readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
         blob_data = {
@@ -1023,62 +1030,74 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
             "type": "blob",
             "sha": blob_sha
         })
-    found_title2 = False
-    for line in summary_list:
-        if title2 in line:
-            found_title2 = True
-    if not found_title2:
-        summary_list_new = []
-        found_title1 = False
-        for line in summary_list:
-            if not found_title1:
-                if title1 in line:
-                    found_title1 = True
-                    summary_list_new.append(line)
-                    summary_list_new.append(f"  * [{datestr}]({title2})")
-                    readme_content = f"# {datestr}"
-                    readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
-                    blob_data = {
-                    "content": readme_content_base64,
-                    "encoding": "base64"
-                    }
-                    response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-                    if response.status_code != 201:
-                        logging.info(f"github response | {response.content}")
-                        return {'result': 'error', 'message': 'github fail to add date blobs'}
-                    blob_sha = response.json()["sha"]
-                    github_path = os.path.join(target_dir, datestr, "README.md")
-                    logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
-                    tree.append({
-                        "path": github_path,
-                        "mode": "100644",
-                        "type": "blob",
-                        "sha": blob_sha
-                    })
-                else:
-                    summary_list_new.append(line)
-            else:
-                summary_list_new.append(line)
-        summary_list = summary_list_new
-    found_title1 = False
-    found_title2 = False
-    summary_result = []
-    for line in summary_list:
-        summary_result.append(line)
-        if not found_title1:
-            if title1 in line:
-                found_title1 = True
-        elif not found_title2:
-            if title2 in line:
-                found_title2 = True
-                for link in summary_link_list:
-                    summary_result.append(link)
-    new_summary_content = '\n'.join(summary_result)
-    # logging.info(f"new_summary_content: {new_summary_content}")
+    target_summary = summary.get_summary_by_link(target_link)
+    latest = 'latest'
+    latest_title = '最新'
+    latest_link = os.path.join(target_relative_dir, latest, "README.md")
+    if not summary.has_link(latest_link):
+        summary.add_summary_link_after_parent(latest_title, latest_link, target_summary)
+        readme_content = f"# {latest_title}"
+        readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
+        blob_data = {
+        "content": readme_content_base64,
+        "encoding": "base64"
+        }
+        response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+        if response.status_code != 201:
+            logging.info(f"github response | {response.content}")
+            return {'result': 'error', 'message': 'github fail to add date blobs'}
+        blob_sha = response.json()["sha"]
+        github_path = os.path.join(target_dir, latest, "README.md")
+        logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
+        tree.append({
+            "path": github_path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": blob_sha
+        })
+    latest_summary = summary.get_summary_by_link(latest_link)
+    summary.add_summary_link_list_after_parent(summary_link_list, latest_summary)
+    truncate_list = summary.truncate_summary(latest_summary, max_latest_num)
+    if len(truncate_list) > 0:
+        datestr = None
+        for truncate_summary in truncate_list:
+            truncate_summary_link = truncate_summary['link']
+            date_pattern = re.compile(r'(?<!\d)(\d{8})(?!\d)')
+            match = date_pattern.search(truncate_summary_link)
+            if match:
+                datestr = match.group(1)
+                break
+        if datestr is None:
+            datestr = datetime.now().strftime('%Y%m%d')
+        datestr_link = os.path.join(target_relative_dir, datestr, "README.md")
+        if not summary.has_link(datestr_link):
+            summary.add_summary_link_after_brother(datestr, datestr_link, latest_summary)
+            readme_content = f"# {datestr}"
+            readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
+            blob_data = {
+            "content": readme_content_base64,
+            "encoding": "base64"
+            }
+            response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+            if response.status_code != 201:
+                logging.info(f"github response | {response.content}")
+                return {'result': 'error', 'message': 'github fail to add date blobs'}
+            blob_sha = response.json()["sha"]
+            github_path = os.path.join(target_dir, datestr, "README.md")
+            logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
+            tree.append({
+                "path": github_path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob_sha
+            })
+        datestr_summary = summary.get_summary_by_link(datestr_link)
+        summary.add_summary_link_list_after_parent(truncate_list, datestr_summary)
+    new_summary_content = summary.to_markdown()
     new_summary_content_base64 = base64.b64encode(new_summary_content.encode()).decode()
     blob_data = {
-                    "content": new_summary_content_base64,
-                    "encoding": "base64"
+        "content": new_summary_content_base64,
+        "encoding": "base64"
     }
     response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
     if response.status_code != 201:
@@ -1931,7 +1950,7 @@ def get_site(app_id, site_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            if key in ['create_time', 'update_time', 'website_storage']:
+            if key in ['create_time', 'update_time', 'website_storage', 'max_latest_num']:
                 dto[key] = int(value)
             else:
                 dto[key] = value
@@ -1953,6 +1972,8 @@ def get_site(app_id, site_id):
             dto['official_website_url'] = ''
         if 'google_token' not in dto:
             dto['google_token'] = ''
+        if 'max_latest_num' not in dto:
+            dto['max_latest_num'] = 10
         maybe_add_site_url(dto)
         return dto
     return None
@@ -2029,3 +2050,115 @@ def all_task():
             task = get_task(app_id, task_id)
             if task:
                 print(task)
+
+class GitBookSummary:
+    def __init__(self, summary_text: str):
+        self.next_id = 0
+        self.summary_list = []
+        for line in summary_text.splitlines():
+            self.summary_list.append(self.parse_line(line))
+    
+    def set_summary_list(self, summary_list):
+        self.summary_list = summary_list
+
+    def parse_line(self, line):
+        pattern = r'(\s*)\*\s*\[\s*(.+?)\s*\]\s*\(\s*(.+?)\s*\)'
+        match = re.match(pattern, line)
+        if match:
+            space = match.group(1)
+            title = match.group(2).strip()
+            link = match.group(3).strip()
+            return self.make_summary(space, title, link)
+        else:
+            self.next_id += 1
+            return {'type': 'line', 'line': line, 'id': self.next_id}
+
+    def make_summary(self, space, title, link):
+        self.next_id += 1
+        return {'type': 'link', 'space': space, 'title': title, 'link': link, 'id': self.next_id}
+    
+    def has_link(self, link):
+        return self.get_summary_by_link(link) is not None
+    
+    def get_summary_by_link(self, link):
+        for summary in self.summary_list:
+            if summary['type'] == 'link' and summary['link'] == link:
+                return summary
+    
+    def append_summary(self, title, link):
+        self.summary_list.append(self.make_summary('', title, link))
+    
+    def add_summary_link_after_parent(self, title, link, parent_summary):
+        self.add_summary_link_list_after_parent([{'title':title, 'link':link}], parent_summary)
+    
+    def add_summary_link_list_after_parent(self, summary_link_list, parent_summary):
+        new_summary_list = []
+        for summary in self.summary_list:
+            new_summary_list.append(summary)
+            if summary['id'] == parent_summary['id']:
+                space = summary['space']
+                for summary_link in summary_link_list:
+                    title = summary_link['title']
+                    link = summary_link['link']
+                    new_summary_list.append(self.make_summary(f'  {space}', title, link))
+        self.summary_list = new_summary_list
+
+    def add_summary_link_after_brother(self, title, link, brother_summary):
+        new_summary_list = []
+        found = False
+        finish = False
+        brother_space = brother_summary['space']
+        for summary in self.summary_list:
+            if not found:
+                if summary['id'] == brother_summary['id']:
+                    found = True
+            elif not finish:
+                type = summary['type']
+                if type == 'link':
+                    if len(summary['space']) <= len(brother_space):
+                        new_summary_list.append(self.make_summary(brother_space, title, link))
+                        finish = True
+            new_summary_list.append(summary)
+        if found and not finish:
+            new_summary_list.append(self.make_summary(brother_space, title, link))
+        self.summary_list = new_summary_list
+
+    def truncate_summary(self, parent_summary, truncate_num):
+        new_summary_list = []
+        truncate_list = []
+        found = False
+        finish = False
+        summary_count = 0
+        parent_space = parent_summary['space']
+        for summary in self.summary_list:
+            if not found:
+                if summary['id'] == parent_summary['id']:
+                    found = True
+                new_summary_list.append(summary)
+            elif not finish:
+                if len(summary['space']) <= len(parent_space):
+                    finish = True
+                    new_summary_list.append(summary)
+                else:
+                    summary_count += 1
+                    if summary_count <= truncate_num:
+                        new_summary_list.append(summary)
+                    else:
+                        truncate_list.append(summary)
+            else:
+                new_summary_list.append(summary)
+        self.summary_list = new_summary_list
+        return truncate_list
+
+    def to_markdown(self):
+        lines = []
+        for summary in self.summary_list:
+            type = summary['type']
+            if type == 'link':
+                space = summary['space']
+                title = summary['title']
+                link = summary['link']
+                lines.append(f'{space}* [{title}]({link})')
+            elif type == 'line':
+                lines.append(summary['line'])
+        return '\n'.join(lines)
