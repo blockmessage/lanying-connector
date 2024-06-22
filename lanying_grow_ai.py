@@ -981,7 +981,16 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     summary_link_list = []
     with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
         file_list = zip_ref.namelist()
-        sorted_file_list = sorted(file_list, key=lambda x: int(x.split('_')[3]))
+        def parse_article_index(x):
+            pattern = re.compile(r'(\d{8})-(\d+)-(\d+)')
+            match = pattern.search(x)
+            if match:
+                try:
+                    return int(match.group(3))
+                except Exception as e:
+                    pass
+            return 0
+        sorted_file_list = sorted(file_list, key=parse_article_index)
         for filename in sorted_file_list:
             with zip_ref.open(filename) as file:
                 bytes = file.read()
@@ -1294,7 +1303,22 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len
         text_prompt = f"请接着上次的回答继续生成，直接输出内容，保持文章连贯，不要有多余内容。"
-    return {'result': 'ok', 'article_text': now_article_text, "message_quota_usage": message_quota_usage}
+    pattern = re.compile(r'<ARTICLE_ADVISED_URL>(.*?)</ARTICLE_ADVISED_URL>')
+    match = pattern.search(now_article_text)
+    article_url_prefix = ''
+    if match:
+        article_url_prefix = match.group(1)
+    now_article_text = pattern.sub('', now_article_text)
+    return {'result': 'ok', 'article_text': now_article_text, 'article_url_prefix': article_url_prefix,  "message_quota_usage": message_quota_usage}
+
+def make_clean_url(url):
+    # 将下划线替换成连字符
+    url = url.replace('_', '-')
+    
+    # 使用正则表达式只保留小写字母、数字和连字符
+    url = re.sub(r'[^a-z0-9-]', '', url)
+    
+    return url
 
 def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword):
     dry_run = task.get('dry_run', 'off')
@@ -1311,9 +1335,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
+    url_placeholder_prompt = '请在文章标题后面，以标签的格式输出标题的英文URL路径表示，格式例如：<ARTICLE_ADVISED_URL>a-good-title-url</ARTICLE_ADVISED_URL>。URL规则为：建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母。\n'
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
     keyword_prompt = f'文章标题必须为：{keyword}\n'
-    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{keyword_prompt}{subject_prompt}'
+    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{url_placeholder_prompt}{keyword_prompt}{subject_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
         logging.info(f"dry_run generate_article text: app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_id:{article_id}")
@@ -1327,12 +1352,14 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         text_result = generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max)
     if text_result['result'] == 'error':
         return handle_ai_response_error(text_result, 'failed to generate article text', app_id, task_id, keyword)
+    article_url_prefix = text_result['article_url_prefix']
     article_info = {
         'create_time': now,
         'article_id': article_id,
         'from_user_id': from_user_id,
         'to_user_id': chatbot_user_id,
         'text_message_quota_usage': text_result['message_quota_usage'],
+        'article_url_prefix': text_result['article_url_prefix'],
         'title': keyword
     }
     article_text = text_result['article_text']
@@ -1390,7 +1417,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     markdown_filename = lanying_utils.get_temp_filename(app_id, ".md")
     with open(markdown_filename, 'w') as file:
         file.write(article_text)
-    markdown_object_name = f"{article_id}_{now}.md"
+    markdown_object_name = make_clean_url(f"{article_url_prefix}-{article_id}-{now}") + ".md"
     result = lanying_file_storage.upload(markdown_object_name, markdown_filename)
     if result['result'] == 'error':
         return result
