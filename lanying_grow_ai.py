@@ -1339,7 +1339,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
-    url_placeholder_prompt = '请在文章标题后面，以标签的格式输出标题的英文URL路径表示，格式例如：<ARTICLE_ADVISED_URL>a-good-title-url</ARTICLE_ADVISED_URL>。URL规则为：建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母。\n'
+    url_placeholder_prompt = '请在文章标题后面，以标签的格式输出标题的英文URL路径表示，格式例如：<ARTICLE_ADVISED_URL>a-good-title-url</ARTICLE_ADVISED_URL>。URL规则为：建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n'
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
     keyword_prompt = f'文章标题必须为：{keyword}\n'
     text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{url_placeholder_prompt}{keyword_prompt}{subject_prompt}'

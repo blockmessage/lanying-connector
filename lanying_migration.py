@@ -3,6 +3,10 @@ import lanying_redis
 import logging
 import json
 import lanying_ai_capsule
+from lanying_grow_ai import GitBookSummary
+import os
+import re
+import shutil
 
 def info(format):
     print(format)
@@ -66,3 +70,31 @@ def transform_capsule_income_app_ids():
             app_ids_key = f"lanying:connector:statistics:capsule_app_ids:everymonth:{date_month}"
             info(f"add app_id{app_id}, to {date_month}")
             redis.hincrby(app_ids_key, app_id, 0)
+
+def transform_summary_remove_date_directory(base_dir):
+    summary_file = os.path.join(base_dir, 'SUMMARY.md')
+    with open(summary_file, 'r') as f:
+        summary_text = f.read()
+    gitbook_summary = GitBookSummary(summary_text=summary_text)
+    new_summary_list = []
+    for summary in gitbook_summary.summary_list:
+        type = summary['type']
+        if type == 'link':
+            link = summary['link']
+            pattern = re.compile(r'/(\d{8})/\d+_\d+')
+            match = pattern.search(link)
+            if match:
+                new_link = re.sub(r'/\d{8}/', '/', link)
+                print(f"move: {link}, {new_link}")
+                old_path = os.path.join(base_dir, link)
+                new_path = os.path.join(base_dir, new_link)
+                shutil.move(old_path, new_path)
+                summary['link'] = new_link
+                new_summary_list.append(summary)
+            else:
+                new_summary_list.append(summary)
+        else:
+            new_summary_list.append(summary)
+    with open(summary_file, 'w') as f:
+        f.write(gitbook_summary.to_markdown())
+    return gitbook_summary
