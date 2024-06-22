@@ -1421,7 +1421,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     markdown_filename = lanying_utils.get_temp_filename(app_id, ".md")
     with open(markdown_filename, 'w') as file:
         file.write(article_text)
-    markdown_object_name = make_clean_url(f"{article_url_prefix}-{article_id}-{now}") + ".md"
+    if article_url_prefix == '':
+        markdown_object_name = make_clean_url(f"{article_id}-{now}") + ".md"
+    else:
+        markdown_object_name = make_clean_url(f"{article_url_prefix}-{article_id}-{now}") + ".md"
     result = lanying_file_storage.upload(markdown_object_name, markdown_filename)
     if result['result'] == 'error':
         return result
