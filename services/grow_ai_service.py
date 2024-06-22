@@ -415,6 +415,7 @@ def create_site():
     baidu_token = str(data.get('baidu_token', ''))
     official_website_url = str(data.get('official_website_url', ''))
     google_token = str(data.get('google_token', ''))
+    max_latest_num = int(data.get('max_latest_num', '10'))
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,
@@ -431,7 +432,8 @@ def create_site():
         meta_keywords = meta_keywords,
         baidu_token = baidu_token,
         official_website_url = official_website_url,
-        google_token = google_token
+        google_token = google_token,
+        max_latest_num = max_latest_num
     )
     result = lanying_grow_ai.create_site(site_setting)
     if result['result'] == 'error':
@@ -464,6 +466,7 @@ def configure_site():
     baidu_token = str(data.get('baidu_token', ''))
     official_website_url = str(data.get('official_website_url', ''))
     google_token = str(data.get('google_token', ''))
+    max_latest_num = int(data.get('max_latest_num', '10'))
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,
@@ -480,7 +483,8 @@ def configure_site():
         meta_keywords = meta_keywords,
         baidu_token = baidu_token,
         official_website_url = official_website_url,
-        google_token = google_token
+        google_token = google_token,
+        max_latest_num = max_latest_num
     )
     result = lanying_grow_ai.configure_site(site_id, site_setting)
     if result['result'] == 'error':

@@ -66,7 +66,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token):
+    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num):
         self.app_id = app_id
         self.name = name
         self.type = type
@@ -83,6 +83,7 @@ class SiteSetting:
         self.baidu_token = baidu_token
         self.official_website_url = official_website_url
         self.google_token = google_token
+        self.max_latest_num = max_latest_num
 
     def to_hmset_fields(self):
         return {
@@ -101,7 +102,8 @@ class SiteSetting:
             'meta_keywords': self.meta_keywords,
             'baidu_token': self.baidu_token,
             'official_website_url': self.official_website_url,
-            'google_token': self.google_token
+            'google_token': self.google_token,
+            'max_latest_num': self.max_latest_num
         }
 
 def handle_schedule(schedule_info):
