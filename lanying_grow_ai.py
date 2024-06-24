@@ -748,6 +748,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
                     break
                 elif cycle_type == 'cycle':
                     set_task_schedule(app_id, task_id, "off", result['message'])
+            make_task_run_result_zip_file(app_id, task_run_id)
             return result
         keyword = result['data']['title']
         result = do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword)
@@ -756,6 +757,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
             if result['message'] == 'quota_not_enough':
                 if cycle_type == 'cycle':
                     set_task_schedule(app_id, task_id, "off", result['message'])
+            make_task_run_result_zip_file(app_id, task_run_id)
             return result
         article_info = result['article_info']
         redis.hset(run_result_key, article_id, json.dumps(article_info, ensure_ascii=False))
@@ -807,8 +809,9 @@ def make_task_run_result_zip_file(app_id, task_run_id):
         result = lanying_file_storage.upload(zip_object_name, zip_filename)
         if result['result'] == 'ok':
             update_task_run_field(app_id, task_run_id, "zip_file", zip_object_name)
+            old_file_size = task_run.get('file_size', 0)
             update_task_run_field(app_id, task_run_id, "file_size", file_size)
-            incrby_service_usage(app_id, 'storage_size', file_size)
+            incrby_service_usage(app_id, 'storage_size', file_size - old_file_size)
             return {'result': 'ok'}
         else:
             return {'result': 'error', 'message': 'fail to make zip file'}
@@ -835,7 +838,8 @@ def deploy_task_run(app_id, task_run_id):
     if task_run is None:
         return {'result': 'error', 'message': 'task_run not exist'}
     if task_run['status'] != 'success':
-        return {'result': 'error', 'message': 'task_run status cannot deploy'}
+        if 'zip_file' not in task_run:
+            return {'result': 'error', 'message': 'task_run status cannot deploy'}
     if task_run['deploy_status'] not in ["wait", "error", "success"]:
         return {'result': 'error', 'message': 'task_run deploy_status cannot deploy'}
     if 'zip_file' not in task_run:
@@ -907,7 +911,8 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     if task_run is None:
         return {'result': 'error', 'message': 'task_run not exist'}
     if task_run['status'] != 'success':
-        return {'result': 'error', 'message': 'task_run status cannot deploy'}
+        if 'zip_file' not in task_run:
+            return {'result': 'error', 'message': 'task_run status cannot deploy'}
     if 'zip_file' not in task_run:
         return {'result': 'error', 'message': 'zip file not exist'}
     task_id = task_run['task_id']
