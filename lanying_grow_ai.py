@@ -23,7 +23,7 @@ import base64
 import copy
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_title):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -42,7 +42,7 @@ class TaskSetting:
         self.site_id_list = site_id_list
         self.target_dir = target_dir
         self.commit_type = commit_type
-        self.target_title = target_title
+        self.target_summary_dir = target_summary_dir
 
     def to_hmset_fields(self):
         return {
@@ -64,7 +64,7 @@ class TaskSetting:
             'site_id_list': json.dumps(self.site_id_list, ensure_ascii=False),
             'target_dir': self.target_dir,
             'commit_type': self.commit_type,
-            'target_title': self.target_title
+            'target_summary_dir': self.target_summary_dir
         }
 
 class SiteSetting:
@@ -451,8 +451,8 @@ def get_task(app_id, task_id):
             dto['target_dir'] = dto.get('deploy',{}).get('gitbook_target_dir', '/articles')
         if 'commit_type' not in dto:
             dto['commit_type'] = dto.get('deploy',{}).get('commit_type', 'pull_request')
-        if 'target_title' not in dto:
-            dto['target_title'] = ''
+        if 'target_summary_dir' not in dto:
+            dto['target_summary_dir'] = ''
         return dto
     return None
 
@@ -941,7 +941,12 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     target_relative_dir = os.path.relpath(abs_target_dir,abs_base_dir)
     if target_relative_dir == '.':
         target_relative_dir = ''
-    logging.info(f"do_deploy_task_run_internal dir: abs_base_dir:{abs_base_dir}, abs_target_dir:{abs_target_dir}, target_relative_dir:{target_relative_dir}")
+    target_summary_dir_abs_or_relative = task['target_dir'] if task['target_summary_dir'] == '' else task['target_summary_dir']
+    abs_target_summary_dir, target_summary_dir = parse_dir(target_summary_dir_abs_or_relative, abs_base_dir)
+    target_summary_relative_dir = os.path.relpath(abs_target_summary_dir,abs_base_dir)
+    if target_summary_relative_dir == '.':
+        target_summary_relative_dir = ''
+    logging.info(f"do_deploy_task_run_internal dir: abs_base_dir:{abs_base_dir}, abs_target_dir:{abs_target_dir}, abs_target_summary_dir:{abs_target_summary_dir},target_relative_dir:{target_relative_dir}")
     if commit_type == 'pull_request':
         new_branch = f"grow-ai-{task_run_id}-{timestr}"
     else:
@@ -1027,11 +1032,11 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                     "type": "blob",
                     "sha": blob_sha
                 })
-    target_link = os.path.join(target_relative_dir, "README.md")
+    target_link = os.path.join(target_summary_relative_dir, "README.md")
     summary = GitBookSummary(summary_text = summary_text)
     if not summary.has_link(target_link):
-        summary.append_summary(target_relative_dir, target_link)
-        readme_content = f"# {target_dir}"
+        summary.append_summary(target_summary_relative_dir, target_link)
+        readme_content = f"# {target_summary_dir}"
         readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
         blob_data = {
         "content": readme_content_base64,
@@ -1042,7 +1047,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
             logging.info(f"github response | {response.content}")
             return {'result': 'error', 'message': 'github fail to add target_dir blobs'}
         blob_sha = response.json()["sha"]
-        github_path = os.path.join(target_dir, "README.md")
+        github_path = os.path.join(target_summary_dir, "README.md")
         logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
         tree.append({
             "path": github_path,
@@ -1053,7 +1058,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     target_summary = summary.get_summary_by_link(target_link)
     latest = 'latest'
     latest_title = '最新'
-    latest_link = os.path.join(target_relative_dir, latest, "README.md")
+    latest_link = os.path.join(target_summary_relative_dir, latest, "README.md")
     if not summary.has_link(latest_link):
         summary.add_summary_link_after_parent(latest_title, latest_link, target_summary)
         readme_content = f"# {latest_title}"
@@ -1067,7 +1072,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
             logging.info(f"github response | {response.content}")
             return {'result': 'error', 'message': 'github fail to add date blobs'}
         blob_sha = response.json()["sha"]
-        github_path = os.path.join(target_dir, latest, "README.md")
+        github_path = os.path.join(target_summary_dir, latest, "README.md")
         logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
         tree.append({
             "path": github_path,
@@ -1089,7 +1094,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                 break
         if datestr is None:
             datestr = datetime.now().strftime('%Y%m%d')
-        datestr_link = os.path.join(target_relative_dir, datestr, "README.md")
+        datestr_link = os.path.join(target_summary_relative_dir, datestr, "README.md")
         if not summary.has_link(datestr_link):
             summary.add_summary_link_after_brother(datestr, datestr_link, latest_summary)
             readme_content = f"# {datestr}"
@@ -1103,7 +1108,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                 logging.info(f"github response | {response.content}")
                 return {'result': 'error', 'message': 'github fail to add date blobs'}
             blob_sha = response.json()["sha"]
-            github_path = os.path.join(target_dir, datestr, "README.md")
+            github_path = os.path.join(target_summary_dir, datestr, "README.md")
             logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
             tree.append({
                 "path": github_path,
