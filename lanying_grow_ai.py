@@ -904,6 +904,21 @@ def parse_dir(dir, base_dir):
         new_dir = os.path.join(base_dir, new_dir)
         return new_dir, new_dir.lstrip('/')
 
+def find_title_from_content(content):
+    match = re.search(r'^(#|title:) (.*)', content, re.MULTILINE)
+    if match:
+        return match.group(2).strip('" ')
+    else:
+        return '无标题'
+
+def find_content_meta_key(content, key, default):
+    pattern = r'^{}: (.*)'.format(key)
+    match = re.search(pattern, content, re.MULTILINE)
+    if match:
+        return match.group(1).strip('" ')
+    else:
+        return default
+
 def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     timestr = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -1023,7 +1038,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                 logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
                 if filename.endswith(".md"):
                     content = bytes.decode()
-                    title = content.splitlines()[0].strip().lstrip('#').strip()
+                    title = find_title_from_content(content)
                     summary_link_list.append({'title': title, 'link': link_path})
                     # summary_link_list.append(f"    * [{title}]({link_path})")
                 tree.append({
@@ -1317,20 +1332,7 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len
         text_prompt = f"请接着上次的回答继续生成，直接输出内容，保持文章连贯，不要有多余内容。"
-    pattern = r'<ARTICLE_ADVISED_URL>(.*?)</ARTICLE_ADVISED_URL>'
-    pattern_with_new_line = r'<ARTICLE_ADVISED_URL>(.*?)</ARTICLE_ADVISED_URL>\n'
-    pattern_bad_format = r'<ARTICLE_ADVISED_URL>(.*?)>\n'
-    article_url_prefix = ''
-    match = re.search(pattern, now_article_text)
-    if match:
-        article_url_prefix = match.group(1)
-    else:
-        match = re.search(pattern_bad_format, now_article_text)
-        if match:
-            article_url_prefix = match.group(1)
-    now_article_text = re.sub(pattern_with_new_line, '', now_article_text)
-    now_article_text = re.sub(pattern, '', now_article_text)
-    now_article_text = re.sub(pattern_bad_format, '', now_article_text)
+    article_url_prefix = find_content_meta_key(now_article_text, 'url', '')
     return {'result': 'ok', 'article_text': now_article_text, 'article_url_prefix': article_url_prefix,  "message_quota_usage": message_quota_usage}
 
 def make_clean_url(url):
@@ -1357,10 +1359,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
-    url_placeholder_prompt = '请在文章标题后面，以标签的格式输出标题的英文URL路径表示，格式例如：<ARTICLE_ADVISED_URL>a-good-title-url</ARTICLE_ADVISED_URL>。URL规则为：建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n'
+    meta_prompt = '请以三个短划线（---）作为边界的 YAML Front Matter 格式为文件添加元数据，注意不要用```yaml ```作为边界，字段有：title, description, keywords, url。字段要求如下：\n1. title： 文章标题。\n2. description: 文章描述，用于搜索引擎SEO。\n3. keywords: 搜索引擎SEO关键字，字符串类型，多个关键字请以英文逗号连接。\n4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n'
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
     keyword_prompt = f'文章标题必须为：{keyword}\n'
-    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{url_placeholder_prompt}{keyword_prompt}{subject_prompt}'
+    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
         logging.info(f"dry_run generate_article text: app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_id:{article_id}")
