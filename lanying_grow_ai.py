@@ -1359,9 +1359,9 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
-    meta_prompt = '请以三个短划线（---）作为边界的 YAML Front Matter 格式为文件添加元数据，注意不要用```yaml ```作为边界，字段有：title, description, keywords, url。字段要求如下：\n1. title： 文章标题。\n2. description: 文章描述，用于搜索引擎SEO。\n3. keywords: 搜索引擎SEO关键字，字符串类型，多个关键字请以英文逗号连接。\n4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n'
+    meta_prompt = '请以三个短划线（---）作为边界的 YAML Front Matter 格式为文件添加元数据，注意不要用```yaml ```作为边界，字段有：title, description, keywords, url。字段要求如下：\n1. title: 文章标题。\n2. description: 文章描述，用于搜索引擎SEO。\n3. keywords: 搜索引擎SEO关键字，字符串类型，多个关键字请以英文逗号连接。\n4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n'
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
-    keyword_prompt = f'文章标题必须为：{keyword}\n'
+    keyword_prompt = f'文章标题必须为：{keyword}\n文章标题需要以markdown标题的格式放到元数据之后。\n'
     text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
