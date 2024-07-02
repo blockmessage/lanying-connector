@@ -919,6 +919,10 @@ def find_content_meta_key(content, key, default):
     else:
         return default
 
+def del_content_meta_key(content, key):
+    pattern = r'^{}: (.*)\n?'.format(key)
+    return re.sub(pattern, '', content, 1, re.MULTILINE)
+
 def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     timestr = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -1332,8 +1336,17 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len
         text_prompt = f"请接着上次的回答继续生成，直接输出内容，保持文章连贯，不要有多余内容。"
+    now_article_text = format_content_meta(now_article_text)
     article_url_prefix = find_content_meta_key(now_article_text, 'url', '')
     return {'result': 'ok', 'article_text': now_article_text, 'article_url_prefix': article_url_prefix,  "message_quota_usage": message_quota_usage}
+
+def format_content_meta(content):
+    content = re.sub(r'^```yaml(.*?)```',r'---\1---', content, flags=re.DOTALL)
+    if content.count('```') % 2 == 1:
+        content = re.sub(r'\n?```\n?$', r'', content, 1)
+    content = del_content_meta_key(content, 'title')
+    content = del_content_meta_key(content, 'url')
+    return content
 
 def make_clean_url(url):
     # 将下划线替换成连字符
@@ -1359,10 +1372,15 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
-    meta_prompt = '请以三个短划线（---）作为边界的 YAML Front Matter 格式为文件添加元数据，注意不要用```yaml ```作为边界，字段有：title, description, keywords, url。字段要求如下：\n1. title: 文章标题。\n2. description: 文章描述，用于搜索引擎SEO。\n3. keywords: 搜索引擎SEO关键字，字符串类型，多个关键字请以英文逗号连接。\n4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n'
+    meta_prompt = ('请以 YAML Front Matter 格式为文章添加元数据, 字段有：title, description, keywords, url。字段要求如下：\n'
+                   '1. title: 文章标题。\n'
+                   '2. description: 文章描述，用于搜索引擎SEO。\n'
+                   '3. keywords: 搜索引擎SEO关键字，字符串类型，多个关键字请以英文逗号连接。\n'
+                   '4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n')
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
-    keyword_prompt = f'文章标题必须为：{keyword}\n文章标题需要以markdown标题的格式放到元数据之后。\n'
-    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}'
+    keyword_prompt = f'文章标题必须为：{keyword}\n'
+    extra_notice_prompt = '请注意：文章标题需要以 markdown 标题的格式放到元数据之后，并且一定要保证元数据之后的内容满足 markdown 格式。\n'
+    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_notice_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
         logging.info(f"dry_run generate_article text: app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_id:{article_id}")
