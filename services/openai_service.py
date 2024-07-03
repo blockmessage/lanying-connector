@@ -813,7 +813,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     model = preset['model']
     check_res = check_message_limit(app_id, config, vendor, True)
     if check_res['result'] == 'error':
-        logging.info(f"check_message_limit deny: app_id={app_id}, msg={check_res['msg']}")
+        logging.info(f"check_message_limit deny: app_id={app_id}, check_res={check_res}")
         return check_res
     openai_key_type = check_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
