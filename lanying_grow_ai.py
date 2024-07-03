@@ -1336,8 +1336,8 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len
         text_prompt = f"请接着上次的回答继续生成，直接输出内容，保持文章连贯，不要有多余内容。"
-    now_article_text = format_content_meta(now_article_text)
     article_url_prefix = find_content_meta_key(now_article_text, 'url', '')
+    now_article_text = format_content_meta(now_article_text)
     return {'result': 'ok', 'article_text': now_article_text, 'article_url_prefix': article_url_prefix,  "message_quota_usage": message_quota_usage}
 
 def format_content_meta(content):
