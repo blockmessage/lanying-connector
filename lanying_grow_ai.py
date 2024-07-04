@@ -1321,8 +1321,8 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
         word_count_expect_min = word_count_min - now_article_len
         word_count_expect_max = word_count_max - now_article_len
         text_prompt = f"请接着上次的回答继续生成，直接输出内容，保持文章连贯，不要有多余内容。"
-    article_url_prefix = find_content_meta_key(now_article_text, 'url', '')
-    now_article_text = format_content_meta(now_article_text)
+    metadata, now_article_text = parse_content_metadata(now_article_text)
+    article_url_prefix = find_metadata_key(metadata, 'url', '')
     return {'result': 'ok', 'article_text': now_article_text, 'article_url_prefix': article_url_prefix,  "message_quota_usage": message_quota_usage}
 
 def find_title_from_content(content):
@@ -1332,22 +1332,33 @@ def find_title_from_content(content):
     else:
         return '无标题'
 
-def find_content_meta_key(content, key, default):
-    pattern = r'^{}: (.*)'.format(key)
-    match = re.search(pattern, content, re.MULTILINE)
+def find_metadata_key(metadata, key, default):
+    pattern = r'<{}>(.*)</{}>'.format(key, key)
+    match = re.search(pattern, metadata, re.MULTILINE)
     if match:
         return match.group(1).strip('" ')
     else:
         return default
 
-def format_content_meta(content):
-    content = re.sub(r'^```yaml(.*?)```',r'---\1---', content, flags=re.DOTALL)
-    if content.count('```') % 2 == 1:
-        content = re.sub(r'\n?```\n?$', r'', content, 1)
-    content = del_content_meta_key(content, 'title')
-    content = del_content_meta_key(content, 'url')
-    content = del_content_meta_key(content, 'relevant_keywords')
-    return content
+def parse_content_metadata(content):
+    match = re.search(r'<metadata>.*?</metadata>', content, flags=re.DOTALL)
+    if match:
+        metadata = match.group(0)
+    else:
+        metadata = ''
+    logging.info(f"got metadata: {metadata}")
+    content = re.sub(r'<metadata>.*?</metadata>\n*', '', content, flags=re.DOTALL)
+    description = find_metadata_key(metadata, 'description', '')
+    keywords = find_metadata_key(metadata, 'keywords', '')
+    extra_keywords = find_metadata_key(metadata, 'extra_keywords', '')
+    if extra_keywords != '':
+        if keywords == '':
+            keywords = extra_keywords
+        else:
+            keywords = f'{keywords}, {extra_keywords}'
+    header = f'---\ndescription: {description}\nkeywords: {keywords}\n---\n'
+    content = f'{header}{content}'
+    return metadata, content
 
 def make_clean_url(url):
     # 将下划线替换成连字符
@@ -1371,25 +1382,29 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     site_list = get_task_site_list(task)
     if len(site_list) > 0:
         meta_keywords = site_list[0].get('meta_keywords', '')
-        meta_keywords_prompt_1 = ', relevant_keywords'
-        meta_keywords_prompt_2 = f'5. relevant_keywords: 相关关键词，请从提供的可能的关键词列表中选出 2 个和文章最相关度最高的且不在[3. keywords]里的关键词， 可能的关键词列表为：{meta_keywords}。\n'
+        if meta_keywords != '':
+            meta_keywords_prompt_1 = '<extra_keywords></extra_keywords>'
+            meta_keywords_prompt_2 = f'5. extra_keywords: 搜索引擎SEO额外关键词，请从提供的可能的关键词列表中选出最多 2 个最适合作为本文关键词且不在[3. keywords]里的关键词，关键词列表可能为空或不足2个， 可能的关键词列表为：{meta_keywords}。\n'
+        else:
+            meta_keywords_prompt_1 = ''
+            meta_keywords_prompt_2 = ''
     else:
         meta_keywords_prompt_1 = ''
         meta_keywords_prompt_2 = ''
     task_prompt = task['prompt']
-    action_prompt = "请生成一篇markdown格式的文章，不要生成图片：\n"
+    action_prompt = "请生成一篇markdown格式的文章，不要生成图片，第一行需要是文章标题：\n"
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
-    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
-    meta_prompt = (f'请以 YAML Front Matter 格式为文章添加元数据, 字段有：title, description, keywords, url{meta_keywords_prompt_1}。字段要求如下：\n'
+    image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记,用于之后放置图片, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
+    meta_prompt = (f'请在文章中输出一份文章的元数据，位于文章摘要或文章标题后，元数据只能输出一份，不要多次输出，元数据为XML格式，如：<metadata><title></title><description></description><keywords></keywords><url></url>{meta_keywords_prompt_1}</metadata>。字段要求如下：\n'
                    '1. title: 文章标题。\n'
                    '2. description: 文章描述，用于搜索引擎SEO。\n'
                    '3. keywords: 搜索引擎SEO关键词, 最多 2 个关键词, 字符串类型，多个关键词请以英文逗号连接。\n'
                    f'4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n{meta_keywords_prompt_2}')
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
     keyword_prompt = f'文章标题必须为：{keyword}\n'
-    extra_notice_prompt = '请注意：文章标题需要以 markdown 标题的格式放到元数据之后，并且一定要保证元数据之后的内容满足 markdown 格式。\n'
-    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_notice_prompt}'
+    extra_prompt = f'注意：一定不要生成图片, 如果未指定中英文等语言，请默认使用中文。\n'
+    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
         logging.info(f"dry_run generate_article text: app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_id:{article_id}")
