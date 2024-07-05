@@ -21,6 +21,7 @@ import lanying_schedule
 import lanying_chatbot
 import base64
 import copy
+import yaml
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
@@ -1356,8 +1357,10 @@ def parse_content_metadata(content):
             keywords = extra_keywords
         else:
             keywords = f'{keywords}, {extra_keywords}'
-    header = f'---\ndescription: {description}\nkeywords: {keywords}\n---\n'
-    content = f'{header}{content}'
+    description_escaped = yaml.dump(description, default_style='"', allow_unicode=True).strip()
+    keywords_escaped = yaml.dump(keywords, default_style='"', allow_unicode=True).strip()
+    header = f'---\ndescription: {description_escaped}\nkeywords: {keywords_escaped}\n---\n'
+    content = f'{header}{content}\n'
     return metadata, content
 
 def make_clean_url(url):
