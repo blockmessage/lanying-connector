@@ -2415,6 +2415,48 @@ def add_quota(redis, key, field, quota):
         else:
             return redis.hincrby(key, field, 0)
 
+def check_deduct_message_quota(app_id, config, quota):
+    message_per_month = config.get('message_per_month', 0)
+    product_id = config.get('product_id', 0)
+    if product_id == 0:
+        return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
+    enable_extra_price = False
+    if config.get('enable_extra_price', 0) == 1 and product_id >= 7005:
+        enable_extra_price = True
+    redis = lanying_redis.get_redis_connection()
+    if redis:
+        key = get_message_statistic_keys(config, app_id)[0]
+        message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
+        if message_count_quota + quota <= message_per_month:
+            return {'result':'ok', 'openai_key_type':'share'}
+        else:
+            if enable_extra_price:
+                return {'result':'ok', 'openai_key_type':'share'}
+            else:
+                return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
+    else:
+        return {'result':'error', 'code':'LanyingInternalError','message': 'Lanying internal error'}
+
+def deduct_message_quota(app_id, config, quota, openai_key_type, origin):
+    message_count_quota = quota
+    logging.info(f"deduct_message_quota init | app_id:{app_id}, message_count_quota:{quota}, openai_key_type={openai_key_type}, origin:{origin}")
+    redis = lanying_redis.get_redis_connection()
+    if redis:
+        logging.info(f"deduct_message_quota start | app_id={app_id}, quota={quota}, openai_key_type={openai_key_type}, origin:{origin}")
+        key_count = 0
+        for key in get_message_statistic_keys(config, app_id):
+            key_count += 1
+            redis.hincrby(key, origin, quota)
+            if openai_key_type == 'share':
+                add_quota(redis, key, 'message_count_quota_share', message_count_quota)
+            else:
+                add_quota(redis, key, 'message_count_quota_self', message_count_quota)
+            new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
+            if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
+                notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+    else:
+        logging.error(f"deduct_message_quota skip | app_id={app_id}, quota={quota}, openai_key_type={openai_key_type}, origin:{origin}")
+
 def check_message_limit(app_id, config, vendor, is_chat):
     message_per_month = config.get('message_per_month', 0)
     product_id = config.get('product_id', 0)
