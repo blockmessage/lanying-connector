@@ -1041,7 +1041,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     summary = GitBookSummary(summary_text = summary_text)
     if not summary.has_link(target_link):
         summary.append_summary(target_summary_relative_dir, target_link)
-        readme_content = f"# {target_summary_dir}"
+        readme_content = f"# {target_summary_dir.capitalize()}"
         readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
         blob_data = {
         "content": readme_content_base64,
@@ -1066,7 +1066,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     latest_link = os.path.join(target_summary_relative_dir, latest, "README.md")
     if not summary.has_link(latest_link):
         summary.add_summary_link_after_parent(latest_title, latest_link, target_summary)
-        readme_content = f"# {latest_title}"
+        readme_content = f"# {os.path.join(target_summary_relative_dir, latest_title).capitalize()}"
         readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
         blob_data = {
         "content": readme_content_base64,
@@ -1102,7 +1102,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         datestr_link = os.path.join(target_summary_relative_dir, datestr, "README.md")
         if not summary.has_link(datestr_link):
             summary.add_summary_link_after_brother(datestr, datestr_link, latest_summary)
-            readme_content = f"# {datestr}"
+            readme_content = f"# {os.path.join(target_summary_relative_dir, datestr).capitalize()}"
             readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
             blob_data = {
             "content": readme_content_base64,
