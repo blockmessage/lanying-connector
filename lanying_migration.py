@@ -203,3 +203,27 @@ def extract_summary(content):
     if len(lines) < 2:
         lines = [content[:300]]
     return '\n'.join(lines)
+
+def add_readme_file_dir_prefix(base_dir):
+    summary_file = os.path.join(base_dir, 'SUMMARY.md')
+    with open(summary_file, 'r') as f:
+        summary_text = f.read()
+    gitbook_summary = GitBookSummary(summary_text=summary_text)
+    for summary in gitbook_summary.summary_list:
+        type = summary['type']
+        if type == 'link':
+            link = summary['link']
+            pattern = r'/(\d{8}|latest)/README.md'
+            match = re.search(pattern, link)
+            if match:
+                path = os.path.join(base_dir, link)
+                print(f"found: {path}")
+                with open(path, 'r') as f:
+                    content = f.read()
+                    lines = content.splitlines()
+                    if len(lines) == 1 and '/' not in content:
+                        prefix = link.split('/')[0].capitalize()
+                        new_content = re.sub(r'# (.*)', r'# {}/\1'.format(prefix), content)
+                        print(f"change content: path:{path}\ncontent:{content}\nnew_content:{new_content}")
+                        with open(path, 'w') as ff:
+                            ff.write(new_content)
