@@ -14,8 +14,13 @@ bp = Blueprint(service, __name__)
 
 @bp.route("/v7.0/search", methods=["GET"])
 @bp.route("/v7.0/news/search", methods=["GET"])
+@bp.route("/v7.0/news", methods=["GET"])
+@bp.route("/v7.0/news/trendingtopics", methods=["GET"])
 @bp.route("/v7.0/images/search", methods=["GET"])
+@bp.route("/v7.0/images/trending", methods=["GET"])
 @bp.route("/v7.0/videos/search", methods=["GET"])
+@bp.route("/v7.0/videos/details", methods=["GET"])
+@bp.route("/v7.0/videos/trending", methods=["GET"])
 @bp.route("/v7.0/entities", methods=["GET"])
 def forward_bing_search():
     result = do_forward_bing_search(request)
@@ -120,6 +125,9 @@ def check_authorization(request):
         authorization = request.headers.get('Ocp-Apim-Subscription-Key')
         if authorization:
             token = str(authorization)
+            prefix = 'Bearer '
+            if token.startswith(prefix):
+                token = token[len(prefix):]
             tokens = token.split("-")
             if len(tokens) == 3:
                 app_id = tokens[0]
@@ -171,11 +179,11 @@ def check_search_quota_and_token(request):
                     features.append(feature)
             if feature == []:
                 features = ['Webpages', 'News', 'Images', 'Videos', 'Entities']
-    elif path == '/v7.0/news/search':
+    elif path in ['/v7.0/news/search', '/v7.0/news', '/v7.0/news/trendingtopics']:
         features = ['News']
-    elif path == '/v7.0/images/search':
+    elif path in ['/v7.0/images/search', '/v7.0/images/trending']:
         features = ['Images']
-    elif path == '/v7.0/videos/search':
+    elif path in ['/v7.0/videos/search', '/v7.0/videos/details', '/v7.0/videos/trending']:
         features = ['Videos']
     elif path == '/v7.0/entities':
         features = ['Entities']
