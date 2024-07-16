@@ -5,6 +5,7 @@ import lanying_vendor_zhipuai
 import lanying_vendor_azure
 import lanying_vendor_claude
 import lanying_vendor_deepseek
+import lanying_vendor_aliyun
 import copy
 
 vendor_to_module = {
@@ -14,7 +15,8 @@ vendor_to_module = {
     'zhipuai': lanying_vendor_zhipuai,
     "azure": lanying_vendor_azure,
     "claude": lanying_vendor_claude,
-    'deepseek': lanying_vendor_deepseek
+    'deepseek': lanying_vendor_deepseek,
+    'aliyun': lanying_vendor_aliyun
 }
 def get_module(vendor):
     return vendor_to_module.get(vendor)
