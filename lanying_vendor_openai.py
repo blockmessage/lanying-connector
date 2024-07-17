@@ -15,7 +15,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 16000,
-            'order': 1
+            'order': 1,
+            'function_call': True
         },
         {
             "model": 'gpt-4o',
@@ -24,7 +25,8 @@ def model_configs():
             "quota": 6,
             "token_limit": 128000,
             "support_vision": False,
-            'order': 2
+            'order': 2,
+            'function_call': True
         },
         {
             "model": 'gpt-4-turbo',
@@ -33,7 +35,8 @@ def model_configs():
             "quota": 10,
             "token_limit": 128000,
             "support_vision": True,
-            'order': 3
+            'order': 3,
+            'function_call': True
         },
         {
             "model": 'gpt-4',
@@ -41,7 +44,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 20,
             "token_limit": 8000,
-            'order': 4
+            'order': 4,
+            'function_call': True
         },
         {
             "model": 'gpt-3.5-turbo-0125',
@@ -49,7 +53,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 16000,
-            'order': 5
+            'order': 5,
+            'function_call': True
         },
         {
             "model": 'gpt-3.5-turbo-1106',
@@ -57,7 +62,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 16000,
-            'order': 6
+            'order': 6,
+            'function_call': True
         },
         {
             "model": 'gpt-4o-2024-05-13',
@@ -66,7 +72,8 @@ def model_configs():
             "quota": 6,
             "token_limit": 128000,
             "support_vision": False,
-            'order': 7
+            'order': 7,
+            'function_call': True
         },
         {
             "model": 'gpt-4-turbo-2024-04-09',
@@ -75,7 +82,8 @@ def model_configs():
             "quota": 10,
             "token_limit": 128000,
             "support_vision": True,
-            'order': 8
+            'order': 8,
+            'function_call': True
         },
         {
             "model": 'gpt-4-1106-preview',
@@ -83,7 +91,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 10,
             "token_limit": 128000,
-            'order': 9
+            'order': 9,
+            'function_call': True
         },
         {
             "model": 'gpt-4-0125-preview',
@@ -91,7 +100,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 10,
             "token_limit": 128000,
-            'order': 10
+            'order': 10,
+            'function_call': True
         },
         {
             "model": 'gpt-3.5-turbo-16k',
@@ -100,7 +110,8 @@ def model_configs():
             "quota": 2,
             "token_limit": 16000,
             'order': 2,
-            'hidden': True
+            'hidden': True,
+            'function_call': True
         },
         {
             "model": 'gpt-4-32k',
@@ -109,7 +120,8 @@ def model_configs():
             "quota": 40,
             "token_limit": 32000,
             'order': 7,
-            'hidden': True
+            'hidden': True,
+            'function_call': True
         },
         {
             "model": 'text-embedding-ada-002',

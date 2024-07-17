@@ -11,7 +11,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 1.5,
             'order': 1,
-            "token_limit": 11000
+            "token_limit": 11000,
+            'function_call': True
         },
         {
             "model": 'abab5.5s-chat',
@@ -19,7 +20,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             'order': 2,
-            "token_limit": 8000
+            "token_limit": 8000,
+            'function_call': False
         },
         {
             "model": 'abab6-chat',
@@ -27,7 +29,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 20,
             'order': 3,
-            "token_limit": 32000
+            "token_limit": 32000,
+            'function_call': True
         },
         {
             "model": 'embo-01',

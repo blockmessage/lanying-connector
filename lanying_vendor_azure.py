@@ -12,7 +12,8 @@ def model_configs():
             "quota": 40,
             "token_limit": 32000,
             'order': 4,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4-32k/chat/completions?api-version=2023-07-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4-32k/chat/completions?api-version=2023-07-01-preview',
+            'function_call': True
         },
         {
             "model": 'gpt-4',
@@ -21,7 +22,8 @@ def model_configs():
             "quota": 20,
             "token_limit": 8000,
             'order': 3,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2023-12-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2023-12-01-preview',
+            'function_call': True
         },
         {
             "model": 'gpt-35-turbo-16k',
@@ -30,7 +32,8 @@ def model_configs():
             "quota": 2,
             "token_limit": 16000,
             'order': 2,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-12-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-12-01-preview',
+            'function_call': True
         },
         {
             "model": 'gpt-35-turbo',
@@ -39,7 +42,8 @@ def model_configs():
             "quota": 1,
             "token_limit": 4000,
             'order': 1,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-12-01-preview'
+            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-12-01-preview',
+            'function_call': True
         },
         {
             "model": 'text-embedding-ada-002',
@@ -212,6 +216,6 @@ def format_preset(preset):
 
 def get_chat_model_url(model):
     for config in model_configs():
-        if model.startswith(config['model']):
+        if model == config['model']:
             return config['url']
     return None

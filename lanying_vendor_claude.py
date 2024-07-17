@@ -21,7 +21,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 10,
             "token_limit": 200000,
-            'order': 1
+            'order': 1,
+            'function_call': False
         },
         {
             "model": 'claude-2.0',
@@ -29,7 +30,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 10,
             "token_limit": 100000,
-            'order': 2
+            'order': 2,
+            'function_call': False
         },
         {
             "model": 'claude-instant-1.2',
@@ -37,7 +39,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 1,
             "token_limit": 100000,
-            'order': 3
+            'order': 3,
+            'function_call': False
         }
     ]
 

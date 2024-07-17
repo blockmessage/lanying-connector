@@ -11,7 +11,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 1,
             "token_limit": 128000,
-            'order': 1
+            'order': 1,
+            'function_call': False
         },
         {
             "model": 'deepseek-coder',
@@ -19,7 +20,8 @@ def model_configs():
             "is_prefix": False,
             "quota": 1,
             "token_limit": 128000,
-            'order': 1
+            'order': 1,
+            'function_call': False
         }
     ]
 

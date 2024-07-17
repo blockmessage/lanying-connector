@@ -19,7 +19,8 @@ def model_configs():
             "token_limit": 5000,
             "token_limit_type": "prompt",
             'order': 1,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions',
+            'function_call': True
         },
         {
             "model": 'ERNIE-3.5-4K-0205',
@@ -28,7 +29,8 @@ def model_configs():
             "quota": 1.2,
             "token_limit": 4000,
             'order': 99,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-4k-0205'
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-4k-0205',
+            'function_call': True
         },
         {
             "model": 'ERNIE-3.5-8K-0205',
@@ -37,7 +39,8 @@ def model_configs():
             "quota": 4,
             "token_limit": 5000,
             'order': 3,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-8k-0205'
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-8k-0205',
+            'function_call': True
         },
         {
             "model": 'ERNIE-Bot-turbo',
@@ -46,7 +49,8 @@ def model_configs():
             "quota": 1,
             "token_limit": 10000,
             'order': 4,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant'
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant',
+            'function_call': True
         },
         {
             "model": 'ERNIE-Bot',
@@ -57,7 +61,8 @@ def model_configs():
             "token_limit_type": "prompt",
             'order': 5,
             'hidden': True,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions',
+            'function_call': True
         },
         {
             "model": 'ERNIE-Bot-8K',
@@ -68,7 +73,8 @@ def model_configs():
             "token_limit_type": "prompt",
             'order': 6,
             'hidden': True,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions'
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions',
+            'function_call': True
         },
         {
             "model": 'ERNIE-Bot-4',
@@ -78,7 +84,8 @@ def model_configs():
             "token_limit": 7000,
             "token_limit_type": "prompt",
             'order': 7,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro'
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro',
+            'function_call': True
         },
         {
             "model": 'Embedding-V1',

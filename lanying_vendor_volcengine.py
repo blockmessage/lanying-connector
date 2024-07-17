@@ -7,40 +7,64 @@ import copy
 def model_configs():
     return [
         {
-            "model": 'qwen-turbo',
+            "model": 'Doubao-pro-32k',
+            'endpoint': 'ep-20240717042115-q6fqg',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1,
-            "token_limit": 6000,
+            "quota": 16,
+            "token_limit": 32000,
             'order': 1,
             'function_call': True
         },
         {
-            "model": 'qwen-plus',
+            "model": 'Doubao-pro-128k',
+            'endpoint': 'ep-20240717042141-zdpsd',
             "type": "chat",
             "is_prefix": False,
-            "quota": 12,
-            "token_limit": 30000,
-            'order': 2,
-            'function_call': True
-        },
-        {
-            "model": 'qwen-max',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 12,
-            "token_limit": 6000,
+            "quota": 22,
+            "token_limit": 128000,
             'order': 3,
             'function_call': True
         },
         {
-            "model": 'qwen-max-longcontext',
+            "model": 'Doubao-pro-4k',
+            'endpoint': 'ep-20240717042041-crlzv',
             "type": "chat",
             "is_prefix": False,
             "quota": 12,
-            "token_limit": 28000,
-            'order': 4,
+            "token_limit": 4000,
+            'order': 5,
             'function_call': True
+        },
+        {
+            "model": 'Doubao-lite-4k',
+            'endpoint': 'ep-20240717041805-kl82w',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 11,
+            "token_limit": 4000,
+            'order': 6,
+            'function_call': True
+        },
+        {
+            "model": 'Doubao-lite-128k',
+            'endpoint': 'ep-20240717041935-b8kjw',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 21,
+            "token_limit": 128000,
+            'order': 4,
+            'function_call': False
+        },
+        {
+            "model": 'Doubao-lite-32k',
+            'endpoint': 'ep-20240717041914-2k2ff',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 15,
+            "token_limit": 32000,
+            'order': 2,
+            'function_call': False
         }
     ]
 
@@ -50,22 +74,22 @@ def prepare_chat(auth_info, preset):
     }
 
 def chat(prepare_info, preset):
-    url = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
+    url = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
     final_preset = format_preset(preset)
     api_key = prepare_info["api_key"]
     headers = {"Content-Type": "application/json", "Authorization": f'Bearer {api_key}'}
     try:
-        logging.info(f"aliyun chat_completion start | preset={preset}, url:{url}")
-        logging.info(f"aliyun chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
+        logging.info(f"volcengine chat_completion start | preset={preset}, url:{url}")
+        logging.info(f"volcengine chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
         stream = final_preset.get("stream", False)
         if stream:
             response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
-            logging.info(f"aliyun chat_completion finish | code={response.status_code}, stream:{stream}")
+            logging.info(f"volcengine chat_completion finish | code={response.status_code}, stream:{stream}")
             if response.status_code == 200:
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        # logging.info(f"stream got line:{line_str}|")
+                        #logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
@@ -85,7 +109,7 @@ def chat(prepare_info, preset):
                                     delta = {'content': ''}
                                 if 'usage' in data and isinstance(data['usage'], dict):
                                     delta['usage'] = data['usage']
-                                # logging.info(f"yield delta:{delta}")
+                                #logging.info(f"yield delta:{delta}")
                                 yield delta
                             except Exception as e:
                                 pass
@@ -113,7 +137,7 @@ def chat(prepare_info, preset):
                 }
         else:
             response = requests.request("POST", url, headers=headers, json=final_preset)
-            logging.info(f"aliyun chat_completion finish | code={response.status_code}, response={response.text}")
+            logging.info(f"volcengine chat_completion finish | code={response.status_code}, response={response.text}")
             res = response.json()
             usage = res.get('usage',{})
             response_message = res['choices'][0]['message']
@@ -131,7 +155,7 @@ def chat(prepare_info, preset):
                         'id': response_message['tool_calls'][0]['id']
                     }
                 except Exception as e:
-                    logging.error(f"fail to parse aliyun function call {response_message}")
+                    logging.error(f"fail to parse volcengine function call {response_message}")
                     logging.exception(e)
             finish_reason = ''
             try:
@@ -157,24 +181,30 @@ def chat(prepare_info, preset):
         }
 
 def format_preset(preset):
-    support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'functions']
+    support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'logprobs', 'top_logprobs', 'logit_bias', 'functions']
+    function_call_support = get_chat_model_function_call(preset['model'])
+    logging.info(f"function_call_support: {function_call_support}")
     ret = dict()
     for key in support_fields:
         if key in preset:
             if key == "functions":
-                tools = []
-                for function in preset['functions']:
-                    function_obj = {}
-                    for k,v in function.items():
-                        if k in ["name", "description", "parameters"]:
-                            function_obj[k] = v
-                    tools.append({'type':'function', 'function':function_obj})
-                ret['tools'] = tools
+                if function_call_support:
+                    tools = []
+                    for function in preset['functions']:
+                        function_obj = {}
+                        for k,v in function.items():
+                            if k in ["name", "description", "parameters"]:
+                                function_obj[k] = v
+                        tools.append({'type':'function', 'function':function_obj})
+                    ret['tools'] = tools
+            elif key == 'model':
+                ret['model'] = get_chat_model_endpoint(preset[key])
             elif key == "messages":
                 last_tool_call_id = ''
                 messages = []
                 for message in preset['messages']:
                     logging.info(f"message:{message}")
+                    isFunction = False
                     if 'function_call' in message:
                         message = copy.deepcopy(message)
                         function_call = message['function_call']
@@ -188,11 +218,17 @@ def format_preset(preset):
                             }}]
                         message['tool_calls'] = tool_calls
                         del message['function_call']
+                        isFunction = True
                     elif message['role'] == 'function':
                         message = copy.deepcopy(message)
                         message['role'] = 'tool'
                         message['tool_call_id'] = last_tool_call_id
-                    messages.append(message)
+                        isFunction = True
+                    if isFunction:
+                        if function_call_support:
+                            messages.append(message)
+                    else:
+                        messages.append(message)
                 ret['messages'] = messages
             elif key == 'top_p':
                 if preset[key] >= 1:
@@ -202,14 +238,23 @@ def format_preset(preset):
                 else:
                     ret[key] = preset[key]
             elif key == 'stream' and preset[key] == True:
-                if 'functions' in preset and len(preset['functions']) > 0:
-                    ret[key] = False
-                else:
-                    ret['stream_options'] = {'include_usage':True}
-                    ret[key] = preset[key]
+                ret['stream_options'] = {'include_usage':True}
+                ret[key] = preset[key]
             else:
                 ret[key] = preset[key]
     return ret
 
 def encoding_for_model(model):
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
+
+def get_chat_model_endpoint(model):
+    for config in model_configs():
+        if model == config['model']:
+            return config['endpoint']
+    return None
+
+def get_chat_model_function_call(model):
+    for config in model_configs():
+        if model == config['model']:
+            return config['function_call']
+    return False
