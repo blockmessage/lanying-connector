@@ -30,6 +30,8 @@ def list_models():
             new_config = copy.deepcopy(config)
             if 'url' in new_config:
                 del new_config['url']
+            if 'endpoint' in new_config:
+                del new_config['endpoint']
             new_config['vendor'] = vendor
             models.append(new_config)
     return models

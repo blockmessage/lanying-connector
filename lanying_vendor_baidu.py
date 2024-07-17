@@ -23,12 +23,79 @@ def model_configs():
             'function_call': True
         },
         {
+            "model": 'ERNIE-3.5-128K',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 2.4,
+            "token_limit": 128000,
+            "token_limit_type": "prompt",
+            'order': 2,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-128k',
+            'function_call': True
+        },
+        {
+            "model": 'ERNIE-4.0-Turbo-8K',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 12,
+            "token_limit": 7000,
+            "token_limit_type": "prompt",
+            'order': 3,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-4.0-turbo-8k',
+            'function_call': True
+        },
+        {
+            "model": 'ERNIE-4.0-8K',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 12,
+            "token_limit": 7000,
+            "token_limit_type": "prompt",
+            'order': 4,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro',
+            'function_call': True
+        },
+        {
+            "model": 'ERNIE-Lite-8K',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1.2,
+            "token_limit": 5000,
+            "token_limit_type": "prompt",
+            'order': 5,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-lite-8k',
+            'function_call': True
+        },
+        {
+            "model": 'ERNIE-Speed-8K',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1.2,
+            "token_limit": 5000,
+            "token_limit_type": "prompt",
+            'order': 6,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie_speed',
+            'function_call': True
+        },
+        {
+            "model": 'ERNIE-Speed-128K',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 2.4,
+            "token_limit": 128000,
+            "token_limit_type": "prompt",
+            'order': 7,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-speed-128k',
+            'function_call': True
+        },
+        {
             "model": 'ERNIE-3.5-4K-0205',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.2,
             "token_limit": 4000,
             'order': 99,
+            'hidden': True,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-4k-0205',
             'function_call': True
         },
@@ -39,17 +106,8 @@ def model_configs():
             "quota": 4,
             "token_limit": 5000,
             'order': 3,
+            'hidden': True,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-8k-0205',
-            'function_call': True
-        },
-        {
-            "model": 'ERNIE-Bot-turbo',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 1,
-            "token_limit": 10000,
-            'order': 4,
-            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant',
             'function_call': True
         },
         {
@@ -84,7 +142,19 @@ def model_configs():
             "token_limit": 7000,
             "token_limit_type": "prompt",
             'order': 7,
+            'hidden': True,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro',
+            'function_call': True
+        },
+        {
+            "model": 'ERNIE-Bot-turbo',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1,
+            "token_limit": 10000,
+            'order': 4,
+            'hidden': True,
+            "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant',
             'function_call': True
         },
         {
