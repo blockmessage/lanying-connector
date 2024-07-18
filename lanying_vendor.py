@@ -7,6 +7,7 @@ import lanying_vendor_claude
 import lanying_vendor_deepseek
 import lanying_vendor_aliyun
 import lanying_vendor_volcengine
+import lanying_vendor_moonshot
 import copy
 
 vendor_to_module = {
@@ -18,7 +19,8 @@ vendor_to_module = {
     "claude": lanying_vendor_claude,
     'deepseek': lanying_vendor_deepseek,
     'aliyun': lanying_vendor_aliyun,
-    'volcengine': lanying_vendor_volcengine
+    'volcengine': lanying_vendor_volcengine,
+    'moonshot': lanying_vendor_moonshot
 }
 def get_module(vendor):
     return vendor_to_module.get(vendor)
