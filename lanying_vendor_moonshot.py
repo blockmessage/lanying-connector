@@ -67,15 +67,18 @@ def chat(prepare_info, preset):
                                         delta['finish_reason'] = choice['finish_reason']
                                     if 'tool_calls'in delta and isinstance(delta['tool_calls'], list) and len(delta['tool_calls']) > 0:
                                         tool_calls = delta['tool_calls']
-                                        delta['function_call'] = {
-                                            'name': tool_calls[0]['function']['name'],
-                                            'arguments': tool_calls[0]['function']['arguments'],
-                                            'id': tool_calls[0]['id']
-                                        }
+                                        function_call = {}
+                                        if 'name' in tool_calls[0]['function']:
+                                            function_call['name'] = tool_calls[0]['function']['name']
+                                        if 'arguments' in tool_calls[0]['function']:
+                                            function_call['arguments'] = tool_calls[0]['function']['arguments']
+                                        if 'id' in tool_calls[0]:
+                                            function_call['id'] = tool_calls[0]['id']
+                                        delta['function_call'] = function_call
+                                    if 'usage' in choice and isinstance(choice['usage'], dict):
+                                        delta['usage'] = choice['usage']
                                 else:
                                     delta = {'content': ''}
-                                if 'usage' in data and isinstance(data['usage'], dict):
-                                    delta['usage'] = data['usage']
                                 logging.info(f"yield delta:{delta}")
                                 yield delta
                             except Exception as e:
@@ -95,6 +98,11 @@ def chat(prepare_info, preset):
                 response_json = {}
                 try:
                     response_json = response.json()
+                    return {
+                        'result': 'error',
+                        'reason': response_json['error']['message'],
+                        'code': response_json['error']['type']
+                    }
                 except Exception as e:
                     pass
                 return {
@@ -106,6 +114,12 @@ def chat(prepare_info, preset):
             response = requests.request("POST", url, headers=headers, json=final_preset)
             logging.info(f"moonshot chat_completion finish | code={response.status_code}, response={response.text}")
             res = response.json()
+            if response.status_code != 200:
+                return {
+                    'result': 'error',
+                    'reason': res['error']['message'],
+                    'code': res['error']['type']
+                }
             usage = res.get('usage',{})
             response_message = res['choices'][0]['message']
             reply = response_message.get('content', "")
