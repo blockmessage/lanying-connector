@@ -10,7 +10,7 @@ def model_configs():
             "model": 'moonshot-v1-8k',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.8,
+            "quota": 1,
             "token_limit": 8000,
             'order': 1,
             'function_call': True
@@ -19,7 +19,7 @@ def model_configs():
             "model": 'moonshot-v1-32k',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1.6,
+            "quota": 2,
             "token_limit": 32000,
             'order': 2,
             'function_call': True
@@ -28,7 +28,7 @@ def model_configs():
             "model": 'moonshot-v1-128k',
             "type": "chat",
             "is_prefix": False,
-            "quota": 4,
+            "quota": 5,
             "token_limit": 128000,
             'order': 3,
             'function_call': True
@@ -56,7 +56,7 @@ def chat(prepare_info, preset):
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        logging.info(f"stream got line:{line_str}|")
+                        # logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
@@ -79,7 +79,7 @@ def chat(prepare_info, preset):
                                         delta['usage'] = choice['usage']
                                 else:
                                     delta = {'content': ''}
-                                logging.info(f"yield delta:{delta}")
+                                # logging.info(f"yield delta:{delta}")
                                 yield delta
                             except Exception as e:
                                 pass

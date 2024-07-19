@@ -1075,6 +1075,14 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
     response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
+    if 'result' in response and response['result'] == 'error':
+        error_code = response.get('code', response.get('reason', ''))
+        if error_code in ['engine_overloaded_error', 'rate_limit_reached_error']:
+            return {
+                'result': 'error',
+                'code': error_code,
+                'msg': '请求过快，请稍后再试。'
+            }
     stream_msg_id = 0
     reply_ext = {
             'ai': {
