@@ -23,7 +23,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.7,
             "token_limit": 128000,
-            'order': 3,
+            'order': 2,
             'function_call': True
         },
         {
@@ -33,7 +33,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.15,
             "token_limit": 4000,
-            'order': 5,
+            'order': 3,
             'function_call': True
         },
         {
@@ -43,7 +43,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.05,
             "token_limit": 4000,
-            'order': 6,
+            'order': 4,
             'function_call': True
         },
         {
@@ -53,7 +53,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.1,
             "token_limit": 128000,
-            'order': 4,
+            'order': 5,
             'function_call': False
         },
         {
@@ -63,7 +63,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.05,
             "token_limit": 32000,
-            'order': 2,
+            'order': 6,
             'function_call': False
         }
     ]
