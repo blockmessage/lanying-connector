@@ -13,7 +13,7 @@ def model_configs():
             "model": 'gpt-4o-mini',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.4,
+            "quota": 0.2,
             "token_limit": 128000,
             "support_vision": False,
             'order': 1,
@@ -111,6 +111,16 @@ def model_configs():
             "quota": 10,
             "token_limit": 128000,
             'order': 11,
+            'function_call': True
+        },
+        {
+            "model": 'gpt-4o-mini-2024-07-18',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.2,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 12,
             'function_call': True
         },
         {
