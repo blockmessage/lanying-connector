@@ -86,6 +86,8 @@ def chat(prepare_info, preset):
                                 if 'usage' in data and isinstance(data['usage'], dict):
                                     delta['usage'] = data['usage']
                                 # logging.info(f"yield delta:{delta}")
+                                if 'usage' in delta:
+                                    logging.info(f"yield usage delta:{delta}")
                                 yield delta
                             except Exception as e:
                                 pass

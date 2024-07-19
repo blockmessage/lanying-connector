@@ -1115,6 +1115,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             stream_usage = {}
             stream_function_name = ""
             stream_function_args = ""
+            stream_function_id = ""
             stream_finish_reason = ""
             try:
                 for delta in reply_generator:
@@ -1132,6 +1133,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                                 stream_function_args = delta["function_call"]["arguments"]
                             else:
                                 stream_function_args += delta["function_call"]["arguments"]
+                        if "id" in delta["function_call"] and delta["function_call"]["id"] is not None:
+                            stream_function_id = delta["function_call"]["id"]
                     if 'finish_reason' in delta and delta['finish_reason'] is not None and len(delta['finish_reason']) > 0:
                         stream_finish_reason = delta['finish_reason']
                     content_count += len(delta_content)
@@ -1158,7 +1161,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 logging.info("stream got error")
                 logging.exception(e)
             reply += ''.join(content_collect)
-            stream_reponse = stream_lines_to_response(preset_maybe_vision, reply, vendor, stream_usage, stream_function_name, stream_function_args)
+            stream_reponse = stream_lines_to_response(preset_maybe_vision, reply, vendor, stream_usage, stream_function_name, stream_function_args, stream_function_id)
             response['reply'] = reply
             response['finish_reason'] = stream_finish_reason
             response['usage'] = stream_reponse['usage']
@@ -3228,7 +3231,7 @@ def user_default_embedding_name_key(app_id, user_id):
 def list_models():
     return lanying_vendor.list_models()
 
-def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name, stream_function_args):
+def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name, stream_function_args, stream_function_id):
     if 'total_tokens' in usage:
         total_tokens = usage['total_tokens']
         prompt_tokens = usage.get('prompt_tokens', 0)
@@ -3248,7 +3251,8 @@ def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name,
     if stream_function_name != "":
         response["function_call"] = {
             "name": stream_function_name,
-            "arguments": stream_function_args
+            "arguments": stream_function_args,
+            "id": stream_function_id
         }
     logging.info(f"stream_lines_to_response | response:{response}")
     return response

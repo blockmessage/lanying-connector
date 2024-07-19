@@ -78,7 +78,7 @@ def chat(prepare_info, preset):
             #logging.info(f"zhipuai chat_completion finish | stream={stream}")
             def generator():
                 for chunk in response:
-                    #logging.info(f"chunk:{chunk}")
+                    # logging.info(f"chunk:{chunk}")
                     content = chunk.choices[0].delta.content
                     chunk_info = {}
                     if content:
@@ -104,6 +104,7 @@ def chat(prepare_info, preset):
                         chunk_info['finish_reason'] = finish_reason
                     except Exception as e:
                         pass
+                    # logging.info(f"yield delta: {chunk_info}")
                     yield chunk_info
             return {
                 'result': 'ok',

@@ -114,12 +114,12 @@ def chat(prepare_info, preset):
         stream = final_preset.get("stream", False)
         if stream:
             response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
-            logging.info(f"volcengine chat_completion finish | code={response.status_code}, stream:{stream}")
+            # logging.info(f"volcengine chat_completion finish | code={response.status_code}, stream:{stream}")
             if response.status_code == 200:
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        #logging.info(f"stream got line:{line_str}|")
+                        logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
@@ -130,16 +130,21 @@ def chat(prepare_info, preset):
                                         delta['finish_reason'] = choice['finish_reason']
                                     if 'tool_calls'in delta and isinstance(delta['tool_calls'], list) and len(delta['tool_calls']) > 0:
                                         tool_calls = delta['tool_calls']
-                                        delta['function_call'] = {
-                                            'name': tool_calls[0]['function']['name'],
-                                            'arguments': tool_calls[0]['function']['arguments'],
-                                            'id': tool_calls[0]['id']
-                                        }
+                                        function_call = {}
+                                        if 'name' in tool_calls[0]['function']:
+                                            function_call['name'] = tool_calls[0]['function']['name']
+                                        if 'arguments' in tool_calls[0]['function']:
+                                            function_call['arguments'] = tool_calls[0]['function']['arguments']
+                                        if 'id' in tool_calls[0]:
+                                            function_call['id'] = tool_calls[0]['id']
+                                        delta['function_call'] = function_call
                                 else:
                                     delta = {'content': ''}
                                 if 'usage' in data and isinstance(data['usage'], dict):
                                     delta['usage'] = data['usage']
-                                #logging.info(f"yield delta:{delta}")
+                                # logging.info(f"yield delta:{delta}")
+                                if 'usage' in delta:
+                                    logging.info(f"yield usage delta:{delta}")
                                 yield delta
                             except Exception as e:
                                 pass

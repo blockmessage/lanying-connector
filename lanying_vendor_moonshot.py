@@ -80,6 +80,8 @@ def chat(prepare_info, preset):
                                 else:
                                     delta = {'content': ''}
                                 # logging.info(f"yield delta:{delta}")
+                                if 'usage' in delta:
+                                    logging.info(f"yield usage delta:{delta}")
                                 yield delta
                             except Exception as e:
                                 pass
