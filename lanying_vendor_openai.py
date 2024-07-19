@@ -10,12 +10,22 @@ import json
 def model_configs():
     return [
         {
+            "model": 'gpt-4o-mini',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.4,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 1,
+            'function_call': True
+        },
+        {
             "model": 'gpt-3.5-turbo',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 16000,
-            'order': 1,
+            'order': 2,
             'function_call': True
         },
         {
@@ -25,7 +35,7 @@ def model_configs():
             "quota": 6,
             "token_limit": 128000,
             "support_vision": False,
-            'order': 2,
+            'order': 3,
             'function_call': True
         },
         {
@@ -35,7 +45,7 @@ def model_configs():
             "quota": 10,
             "token_limit": 128000,
             "support_vision": True,
-            'order': 3,
+            'order': 4,
             'function_call': True
         },
         {
@@ -44,7 +54,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 20,
             "token_limit": 8000,
-            'order': 4,
+            'order': 5,
             'function_call': True
         },
         {
@@ -53,7 +63,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 16000,
-            'order': 5,
+            'order': 6,
             'function_call': True
         },
         {
@@ -62,7 +72,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.5,
             "token_limit": 16000,
-            'order': 6,
+            'order': 7,
             'function_call': True
         },
         {
@@ -72,7 +82,7 @@ def model_configs():
             "quota": 6,
             "token_limit": 128000,
             "support_vision": False,
-            'order': 7,
+            'order': 8,
             'function_call': True
         },
         {
@@ -82,7 +92,7 @@ def model_configs():
             "quota": 10,
             "token_limit": 128000,
             "support_vision": True,
-            'order': 8,
+            'order': 9,
             'function_call': True
         },
         {
@@ -91,7 +101,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 10,
             "token_limit": 128000,
-            'order': 9,
+            'order': 10,
             'function_call': True
         },
         {
@@ -100,7 +110,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 10,
             "token_limit": 128000,
-            'order': 10,
+            'order': 11,
             'function_call': True
         },
         {

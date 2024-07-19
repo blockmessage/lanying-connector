@@ -3240,6 +3240,7 @@ def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name,
         prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(preset.get('functions',[]), preset['model'], vendor)
         completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
         total_tokens = prompt_tokens + completion_tokens
+        logging.info(f"stream_lines_to_response calc tokens self | vendor:{vendor}, model:{preset['model']}")
     response = {
         'reply': reply,
         'usage':{
