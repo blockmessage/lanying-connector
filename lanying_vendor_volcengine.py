@@ -65,6 +65,36 @@ def model_configs():
             "token_limit": 32000,
             'order': 6,
             'function_call': False
+        },
+        {
+            "model": 'moonshot-v1-8k',
+            'endpoint': 'ep-20240719050907-zdl8s',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1,
+            "token_limit": 8000,
+            'order': 7,
+            'function_call': True
+        },
+        {
+            "model": 'moonshot-v1-32k',
+            'endpoint': 'ep-20240719050955-l8gks',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 2,
+            "token_limit": 32000,
+            'order': 8,
+            'function_call': True
+        },
+        {
+            "model": 'moonshot-v1-128k',
+            'endpoint': 'ep-20240719051036-f965f',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 5,
+            "token_limit": 128000,
+            'order': 9,
+            'function_call': True
         }
     ]
 
