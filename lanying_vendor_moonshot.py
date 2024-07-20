@@ -10,7 +10,7 @@ def model_configs():
             "model": 'moonshot-v1-8k',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1,
+            "quota": 1.13,
             "token_limit": 8000,
             'order': 1,
             'function_call': True
@@ -19,7 +19,7 @@ def model_configs():
             "model": 'moonshot-v1-32k',
             "type": "chat",
             "is_prefix": False,
-            "quota": 2,
+            "quota": 2.18,
             "token_limit": 32000,
             'order': 2,
             'function_call': True
@@ -28,7 +28,7 @@ def model_configs():
             "model": 'moonshot-v1-128k',
             "type": "chat",
             "is_prefix": False,
-            "quota": 5,
+            "quota": 5.34,
             "token_limit": 128000,
             'order': 3,
             'function_call': True

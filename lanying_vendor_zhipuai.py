@@ -14,7 +14,7 @@ def model_configs():
             "model": 'glm-3-turbo',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.5,
+            "quota": 0.52,
             "token_limit": 128000,
             'order': 1,
             'function_call': True
@@ -23,7 +23,7 @@ def model_configs():
             "model": 'glm-4',
             "type": "chat",
             "is_prefix": False,
-            "quota": 10,
+            "quota": 8.85,
             "token_limit": 128000,
             'order': 2,
             'function_call': True

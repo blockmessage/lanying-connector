@@ -11,7 +11,7 @@ def model_configs():
             'endpoint': 'ep-20240717042115-q6fqg',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.15,
+            "quota": 0.22,
             "token_limit": 32000,
             'order': 1,
             'function_call': True
@@ -21,7 +21,7 @@ def model_configs():
             'endpoint': 'ep-20240717042141-zdpsd',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.7,
+            "quota": 0.69,
             "token_limit": 128000,
             'order': 2,
             'function_call': True
@@ -31,7 +31,7 @@ def model_configs():
             'endpoint': 'ep-20240717042041-crlzv',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.15,
+            "quota": 0.22,
             "token_limit": 4000,
             'order': 3,
             'function_call': True
@@ -41,7 +41,7 @@ def model_configs():
             'endpoint': 'ep-20240717041805-kl82w',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.05,
+            "quota": 0.12,
             "token_limit": 4000,
             'order': 4,
             'function_call': True
@@ -51,7 +51,7 @@ def model_configs():
             'endpoint': 'ep-20240717041935-b8kjw',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.1,
+            "quota": 0.16,
             "token_limit": 128000,
             'order': 5,
             'function_call': False
@@ -61,7 +61,7 @@ def model_configs():
             'endpoint': 'ep-20240717041914-2k2ff',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.05,
+            "quota": 0.12,
             "token_limit": 32000,
             'order': 6,
             'function_call': False
@@ -71,7 +71,7 @@ def model_configs():
             'endpoint': 'ep-20240719050907-zdl8s',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1,
+            "quota": 1.13,
             "token_limit": 8000,
             'order': 7,
             'function_call': True
@@ -81,7 +81,7 @@ def model_configs():
             'endpoint': 'ep-20240719050955-l8gks',
             "type": "chat",
             "is_prefix": False,
-            "quota": 2,
+            "quota": 2.18,
             "token_limit": 32000,
             'order': 8,
             'function_call': True
@@ -91,7 +91,7 @@ def model_configs():
             'endpoint': 'ep-20240719051036-f965f',
             "type": "chat",
             "is_prefix": False,
-            "quota": 5,
+            "quota": 5.34,
             "token_limit": 128000,
             'order': 9,
             'function_call': True

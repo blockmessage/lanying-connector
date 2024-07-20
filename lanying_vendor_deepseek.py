@@ -9,7 +9,7 @@ def model_configs():
             "model": 'deepseek-chat',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.15,
+            "quota": 0.21,
             "token_limit": 128000,
             'order': 1,
             'function_call': False
@@ -18,7 +18,7 @@ def model_configs():
             "model": 'deepseek-coder',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.15,
+            "quota": 0.21,
             "token_limit": 128000,
             'order': 1,
             'function_call': False
