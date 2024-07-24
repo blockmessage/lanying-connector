@@ -575,7 +575,6 @@ def handle_chat_message(config, msg):
     try:
         init_chatbot_config(config, msg)
         maybe_reply_message_read_ack(config, msg)
-        add_debug_message(config, "处理开始")
         maybe_transcription_audio_msg(config, msg)
         maybe_save_image_msg(config, msg)
         maybe_add_history(config, msg)
@@ -656,7 +655,10 @@ def handle_chat_message_try(config, msg, retry_times):
     msg_type = msg['type']
     checkres = check_message_need_reply(config, msg)
     if checkres['result'] == 'error':
+        logging.info(f"stop reply message | msg:{msg}")
         return checkres
+    config['enable_debug_message'] = True
+    add_debug_message(config, "处理开始")
     chatbot_user_id = checkres['chatbot_user_id']
     config['chatbot_user_id'] = chatbot_user_id
     fromUserId = config['from_user_id']
@@ -4382,6 +4384,9 @@ def replyMessageAsync(config, content, ext = {}):
             return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
 
 def add_debug_message(config, content, is_last_msg = False):
+    enable_debug_message = config.get('enable_debug_message', False)
+    if not enable_debug_message:
+        return
     if 'reply_msg_type' in config:
         is_debug = config.get('is_debug', False)
         status_bar = config.get('status_bar', False)

@@ -777,35 +777,11 @@ def get_wechat_username(app_id, user_id):
     return None
 
 def get_wechat_access_token(config, app_id):
-    redis = lanying_redis.get_redis_connection()
-    key = wechat_access_token_key(app_id)
-    result = redis.get(key)
-    if result:
-        return str(result, 'utf-8')
-    wechat_app_id = config['wechat_app_id']
-    wechat_app_secret = config['wechat_app_secret']
-    if wechat_app_id and wechat_app_secret:
-        token_result = get_wechat_access_token_internal(app_id, wechat_app_id, wechat_app_secret)
-        if token_result['result'] == 'ok':
-            access_token = token_result['access_token']
-            expires_in = token_result['expires_in']
-            redis.setex(key, expires_in - 120, access_token)
-            return access_token
-    else:
-        logging.info(f"get_wechat_access_token cannot get wechat app_id or secret:app_id:{app_id}")
+    result = lanying_im_api.get_wechat_official_account_access_token(config, app_id)
+    if 'data' in result and 'access_token' in result['data']:
+        access_token = result['data']['access_token']
+        return access_token
     return None
-
-def get_wechat_access_token_internal(app_id, wechat_app_id, wechat_app_secret):
-    server, headers = get_proxy_info()
-    url = f"{server}/cgi-bin/token?grant_type=client_credential&appid={wechat_app_id}&secret={wechat_app_secret}"
-    response = requests.get(url, headers=headers)
-    data = response.json()
-    if 'access_token' in data:
-        logging.info(f"get_wechat_access_token_internal success | appid={app_id}")
-        return {'result':'ok', 'access_token': data['access_token'], 'expires_in': data['expires_in']}
-    else:
-        logging.info(f"get_wechat_access_token_internal failed | appid={app_id}, bad_data:{data}")
-        return {'result': 'error'}
 
 def wechat_user_key(app_id, username):
     return f"{service}:wechat_user:{app_id}:{username}"

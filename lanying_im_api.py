@@ -259,3 +259,23 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
         except Exception as e:
             pass
     return 0
+
+def get_wechat_official_account_access_token(config, app_id):
+    wechat_app_id = config['wechat_app_id']
+    wechat_app_secret = config['wechat_app_secret']
+    if wechat_app_id and wechat_app_secret:
+        adminToken = config['lanying_admin_token']
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        signature = lanying_utils.sha256(wechat_app_id + ":" + wechat_app_secret)
+        params = {
+            'signature': signature
+        }
+        response = requests.get(apiEndpoint + '/app/official_account/access_token',
+                                    headers={'app_id': app_id, 'access-token': adminToken},
+                                    params=params)
+        result = response.json()
+        logging.info(f"get_wechat_official_account_access_token, app_id={app_id}, status_code:{response.status_code}")
+        return result
+    else:
+        logging.info(f"get_wechat_official_account_access_token cannot get wechat app_id or secret:app_id:{app_id}")
+    return {}
