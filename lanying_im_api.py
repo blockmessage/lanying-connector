@@ -26,7 +26,7 @@ def get_user_profile_with_token(app_id, user_id, adminToken):
     return result
 
 
-def set_user_profile(app_id, user_id, description, nick_name, private_info):
+def set_user_profile(app_id, user_id, description, nick_name, private_info, public_info = ''):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         adminToken = config['lanying_admin_token']
@@ -38,6 +38,8 @@ def set_user_profile(app_id, user_id, description, nick_name, private_info):
             body['nick_name'] = nick_name
         if private_info and len(private_info) > 0:
             body['private_info'] = private_info
+        if public_info and len(public_info) > 0:
+            body['public_info'] = public_info
         if len(body) == 0:
             return None
         response = requests.post(apiEndpoint + '/user/profile',

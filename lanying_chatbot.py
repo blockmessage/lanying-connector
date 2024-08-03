@@ -6,12 +6,14 @@ import lanying_ai_capsule
 from datetime import datetime
 import lanying_im_api
 import lanying_utils
+import lanying_oss
+import os
 
 def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
-                   audio_to_text, image_vision, audio_to_text_model, preset_protect = 'off'):
+                   audio_to_text, image_vision, audio_to_text_model, link_profile, preset_protect = 'off'):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -47,6 +49,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "audio_to_text": audio_to_text,
         "image_vision": image_vision,
         "audio_to_text_model": audio_to_text_model,
+        "link_profile": json.dumps(link_profile, ensure_ascii=False),
         "preset_protect": preset_protect
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
@@ -56,7 +59,10 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         private_info = ''
         if len(welcome_message) > 0:
             private_info = json.dumps({"welcome_message":welcome_message},ensure_ascii=False)
-        lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info)
+        public_info = ''
+        if len(link_profile) > 0:
+            public_info = json.dumps({'manufacturer': maybe_restore_bad_business_key(link_profile)}, ensure_ascii=False)
+        lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info, public_info)
     except Exception as e:
         logging.exception(e)
     try:
@@ -121,6 +127,7 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
     quota_exceed_reply_type = capsule_chatbot.get('quota_exceed_reply_type', 'capsule')
     quota_exceed_reply_msg = capsule_chatbot.get('quota_exceed_reply_msg', '')
     group_history_use_mode = capsule_chatbot.get('group_history_use_mode', 'all')
+    link_profile = capsule_chatbot.get('link_profile', {})
     preset_protect = capsule['preset_protect']
     preset = capsule_chatbot['preset']
     if preset_protect == 'on':
@@ -130,7 +137,7 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model, preset_protect)
+                                   audio_to_text, image_vision, audio_to_text_model, link_profile, preset_protect)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -192,6 +199,7 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
     audio_to_text = capsule_chatbot.get('audio_to_text','')
     image_vision = capsule_chatbot.get('image_vision','')
     audio_to_text_model = capsule_chatbot.get('audio_to_text_model', '')
+    link_profile = capsule_chatbot.get('link_profile', {})
     preset_protect = capsule['preset_protect']
     preset = capsule_chatbot['preset']
     if preset_protect == 'on':
@@ -201,7 +209,7 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model, preset_protect)
+                                   audio_to_text, image_vision, audio_to_text_model, link_profile, preset_protect)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -238,7 +246,7 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
                       preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                       message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                       quota_exceed_reply_msg, group_history_use_mode,
-                      audio_to_text, image_vision, audio_to_text_model):
+                      audio_to_text, image_vision, audio_to_text_model, link_profile):
     logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -271,7 +279,8 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         "group_history_use_mode": group_history_use_mode,
         "audio_to_text": audio_to_text,
         "image_vision": image_vision,
-        "audio_to_text_model": audio_to_text_model
+        "audio_to_text_model": audio_to_text_model,
+        "link_profile": json.dumps(link_profile, ensure_ascii=False)
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -280,17 +289,21 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
     if old_name != name:
         del_name_chatbot_id(app_id, old_name)
         set_name_chatbot_id(app_id, name, chatbot_id)
-    if desc != chatbot_info.get('desc', '') or nickname != chatbot_info.get('nickname', '') or welcome_message !=  chatbot_info.get('welcome_message', ''):
+    if desc != chatbot_info.get('desc', '') or nickname != chatbot_info.get('nickname', '') or welcome_message !=  chatbot_info.get('welcome_message', '') or link_profile != chatbot_info['link_profile']:
         try:
             private_info = {}
+            public_info = {}
             try:
                 profile = lanying_im_api.get_user_profile(app_id, user_id)
                 private_info = lanying_utils.safe_json_loads(profile["data"].get('private_info', '{}'))
+                public_info = lanying_utils.safe_json_loads(profile["data"].get('public_info', '{}'))
             except Exception as ee:
                 logging.exception(ee)
             private_info['welcome_message'] = welcome_message
             private_info_str =  json.dumps(private_info, ensure_ascii=False)
-            lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info_str)
+            public_info['manufacturer'] = maybe_restore_bad_business_key(link_profile)
+            public_info_str =  json.dumps(public_info, ensure_ascii=False)
+            lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info_str, public_info_str)
         except Exception as e:
             logging.exception(e)
             pass
@@ -478,7 +491,7 @@ def get_chatbot(app_id, chatbot_id):
         for key,value in info.items():
             if key in ["create_time", "user_id", "history_msg_count_max", "history_msg_count_min","history_msg_size_max","message_per_month_per_user", "price"]:
                 dto[key] = int(value)
-            elif key in ["preset","chatbot_ids"]:
+            elif key in ["preset","chatbot_ids", "link_profile"]:
                 dto[key] = json.loads(value)
             else:
                 dto[key] = value
@@ -506,6 +519,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['audio_to_text_model'] = 'whisper-1'
         if 'preset_protect' not in dto:
             dto['preset_protect'] = 'off'
+        if 'link_profile' not in dto:
+            dto['link_profile'] = get_default_link_profile()
         return dto
     return None
 
@@ -520,6 +535,13 @@ def get_chatbot_with_profile(app_id, chatbot_id):
                 chatbot['nickname'] = result['data'].get('nick_name', '')
                 chatbot['avatar'] = result['data'].get('avatar', '')
                 chatbot['desc'] = result['data'].get('description', '')
+                public_info = lanying_utils.safe_json_loads(result['data'].get('public_info', '{}'))
+                if not isinstance(public_info, dict):
+                    public_info = {}
+                link_profile = public_info.get('manufacturer', {})
+                if len(link_profile) == 0 or not isinstance(link_profile, dict):
+                    link_profile = get_default_link_profile()
+                chatbot['link_profile'] = maybe_fix_business_key(link_profile)
                 if len(chatbot['avatar']) > 0:
                     try:
                         avatar_download_url = lanying_im_api.get_avatar_real_download_url(app_id,user_id, chatbot['avatar'])
@@ -532,6 +554,46 @@ def get_chatbot_with_profile(app_id, chatbot_id):
             pass
     return chatbot
 
+def maybe_fix_business_key(link_profile):
+    if 'bussiness' in link_profile:
+        link_profile['business'] = link_profile['bussiness']
+        del link_profile['bussiness']
+    return link_profile
+
+def maybe_restore_bad_business_key(link_profile):
+    if 'business' in link_profile:
+        link_profile['bussiness'] = link_profile['business']
+        del link_profile['business']
+    return link_profile
+
+def get_default_link_profile():
+    return {
+        "avatar": "https://www.lanyingim.com/img/logo-single-color-little-shadow.png",
+        "hover_avatar": "https://www.lanyingim.com/img/logo-single-color-little-shadow.png",
+        "description": {
+            "title": "在线咨询",
+            "detail_list": ["7*24小时实时在线服务", "解答售前 售后问题"]
+        },
+        "business": {
+            "icon": "https://www.lanyingim.com/img/phone_black.png",
+            "hover_icon": "https://www.lanyingim.com/img/phone_blue.png",
+            "description": {
+                "title": "商务联系",
+                "detail_list": ["官方电话", "400-666-0162"]
+            }
+        },
+        "wechat": {
+            "icon": "https://www.lanyingim.com/img/qrcode_black.png",
+            "hover_icon": "https://www.lanyingim.com/img/qrcode_blue.png",
+            "description": {
+                "title": "企业微信",
+                "official_account": "https://www.lanyingim.com/img/wecom_qrcode.jpg",
+                "detail_title": "添加企业微信",
+                "detail_list": ["沟通产品技术和细节，", "进群交流大模型AI等话题"]
+            }
+        }
+    }
+
 def get_chatbot_profile(app_id, user_id):
     try:
         result = lanying_im_api.get_user_profile(app_id, user_id)
@@ -540,10 +602,29 @@ def get_chatbot_profile(app_id, user_id):
                 'nickname': result['data'].get('nick_name', ''),
                 'avatar':result['data'].get('avatar', ''),
                 'desc' : result['data'].get('description', ''),
-                'private_info': result['data'].get('private_info', '')
+                'private_info': result['data'].get('private_info', ''),
+                'public_info': result['data'].get('public_info', '')
             }
     except Exception as e:
         return {}
+
+def upload_image(app_id, chatbot_id, file_name):
+    chatbot = get_chatbot(app_id, chatbot_id)
+    if chatbot is None:
+        return {'result': 'error', 'message': 'chatbot not exist'}
+    _,ext = os.path.splitext(file_name)
+    ext = ext.lower()
+    if ext not in ['.png', '.jpg', '.jpeg', '.webp']:
+        return {'result': 'error', 'message': 'bad image format'}
+    timestr = datetime.now().strftime('%Y%m%d%H%M%S%f')
+    object_name = f'image/{app_id}/{chatbot_id}/{timestr}{ext}'
+    result = lanying_oss.sign_upload(object_name)
+    if result['result'] == 'error':
+        return result
+    return {
+        'result': 'ok',
+        'data': result['data']
+    }
 
 def generate_chatbot_id():
     redis = lanying_redis.get_redis_connection()

@@ -3758,11 +3758,14 @@ def create_chatbot():
     image_vision = str(data.get('image_vision', 'off'))
     audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
+    link_profile = dict(data.get('link_profile', {}))
+    if len(link_profile) == 0:
+        link_profile = lanying_chatbot.get_default_link_profile()
     result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link,
                                             preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                             message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                                             quota_exceed_reply_msg, group_history_use_mode,
-                                            audio_to_text, image_vision, audio_to_text_model)
+                                            audio_to_text, image_vision, audio_to_text_model, link_profile)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -3797,11 +3800,14 @@ def configure_chatbot():
     image_vision = str(data.get('image_vision', 'off'))
     audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
+    link_profile = dict(data.get('link_profile', {}))
+    if len(link_profile) == 0:
+        link_profile = lanying_chatbot.get_default_link_profile()
     result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
                                                quota_exceed_reply_msg, group_history_use_mode,
-                                               audio_to_text, image_vision, audio_to_text_model)
+                                               audio_to_text, image_vision, audio_to_text_model, link_profile)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -3927,6 +3933,23 @@ def list_chatbots():
         chatbot['linked_plugin_names'] = linked_plugin_names
         dtos.append(chatbot)
     resp = make_response({'code':200, 'data':{'list': dtos}})
+    return resp
+
+@bp.route("/service/openai/upload_image", methods=["POST"])
+def upload_image():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    chatbot_id = str(data['chatbot_id'])
+    file_name = str(data['file_name'])
+    result = lanying_chatbot.upload_image(app_id, chatbot_id, file_name)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
 def make_linked_capsule_info(capsule):
