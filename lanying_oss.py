@@ -15,7 +15,7 @@ cdn_url = os.getenv('ALIYUN_OSS_CDN_URL', '')
 upload_url =  endpoint.replace('https://', f'https://{bucket}.')
 # 指定过期时间，单位为秒。
 expire_time = 20 * 60
-max_file_size = 2 * 1024 * 1024
+max_file_size = 5 * 1024 * 1024
 
 
 def generate_expiration(seconds):

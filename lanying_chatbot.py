@@ -580,7 +580,8 @@ def get_default_link_profile():
             "description": {
                 "title": "商务联系",
                 "detail_list": ["官方电话", "400-666-0162"]
-            }
+            },
+            "phone_number": "400-666-0162"
         },
         "wechat": {
             "icon": "https://www.lanyingim.com/img/qrcode_black.png",
