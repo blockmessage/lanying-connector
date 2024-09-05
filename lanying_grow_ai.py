@@ -69,7 +69,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num):
+    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language):
         self.app_id = app_id
         self.name = name
         self.type = type
@@ -87,6 +87,7 @@ class SiteSetting:
         self.official_website_url = official_website_url
         self.google_token = google_token
         self.max_latest_num = max_latest_num
+        self.language = language
 
     def to_hmset_fields(self):
         return {
@@ -106,7 +107,8 @@ class SiteSetting:
             'baidu_token': self.baidu_token,
             'official_website_url': self.official_website_url,
             'google_token': self.google_token,
-            'max_latest_num': self.max_latest_num
+            'max_latest_num': self.max_latest_num,
+            'language': self.language
         }
 
 def handle_schedule(schedule_info):
@@ -1950,12 +1952,16 @@ def sync_to_github(site):
 
 def transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch):
     new_book_json = copy.deepcopy(book_json)
-    for field in ['title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname', 'google_token']:
+    for field in ['language','title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname', 'google_token']:
         try:
             if field == 'title':
                 title = site.get('title', '')
                 if len(title) > 0:
                     new_book_json['title'] = title
+            elif field == 'language':
+                language = site.get('language', '')
+                if len(language) > 0:
+                    new_book_json['language'] = language
             elif field == 'github_buttons':
                 new_book_json['pluginsConfig']['github-buttons']['repo'] = f'{github_owner}/{github_repo}'
             elif field == 'copyright':
@@ -1966,7 +1972,11 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                         site_url = official_website_url
                     else:
                         site_url = '/'
-                    new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' style='text-decoration:none!important;'>官网</a> | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>网站地图</a>"
+                    language = site.get('language', 'zh-hans')
+                    if language == 'en':
+                        new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>Official Website</a> | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>Sitemap</a>"
+                    else:
+                        new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>官网</a> | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>网站地图</a>"
             elif field == 'edit_link':
                 new_book_json['pluginsConfig']['edit-link']['base'] = f'https://github.com/{github_owner}/{github_repo}/blob/{base_branch}'
             elif field == 'logo_site_url':
@@ -2075,6 +2085,8 @@ def get_site(app_id, site_id):
             dto['google_token'] = ''
         if 'max_latest_num' not in dto:
             dto['max_latest_num'] = 10
+        if 'language' not in dto:
+            dto['language'] = 'zh-hans'
         maybe_add_site_url(dto)
         return dto
     return None
