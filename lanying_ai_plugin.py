@@ -36,6 +36,24 @@ def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_bl
                 process_function_embeddings.apply_async(args = [app_id, plugin_id, function_ids])
     return {'result': 'ok', 'data':{'success': True}}
 
+def re_process_function_embedding(app_id):
+    redis = lanying_redis.get_redis_connection()
+    list_key = get_ai_plugin_ids_key(app_id)
+    plugin_ids = lanying_redis.redis_lrange(redis, list_key, 0, -1)
+    from lanying_tasks import process_function_embeddings
+    for plugin_id in plugin_ids:
+        function_ids = list_ai_function_ids(app_id, plugin_id)
+        if len(function_ids) > 0:
+            process_function_embeddings.apply_async(args = [app_id, plugin_id, function_ids])
+
+def re_process_function_embedding_for_plugin_id(app_id, plugin_id):
+    redis = lanying_redis.get_redis_connection()
+    list_key = get_ai_plugin_ids_key(app_id)
+    from lanying_tasks import process_function_embeddings
+    function_ids = list_ai_function_ids(app_id, plugin_id)
+    if len(function_ids) > 0:
+        process_function_embeddings.apply_async(args = [app_id, plugin_id, function_ids])
+
 def get_ai_plugin_embedding(app_id):
     embedding_name = maybe_create_function_embedding(app_id)
     details = lanying_embedding.get_embedding_info_with_details(app_id, embedding_name)

@@ -30,7 +30,11 @@ def is_connection_valid(conn):
             cursor.execute("SELECT 1")
             result = cursor.fetchone()
             return result and result[0] == 1
-    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+    except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError):
+        return False
+    except Exception as e:
+        logging.info("is_connection_valid got other exception")
+        logging.exception(e)
         return False
 
 sql_pool_host = os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')
