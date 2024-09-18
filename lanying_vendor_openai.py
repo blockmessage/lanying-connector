@@ -39,6 +39,54 @@ def model_configs():
             'function_call': True
         },
         {
+            "model": 'o1-mini',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 6.4,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 3,
+            'function_call': False,
+            'support_stream': False,
+            'max_output_tokens': 65536
+        },
+        {
+            "model": 'o1-mini-2024-09-12',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 6.4,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 103,
+            'function_call': False,
+            'support_stream': False,
+            'max_output_tokens': 65536
+        },
+        {
+            "model": 'o1-preview',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 6.4,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 4,
+            'function_call': False,
+            'support_stream': False,
+            'max_output_tokens': 32768
+        },
+        {
+            "model": 'o1-preview-2024-09-12',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 32,
+            "token_limit": 128000,
+            "support_vision": False,
+            'order': 104,
+            'function_call': False,
+            'support_stream': False,
+            'max_output_tokens': 32768
+        },
+        {
             "model": 'gpt-4-turbo',
             "type": "chat",
             "is_prefix": False,
@@ -385,7 +433,9 @@ def embedding(prepare_info, model, text):
             'response': response
         }
 
-def encoding_for_model(model): 
+def encoding_for_model(model):
+    if model.startswith("o1-"):
+        return tiktoken.encoding_for_model("gpt-4o")
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
