@@ -16,6 +16,7 @@ import lanying_utils
 import lanying_user_router
 import uuid
 import lanying_audio
+from lanying_async import executor
 
 official_account_max_message_size = 600
 service = 'wechat_official_account'
@@ -68,7 +69,7 @@ def handle_wechat_msg_text(xml, config, app_id, start_time):
     msg_id = int(xml.find('MsgId').text)
     verify_type = config.get('type', 'verified')
     logging.info(f"got wechat text message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},content:{content},msg_id:{msg_id}, verify_type:{verify_type}")
-    user_id = get_or_register_user(app_id, from_user_name)
+    user_id = get_or_register_user(config, app_id, from_user_name)
     if user_id:
         if verify_type == 'unverified':
             reply_expire_time = start_time + int(os.getenv("WECHAT_OFFICIAL_ACCOUNT_REPLY_EXPIRE_TIME", "3"))
@@ -136,7 +137,7 @@ def handle_wechat_msg_image(xml, config, app_id, start_time):
     msg_id = int(xml.find('MsgId').text)
     verify_type = config.get('type', 'verified')
     logging.info(f"got wechat image message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},pic_url:{pic_url},msg_id:{msg_id}, verify_type:{verify_type}")
-    user_id = get_or_register_user(app_id, from_user_name)
+    user_id = get_or_register_user(config, app_id, from_user_name)
     if user_id:
         if verify_type == 'unverified':
             reply_expire_time = start_time + int(os.getenv("WECHAT_OFFICIAL_ACCOUNT_REPLY_EXPIRE_TIME", "3"))
@@ -220,7 +221,7 @@ def handle_wechat_msg_voice(xml, config, app_id, start_time):
     msg_id = int(xml.find('MsgId').text)
     verify_type = config.get('type', 'verified')
     logging.info(f"got wechat image message | app_id:{app_id}, from_user_name:{from_user_name},to_user_name:{to_user_name},create_time:{create_time},media_id:{media_id}, media_id_16k:{media_id_16k}, format:{format},msg_id:{msg_id}, verify_type:{verify_type}")
-    user_id = get_or_register_user(app_id, from_user_name)
+    user_id = get_or_register_user(config, app_id, from_user_name)
     amr_filename = lanying_utils.get_temp_filename(app_id, ".amr")
     filename = lanying_utils.get_temp_filename(app_id, ".mp3")
     get_wechat_media(config, app_id, media_id_16k, amr_filename)
@@ -752,27 +753,73 @@ def check_token(app_id):
         return mysignature == signature
     return True
 
-def get_or_register_user(app_id, username):
+def get_or_register_user(config, app_id, username):
+    verify_type = config.get('type', 'verified')
     redis = lanying_redis.get_redis_connection()
     key = wechat_user_key(app_id, username)
-    result = redis.get(key)
-    if result:
-        user_id = int(result)
+    if verify_type == 'unverified':
+        logging.info(f"get_or_register_user no need bind | app_id:{app_id}, username:{username}")
+        result = redis.get(key)
+        if result:
+            user_id = int(result)
+            return user_id
+        else:
+            user_id = register_anonymous_user(app_id, username, "wechat_")
+            if user_id:
+                im_key = im_user_key(app_id, user_id)
+                redis.set(key, user_id)
+                redis.set(im_key, username)
+            return user_id
+    login_info = lanying_im_api.official_account_login_with_open_id(config, app_id, username)
+    user_id = login_info.get('data', {}).get('user_id', 0)
+    bind_token = login_info.get('data', {}).get('openid', '')
+    if user_id > 0:
+        im_key = im_user_key(app_id, user_id)
+        redis.set(key, user_id)
+        redis.set(im_key, username)
+        logging.info(f"get_or_register_user found binding | app_id:{app_id}, username:{username}, user_id:{user_id}")
         return user_id
-    else:
+    elif len(bind_token) > 0:
+        logging.info(f"get_or_register_user found bind_token | app_id:{app_id}, username:{username}, bind_token:{bind_token}")
         user_id = register_anonymous_user(app_id, username, "wechat_")
         if user_id:
+            logging.info(f"get_or_register_user bind token to user | app_id:{app_id}, username:{username}, bind_token:{bind_token}, user_id:{user_id}")
+            executor.submit(lanying_im_api.official_account_bind, config, app_id, user_id, bind_token)
             im_key = im_user_key(app_id, user_id)
             redis.set(key, user_id)
             redis.set(im_key, username)
         return user_id
+    else:
+        logging.info(f"get_or_register_user cannot bind | app_id:{app_id}, username:{username}")
+        result = redis.get(key)
+        if result:
+            user_id = int(result)
+            return user_id
+        else:
+            user_id = register_anonymous_user(app_id, username, "wechat_")
+            if user_id:
+                im_key = im_user_key(app_id, user_id)
+                redis.set(key, user_id)
+                redis.set(im_key, username)
+            return user_id
 
 def get_wechat_username(app_id, user_id):
     redis = lanying_redis.get_redis_connection()
     im_key = im_user_key(app_id, user_id)
     result = redis.get(im_key)
     if result:
-        return str(result,'utf-8')
+        username = str(result,'utf-8')
+        wechat_key = wechat_user_key(app_id, username)
+        wechat_result = redis.get(wechat_key)
+        if wechat_result:
+            if int(wechat_result) == int(user_id):
+                return username
+            else:
+                logging.info(f"get_wechat_username | not match, app_id:{app_id}, user_id:{user_id}, username:{username}, username_to_user_id:{wechat_result}")
+                return None
+        else:
+            logging.info(f"get_wechat_username | not match, app_id:{app_id}, user_id:{user_id}, username:{username}")
+            return None
     logging.info(f"get_wechat_username | not found, app_id:{app_id}, user_id:{user_id}")
     return None
 

@@ -281,3 +281,48 @@ def get_wechat_official_account_access_token(config, app_id):
     else:
         logging.info(f"get_wechat_official_account_access_token cannot get wechat app_id or secret:app_id:{app_id}")
     return {}
+
+def official_account_login_with_open_id(config, app_id, open_id):
+    wechat_app_id = config['wechat_app_id']
+    if wechat_app_id:
+        adminToken = config['lanying_admin_token']
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        params = {
+            'open_id': open_id
+        }
+        response = requests.get(apiEndpoint + '/app/official_account/login_with_open_id',
+                                    headers={'app_id': app_id, 'access-token': adminToken},
+                                    params=params)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"official_account_login_with_open_id | app_id={app_id}, result:{result}")
+        return result
+    else:
+        logging.info(f"official_account_login_with_open_id failed | app_id:{app_id}")
+    return {}
+
+def official_account_bind(config, app_id, user_id, bind_token):
+    wechat_app_id = config['wechat_app_id']
+    if wechat_app_id:
+        adminToken = config['lanying_admin_token']
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        params = {
+            'type': 3,
+            'open_id': bind_token
+        }
+        response = requests.post(apiEndpoint + '/app/wechat/bind',
+                                    headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(user_id)},
+                                    json=params)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"official_account_bind | app_id={app_id}, result:{result}")
+        return result
+    else:
+        logging.info(f"official_account_bind failed | app_id:{app_id}")
+    return {}
