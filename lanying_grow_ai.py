@@ -69,7 +69,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language):
+    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type):
         self.app_id = app_id
         self.name = name
         self.type = type
@@ -88,6 +88,7 @@ class SiteSetting:
         self.google_token = google_token
         self.max_latest_num = max_latest_num
         self.language = language
+        self.commit_type = commit_type
 
     def to_hmset_fields(self):
         return {
@@ -108,7 +109,8 @@ class SiteSetting:
             'official_website_url': self.official_website_url,
             'google_token': self.google_token,
             'max_latest_num': self.max_latest_num,
-            'language': self.language
+            'language': self.language,
+            'commit_type': self.commit_type
         }
 
 def handle_schedule(schedule_info):
@@ -940,7 +942,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     github_token = site.get('github_token', '')
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
-    commit_type = task.get('commit_type', 'pull_request')
+    commit_type = site.get('commit_type', 'pull_request')
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
     base_branch = site.get('github_base_branch', 'master')
     abs_base_dir, base_dir = parse_dir(site.get('github_base_dir', '/'), '/')
@@ -2087,6 +2089,8 @@ def get_site(app_id, site_id):
             dto['max_latest_num'] = 10
         if 'language' not in dto:
             dto['language'] = 'zh-hans'
+        if 'commit_type' not in dto:
+            dto['commit_type'] = 'pull_request'
         maybe_add_site_url(dto)
         return dto
     return None
