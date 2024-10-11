@@ -90,7 +90,7 @@ def create_task():
     if 'commit_type' in data:
         commit_type = str(data.get('commit_type')).strip()
     else:
-        commit_type = deploy.get('gitbook_commit_type', 'pull_request').strip()
+        commit_type = deploy.get('gitbook_commit_type', 'branch').strip()
     target_summary_dir = str(data.get('target_summary_dir', ''))
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
@@ -154,7 +154,7 @@ def configure_task():
     if 'commit_type' in data:
         commit_type = str(data.get('commit_type')).strip()
     else:
-        commit_type = deploy.get('gitbook_commit_type', 'pull_request').strip()
+        commit_type = deploy.get('gitbook_commit_type', 'branch').strip()
     target_summary_dir = str(data.get('target_summary_dir', ''))
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
@@ -421,7 +421,7 @@ def create_site():
     google_token = str(data.get('google_token', ''))
     max_latest_num = int(data.get('max_latest_num', '10'))
     language = str(data.get('language', 'zh-hans'))
-    commit_type = str(data.get('commit_type','pull_request')).strip()
+    commit_type = str(data.get('commit_type','branch')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,
@@ -476,7 +476,7 @@ def configure_site():
     google_token = str(data.get('google_token', ''))
     max_latest_num = int(data.get('max_latest_num', '10'))
     language = str(data.get('language', 'zh-hans'))
-    commit_type = str(data.get('commit_type','pull_request')).strip()
+    commit_type = str(data.get('commit_type','branch')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,

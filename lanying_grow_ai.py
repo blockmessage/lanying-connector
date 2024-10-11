@@ -455,7 +455,7 @@ def get_task(app_id, task_id):
         if 'target_dir' not in dto:
             dto['target_dir'] = dto.get('deploy',{}).get('gitbook_target_dir', '/articles')
         if 'commit_type' not in dto:
-            dto['commit_type'] = dto.get('deploy',{}).get('commit_type', 'pull_request')
+            dto['commit_type'] = dto.get('deploy',{}).get('commit_type', 'branch')
         if 'target_summary_dir' not in dto:
             dto['target_summary_dir'] = ''
         return dto
@@ -942,7 +942,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     github_token = site.get('github_token', '')
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
-    commit_type = site.get('commit_type', 'pull_request')
+    commit_type = site.get('commit_type', 'branch')
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
     base_branch = site.get('github_base_branch', 'master')
     abs_base_dir, base_dir = parse_dir(site.get('github_base_dir', '/'), '/')
@@ -2090,7 +2090,7 @@ def get_site(app_id, site_id):
         if 'language' not in dto:
             dto['language'] = 'zh-hans'
         if 'commit_type' not in dto:
-            dto['commit_type'] = 'pull_request'
+            dto['commit_type'] = 'branch'
         maybe_add_site_url(dto)
         return dto
     return None
