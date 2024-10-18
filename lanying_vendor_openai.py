@@ -231,12 +231,12 @@ def model_configs():
             "is_prefix": False,
             "quota": 100,
             "image_quota":{
-                "standard_1024x1024": 30,
-                "standard_1024x1792": 60,
-                "standard_1792x1024": 60,
-                "hd_1024x1024": 60,
-                "hd_1024x1792": 90,
-                "hd_1792x1024": 90
+                "standard_1024x1024": 26.67,
+                "standard_1024x1792": 53.33,
+                "standard_1792x1024": 53.33,
+                "hd_1024x1024": 53.33,
+                "hd_1024x1792": 80.00,
+                "hd_1792x1024": 80.00
             },
             "token_limit": 16000,
             'order': 10,

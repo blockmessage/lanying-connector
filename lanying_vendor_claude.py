@@ -3,11 +3,12 @@ import anthropic
 import os
 import time
 import tiktoken
-from anthropic.types.beta import (
-    ContentBlockDeltaEvent,
-    ContentBlockStartEvent,
-    MessageDeltaEvent,
-    MessageStartEvent,
+from anthropic.types import (
+    RawMessageStartEvent,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawMessageDeltaEvent,
+    Message
 )
 import json
 ASSISTANT_MESSAGE_DEFAULT = '好的'
@@ -62,7 +63,7 @@ def chat(prepare_info, preset):
     for i in range(retry_times):
         logging.info(f"vendor claude start try task_id:{task_id}, {i}/{retry_times}")
         try:
-            response = client.beta.messages.create(**final_preset, extra_headers = headers)
+            response = client.messages.create(**final_preset, extra_headers = headers)
             break
         except Exception as e:
             if i == retry_times - 1:
@@ -87,32 +88,29 @@ def chat(prepare_info, preset):
             for chunk in response:
                 # logging.info(f"vendor claude chunk: {chunk}")
                 chunk_reply = {}
-                if isinstance(chunk, ContentBlockStartEvent):
+                if isinstance(chunk, RawContentBlockStartEvent):
                     if chunk.content_block.type == 'text':
                         content = chunk.content_block.text
                         chunk_reply['content'] = content
-                elif isinstance(chunk, ContentBlockDeltaEvent):
+                elif isinstance(chunk, RawContentBlockDeltaEvent):
                     if chunk.delta.type == 'text_delta':
                         content = chunk.delta.text
                         chunk_reply['content'] = content
-                elif isinstance(chunk, MessageDeltaEvent):
+                elif isinstance(chunk, RawMessageDeltaEvent):
                     if chunk.usage:
-                        if 'output_tokens' in chunk.usage:
-                            usage['completion_tokens'] = chunk.usage['output_tokens']
-                            usage['total_tokens'] = usage['prompt_tokens'] + usage['completion_tokens']
-                            chunk_reply['usage'] = usage
-                            finish_reason = ''
-                            try:
-                                finish_reason = str(chunk.delta.stop_reason)
-                                chunk_reply['finish_reason'] = finish_reason
-                            except Exception as e:
-                                pass
-                elif isinstance(chunk, MessageStartEvent):
+                        usage['completion_tokens'] = chunk.usage.output_tokens
+                        usage['total_tokens'] = usage['prompt_tokens'] + usage['completion_tokens']
+                        chunk_reply['usage'] = usage
+                        finish_reason = ''
+                        try:
+                            finish_reason = str(chunk.delta.stop_reason)
+                            chunk_reply['finish_reason'] = finish_reason
+                        except Exception as e:
+                            pass
+                elif isinstance(chunk, RawMessageStartEvent):
                     if chunk.message.usage:
-                        if 'input_tokens' in chunk.message.usage:
-                            usage['prompt_tokens'] = chunk.message.usage['input_tokens']
-                        if 'output_tokens' in chunk.message.usage:
-                            usage['completion_tokens'] = chunk.message.usage['output_tokens']
+                        usage['prompt_tokens'] = chunk.message.usage.input_tokens
+                        usage['completion_tokens'] = chunk.message.usage.output_tokens
                         usage['total_tokens'] = usage['prompt_tokens'] + usage['completion_tokens']
                         chunk_reply['usage'] = usage
                 if len(chunk_reply) > 0:
@@ -129,32 +127,39 @@ def chat(prepare_info, preset):
             }
         }
     try:
-        usage = response.usage
-        reply = ''
-        try:
-            reply = response.content[0].text
-        except Exception as ee:
-            logging.exception(ee)
-            pass
-        if reply:
-            reply = reply.strip()
-        else:
+        if isinstance(response, Message):
+            usage = response.usage
             reply = ''
-        finish_reason = ''
-        try:
-            finish_reason = str(response.stop_reason)
-        except Exception as e:
-            pass
-        return {
-            'result': 'ok',
-            'reply' : reply,
-            'finish_reason': finish_reason,
-            'usage' : {
-                'completion_tokens' : usage.get('output_tokens', 0),
-                'prompt_tokens' : usage.get('input_tokens', 0),
-                'total_tokens' : usage.get('input_tokens', 0) + usage.get('output_tokens', 0)
+            try:
+                reply = response.content[0].text
+            except Exception as ee:
+                logging.exception(ee)
+                pass
+            if reply:
+                reply = reply.strip()
+            else:
+                reply = ''
+            finish_reason = ''
+            try:
+                finish_reason = str(response.stop_reason)
+            except Exception as e:
+                pass
+            return {
+                'result': 'ok',
+                'reply' : reply,
+                'finish_reason': finish_reason,
+                'usage' : {
+                    'completion_tokens' : usage.output_tokens,
+                    'prompt_tokens' : usage.input_tokens,
+                    'total_tokens' : usage.input_tokens + usage.output_tokens
+                }
             }
-        }
+        else:
+            return {
+                'result': 'error',
+                'reason': 'unknown',
+                'response': response 
+            }
     except Exception as e:
         logging.exception(e)
         logging.info(f"vendor claude fail to transform response:{response}")
