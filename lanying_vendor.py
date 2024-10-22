@@ -13,6 +13,7 @@ import copy
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
+    'aws': lanying_vendor_aws,
     'minimax': lanying_vendor_minimax,
     'baidu': lanying_vendor_baidu,
     'zhipuai': lanying_vendor_zhipuai,
@@ -21,8 +22,7 @@ vendor_to_module = {
     'deepseek': lanying_vendor_deepseek,
     'aliyun': lanying_vendor_aliyun,
     'volcengine': lanying_vendor_volcengine,
-    'moonshot': lanying_vendor_moonshot,
-    'aws': lanying_vendor_aws
+    'moonshot': lanying_vendor_moonshot
 }
 def get_module(vendor):
     return vendor_to_module.get(vendor)
