@@ -182,8 +182,11 @@ def format_preset(preset):
                         role = message['role']
                         content = message['content']
                         if role == 'system':
-                            if len(system_message) > 0:
-                                system_message += "\n\n\n" + message['content']
+                            if len(content) > 0:
+                                if system_message == '':
+                                    system_message = content
+                                else:
+                                    system_message += "\n\n\n" + content
                         elif role == "user":
                             if len(messages) > 0 and messages[-1]['role'] == 'user':
                                 messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
