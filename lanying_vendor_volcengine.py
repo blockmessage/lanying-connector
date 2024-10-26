@@ -8,7 +8,7 @@ def model_configs():
     return [
         {
             "model": 'Doubao-pro-32k',
-            'endpoint': 'ep-20240717042115-q6fqg',
+            'endpoint': 'ep-20241026172834-pt64n',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.22,
@@ -18,7 +18,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-128k',
-            'endpoint': 'ep-20240717042141-zdpsd',
+            'endpoint': 'ep-20241026172902-59tzn',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.69,
@@ -28,7 +28,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-4k',
-            'endpoint': 'ep-20240717042041-crlzv',
+            'endpoint': 'ep-20241026172733-mvz6c',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.22,
@@ -38,7 +38,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-4k',
-            'endpoint': 'ep-20240717041805-kl82w',
+            'endpoint': 'ep-20241026172923-4dh9k',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.12,
@@ -48,7 +48,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-128k',
-            'endpoint': 'ep-20240717041935-b8kjw',
+            'endpoint': 'ep-20241026173030-2jz9w',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.16,
@@ -58,7 +58,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-32k',
-            'endpoint': 'ep-20240717041914-2k2ff',
+            'endpoint': 'ep-20241026173004-lnrlx',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.12,
@@ -68,7 +68,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-8k',
-            'endpoint': 'ep-20240719050907-zdl8s',
+            'endpoint': 'ep-20241026173110-jcbwp',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.13,
@@ -78,7 +78,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-32k',
-            'endpoint': 'ep-20240719050955-l8gks',
+            'endpoint': 'ep-20241026173141-9hs7f',
             "type": "chat",
             "is_prefix": False,
             "quota": 2.18,
@@ -88,7 +88,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-128k',
-            'endpoint': 'ep-20240719051036-f965f',
+            'endpoint': 'ep-20241026173205-522lk',
             "type": "chat",
             "is_prefix": False,
             "quota": 5.34,
