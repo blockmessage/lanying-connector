@@ -2,6 +2,7 @@ import logging
 import tiktoken
 import requests
 import json
+import os
 
 def model_configs():
     return [
@@ -13,7 +14,8 @@ def model_configs():
             "token_limit": 32000,
             'order': 4,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4-32k/chat/completions?api-version=2023-07-01-preview',
-            'function_call': True
+            'function_call': True,
+            'api_type': 'openai'
         },
         {
             "model": 'gpt-4',
@@ -23,7 +25,8 @@ def model_configs():
             "token_limit": 8000,
             'order': 3,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2023-12-01-preview',
-            'function_call': True
+            'function_call': True,
+            'api_type': 'openai'
         },
         {
             "model": 'gpt-35-turbo-16k',
@@ -33,7 +36,9 @@ def model_configs():
             "token_limit": 16000,
             'order': 2,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-12-01-preview',
-            'function_call': True
+            'function_call': True,
+            'real_model': 'gpt-3.5-turbo-16k',
+            'api_type': 'openai'
         },
         {
             "model": 'gpt-35-turbo',
@@ -43,7 +48,9 @@ def model_configs():
             "token_limit": 4000,
             'order': 1,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-12-01-preview',
-            'function_call': True
+            'function_call': True,
+            'real_model': 'gpt-3.5-turbo',
+            'api_type': 'openai'
         },
         {
             "model": 'text-embedding-ada-002',
@@ -54,7 +61,8 @@ def model_configs():
             'order': 1000,
             "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-12-01-preview',
             'dim': 1536,
-            'dim_origin': 1536
+            'dim_origin': 1536,
+            'api_type': 'openai'
         }
     ]
 
@@ -74,9 +82,19 @@ def prepare_chat(auth_info, preset):
     }
 
 def chat(prepare_info, preset):
-    url = get_chat_model_url(preset['model'])
+    model_config = get_chat_model_config(preset['model'])
+    real_model = model_config.get('real_model', None)
     final_preset = format_preset(preset)
-    headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
+    if real_model:
+        final_preset['model'] = real_model
+    api_type = model_config.get('api_type', 'azure')
+    if api_type == 'openai':
+        api_endpoint = os.getenv('AZURE_API_ENDPOINT', '') 
+        headers = {"Content-Type": "application/json", "Authorization": "Bearer " + prepare_info['api_key']}
+        url = maybe_add_proxy_headers(prepare_info, api_endpoint, headers) + '/chat/completions'
+    else:
+        url = model_config['url']
+        headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
     try:
         logging.info(f"azure chat_completion start | preset={preset}, url:{url}")
         logging.info(f"azure chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
@@ -163,14 +181,23 @@ def prepare_embedding(auth_info, _):
 
 def embedding(prepare_info, model, text):
     model = 'text-embedding-ada-002'
-    url = get_chat_model_url(model)
-    headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
+    model_config = get_chat_model_config(model)
+    api_type = model_config.get('api_type', 'azure')
+    if api_type == 'openai':
+        api_endpoint = os.getenv('AZURE_API_ENDPOINT', '')
+        headers = {"Content-Type": "application/json", "Authorization": "Bearer " + prepare_info['api_key']}
+        url = maybe_add_proxy_headers(prepare_info, api_endpoint, headers) + '/embeddings'
+    else:
+        url = model_config['url']
+        headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
     json_body = {"input":text, "model":model}
     try:
         logging.info(f"azure embedding start")
         response = requests.request("POST", url, headers=headers, json=json_body)
         logging.info(f"azure embedding finish: response:{response}")
         res = response.json()
+        if 'data' not in res:
+            logging.info(f"azure embedding finish with error:{res}")
         embedding = res['data'][0]['embedding']
         usage = res.get('usage',{})
         return {
@@ -219,3 +246,29 @@ def get_chat_model_url(model):
         if model == config['model']:
             return config['url']
     return None
+
+def get_chat_model_real_model(model):
+    for config in model_configs():
+        if model == config['model']:
+            if 'real_model' in config:
+                return config['real_model']
+            else:
+                return model
+    return None
+
+def get_chat_model_config(model):
+    for config in model_configs():
+        if model == config['model']:
+            return config
+    return None
+
+def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
+    proxy_api_base = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_BASE", '')
+    proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
+    if len(proxy_api_base) > 0:
+        api_key = prepare_info['api_key']
+        headers['Authorization'] = f"Basic {proxy_api_key}"
+        headers['Authorization-Next'] = f"Bearer {api_key}"
+        return proxy_api_base
+    else:
+        return api_endpoint
