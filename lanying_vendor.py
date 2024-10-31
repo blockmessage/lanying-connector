@@ -3,6 +3,7 @@ import lanying_vendor_minimax
 import lanying_vendor_baidu
 import lanying_vendor_zhipuai
 import lanying_vendor_azure
+import lanying_vendor_azure2
 import lanying_vendor_claude
 import lanying_vendor_deepseek
 import lanying_vendor_aliyun
@@ -18,6 +19,7 @@ vendor_to_module = {
     'baidu': lanying_vendor_baidu,
     'zhipuai': lanying_vendor_zhipuai,
     "azure": lanying_vendor_azure,
+    "azure2": lanying_vendor_azure2,
     "claude": lanying_vendor_claude,
     'deepseek': lanying_vendor_deepseek,
     'aliyun': lanying_vendor_aliyun,
