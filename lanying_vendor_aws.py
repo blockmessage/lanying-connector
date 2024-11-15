@@ -330,7 +330,7 @@ def maybe_add_proxy_headers(prepare_info, client):
     if len(proxy_api_base) > 0:
         client.base_url = proxy_api_base
         return {
-            "Authorization": f"Basic {proxy_api_key}"
+            # "Authorization": f"Basic {proxy_api_key}"
         }
     else:
         return {}

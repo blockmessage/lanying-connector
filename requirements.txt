@@ -13,7 +13,7 @@ beautifulsoup4==4.11.2
 billiard==3.6.4.0
 bitarray==2.7.5
 boto3==1.35.43
-botocore==1.35.43
+botocore @ git+https://github.com/blockmessage/botocore.git@850fa641bc169d26ba4855a6478ac4137cfe48fc
 cachetools==5.3.1
 celery==5.2.7
 certifi==2022.9.24

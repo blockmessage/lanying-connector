@@ -91,7 +91,7 @@ def chat(prepare_info, preset):
     if api_type == 'openai':
         api_endpoint = os.getenv('AZURE_API_ENDPOINT', '') 
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + prepare_info['api_key']}
-        url = maybe_add_proxy_headers(prepare_info, api_endpoint, headers) + '/chat/completions'
+        url = maybe_add_proxy_headers(prepare_info, api_endpoint, headers) + '/v1/chat/completions'
     else:
         url = model_config['url']
         headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
@@ -186,7 +186,7 @@ def embedding(prepare_info, model, text):
     if api_type == 'openai':
         api_endpoint = os.getenv('AZURE_API_ENDPOINT', '')
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + prepare_info['api_key']}
-        url = maybe_add_proxy_headers(prepare_info, api_endpoint, headers) + '/embeddings'
+        url = maybe_add_proxy_headers(prepare_info, api_endpoint, headers) + '/v1/embeddings'
     else:
         url = model_config['url']
         headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
@@ -221,9 +221,14 @@ def embedding(prepare_info, model, text):
 def encoding_for_model(model): 
     if model.startswith("gpt-35-turbo"):
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
+    if model.startswith("o1-"):
+        return tiktoken.encoding_for_model("gpt-4o")
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
+    model = preset.get('model', '')
+    if model.startswith("o1-"):
+        return format_preset_for_o1(preset)
     support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream", "functions"]
     ret = dict()
     for key in support_fields:
@@ -239,6 +244,29 @@ def format_preset(preset):
                 ret[key] = functions
             else:
                 ret[key] = preset[key]
+    return ret
+
+def format_preset_for_o1(preset):
+    support_fields = ['model', "messages", "max_completion_tokens"]
+    ret = dict()
+    for key in support_fields:
+        if key in preset:
+            if key == "messages":
+                messages = []
+                for message in preset['messages']:
+                    if 'role' in message:
+                        if message['role'] == 'system':
+                            message['role'] = 'user'
+                            messages.append(message)
+                        elif message['role'] == 'user' or message['role'] == 'assistant':
+                            messages.append(message)
+                        else:
+                            logging.info(f"skip message for o1 {message}")
+                ret[key] = messages
+            else:
+                ret[key] = preset[key]
+    if 'max_completion_tokens' not in ret:
+        ret['max_completion_tokens'] = 25000
     return ret
 
 def get_chat_model_url(model):
@@ -263,12 +291,12 @@ def get_chat_model_config(model):
     return None
 
 def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
-    proxy_api_base = os.getenv("LANYING_CONNECTOR_AZURE_PROXY_API_BASE", '')
+    domain = os.getenv("LANYING_CONNECTOR_AZURE_PROXY_DOMAIN", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_AZURE_PROXY_API_KEY", '')
-    if len(proxy_api_base) > 0:
+    if len(domain) > 0:
         api_key = prepare_info['api_key']
         headers['Authorization'] = f"Basic {proxy_api_key}"
         headers['Authorization-Next'] = f"Bearer {api_key}"
-        return proxy_api_base
+        return domain
     else:
         return api_endpoint

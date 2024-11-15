@@ -332,12 +332,12 @@ def get_chat_model_config(model):
     return None
 
 def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
-    proxy_api_base = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_API_BASE", '')
+    domain = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_DOMAIN", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_API_KEY", '')
-    if len(proxy_api_base) > 0:
+    if len(domain) > 0:
         api_key = prepare_info['api_key']
         headers['Authorization'] = f"Basic {proxy_api_key}"
         headers['Authorization-Next'] = f"Bearer {api_key}"
-        return proxy_api_base
+        return domain
     else:
         return api_endpoint
