@@ -224,7 +224,7 @@ def handle_request(request, request_type):
                             yield line_str + '\n'
                     finally:
                         reply = ''.join(contents)
-                        response_json = stream_lines_to_response(preset, reply, vendor, {}, "", "")
+                        response_json = stream_lines_to_response(preset, reply, vendor, {}, "", "","")
                         logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
                         add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
                 return {'result':'ok', 'response':response, 'iter': generate_response}
@@ -311,7 +311,7 @@ def handle_request(request, request_type):
                     yield delta_line
                     yield 'data: [DONE]\n'
                     reply = ''.join(contents)
-                    response_json = stream_lines_to_response(preset, reply, vendor, usage, "", "")
+                    response_json = stream_lines_to_response(preset, reply, vendor, usage, "", "","")
                     logging.info(f"forward request: stream response | response: {response}, response_json:{response_json}")
                     add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
