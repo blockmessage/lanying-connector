@@ -11,6 +11,10 @@ import lanying_vendor_volcengine
 import lanying_vendor_moonshot
 import lanying_vendor_aws
 import copy
+import logging
+import lanying_config
+import lanying_slack
+from datetime import datetime
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
@@ -26,6 +30,43 @@ vendor_to_module = {
     'volcengine': lanying_vendor_volcengine,
     'moonshot': lanying_vendor_moonshot
 }
+
+def backup_rules():
+    return [
+        {
+            'vendor': 'azure',
+            'backups':[
+                {
+                    'vendor': 'openai',
+                    'transforms':{
+                        'gpt-35-turbo': 'gpt-3.5-turbo',
+                        'gpt-35-turbo-16k': 'gpt-3.5-turbo'
+                    }
+                }
+            ]
+        },
+        {
+            'vendor': 'azure2',
+            'backups':[
+                {
+                    'vendor': 'openai',
+                    'transforms':{
+                    }
+                }
+            ]
+        },
+        {
+            'vendor': 'aws',
+            'backups':[
+                {
+                    'vendor': 'claude',
+                    'transforms':{
+                    }
+                }
+            ]
+        }
+    ]
+
 def get_module(vendor):
     return vendor_to_module.get(vendor)
 
@@ -162,11 +203,89 @@ def get_embedding_model_config(vendor, model):
 
 def prepare_chat(vendor, auth_info, preset):
     module = get_module(vendor)
-    return module.prepare_chat(auth_info, preset)
+    result = module.prepare_chat(auth_info, preset)
+    if isinstance(result, dict):
+        result['auth_info'] = auth_info
+    return result
 
 def chat(vendor, prepare_info, preset):
     module = get_module(vendor)
-    return module.chat(prepare_info, preset)
+    try:
+        resp = module.chat(prepare_info, preset)
+        if 'result' in resp and resp['result'] == 'ok':
+            return resp
+        return chat_retry(vendor, prepare_info, preset, resp)
+    except Exception as e:
+        logging.error(e)
+        error_message = 'exception'
+        try:
+            error_message = str(e)
+        except Exception as ee:
+            pass
+        resp = {
+            'result': 'error',
+            'reason': error_message
+        }
+        return chat_retry(vendor, prepare_info, preset, resp)
+
+def chat_retry(vendor, prepare_info, preset, resp):
+    unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
+    model = preset['model']
+    try:
+        new_resp = do_chat_retry(vendor, prepare_info, preset, resp, unique_id)
+        if 'result' in new_resp and new_resp['result'] == 'ok':
+            return new_resp
+        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_chat_resp_failed')
+        return resp
+    except Exception as e:
+        logging.error(e)
+        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_chat_resp_failed')
+        return resp
+
+def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
+    if 'auth_info' not in prepare_info:
+        logging.info("do_chat_retry | auth_info not exist")
+        return resp
+    auth_info = prepare_info['auth_info']
+    if 'key_type' not in auth_info:
+        logging.info("do_chat_retry | key_type not exist")
+        return resp
+    key_type = auth_info['key_type']
+    if key_type != 'share':
+        logging.info("do_chat_retry | key_type not share")
+        return resp
+    app_id = auth_info['app_id']
+    model = preset['model']
+    for rule in backup_rules():
+        if rule['vendor'] == vendor:
+            backups = rule.get('backups',[])
+            for backup in backups:
+                new_vendor = backup['vendor']
+                transforms = backup.get('transforms', {})
+                new_model = model
+                if new_model in transforms:
+                    new_model = transforms[new_model]
+                try:
+                    new_model_config = get_chat_model_config(new_vendor, new_model)
+                    if new_model_config:
+                        new_preset = copy.deepcopy(preset)
+                        new_preset['model'] = new_model
+                        logging.info(f"chat backup start | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
+                        new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
+                        new_prepare_info = prepare_chat(new_vendor, new_auth_info, new_preset)
+                        new_module = get_module(new_vendor)
+                        new_resp = new_module.chat(new_prepare_info, new_preset)
+                        if 'result' in new_resp and new_resp['result'] == 'ok':
+                            logging.info(f"chat backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
+                            return resp
+                        else:
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
+                except Exception as e:
+                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
+                    logging.error(e)
+            logging.info(f"chat backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
+    return resp
 
 def prepare_embedding(vendor, auth_info, type):
     module = get_module(vendor)
@@ -174,7 +293,25 @@ def prepare_embedding(vendor, auth_info, type):
 
 def embedding(vendor, prepare_info, model, text):
     module = get_module(vendor)
-    return module.embedding(prepare_info, model, text)
+    try:
+        resp = module.embedding(prepare_info, model, text)
+        if 'result' in resp and resp['result'] == 'ok':
+            return resp
+        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_embedding_resp_failed')
+        return resp
+    except Exception as e:
+        logging.error(e)
+        error_message = 'exception'
+        try:
+            error_message = str(e)
+        except Exception as ee:
+            pass
+        resp = {
+            'result': 'error',
+            'reason': error_message
+        }
+        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_embedding_resp_failed')
+        return resp
 
 def encoding_for_model(vendor, model):
     module = get_module(vendor)

@@ -162,6 +162,18 @@ def get_lanying_connector_default_api_group_id(vendor):
 def get_lanying_connector_default_secret_key(vendor):
     return os.getenv(f'{vendor.upper()}_SECRET_KEY', '')
 
+def get_lanying_connector_share_auth_info(vendor):
+    DefaultApiKey = get_lanying_connector_default_api_key(vendor)
+    DefaultApiGroupId = get_lanying_connector_default_api_group_id(vendor)
+    DefaultSecretKey = get_lanying_connector_default_secret_key(vendor)
+    if DefaultApiKey:
+        return {
+            'api_key':DefaultApiKey,
+            'secret_key':DefaultSecretKey,
+            'api_group_id':DefaultApiGroupId
+        }
+    return None
+
 def get_service_config(app_id, service):
     if mode == 'etcd':
         config = get_config(app_id, f"lanying_connector.service.{service}", None)

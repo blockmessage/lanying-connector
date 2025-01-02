@@ -2199,15 +2199,12 @@ def calcMessageTokens(message, model, vendor):
 
 def get_preset_auth_info(config, openai_key_type, vendor):
     if openai_key_type == 'share':
-        DefaultApiKey = lanying_config.get_lanying_connector_default_api_key(vendor)
-        DefaultApiGroupId = lanying_config.get_lanying_connector_default_api_group_id(vendor)
-        DefaultSecretKey = lanying_config.get_lanying_connector_default_secret_key(vendor)
-        if DefaultApiKey:
-            return {
-                'api_key':DefaultApiKey,
-                'secret_key':DefaultSecretKey,
-                'api_group_id':DefaultApiGroupId
-            }
+        auth_info = lanying_config.get_lanying_connector_share_auth_info(vendor)
+        if auth_info:
+            auth_info['key_type'] = openai_key_type
+            auth_info['vendor'] = vendor
+            auth_info['app_id'] = config.get('app_id', '')
+            return auth_info
     else:
         return get_preset_self_auth_info(config, vendor)
 
