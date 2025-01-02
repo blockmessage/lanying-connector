@@ -21,7 +21,7 @@ USER_MESSAGE_DEFAULT = '继续'
 def model_configs():
     return [
         {
-            "model": 'anthropic.claude-3-sonnet-20240229-v1:0',
+            "model": 'anthropic.claude-3-5-sonnet-20241022-v2:0',
             "type": "chat",
             "is_prefix": False,
             "quota": 5.61,
@@ -30,10 +30,10 @@ def model_configs():
             'function_call': True
         },
         {
-            "model": 'anthropic.claude-3-haiku-20240307-v1:0',
+            "model": 'anthropic.claude-3-5-haiku-20241022-v1:0',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.54,
+            "quota": 1.55,
             "token_limit": 200000,
             'order': 2,
             'function_call': True
@@ -45,6 +45,7 @@ def model_configs():
             "quota": 30.78,
             "token_limit": 200000,
             'order': 3,
+            'hidden': True,
             'function_call': True
         },
         {
@@ -53,7 +54,25 @@ def model_configs():
             "is_prefix": False,
             "quota": 5.61,
             "token_limit": 200000,
-            'order': 4,
+            'order': 4.01,
+            'function_call': True
+        },
+        {
+            "model": 'anthropic.claude-3-sonnet-20240229-v1:0',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 5.61,
+            "token_limit": 200000,
+            'order': 4.02,
+            'function_call': True
+        },
+        {
+            "model": 'anthropic.claude-3-haiku-20240307-v1:0',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.54,
+            "token_limit": 200000,
+            'order': 4.1,
             'function_call': True
         },
         {

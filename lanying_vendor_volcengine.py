@@ -27,6 +27,16 @@ def model_configs():
             'function_call': True
         },
         {
+            "model": 'Doubao-pro-256k',
+            'endpoint': 'ep-20250102115354-hrz4z',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.69,
+            "token_limit": 256000,
+            'order': 2.1,
+            'function_call': True
+        },
+        {
             "model": 'Doubao-pro-4k',
             'endpoint': 'ep-20241026172733-mvz6c',
             "type": "chat",
