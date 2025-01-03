@@ -39,6 +39,7 @@ def send_message_with_filter(text, filter_name):
     redis = lanying_redis.get_redis_connection()
     key = f"lanying_connector:slack_notify:{date_str}:{filter_name}"
     count = redis.incr(key)
+    text = f"{text} [count: {count}]"
     if count == 1:
         redis.expire(key, 86400 * 3)
     if count < 20:

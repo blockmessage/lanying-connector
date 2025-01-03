@@ -21,21 +21,21 @@ USER_MESSAGE_DEFAULT = '继续'
 def model_configs():
     return [
         {
-            "model": 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 5.61,
-            "token_limit": 200000,
-            'order': 1,
-            'function_call': True
-        },
-        {
             "model": 'anthropic.claude-3-5-haiku-20241022-v1:0',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.55,
             "token_limit": 200000,
             'order': 2,
+            'function_call': True
+        },
+        {
+            "model": 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 5.61,
+            "token_limit": 200000,
+            'order': 1,
             'function_call': True
         },
         {

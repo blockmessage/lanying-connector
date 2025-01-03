@@ -8,7 +8,10 @@ from anthropic.types import (
     RawContentBlockDeltaEvent,
     RawContentBlockStartEvent,
     RawMessageDeltaEvent,
-    Message
+    RawContentBlockStopEvent,
+    Message,
+    TextBlock,
+    ToolUseBlock
 )
 import json
 ASSISTANT_MESSAGE_DEFAULT = '好的'
@@ -17,12 +20,57 @@ USER_MESSAGE_DEFAULT = '继续'
 def model_configs():
     return [
         {
+            "model": 'claude-3-5-haiku-20241022',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1.55,
+            "token_limit": 200000,
+            'order': 1,
+            'function_call': True
+        },
+        {
+            "model": 'claude-3-5-sonnet-20241022',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 5.61,
+            "token_limit": 200000,
+            'order': 2,
+            'function_call': True
+        },
+        {
+            "model": 'claude-3-opus-20240229',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 30.78,
+            "token_limit": 200000,
+            'order': 3,
+            'function_call': True
+        },
+        {
+            "model": 'claude-3-sonnet-20240229',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 5.61,
+            "token_limit": 200000,
+            'order': 4,
+            'function_call': True
+        },
+        {
+            "model": 'claude-3-haiku-20240307',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.54,
+            "token_limit": 200000,
+            'order': 5,
+            'function_call': True
+        },
+        {
             "model": 'claude-2.1',
             "type": "chat",
             "is_prefix": False,
             "quota": 10,
             "token_limit": 200000,
-            'order': 1,
+            'order': 8,
             'function_call': False
         },
         {
@@ -31,7 +79,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 10,
             "token_limit": 100000,
-            'order': 2,
+            'order': 9,
             'function_call': False
         },
         {
@@ -40,7 +88,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 1,
             "token_limit": 100000,
-            'order': 3,
+            'order': 10,
             'function_call': False
         }
     ]
@@ -51,10 +99,12 @@ def prepare_chat(auth_info, preset):
     }
 
 def chat(prepare_info, preset):
+    from lanying_vendor import get_chat_model_config
+    model_config = get_chat_model_config('claude', preset['model'])
     client = anthropic.Anthropic(
         api_key=prepare_info['api_key']
     )
-    final_preset = format_preset(preset)
+    final_preset = format_preset(preset, model_config)
     headers = maybe_add_proxy_headers(prepare_info, client)
     logging.info(f"vendor claude chat request: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
     retry_times = 1
@@ -85,6 +135,8 @@ def chat(prepare_info, preset):
                 'prompt_tokens': 0,
                 'total_tokens': 0
             }
+            function_call = None
+            function_content = ''
             for chunk in response:
                 # logging.info(f"vendor claude chunk: {chunk}")
                 chunk_reply = {}
@@ -92,10 +144,18 @@ def chat(prepare_info, preset):
                     if chunk.content_block.type == 'text':
                         content = chunk.content_block.text
                         chunk_reply['content'] = content
+                    elif chunk.content_block.type == 'tool_use':
+                        function_call = {
+                            'id': chunk.content_block.id,
+                            'name': chunk.content_block.name,
+                            'arguments': chunk.content_block.input
+                        }
                 elif isinstance(chunk, RawContentBlockDeltaEvent):
                     if chunk.delta.type == 'text_delta':
                         content = chunk.delta.text
                         chunk_reply['content'] = content
+                    elif chunk.delta.type == 'input_json_delta':
+                        function_content += chunk.delta.partial_json
                 elif isinstance(chunk, RawMessageDeltaEvent):
                     if chunk.usage:
                         usage['completion_tokens'] = chunk.usage.output_tokens
@@ -113,6 +173,11 @@ def chat(prepare_info, preset):
                         usage['completion_tokens'] = chunk.message.usage.output_tokens
                         usage['total_tokens'] = usage['prompt_tokens'] + usage['completion_tokens']
                         chunk_reply['usage'] = usage
+                elif isinstance(chunk, RawContentBlockStopEvent):
+                    if function_call is not None:
+                        function_call['arguments'] = function_content
+                        chunk_reply['function_call'] = function_call
+                        function_call = None
                 if len(chunk_reply) > 0:
                     # logging.info(f"vendor claude yield:{chunk_reply}")
                     yield chunk_reply
@@ -130,8 +195,17 @@ def chat(prepare_info, preset):
         if isinstance(response, Message):
             usage = response.usage
             reply = ''
+            function_call = None
             try:
-                reply = response.content[0].text
+                for content in response.content:
+                    if isinstance(content, TextBlock):
+                        reply += content.text
+                    elif isinstance(content, ToolUseBlock):
+                        function_call = {
+                            'name': content.name,
+                            'arguments': json.dumps(content.input, ensure_ascii=False),
+                            'id': content.id,
+                        }
             except Exception as ee:
                 logging.exception(ee)
                 pass
@@ -147,6 +221,7 @@ def chat(prepare_info, preset):
             return {
                 'result': 'ok',
                 'reply' : reply,
+                'function_call' : function_call,
                 'finish_reason': finish_reason,
                 'usage' : {
                     'completion_tokens' : usage.output_tokens,
@@ -169,12 +244,14 @@ def chat(prepare_info, preset):
             'response': response 
         }
 
-def format_preset(preset):
-    support_fields = ['system', 'model', "messages", "temperature", "top_p", "top_k", "stop_sequences", "max_tokens","stream"]
+def format_preset(preset, model_config):
+    support_fields = ['system', 'model', "messages", "temperature", "top_p", "top_k", "stop_sequences", "max_tokens","stream", "functions"]
     ret = dict()
+    support_function_call = (model_config.get('function_call', True) == True)
     for key in support_fields:
         if key in preset:
             if key == "messages":
+                last_tool_call_id = ''
                 messages = []
                 system_message = ret.get('system', '')
                 for message in preset['messages']:
@@ -192,15 +269,59 @@ def format_preset(preset):
                                 messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
                             messages.append({'role': role, 'content':content})
                         elif role == 'assistant':
-                            if len(content) > 0:
+                            if support_function_call and 'function_call' in message:
+                                last_tool_call_id = message['function_call'].get('id', '')
+                                new_message = {
+                                    'role': role,
+                                    'content': [
+                                        {
+                                            "type": "tool_use",
+                                            "id": message['function_call'].get('id', ''),
+                                            "name": message['function_call'].get('name', ''),
+                                            "input": json.loads(message['function_call'].get('arguments', '{}'))
+                                        }
+                                    ]
+                                }
+                            else:
+                                new_message = {
+                                    'role': role,
+                                    'content': content
+                                }
+                            if len(new_message['content']) > 0:
                                 if len(messages) > 0 and messages[-1]['role'] == 'assistant':
                                     messages.append({'role':'user', 'content':USER_MESSAGE_DEFAULT})
-                                messages.append({'role': role, 'content':content})
+                                messages.append(new_message)
+                        elif role == 'function':
+                            if support_function_call:
+                                function_message = {
+                                    'role': 'user',
+                                    'content': [
+                                        {
+                                            "type": "tool_result",
+                                            "tool_use_id": last_tool_call_id,
+                                            "content": message['content']
+                                        }
+                                    ]
+                                }
+                                messages.append(function_message)
                     else:
                         logging.info(f"vendor claude ingore message in preset: {message}")
                 if len(system_message) > 0:
                     ret['system'] = system_message
                 ret[key] = messages
+            elif key == 'functions':
+                if support_function_call:
+                    tools = []
+                    for function in preset['functions']:
+                        function_obj = {}
+                        for k,v in function.items():
+                            if k in ["name", "description", "parameters"]:
+                                if k == 'parameters':
+                                    function_obj['input_schema'] = v
+                                else:
+                                    function_obj[k] = v
+                        tools.append(function_obj)
+                    ret['tools'] = tools
             else:
                 ret[key] = preset[key]
         else:

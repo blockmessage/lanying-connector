@@ -61,6 +61,15 @@ def backup_rules():
                 {
                     'vendor': 'claude',
                     'transforms':{
+                        'anthropic.claude-3-5-haiku-20241022-v1:0':'claude-3-5-haiku-20241022',
+                        'anthropic.claude-3-5-sonnet-20241022-v2:0':'claude-3-5-sonnet-20241022',
+                        'anthropic.claude-3-opus-20240229-v1:0':'claude-3-opus-20240229',
+                        'anthropic.claude-3-5-sonnet-20240620-v1:0':'claude-3-5-sonnet-20241022',
+                        'anthropic.claude-3-sonnet-20240229-v1:0':'claude-3-sonnet-20240229',
+                        'anthropic.claude-3-haiku-20240307-v1:0':'claude-3-haiku-20240307',
+                        'anthropic.claude-v2:1':'claude-2.1',
+                        'anthropic.claude-v2':'claude-2.0',
+                        'anthropic.claude-instant-v1':'claude-instant-1.2'
                     }
                 }
             ]
@@ -231,15 +240,14 @@ def chat(vendor, prepare_info, preset):
 def chat_retry(vendor, prepare_info, preset, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
     model = preset['model']
+    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_chat_resp_failed')
     try:
         new_resp = do_chat_retry(vendor, prepare_info, preset, resp, unique_id)
         if 'result' in new_resp and new_resp['result'] == 'ok':
             return new_resp
-        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_chat_resp_failed')
         return resp
     except Exception as e:
         logging.error(e)
-        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_chat_resp_failed')
         return resp
 
 def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
@@ -278,7 +286,7 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"chat backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
                             lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
-                            return resp
+                            return new_resp
                         else:
                             lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
                 except Exception as e:
