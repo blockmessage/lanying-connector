@@ -15,6 +15,7 @@ import logging
 import lanying_config
 import lanying_slack
 from datetime import datetime
+import time
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
@@ -70,6 +71,30 @@ def backup_rules():
                         'anthropic.claude-v2:1':'claude-2.1',
                         'anthropic.claude-v2':'claude-2.0',
                         'anthropic.claude-instant-v1':'claude-instant-1.2'
+                    }
+                }
+            ]
+        }
+    ]
+
+def embedding_backup_rules():
+    return [
+        {
+            'vendor': 'azure',
+            'backups':[
+                {
+                    'vendor': 'openai',
+                    'transforms':{
+                    }
+                }
+            ]
+        },
+        {
+            'vendor': 'azure2',
+            'backups':[
+                {
+                    'vendor': 'openai',
+                    'transforms':{
                     }
                 }
             ]
@@ -297,29 +322,101 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
 
 def prepare_embedding(vendor, auth_info, type):
     module = get_module(vendor)
-    return module.prepare_embedding(auth_info, type)
+    result = module.prepare_embedding(auth_info, type)
+    if isinstance(result, dict):
+        result['auth_info'] = auth_info
+        result['type'] = type
+    return result
 
 def embedding(vendor, prepare_info, model, text):
     module = get_module(vendor)
+    retry_times = 3
+    for i in range(retry_times):
+        try:
+            resp = module.embedding(prepare_info, model, text)
+            if 'result' in resp and resp['result'] == 'ok':
+                return resp
+            if i == retry_times - 1:
+                logging.info(f"embedding finally failed: {i}/{retry_times}, resp:{resp}")
+                return embedding_retry(vendor, prepare_info, model, text, resp)
+            else:
+                logging.info(f"embedding schedule retry: {i}/{retry_times}, resp:{resp}")
+                time.sleep(0.5)
+        except Exception as e:
+            logging.error(e)
+            error_message = 'exception'
+            try:
+                error_message = str(e)
+            except Exception as ee:
+                pass
+            resp = {
+                'result': 'error',
+                'reason': error_message
+            }
+            if i == retry_times - 1:
+                logging.info(f"embedding finally failed: {i}/{retry_times}, resp:{resp}")
+                return embedding_retry(vendor, prepare_info, model, text, resp)
+            else:
+                logging.info(f"embedding schedule retry: {i}/{retry_times}, resp:{resp}")
+                time.sleep(0.5)
+
+def embedding_retry(vendor, prepare_info, model, text, resp):
+    unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
+    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_embedding_resp_failed')
     try:
-        resp = module.embedding(prepare_info, model, text)
-        if 'result' in resp and resp['result'] == 'ok':
-            return resp
-        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_embedding_resp_failed')
+        new_resp = do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id)
+        if 'result' in new_resp and new_resp['result'] == 'ok':
+            return new_resp
         return resp
     except Exception as e:
         logging.error(e)
-        error_message = 'exception'
-        try:
-            error_message = str(e)
-        except Exception as ee:
-            pass
-        resp = {
-            'result': 'error',
-            'reason': error_message
-        }
-        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_embedding_resp_failed')
         return resp
+
+def do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id):
+    if 'auth_info' not in prepare_info:
+        logging.info("do_embedding_retry | auth_info not exist")
+        return resp
+    auth_info = prepare_info['auth_info']
+    if 'type' not in prepare_info:
+        logging.info("do_embedding_retry | type not exist")
+        return resp
+    type = prepare_info['type']
+    if 'key_type' not in auth_info:
+        logging.info("do_embedding_retry | key_type not exist")
+        return resp
+    key_type = auth_info['key_type']
+    if key_type != 'share':
+        logging.info("do_embedding_retry | key_type not share")
+        return resp
+    app_id = auth_info['app_id']
+    for rule in embedding_backup_rules():
+        if rule['vendor'] == vendor:
+            backups = rule.get('backups',[])
+            for backup in backups:
+                new_vendor = backup['vendor']
+                transforms = backup.get('transforms', {})
+                new_model = model
+                if new_model in transforms:
+                    new_model = transforms[new_model]
+                try:
+                    new_model_config = get_embedding_model_config(new_vendor, new_model)
+                    if new_model_config:
+                        logging.info(f"embedding backup start | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
+                        new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
+                        new_prepare_info = prepare_embedding(new_vendor, new_auth_info, type)
+                        new_module = get_module(new_vendor)
+                        new_resp = new_module.embedding(new_prepare_info, new_model, text)
+                        if 'result' in new_resp and new_resp['result'] == 'ok':
+                            logging.info(f"embedding backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_embedding_switch')
+                            return new_resp
+                        else:
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_embedding_switch')
+                except Exception as e:
+                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_embedding_switch')
+                    logging.error(e)
+            logging.info(f"embedding backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
+    return resp
 
 def encoding_for_model(vendor, model):
     module = get_module(vendor)
