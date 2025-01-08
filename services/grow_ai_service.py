@@ -1,11 +1,23 @@
-from flask import Blueprint, request, make_response, send_file
+from flask import Blueprint, request, make_response, send_file, abort
 import logging
 import os
 import json
 import lanying_grow_ai
+import lanying_cert
 service = 'grow_ai'
 bp = Blueprint(service, __name__)
 
+
+@bp.route("/.well-known/acme-challenge/<string:key>", methods=["GET"])
+def acme_challenge(key):
+    logging.info(f"acme_challenge got challenge | {key}")
+    result = lanying_cert.get_acme_challenge_value(key)
+    logging.info(f"acme_challenge challenge result | key:{key}, result:{result}")
+    if result['result'] == 'ok':
+        resp = make_response(result['value'])
+        return resp
+    else:
+        abort(404)
 
 @bp.route("/service/grow_ai/open_service", methods=["POST"])
 def open_service():
@@ -518,6 +530,73 @@ def get_site_list():
         resp = make_response({'code':400, 'message':result['message']})
     else:
         resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/grow_ai/create_custom_domain", methods=["POST"])
+def create_custom_domain():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    site_id = str(data['site_id'])
+    tenement_id = str(data['tenement_id'])
+    domain_name = str(data['domain_name']).strip()
+    scope = str(data['scope'])
+    result = lanying_grow_ai.create_custum_domain(app_id, site_id, domain_name, scope, tenement_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get("data",{})})
+    return resp
+
+@bp.route("/service/grow_ai/get_site_custom_domain_info", methods=["POST"])
+def get_site_custom_domain_info():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    site_id = str(data['site_id'])
+    result = lanying_grow_ai.get_site_custom_domain_info(app_id, site_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get("data",{})})
+    return resp
+
+@bp.route("/service/grow_ai/get_site_custom_domain_info_list", methods=["POST"])
+def get_site_custom_domain_info_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_grow_ai.get_site_custom_domain_info_list(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get("data",{})})
+    return resp
+
+@bp.route("/service/grow_ai/check_domain_cname", methods=["POST"])
+def check_domain_cname():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    site_id = str(data['site_id'])
+    tenement_id = str(data['tenement_id'])
+    result = lanying_grow_ai.check_domain_cname(app_id, site_id, tenement_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get("data",{})})
     return resp
 
 def check_access_token_valid():

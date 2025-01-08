@@ -460,6 +460,15 @@ def grow_ai_deply_task_run(self, app_id, task_run_id):
     except Exception as e:
         raise self.retry(exc=e, countdown=5)
 
+global_grow_ai_cdn_config_task_run_max_retries=60
+@normal_queue.task(bind=True, max_retries=global_grow_ai_cdn_config_task_run_max_retries)
+def grow_ai_cdn_config_task_run(self, app_id, site_id, domain_id, tenement_id):
+    has_retry_times = (self.request.retries != global_grow_ai_cdn_config_task_run_max_retries)
+    try:
+        lanying_grow_ai.do_cdn_config_task_run(app_id, site_id, domain_id, tenement_id, has_retry_times, self.request.retries, global_grow_ai_cdn_config_task_run_max_retries)
+    except Exception as e:
+        raise self.retry(exc=e, countdown=10)
+
 def task_error(message):
     logging.error(message)
     raise Exception(message)
