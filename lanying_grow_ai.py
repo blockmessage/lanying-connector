@@ -1387,8 +1387,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_count_max = task['word_count_max']
     from_user_id = task_run['user_id']
     site_list = get_task_site_list(task)
+    site_language = 'zh-hans'
     if len(site_list) > 0:
         meta_keywords = site_list[0].get('meta_keywords', '')
+        site_language = site_list[0].get('language', 'zh-hans')
         if meta_keywords != '':
             meta_keywords_prompt_1 = '<extra_keywords></extra_keywords>'
             meta_keywords_prompt_2 = f'5. extra_keywords: 搜索引擎SEO额外关键词，请从提供的可能的关键词列表中选出最多 2 个最适合作为本文关键词且不在[3. keywords]里的关键词，关键词列表可能为空或不足2个， 可能的关键词列表为：{meta_keywords}。\n'
@@ -1398,8 +1400,12 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     else:
         meta_keywords_prompt_1 = ''
         meta_keywords_prompt_2 = ''
+    logging.info(f"use site language:{site_language}")
+    action_language = ''
+    if site_language == 'en':
+        action_language = '英文'
     task_prompt = task['prompt']
-    action_prompt = "请生成一篇markdown格式的文章，不要生成图片，第一行需要是文章标题：\n"
+    action_prompt = f"请生成一篇markdown格式的{action_language}文章，不要生成图片，第一行需要是文章标题：\n"
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记,用于之后放置图片, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
@@ -1410,7 +1416,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
                    f'4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n{meta_keywords_prompt_2}')
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
     keyword_prompt = f'文章标题必须为：{keyword}\n'
-    extra_prompt = f'注意：一定不要生成图片, 如果未指定中英文等语言，请默认使用中文。\n'
+    if site_language == 'en':
+        extra_prompt = f'注意：一定不要生成图片。一定要使用英文，不要使用中文。\n'
+    else:
+        extra_prompt = f'注意：一定不要生成图片, 如果未指定中英文等语言，请默认使用中文。\n'
     text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
