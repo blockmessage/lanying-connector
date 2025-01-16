@@ -416,6 +416,8 @@ def get_task_list(app_id):
                 site = get_site(app_id, site_id)
                 if site and 'site_url' in site and len(site['site_url']) > 0:
                     task_info['site_url'] = site['site_url']
+                if site and 'custom_site_url' in site and len(site['custom_site_url']) > 0:
+                    task_info['custom_site_url'] = site['custom_site_url']
             task_list.append(task_info)
     return {
         'result': 'ok',
@@ -1692,12 +1694,18 @@ def release_finish(repository, release):
     return {'result': 'error', 'message': 'deploy not found'}
 
 def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release):
-    logging.info(f"start_deploy_github_action | app_id:{app_id}, task_id:{task_id}, site_id:{site_id}, github_owner:{github_owner}, github_repo:{github_repo}, release:{release}")
+    logging.info(f"start_deploy_github_action start | app_id:{app_id}, task_id:{task_id}, site_id:{site_id}, github_owner:{github_owner}, github_repo:{github_repo}, release:{release}")
     deploy_repo_owner = 'maxim-top'
     deploy_repo_name = 'im.gitbook'
     deploy_workflow_id = 'deploy_sub_site.yml'
     deploy_github_token = os.getenv('GROW_AI_GITHUB_TOKEN', '')
     site_name = get_github_site(github_owner, github_repo)
+    cdn_url = make_site_full_url(site_name)
+    site = get_site(app_id, site_id)
+    if site is not None:
+        custom_site_url = site.get('custom_site_url', '')
+        if custom_site_url != '':
+            cdn_url = custom_site_url
     deploy_code = f"{uuid.uuid4()}-{int(time.time()*1000000)}"
     set_deploy_code(deploy_code, {
         'app_id': app_id,
@@ -1720,7 +1728,7 @@ def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_re
         'inputs': {
             'book_url': f'https://github.com/{github_owner}/{github_repo}/releases/download/{release}/book.tar.gz',
             'oss_path': f'/{site_name}',
-            'cdn_url': make_site_full_url(site_name),
+            'cdn_url': cdn_url,
             'check_url': f'{connector_server}/grow_ai/check_deploy?code={deploy_code}',
             'callback_url': f'{connector_server}/grow_ai/deploy_finish?code={deploy_code}'
         }
@@ -1880,7 +1888,7 @@ def create_site(site_setting: SiteSetting):
     site_info = get_site(app_id, site_id)
     logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
     maybe_register_github_site(app_id, site_info)
-    maybe_sync_to_github({}, site_info)
+    maybe_sync_to_github(site_info)
     return {
         'result': 'ok',
         'data': {
@@ -1904,7 +1912,7 @@ def configure_site(site_id, site_setting: SiteSetting):
     redis.hmset(get_site_key(app_id, site_id), fields)
     new_site_info = get_site(app_id, site_id)
     maybe_register_github_site(app_id, new_site_info)
-    maybe_sync_to_github(site_info, new_site_info)
+    maybe_sync_to_github(new_site_info)
     return {
         'result': 'ok',
         'data': {
@@ -1912,7 +1920,7 @@ def configure_site(site_id, site_setting: SiteSetting):
         }
     }
 
-def maybe_sync_to_github(old_site, site):
+def maybe_sync_to_github(site):
     try:
         executor.submit(sync_to_github, site)
     except Exception as e:
@@ -2005,6 +2013,7 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                 if len(canonical_link) == 0:
                     site_name = get_github_site(github_owner, github_repo)
                     canonical_link = make_site_full_url(site_name)
+                    site['canonical_link'] = canonical_link
                 new_canonical_link = canonical_link.rstrip('/')
                 new_book_json['pluginsConfig']['canonical-link']['baseURL'] = new_canonical_link
             elif field == 'sitemap_hostname':
@@ -2389,7 +2398,7 @@ def get_custom_domain_info(app_id, site_id, domain_id):
     redis = lanying_redis.get_redis_connection()
     return lanying_redis.redis_hgetall(redis, get_custom_domain_info_key(app_id, site_id, domain_id))
     
-def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id):
+def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner):
     site = get_site(app_id, site_id)
     if site is None:
         return {
@@ -2406,13 +2415,13 @@ def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id):
     if result['result'] == 'error':
         return result
     if 'success' not in result['data']:
-        return result
-    old_domain_name = get_custom_domain_name(domain_name)
-    if old_domain_name:
-        return {
-            'result': 'error',
-            'message': 'domain_name_exist'
-        }
+        if check_verify_owner == 'on':
+            return {
+                'result': 'error',
+                'message': 'site_owner_verify_failed'
+            }
+        else:
+            return result
     result = lanying_cdn.add_cdn(domain_name, get_cdn_source_domain(), scope)
     if result['result'] == 'error':
         return result
@@ -2478,6 +2487,10 @@ def check_domain_cname(app_id, site_id, tenement_id):
                 update_custom_domain_info(app_id, site_id, domain_id, "cname_ready", 'ready')
                 update_custom_domain_info(app_id, site_id, domain_id, "state", 'wait_cdn_config')
                 update_custom_domain_info(app_id, site_id, domain_id, "task_status", "wait")
+                custom_site_url = f'https://{domain_name}/'
+                update_site_field(app_id, site_id, "custom_site_name", domain_name)
+                update_site_field(app_id, site_id, "custom_site_url", custom_site_url)
+                update_site_field(app_id, site_id, "canonical_link", custom_site_url)
                 lanying_slack.async_send_message(f'GrowAI 开始配置CDN, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_name:{domain_name}')
                 from lanying_tasks import grow_ai_cdn_config_task_run
                 grow_ai_cdn_config_task_run.apply_async(args = [app_id, site_id, domain_id, tenement_id], countdown=10)
@@ -2690,8 +2703,9 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info):
         lanying_cdn.set_cdn_domain_cert(domain_name, domain_info['cert_pem'], domain_info['cert_key'])
         update_custom_domain_info(app_id, site_id, domain_id, "state", 'ready')
         update_custom_domain_info(app_id, site_id, domain_id, "cert_ready", "ready")
-        update_site_field(app_id, site_id, "custom_site_name", domain_name)
-        update_site_field(app_id, site_id, "custom_site_url", f'https://{domain_name}/')
+        site = get_site(app_id, site_id)
+        if site:
+            maybe_sync_to_github(site)
         return {
             'result': 'ok'
         }

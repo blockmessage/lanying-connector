@@ -423,13 +423,13 @@ def create_site():
     github_base_branch = str(data['github_base_branch'])
     github_base_dir = str(data['github_base_dir'])
     footer_note = str(data['footer_note'])
-    lanying_link = str(data['lanying_link'])
+    lanying_link = maybe_add_https_prefix(str(data['lanying_link']))
     title = str(data.get('title', ''))
     copyright = str(data.get('copyright', ''))
-    canonical_link = str(data.get('canonical_link', ''))
+    canonical_link = maybe_add_https_prefix(str(data.get('canonical_link', '')))
     meta_keywords = str(data.get('meta_keywords', ''))
     baidu_token = str(data.get('baidu_token', ''))
-    official_website_url = str(data.get('official_website_url', ''))
+    official_website_url = maybe_add_https_prefix(str(data.get('official_website_url', '')))
     google_token = str(data.get('google_token', ''))
     max_latest_num = int(data.get('max_latest_num', '10'))
     language = str(data.get('language', 'zh-hans'))
@@ -478,13 +478,13 @@ def configure_site():
     github_base_branch = str(data['github_base_branch'])
     github_base_dir = str(data['github_base_dir'])
     footer_note = str(data['footer_note'])
-    lanying_link = str(data['lanying_link'])
+    lanying_link = maybe_add_https_prefix(str(data['lanying_link']))
     title = str(data.get('title', ''))
     copyright = str(data.get('copyright', ''))
-    canonical_link = str(data.get('canonical_link', ''))
+    canonical_link = maybe_add_https_prefix(str(data.get('canonical_link', '')))
     meta_keywords = str(data.get('meta_keywords', ''))
     baidu_token = str(data.get('baidu_token', ''))
-    official_website_url = str(data.get('official_website_url', ''))
+    official_website_url = maybe_add_https_prefix(str(data.get('official_website_url', '')))
     google_token = str(data.get('google_token', ''))
     max_latest_num = int(data.get('max_latest_num', '10'))
     language = str(data.get('language', 'zh-hans'))
@@ -544,7 +544,8 @@ def create_custom_domain():
     tenement_id = str(data['tenement_id'])
     domain_name = str(data['domain_name']).strip()
     scope = str(data['scope'])
-    result = lanying_grow_ai.create_custum_domain(app_id, site_id, domain_name, scope, tenement_id)
+    check_verify_owner = str(data.get('check_verify_owner', 'off'))
+    result = lanying_grow_ai.create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -606,3 +607,11 @@ def check_access_token_valid():
         return True
     else:
         return False
+
+def maybe_add_https_prefix(url):
+    url = url.strip(' ')
+    if url == '':
+        return url
+    if url.startsWith('http'):
+        return url
+    return f'https://{url}'

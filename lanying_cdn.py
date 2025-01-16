@@ -47,10 +47,16 @@ def add_cdn(domain_name, source_domain, scope='global'):
         }
     except Exception as e:
         logging.exception(e)
-        return {
-            'result': 'error',
-            'message': 'fail_to_create_cdn'
-        }
+        if e.message and 'domain name is exist' in e.message:
+            return {
+                'result': 'error',
+                'message': 'domain_name_exist'
+            }
+        else:
+            return {
+                'result': 'error',
+                'message': 'fail_to_create_cdn'
+            }
 
 def desc_cdn(domain_name):
     client = create_client()
