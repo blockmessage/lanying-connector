@@ -177,7 +177,7 @@ def set_cdn_domain_config(domain_name, origin_host, sub_dir):
                 {"argName": "name","argValue": "redirect_to_sub_site"},
                 {"argName": "pos","argValue": "head"},
                 {"argName": "pri","argValue": "0"},
-                {"argName": "rule","argValue": "if match_re($uri, '^/\\.well-known/acme-challenge') {\n    rewrite(concat('https://connector.lanyingim.com',$uri), 'redirect')\n} else {\n    sub_dir = '/"+ sub_dir + "'\n    dst = concat(sub_dir, $uri)\n    rewrite(dst, 'break')\n}"},
+                {"argName": "rule","argValue": "if match_re($uri, '^/\\.well-known/acme-challenge') {\n    rewrite(concat('https://connector.lanyingim.com',$uri), 'redirect')\n} else {\n    if eq($scheme, 'http') {\n        rewrite(concat('https://', $host, $uri), 'redirect', 301);\n    } else {\n        sub_dir = '/"+ sub_dir + "'\n        dst = concat(sub_dir, $uri)\n        rewrite(dst, 'break')\n    }\n}"},
                 {"argName": "brk","argValue": "off"}
             ],
             "functionName": "edge_function"

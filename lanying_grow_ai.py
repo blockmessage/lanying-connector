@@ -2329,18 +2329,18 @@ def is_valid_domain(domain):
     return bool(re.match(pattern, domain))
 
 def is_domain_name_reserved(domain_name):
-    if 'lanyingim.com' in domain_name:
-        return True
-    if 'maximtop.com' in domain_name:
-        return True
-    if 'chatai101.com' in domain_name:
-        return True
-    if 'maxim.top' in domain_name:
-        return True
-    if 'maximtop.cn' in domain_name:
-        return True
-    if 'maximtop.com.cn' in domain_name:
-        return True
+    # if 'lanyingim.com' in domain_name:
+    #     return True
+    # if 'maximtop.com' in domain_name:
+    #     return True
+    # if 'chatai101.com' in domain_name:
+    #     return True
+    # if 'maxim.top' in domain_name:
+    #     return True
+    # if 'maximtop.cn' in domain_name:
+    #     return True
+    # if 'maximtop.com.cn' in domain_name:
+    #     return True
     return False
 
 def get_cdn_source_domain():
