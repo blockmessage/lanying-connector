@@ -2397,8 +2397,71 @@ def get_custom_domain_name(domain_name):
 def get_custom_domain_info(app_id, site_id, domain_id):
     redis = lanying_redis.get_redis_connection()
     return lanying_redis.redis_hgetall(redis, get_custom_domain_info_key(app_id, site_id, domain_id))
-    
-def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner):
+
+def check_domain_num(app_id, site_id, max_domain_num):
+    site_list = get_site_list(app_id)['data']['list']
+    domain_num = 1
+    for site in site_list:
+        if site['site_id'] != site_id:
+            if site['domain_id'] != '':
+                domain_num += 1
+    if domain_num > max_domain_num:
+        logging.info(f"check_domain_num error | app_id:{app_id}, site_id:{site_id}, domain_num:{domain_num}, max_domain_num:{max_domain_num}")
+        return {
+            'result': 'error',
+            'message': f'domain_num_exceed({domain_num}/{max_domain_num})'
+        }
+    else:
+        logging.info(f"check_domain_num ok | app_id:{app_id}, site_id:{site_id}, domain_num:{domain_num}, max_domain_num:{max_domain_num}")
+        return {
+            'result': 'ok'
+        }
+
+def domain_num_limit_changed(app_id, max_domain_num, tenement_id):
+    site_list = get_site_list(app_id)['data']['list']
+    domain_count = 0
+    for site in site_list:
+        site_id = site['site_id']
+        domain_id = site.get('domain_id', '')
+        if domain_id != '':
+            domain_info = get_custom_domain_info(app_id, site_id, domain_id)
+            if domain_info:
+                cdn_status = domain_info.get('cdn_status', 'online')
+                if cdn_status == 'online':
+                    domain_count += 1
+                    if domain_count > max_domain_num:
+                        try:
+                            domain_name = domain_info['domain_name']
+                            lanying_cdn.stop_cdn(domain_name)
+                            update_custom_domain_info(app_id, site_id, domain_id, 'cdn_status', 'offline')
+                            logging.info(f"domain_num_limit_changed stop cdn success| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+                            lanying_slack.async_send_message(f'GrowAI 停止CDN成功。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
+                        except Exception as e:
+                            logging.exception(e)
+                            logging.info(f"domain_num_limit_changed stop cdn failed| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+                            lanying_slack.async_send_message(f'GrowAI 停止CDN失败。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
+                elif cdn_status == 'offline':
+                    if domain_count + 1 <= max_domain_num:
+                        domain_count += 1
+                        try:
+                            domain_name = domain_info['domain_name']
+                            lanying_cdn.start_cdn(domain_name)
+                            update_custom_domain_info(app_id, site_id, domain_id, 'cdn_status', 'online')
+                            logging.info(f"domain_num_limit_changed start cdn success| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+                            lanying_slack.async_send_message(f'GrowAI 启动CDN成功。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
+                        except Exception as e:
+                            logging.exception(e)
+                            logging.info(f"domain_num_limit_changed start cdn failed| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+                            lanying_slack.async_send_message(f'GrowAI 启动CDN失败。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True,
+            'domain_count': domain_count
+        }
+    }
+
+def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner, max_domain_num):
     site = get_site(app_id, site_id)
     if site is None:
         return {
@@ -2411,6 +2474,9 @@ def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check
             'message': 'site_name_not_exist'
         }
     site_name = site['site_name']
+    result = check_domain_num(app_id, site_id, max_domain_num)
+    if result['result'] == 'error':
+        return result
     result = check_domain_owner(app_id, site_id, domain_name)
     if result['result'] == 'error':
         return result
@@ -2425,14 +2491,49 @@ def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check
     result = lanying_cdn.add_cdn(domain_name, get_cdn_source_domain(), scope)
     if result['result'] == 'error':
         return result
-    lanying_slack.async_send_message(f'GrowAI 开始创建CDN, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_name:{domain_name}, scope:{scope}')
     domain_id = create_custom_domain_info(domain_name, app_id, site_id, site_name, scope)
     update_site_field(app_id, site_id, 'domain_id', domain_id)
+    clean_old_domain(app_id, site_id, site, tenement_id)
     domain_info = get_custom_domain_info(app_id, site_id, domain_id)
+    lanying_slack.async_send_message(f'GrowAI 开始创建CDN, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, scope:{scope}')
     return {
         'result': 'ok',
         'data': domain_info
     }
+
+def clean_old_domain(app_id, site_id, old_site, tenement_id):
+    try:
+        if old_site['domain_id'] != '':
+            old_domain_id = old_site['domain_id']
+            old_domain_info = get_custom_domain_info(app_id, site_id, old_domain_id)
+            if old_domain_info:
+                domain_name = old_domain_info['domain_name']
+                try:
+                    lanying_cdn.delete_cdn(domain_name)
+                    lanying_slack.async_send_message(f'GrowAI 删除CDN成功, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{old_domain_id}, domain_name:{domain_name}')
+                except Exception as e:
+                    logging.exception(e)
+                    lanying_slack.async_send_message(f'GrowAI 删除CDN失败, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{old_domain_id}, domain_name:{domain_name}')
+    except Exception as e:
+        logging.exception(e)
+
+def manual_clean_site_domain(app_id, site_id):
+    site = get_site(app_id, site_id)
+    result = {}
+    if site['domain_id'] != '':
+        domain_id = site['domain_id']
+        result['domain_id'] = domain_id
+        domain_info = get_custom_domain_info(app_id, site_id, domain_id)
+        if domain_info:
+            domain_name = domain_info['domain_name']
+            result['domain_name'] = domain_name
+            try:
+                lanying_cdn.delete_cdn(domain_name)
+                result['delete_cdn_result'] = 'ok'
+            except Exception as e:
+                result['delete_cdn_result'] = 'error'
+        update_site_field(app_id, site_id, 'domain_id', '')
+    return result
 
 def get_site_custom_domain_info_list(app_id):
     site_list = get_site_list(app_id)['data']['list']
@@ -2490,8 +2591,11 @@ def check_domain_cname(app_id, site_id, tenement_id):
                 custom_site_url = f'https://{domain_name}/'
                 update_site_field(app_id, site_id, "custom_site_name", domain_name)
                 update_site_field(app_id, site_id, "custom_site_url", custom_site_url)
-                update_site_field(app_id, site_id, "canonical_link", custom_site_url)
-                lanying_slack.async_send_message(f'GrowAI 开始配置CDN, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_name:{domain_name}')
+                old_canonical_link =  site.get('old_canonical_link', '')
+                old_custom_site_url= site.get('custom_site_url', '')
+                if old_canonical_link == '' or 'docs.lanyingim.com' in old_canonical_link or '.site.chatai101.com' in old_canonical_link or old_custom_site_url == old_canonical_link:
+                    update_site_field(app_id, site_id, "canonical_link", custom_site_url)
+                lanying_slack.async_send_message(f'GrowAI 开始配置CDN, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
                 from lanying_tasks import grow_ai_cdn_config_task_run
                 grow_ai_cdn_config_task_run.apply_async(args = [app_id, site_id, domain_id, tenement_id], countdown=10)
                 domain_info = get_custom_domain_info(app_id, site_id, domain_id)
@@ -2578,11 +2682,12 @@ def do_cdn_config_task_run(app_id, site_id, domain_id, tenement_id, has_retry_ti
                 'message': 'bad_domain_state'
             }
         domain_name = domain_info['domain_name']
+        cert_failed_times = domain_info.get('cert_failed_times', '0')
         logging.info(f"cdn_config_task_run_internal start | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}")
         result = do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info)
         if result['result'] == 'ok':
-            logging.info(f"cdn_config_task_run_internal success | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}, result:{result}")
-            lanying_slack.async_send_message(f'GrowAI 配置CDN完成, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_name:{domain_name}, try_times:{now_times}/{max_times}')
+            logging.info(f"cdn_config_task_run_internal success | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}, result:{result}, cert_failed_times:{cert_failed_times}")
+            lanying_slack.async_send_message(f'GrowAI 配置CDN完成, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, domain_id:{domain_id}, try_times:{now_times}/{max_times}, cert_failed_times:{cert_failed_times}')
             update_custom_domain_info(app_id, site_id, domain_id, "task_status", "success")
             return result
         else:
@@ -2591,13 +2696,13 @@ def do_cdn_config_task_run(app_id, site_id, domain_id, tenement_id, has_retry_ti
                 if has_retry_times:
                     update_custom_domain_info(app_id, site_id, domain_id, "task_status", "retry")
                 else:
-                    logging.info(f"cdn_config_task_run_internal failed with no retry times | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}, result:{result}")
-                    lanying_slack.async_send_message(f'GrowAI 配置CDN失败, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_name:{domain_name}, try_times:{now_times}/{max_times}, result:{result}')
+                    logging.info(f"cdn_config_task_run_internal failed with no retry times | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}, result:{result}, cert_failed_times:{cert_failed_times}")
+                    lanying_slack.async_send_message(f'GrowAI 配置CDN失败, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, try_times:{now_times}/{max_times}, result:{result}, cert_failed_times:{cert_failed_times}')
                     update_custom_domain_info(app_id, site_id, domain_id, "task_status", "error")
-                raise Exception('failed')
+                raise Exception(result)
             else:
-                logging.info(f"cdn_config_task_run_internal failed with not retry | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}, result:{result}")
-                lanying_slack.async_send_message(f'GrowAI 配置CDN失败, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_name:{domain_name}, try_times:{now_times}/{max_times}, result:{result}')
+                logging.info(f"cdn_config_task_run_internal failed with not retry | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}, result:{result}, cert_failed_times:{cert_failed_times}")
+                lanying_slack.async_send_message(f'GrowAI 配置CDN失败, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, try_times:{now_times}/{max_times}, result:{result}, cert_failed_times:{cert_failed_times}')
                 return result
     except Exception as e:
         logging.exception(e)
@@ -2686,18 +2791,29 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info):
             except Exception as e:
                 logging.exception(e)
                 logging.info(f"do_cdn_config_task_run_internal cert exception | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
-                return {
-                    'result': 'error',
-                    'message': 'cert_not_ready',
-                    'retry': False
-                }
+                cert_failed_times = int(domain_info.get('cert_failed_times', '0')) + 1
+                update_custom_domain_info(app_id, site_id, domain_id, "cert_failed_times", cert_failed_times)
+                if cert_failed_times < 5:
+                    return {
+                        'result': 'error',
+                        'message': 'cert_not_ready',
+                        'retry': True,
+                        'retry_delay_time': 60
+                    }
+                else:
+                    return {
+                        'result': 'error',
+                        'message': 'cert_not_ready',
+                        'retry': False
+                    }
         except Exception as e:
             logging.exception(e)
             logging.info(f"do_cdn_config_task_run_internal cert order exception | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
             return {
                 'result': 'error',
                 'message': 'cert_not_ready',
-                'retry': True
+                'retry': True,
+                'retry_delay_time': 60
             }
     try:
         lanying_cdn.set_cdn_domain_cert(domain_name, domain_info['cert_pem'], domain_info['cert_key'])

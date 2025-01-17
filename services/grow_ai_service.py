@@ -544,8 +544,9 @@ def create_custom_domain():
     tenement_id = str(data['tenement_id'])
     domain_name = str(data['domain_name']).strip()
     scope = str(data['scope'])
+    max_domain_num = int(data['max_domain_num'])
     check_verify_owner = str(data.get('check_verify_owner', 'off'))
-    result = lanying_grow_ai.create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner)
+    result = lanying_grow_ai.create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner, max_domain_num)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -600,6 +601,23 @@ def check_domain_cname():
         resp = make_response({'code':200, 'data':result.get("data",{})})
     return resp
 
+@bp.route("/service/grow_ai/domain_num_limit_changed", methods=["POST"])
+def domain_num_limit_changed():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    max_domain_num = int(data['max_domain_num'])
+    tenement_id = str(data['tenement_id'])
+    result = lanying_grow_ai.domain_num_limit_changed(app_id, max_domain_num, tenement_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get("data",{})})
+    return resp
+
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
     accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')
@@ -612,6 +630,6 @@ def maybe_add_https_prefix(url):
     url = url.strip(' ')
     if url == '':
         return url
-    if url.startsWith('http'):
+    if url.startswith('http'):
         return url
     return f'https://{url}'

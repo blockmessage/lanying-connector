@@ -47,20 +47,38 @@ def add_cdn(domain_name, source_domain, scope='global'):
         }
     except Exception as e:
         logging.exception(e)
-        if e.message and 'domain name is exist' in e.message:
-            return {
-                'result': 'error',
-                'message': 'domain_name_exist'
-            }
-        else:
-            return {
-                'result': 'error',
-                'message': 'fail_to_create_cdn'
+        if isinstance(e.args[0], dict):
+            code = e.args[0].get('code', '')
+            if code == 'DomainNotRegistration':
+                return {
+                    'result': 'error',
+                    'message': 'domain_not_registration'
+                }
+            elif code == 'DomainAlreadyExist':
+                return {
+                    'result': 'error',
+                    'message': 'domain_name_exist'
+                }
+        return {
+            'result': 'error',
+            'message': 'fail_to_create_cdn'
             }
 
 def desc_cdn(domain_name):
     client = create_client()
     result = client.describe_cdn_domain_detail(cdn_20180510_models.DescribeCdnDomainDetailRequest(domain_name = domain_name))
+    show_result(result)
+    return result
+
+def stop_cdn(domain_name):
+    client = create_client()
+    result = client.stop_cdn_domain(cdn_20180510_models.StopCdnDomainRequest(domain_name = domain_name))
+    show_result(result)
+    return result
+
+def start_cdn(domain_name):
+    client = create_client()
+    result = client.start_cdn_domain(cdn_20180510_models.StartCdnDomainRequest(domain_name = domain_name))
     show_result(result)
     return result
 
@@ -119,7 +137,7 @@ def describe_cdn_user_quota():
     show_result(result)
     return result
 
-def delete_cdn_domain(domain_name):
+def delete_cdn(domain_name):
     client = create_client()
     result = client.delete_cdn_domain(cdn_20180510_models.DeleteCdnDomainRequest(domain_name = domain_name))
     show_result(result)

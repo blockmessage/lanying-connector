@@ -467,7 +467,11 @@ def grow_ai_cdn_config_task_run(self, app_id, site_id, domain_id, tenement_id):
     try:
         lanying_grow_ai.do_cdn_config_task_run(app_id, site_id, domain_id, tenement_id, has_retry_times, self.request.retries, global_grow_ai_cdn_config_task_run_max_retries)
     except Exception as e:
-        raise self.retry(exc=e, countdown=10)
+        retry_delay_time = 10
+        if isinstance(e.args[0], dict): 
+            if 'retry_delay_time' in e.args[0]:
+                retry_delay_time = e.args[0]['retry_delay_time']
+        raise self.retry(exc=e, countdown=retry_delay_time)
 
 def task_error(message):
     logging.error(message)
