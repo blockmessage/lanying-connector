@@ -2684,7 +2684,7 @@ def do_cdn_config_task_run(app_id, site_id, domain_id, tenement_id, has_retry_ti
         domain_name = domain_info['domain_name']
         cert_failed_times = domain_info.get('cert_failed_times', '0')
         logging.info(f"cdn_config_task_run_internal start | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}")
-        result = do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info)
+        result = do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info, tenement_id)
         if result['result'] == 'ok':
             logging.info(f"cdn_config_task_run_internal success | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, progress:{now_times}/{max_times}, result:{result}, cert_failed_times:{cert_failed_times}")
             lanying_slack.async_send_message(f'GrowAI 配置CDN完成, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, domain_id:{domain_id}, try_times:{now_times}/{max_times}, cert_failed_times:{cert_failed_times}')
@@ -2708,7 +2708,7 @@ def do_cdn_config_task_run(app_id, site_id, domain_id, tenement_id, has_retry_ti
         logging.exception(e)
         raise e
 
-def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info):
+def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info, tenement_id):
     domain_name = domain_info['domain_name']
     logging.info(f"do_cdn_config_task_run_internal start | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
     if 'cdn_ready' not in domain_info:
@@ -2785,8 +2785,10 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info):
                 logging.info(f"do_cdn_config_task_run_internal cert finish | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
                 update_custom_domain_info(app_id, site_id, domain_id, "cert_pem", finalized_orderr.fullchain_pem)
                 update_custom_domain_info(app_id, site_id, domain_id, "cert_key", pkey_pem)
-                update_custom_domain_info(app_id, site_id, domain_id, "cert_create_time", int(time.time()))
+                cert_create_time = int(time.time())
+                update_custom_domain_info(app_id, site_id, domain_id, "cert_create_time", cert_create_time)
                 update_custom_domain_info(app_id, site_id, domain_id, "cert_ready", "ready")
+                add_custom_domain_renew_schedule(app_id, site_id, domain_id, domain_name, cert_create_time, tenement_id)
                 domain_info = get_custom_domain_info(app_id, site_id, domain_id)
             except Exception as e:
                 logging.exception(e)
@@ -2832,3 +2834,172 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info):
             'message': 'cert_config_not_ready',
             'retry': True
         }
+
+def add_custom_domain_renew_schedule(app_id, site_id, domain_id, domain_name, cert_create_time, tenement_id):
+    redis = lanying_redis.get_redis_connection()
+    value = {
+        'app_id': app_id,
+        'site_id': site_id,
+        'domain_id': domain_id,
+        'domain_name': domain_name,
+        'cert_create_time': cert_create_time,
+        'tenement_id': tenement_id
+    }
+    redis.hset(custom_domain_renew_schedule_key(), f'{app_id}_{site_id}', json.dumps(value))
+
+def custom_domain_renew_schedule_key():
+    return 'lanying-connector:custom_domain_renew_schedule'
+
+def custom_domain_run_renew_schedules():
+    logging.info("custom_domain_run_renew_schedules start")
+    redis = lanying_redis.get_redis_connection()
+    schedules = lanying_redis.redis_hgetall(redis, custom_domain_renew_schedule_key())
+    check_time = int(time.time()) - 60 * 86400
+    renew_schedules = []
+    for _, schedule_str in schedules.items():
+        try:
+            schedule = json.loads(schedule_str)
+            app_id = schedule['app_id']
+            site_id = schedule['site_id']
+            domain_id = schedule['domain_id']
+            site = get_site(app_id, site_id)
+            if site and domain_id == site.get('domain_id', ''):
+                domain_info = get_custom_domain_info(app_id, site_id, domain_id)
+                if domain_info:
+                    cdn_status = domain_info.get('cdn_status', 'online')
+                    if cdn_status == 'online':
+                        cert_create_time = int(domain_info['cert_create_time'])
+                        if cert_create_time < check_time:
+                            renew_schedules.append(schedule)
+        except Exception as e:
+            logging.exception(e)
+    logging.info(f"custom_domain_run_renew_schedules renew list size: {len(renew_schedules)}")
+    if len(renew_schedules) > 0:
+        max_delay = min(600, max(60,round(3600 * 8 / len(renew_schedules))))
+        min_delay = max(60, round(max_delay / 2))
+        from lanying_tasks import custom_domain_renew_task
+        delay = random.randint(1, 20)
+        logging.info(f"custom_domain_run_renew_schedules renew delay: {delay}")
+        custom_domain_renew_task.apply_async(args = [renew_schedules, min_delay, max_delay, 1], countdown=delay)
+
+def do_custom_domain_renew_task(renew_schedules, min_delay, max_delay, index):
+    if len(renew_schedules) > 0:
+        renew_schedule = renew_schedules[0]
+        logging.info(f"do_custom_domain_renew_task start | renew_schedule:{renew_schedule}, min_delay:{min_delay}, max_delay:{max_delay}, index:{index}")
+        try:
+            do_custom_domain_renew(renew_schedule, index)
+        except Exception as e:
+            logging.exception(e)
+        renew_schedules = renew_schedules[1:]
+        if len(renew_schedule) > 0:
+            from lanying_tasks import custom_domain_renew_task
+            delay = random.randint(min_delay, max_delay)
+            logging.info(f"do_custom_domain_renew_task renew delay: {delay}")
+            custom_domain_renew_task.apply_async(args = [renew_schedules, min_delay, max_delay, index+1], countdown=delay)
+
+def do_custom_domain_renew(schedule, index):
+    check_time = int(time.time()) - 60 * 86400
+    app_id = schedule['app_id']
+    site_id = schedule['site_id']
+    domain_id = schedule['domain_id']
+    tenement_id = schedule['tenement_id']
+    domain_name = schedule['domain_name']
+    site = get_site(app_id, site_id)
+    if site and domain_id == site.get('domain_id', ''):
+        domain_info = get_custom_domain_info(app_id, site_id, domain_id)
+        if domain_info:
+            cdn_status = domain_info.get('cdn_status', 'online')
+            if cdn_status == 'online':
+                cert_create_time = int(domain_info['cert_create_time'])
+                cert_renew_failed_times = domain_info.get('cert_renew_failed_times', '0')
+                cert_days = round((int(time.time()) - cert_create_time) / 86400)
+                if cert_create_time < check_time:
+                    lanying_slack.async_send_message(f'GrowAI 开始续签证书, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, domain_id:{domain_id}, cert_failed_times:{cert_renew_failed_times}, cert_days:{cert_days}')
+                    result = do_custom_domain_renew_internal(app_id, site_id, domain_id, domain_info, index, tenement_id)
+                    if result['result'] == 'ok':
+                        lanying_slack.async_send_message(f'GrowAI 续签证书成功, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, domain_id:{domain_id}, cert_failed_times:{cert_renew_failed_times}, cert_days:{cert_days}')
+                    else:
+                        lanying_slack.async_send_message(f'GrowAI 续签证书失败, 租户ID: {tenement_id}, app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, domain_id:{domain_id}, cert_failed_times:{cert_renew_failed_times}, cert_days:{cert_days}, result:{result}')
+                    return result
+    return {
+        'result': 'error',
+        'message': 'no_need_renew'
+    }
+
+def do_custom_domain_renew_internal(app_id, site_id, domain_id, domain_info, index, tenement_id):
+    domain_name = domain_info['domain_name']
+    logging.info(f"do_custom_domain_renew_internal start | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, index:{index}")
+    test_key = f'{app_id}_{site_id}_{domain_id}'
+    test_value = f'{site_id}_{domain_id}'
+    lanying_cert.set_acme_challenge_value(test_key,test_value)
+    try:
+        url = f'http://{domain_name}/.well-known/acme-challenge/{test_key}'
+        logging.info(f"do_custom_domain_renew_internal http check start | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, url: {url}")
+        response = requests.get(url)
+        logging.info(f"do_custom_domain_renew_internal http check response | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}, response: {response.text}")
+        if response.text == test_value:
+            logging.info(f"do_custom_domain_renew_internal http check success | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+        else:
+            logging.info(f"do_custom_domain_renew_internal http check failed | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+            return {
+                'result': 'error',
+                'message': 'http_not_ready'
+            }
+    except Exception as e:
+        logging.exception(e)
+        logging.info(f"do_custom_domain_renew_internal http check exception | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+        return {
+            'result': 'error',
+            'message': 'http_not_ready'
+        }
+    try:
+        logging.info(f"do_custom_domain_renew_internal start cert request | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+        client_acme = lanying_cert.get_acme_client()
+        pkey_pem, csr_pem = lanying_cert.new_csr_comp(domain_name)
+        orderr = client_acme.new_order(csr_pem)
+        try:
+            logging.info(f"do_custom_domain_renew_internal cert start challenge cert order | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+            challb = lanying_cert.select_http01_chall(orderr)
+            finalized_orderr = lanying_cert.perform_http01(client_acme, challb, orderr)
+            logging.info(f"do_custom_domain_renew_internal cert finish | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+            update_custom_domain_info(app_id, site_id, domain_id, "cert_pem", finalized_orderr.fullchain_pem)
+            update_custom_domain_info(app_id, site_id, domain_id, "cert_key", pkey_pem)
+            cert_create_time = int(time.time())
+            update_custom_domain_info(app_id, site_id, domain_id, "cert_create_time", cert_create_time)
+            update_custom_domain_info(app_id, site_id, domain_id, "cert_renew_failed_times", 0)
+            add_custom_domain_renew_schedule(app_id, site_id, domain_id, domain_name, cert_create_time, tenement_id)
+            domain_info = get_custom_domain_info(app_id, site_id, domain_id)
+        except Exception as e:
+            logging.exception(e)
+            logging.info(f"do_custom_domain_renew_internal cert exception | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+            cert_renew_failed_times = int(domain_info.get('cert_renew_failed_times', '0')) + 1
+            update_custom_domain_info(app_id, site_id, domain_id, "cert_renew_failed_times", cert_renew_failed_times)
+            if cert_renew_failed_times < 5:
+                return {
+                    'result': 'error',
+                    'message': 'cert_not_ready'
+                }
+            else:
+                return {
+                    'result': 'error',
+                    'message': 'cert_not_ready'
+                }
+    except Exception as e:
+        logging.exception(e)
+        logging.info(f"do_custom_domain_renew_internal cert order exception | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
+        return {
+            'result': 'error',
+            'message': 'cert_not_ready'
+        }
+    try:
+        lanying_cdn.set_cdn_domain_cert(domain_name, domain_info['cert_pem'], domain_info['cert_key'])
+        return {
+            'result': 'ok'
+        }
+    except Exception as e:
+        logging.exception(e)
+        return {
+            'result': 'error',
+            'message': 'cert_config_not_ready'
+        }
+
