@@ -434,6 +434,7 @@ def create_site():
     max_latest_num = int(data.get('max_latest_num', '10'))
     language = str(data.get('language', 'zh-hans'))
     commit_type = str(data.get('commit_type','branch')).strip()
+    icp_number = str(data.get('icp_number','')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,
@@ -453,7 +454,8 @@ def create_site():
         google_token = google_token,
         max_latest_num = max_latest_num,
         language = language,
-        commit_type = commit_type
+        commit_type = commit_type,
+        icp_number = icp_number
     )
     result = lanying_grow_ai.create_site(site_setting)
     if result['result'] == 'error':
@@ -489,6 +491,7 @@ def configure_site():
     max_latest_num = int(data.get('max_latest_num', '10'))
     language = str(data.get('language', 'zh-hans'))
     commit_type = str(data.get('commit_type','branch')).strip()
+    icp_number = str(data.get('icp_number','')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         name = name,
@@ -508,7 +511,8 @@ def configure_site():
         google_token = google_token,
         max_latest_num = max_latest_num,
         language = language,
-        commit_type = commit_type
+        commit_type = commit_type,
+        icp_number = icp_number
     )
     result = lanying_grow_ai.configure_site(site_id, site_setting)
     if result['result'] == 'error':

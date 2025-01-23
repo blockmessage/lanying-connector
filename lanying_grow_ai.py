@@ -72,7 +72,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type):
+    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number):
         self.app_id = app_id
         self.name = name
         self.type = type
@@ -92,6 +92,7 @@ class SiteSetting:
         self.max_latest_num = max_latest_num
         self.language = language
         self.commit_type = commit_type
+        self.icp_number = icp_number
 
     def to_hmset_fields(self):
         return {
@@ -113,7 +114,8 @@ class SiteSetting:
             'google_token': self.google_token,
             'max_latest_num': self.max_latest_num,
             'language': self.language,
-            'commit_type': self.commit_type
+            'commit_type': self.commit_type,
+            'icp_number': self.icp_number
         }
 
 def handle_schedule(schedule_info):
@@ -1996,9 +1998,17 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                         site_url = '/'
                     language = site.get('language', 'zh-hans')
                     if language == 'en':
-                        new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>Official Website</a> | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>Sitemap</a>"
+                        official_site_link = f" | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>Official Website</a>"
+                        site_map_link = f" | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>Sitemap</a>"
                     else:
-                        new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright} | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>官网</a> | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>网站地图</a>"
+                        official_site_link = f" | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>官网</a>"
+                        site_map_link = f" | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>网站地图</a>"
+                    icp_number = site.get('icp_number', '')
+                    if icp_number != '':
+                        icp_number_link = f" | <a href='https://beian.miit.gov.cn' target='_blank' style='text-decoration:none!important;'>{icp_number}</a>"
+                    else:
+                        icp_number_link = ''
+                    new_book_json['pluginsConfig']['tbfed-pagefooter']['copyright'] = f"{copyright}{icp_number_link}{official_site_link}{site_map_link}"
             elif field == 'edit_link':
                 new_book_json['pluginsConfig']['edit-link']['base'] = f'https://github.com/{github_owner}/{github_repo}/blob/{base_branch}'
             elif field == 'logo_site_url':
@@ -2115,6 +2125,8 @@ def get_site(app_id, site_id):
             dto['commit_type'] = 'branch'
         if 'domain_id' not in dto:
             dto['domain_id'] = ''
+        if 'icp_number' not in dto:
+            dto['icp_number'] = ''
         maybe_add_site_url(dto)
         return dto
     return None
@@ -2795,12 +2807,12 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info, ten
                 logging.info(f"do_cdn_config_task_run_internal cert exception | app_id:{app_id}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
                 cert_failed_times = int(domain_info.get('cert_failed_times', '0')) + 1
                 update_custom_domain_info(app_id, site_id, domain_id, "cert_failed_times", cert_failed_times)
-                if cert_failed_times < 5:
+                if cert_failed_times < 6:
                     return {
                         'result': 'error',
                         'message': 'cert_not_ready',
                         'retry': True,
-                        'retry_delay_time': 60
+                        'retry_delay_time': 60 * cert_failed_times
                     }
                 else:
                     return {
