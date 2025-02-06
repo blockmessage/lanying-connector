@@ -648,7 +648,7 @@ def handle_chat_message(config, msg):
             if len(reply_list) > 0:
                 time.sleep(0.5)
     time.sleep(0.5)
-    add_debug_message(config, "处理完成", True)
+    add_debug_message(config, "处理完成", {'is_last_msg': True})
 
 def handle_chat_message_try(config, msg, retry_times):
     app_id = msg['appId']
@@ -1119,12 +1119,19 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             stream_function_args = ""
             stream_function_id = ""
             stream_finish_reason = ""
+            reasoning_content = ""
+            reasoning_content_count = 0
+            reasoning_content_collect = []
+            reason_finish = False
             try:
                 for delta in reply_generator:
                     # logging.info(f"KKK:delta:{delta}")
                     delta_content = delta.get('content', '')
                     if not delta_content:
                         delta_content = ''
+                    delta_reasoning_content = delta.get('reasoning_content', '')
+                    if not delta_reasoning_content:
+                        delta_reasoning_content = ''
                     if 'usage' in delta:
                         stream_usage = delta['usage']
                     if "function_call" in delta:
@@ -1141,9 +1148,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         stream_finish_reason = delta['finish_reason']
                     content_count += len(delta_content)
                     content_collect.append(delta_content)
+                    reasoning_content_count += len(delta_reasoning_content)
+                    reasoning_content_collect.append(delta_reasoning_content)
                     collect_now = time.time()
                     delta_time = collect_now - collect_start_time
                     if delta_time >= stream_interval and content_count >= stream_collect_count:
+                        reason_finish = True
                         message_to_send = ''.join(content_collect)
                         if stream_msg_id > 0:
                             reply_ext['ai']['seq'] += 1
@@ -1159,6 +1169,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         content_collect = []
                         collect_start_time = collect_now
                         stream_msg_last_send_time = collect_now
+                    if (delta_time >= stream_interval and reasoning_content_count >= stream_collect_count) or (reason_finish and reasoning_content_count > 0):
+                        message_to_send = ''.join(reasoning_content_collect)
+                        reasoning_content_count = 0
+                        reasoning_content_collect = []
+                        collect_start_time = collect_now
+                        add_debug_message(config, message_to_send, {'stream_interval': stream_interval, 'is_reasoning_msg': True})
             except Exception as e:
                 logging.info("stream got error")
                 logging.exception(e)
@@ -4403,7 +4419,10 @@ def replyMessageAsync(config, content, ext = {}):
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
 
-def add_debug_message(config, content, is_last_msg = False):
+def add_debug_message(config, content, opt = {}):
+    is_last_msg = opt.get('is_last_msg', False)
+    is_reasoning_msg = opt.get('is_reasoning_msg', False)
+    stream_interval = opt.get('stream_interval', 3)
     enable_debug_message = config.get('enable_debug_message', False)
     if not enable_debug_message:
         return
@@ -4420,17 +4439,33 @@ def add_debug_message(config, content, is_last_msg = False):
         reply_from = config['reply_from']
         reply_to = config['reply_to']
         request_msg_id = config['request_msg_id']
+        debug_msg_seq = config.get('debug_msg_seq', 1)
         ext = {
             'ai':{
                 'role': 'ai',
                 'is_debug_msg': True,
+                'stream': True,
+                'stream_interval': stream_interval,
+                'seq': debug_msg_seq,
                 'request_msg_id': request_msg_id
             }
         }
+        config['debug_msg_seq'] = debug_msg_seq + 1
         send_msg_type = 1 if reply_msg_type == 'CHAT' else 2
         last_debug_msg_id = config.get('last_debug_msg_id')
         if is_debug:
-            final_content = '' if content == '' else f'[蓝莺AI][{timestr}] {content}\n\n'
+            if not is_reasoning_msg:
+                if last_debug_msg_id is None:
+                    final_content = '' if content == '' else f'[蓝莺AI][{timestr}] {content}\n'
+                else:
+                    final_content = '' if content == '' else f'\n[蓝莺AI][{timestr}] {content}\n'
+            else:
+                is_first_reasoning_msg = config.get('is_first_reasoning_msg', True)
+                if is_first_reasoning_msg:
+                    config['is_first_reasoning_msg'] = False
+                    final_content = f'\n[蓝莺AI][{timestr}] {content}'
+                else:
+                    final_content = content
             if last_debug_msg_id is None:
                 extra = {
                     'ext': ext
@@ -4447,9 +4482,16 @@ def add_debug_message(config, content, is_last_msg = False):
                 lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 11, final_content, extra)
         elif status_bar:
             trunc_size = 150
-            final_content = '' if content == '' else f'[蓝莺AI] {content}'
-            if len(final_content) > trunc_size:
-                final_content = final_content[:trunc_size-3] + "..."
+            if not is_reasoning_msg:
+                final_content = '' if content == '' else f'[蓝莺AI] {content}'
+                if len(final_content) > trunc_size:
+                    final_content = final_content[:trunc_size-3] + "..."
+            else:
+                is_first_reasoning_msg = config.get('is_first_reasoning_msg', True)
+                if is_first_reasoning_msg:
+                    final_content = '' if content == '' else f'[蓝莺AI] {content}'
+                else:
+                    final_content = content
             if last_debug_msg_id is None:
                 extra = {
                     'ext': ext
@@ -4463,7 +4505,15 @@ def add_debug_message(config, content, is_last_msg = False):
                     'related_mid': last_debug_msg_id,
                     'online_only': False if is_last_msg else True
                 }
-                lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_content, extra)
+                if is_reasoning_msg:
+                    is_first_reasoning_msg = config.get('is_first_reasoning_msg', True)
+                    if is_first_reasoning_msg:
+                        config['is_first_reasoning_msg'] = False
+                        lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_content, extra)
+                    else:
+                        lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 11, final_content, extra)
+                else:
+                    lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_content, extra)
 
 def replyAudioMessageAsync(config, content, audio_filename, ext = {}):
     add_ai_message_cnt(content)

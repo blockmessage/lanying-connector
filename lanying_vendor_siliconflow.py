@@ -7,125 +7,25 @@ import copy
 def model_configs():
     return [
         {
-            "model": 'Doubao-pro-32k',
-            'endpoint': 'ep-20241026172834-pt64n',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.22,
-            "token_limit": 32000,
-            'order': 1,
-            'function_call': True
-        },
-        {
-            "model": 'Doubao-pro-128k',
-            'endpoint': 'ep-20241026172902-59tzn',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.69,
-            "token_limit": 128000,
-            'order': 2,
-            'function_call': True
-        },
-        {
-            "model": 'Doubao-pro-256k',
-            'endpoint': 'ep-20250102115354-hrz4z',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.69,
-            "token_limit": 256000,
-            'order': 2.1,
-            'function_call': True
-        },
-        {
             "model": 'DeepSeek-R1',
-            'endpoint': 'ep-20250207112323-lfwjs',
+            'real_model': 'deepseek-ai/DeepSeek-R1',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.96,
             "token_limit": 64000,
-            'order': 2.2,
+            'order': 1,
             'function_call': False
         },
         {
             "model": 'DeepSeek-V3',
-            'endpoint': 'ep-20250207112344-8rg6v',
+            'real_model': 'deepseek-ai/DeepSeek-V3',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.21,
             "token_limit": 64000,
-            'order': 2.3,
+            'order': 2,
             'function_call': False
         },
-        {
-            "model": 'Doubao-pro-4k',
-            'endpoint': 'ep-20241026172733-mvz6c',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.22,
-            "token_limit": 4000,
-            'order': 3,
-            'function_call': True
-        },
-        {
-            "model": 'Doubao-lite-4k',
-            'endpoint': 'ep-20241026172923-4dh9k',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.12,
-            "token_limit": 4000,
-            'order': 4,
-            'function_call': True
-        },
-        {
-            "model": 'Doubao-lite-128k',
-            'endpoint': 'ep-20241026173030-2jz9w',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.16,
-            "token_limit": 128000,
-            'order': 5,
-            'function_call': False
-        },
-        {
-            "model": 'Doubao-lite-32k',
-            'endpoint': 'ep-20241026173004-lnrlx',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.12,
-            "token_limit": 32000,
-            'order': 6,
-            'function_call': False
-        },
-        {
-            "model": 'moonshot-v1-8k',
-            'endpoint': 'ep-20241026173110-jcbwp',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 1.13,
-            "token_limit": 8000,
-            'order': 7,
-            'function_call': True
-        },
-        {
-            "model": 'moonshot-v1-32k',
-            'endpoint': 'ep-20241026173141-9hs7f',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 2.18,
-            "token_limit": 32000,
-            'order': 8,
-            'function_call': True
-        },
-        {
-            "model": 'moonshot-v1-128k',
-            'endpoint': 'ep-20241026173205-522lk',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 5.34,
-            "token_limit": 128000,
-            'order': 9,
-            'function_call': True
-        }
     ]
 
 def prepare_chat(auth_info, preset):
@@ -134,22 +34,26 @@ def prepare_chat(auth_info, preset):
     }
 
 def chat(prepare_info, preset):
-    url = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
+    model_config = get_chat_model_config(preset['model'])
+    real_model = model_config.get('real_model', None)
+    url = 'https://api.siliconflow.cn/v1/chat/completions'
     final_preset = format_preset(preset)
+    if real_model:
+        final_preset['model'] = real_model
     api_key = prepare_info["api_key"]
     headers = {"Content-Type": "application/json", "Authorization": f'Bearer {api_key}'}
     try:
-        logging.info(f"volcengine chat_completion start | preset={preset}, url:{url}")
-        logging.info(f"volcengine chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
+        logging.info(f"siliconflow chat_completion start | preset={preset}, url:{url}")
+        logging.info(f"siliconflow chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
         stream = final_preset.get("stream", False)
         if stream:
             response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
-            # logging.info(f"volcengine chat_completion finish | code={response.status_code}, stream:{stream}")
+            logging.info(f"siliconflow chat_completion finish | code={response.status_code}, stream:{stream}")
             if response.status_code == 200:
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        logging.info(f"stream got line:{line_str}|")
+                        # logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
@@ -170,11 +74,9 @@ def chat(prepare_info, preset):
                                         delta['function_call'] = function_call
                                 else:
                                     delta = {'content': ''}
-                                if 'usage' in data and isinstance(data['usage'], dict):
+                                if 'usage' in data:
                                     delta['usage'] = data['usage']
                                 logging.info(f"yield delta:{delta}")
-                                if 'usage' in delta:
-                                    logging.info(f"yield usage delta:{delta}")
                                 yield delta
                             except Exception as e:
                                 pass
@@ -193,17 +95,30 @@ def chat(prepare_info, preset):
                 response_json = {}
                 try:
                     response_json = response.json()
+                    return {
+                        'result': 'error',
+                        'reason': response_json['message'],
+                        'code': response_json['code'],
+                        'response': response_json
+                    }
                 except Exception as e:
                     pass
                 return {
                     'result': 'error',
                     'reason': 'bad_status_code',
-                    'response': response_json
+                    'response': response_json,
+                    'status_code': response.status_code
                 }
         else:
             response = requests.request("POST", url, headers=headers, json=final_preset)
-            logging.info(f"volcengine chat_completion finish | code={response.status_code}, response={response.text}")
+            logging.info(f"siliconflow chat_completion finish | code={response.status_code}, response={response.text}")
             res = response.json()
+            if response.status_code != 200:
+                return {
+                    'result': 'error',
+                    'reason': res['message'],
+                    'code': res['code']
+                }
             usage = res.get('usage',{})
             response_message = res['choices'][0]['message']
             reply = response_message.get('content', "")
@@ -220,7 +135,7 @@ def chat(prepare_info, preset):
                         'id': response_message['tool_calls'][0]['id']
                     }
                 except Exception as e:
-                    logging.error(f"fail to parse volcengine function call {response_message}")
+                    logging.error(f"fail to parse siliconflow function call {response_message}")
                     logging.exception(e)
             finish_reason = ''
             try:
@@ -262,8 +177,6 @@ def format_preset(preset):
                                 function_obj[k] = v
                         tools.append({'type':'function', 'function':function_obj})
                     ret['tools'] = tools
-            elif key == 'model':
-                ret['model'] = get_chat_model_endpoint(preset[key])
             elif key == "messages":
                 last_tool_call_id = ''
                 messages = []
@@ -295,16 +208,6 @@ def format_preset(preset):
                     else:
                         messages.append(message)
                 ret['messages'] = messages
-            elif key == 'top_p':
-                if preset[key] >= 1:
-                    ret[key] = 0.9
-                elif preset[key] <= 0:
-                    ret[key] = 0.1
-                else:
-                    ret[key] = preset[key]
-            elif key == 'stream' and preset[key] == True:
-                ret['stream_options'] = {'include_usage':True}
-                ret[key] = preset[key]
             else:
                 ret[key] = preset[key]
     return ret
@@ -312,10 +215,10 @@ def format_preset(preset):
 def encoding_for_model(model):
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-def get_chat_model_endpoint(model):
+def get_chat_model_config(model):
     for config in model_configs():
         if model == config['model']:
-            return config['endpoint']
+            return config
     return None
 
 def get_chat_model_function_call(model):

@@ -10,16 +10,19 @@ import lanying_vendor_aliyun
 import lanying_vendor_volcengine
 import lanying_vendor_moonshot
 import lanying_vendor_aws
+import lanying_vendor_siliconflow
 import copy
 import logging
 import lanying_config
 import lanying_slack
 from datetime import datetime
 import time
+import lanying_utils
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
     'aws': lanying_vendor_aws,
+    'siliconflow': lanying_vendor_siliconflow,
     'minimax': lanying_vendor_minimax,
     'baidu': lanying_vendor_baidu,
     'zhipuai': lanying_vendor_zhipuai,
@@ -74,6 +77,22 @@ def backup_rules():
                     }
                 }
             ]
+        }
+    ]
+
+def chat_same_model_retry_rules():
+    return [
+        {
+            'vendor': 'siliconflow',
+            'type': 'code',
+            'code': '50501',
+            'sleep_time': 5
+        },
+        {
+            'vendor': 'siliconflow',
+            'type': 'status_code',
+            'status_code': '504',
+            'sleep_time': 5
         }
     ]
 
@@ -245,7 +264,7 @@ def prepare_chat(vendor, auth_info, preset):
 def chat(vendor, prepare_info, preset):
     module = get_module(vendor)
     try:
-        resp = module.chat(prepare_info, preset)
+        resp = chat_with_same_model_retry(module, vendor, prepare_info, preset)
         if 'result' in resp and resp['result'] == 'ok':
             return resp
         return chat_retry(vendor, prepare_info, preset, resp)
@@ -262,10 +281,56 @@ def chat(vendor, prepare_info, preset):
         }
         return chat_retry(vendor, prepare_info, preset, resp)
 
+def chat_with_same_model_retry(module, vendor, prepare_info, preset):
+    try_times = 3
+    for i in range(try_times):
+        try:
+            resp = module.chat(prepare_info, preset)
+            if 'result' in resp and resp['result'] == 'ok':
+                return resp
+        except Exception as e:
+            logging.error(e)
+            error_message = 'exception'
+            try:
+                error_message = str(e)
+            except Exception as ee:
+                pass
+            resp = {
+                'result': 'error',
+                'reason': error_message
+            }
+        rules = chat_same_model_retry_rules()
+        need_retry = False
+        sleep_time = 3
+        for rule in rules:
+            if vendor == rule['vendor']:
+                type = rule.get('type')
+                if type == 'code':
+                    if str(resp.get('code', '')) == rule['code']:
+                        need_retry = True
+                        sleep_time = rule.get('sleep_time', sleep_time)
+                        break
+                elif type =='status_code':
+                    if str(resp.get('status_code', '')) == rule['status_code']:
+                        need_retry = True
+                        sleep_time = rule.get('sleep_time', sleep_time)
+                        break
+        if need_retry:
+            if i >= try_times - 1:
+                logging.info(f"chat_with_same_model_retry no retry times| vendor:{vendor}, resp:{resp}, sleep_time:{sleep_time}, progress: {i}/{try_times}")
+                return resp
+            else:
+                logging.info(f"chat_with_same_model_retry schedule retry | vendor:{vendor}, resp:{resp}, sleep_time:{sleep_time}, progress: {i}/{try_times}")
+                time.sleep(sleep_time)
+        else:
+            logging.info(f"chat_with_same_model_retry no need retry | vendor:{vendor}, resp:{resp}, sleep_time:{sleep_time}, progress: {i}/{try_times}")
+            return resp
+
 def chat_retry(vendor, prepare_info, preset, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
     model = preset['model']
-    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_chat_resp_failed')
+    if need_notify_failed(vendor):
+        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_chat_resp_failed_{vendor}')
     try:
         new_resp = do_chat_retry(vendor, prepare_info, preset, resp, unique_id)
         if 'result' in new_resp and new_resp['result'] == 'ok':
@@ -307,15 +372,15 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
                         new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
                         new_prepare_info = prepare_chat(new_vendor, new_auth_info, new_preset)
                         new_module = get_module(new_vendor)
-                        new_resp = new_module.chat(new_prepare_info, new_preset)
+                        new_resp = chat_with_same_model_retry(new_module, new_vendor, new_prepare_info, new_preset)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"chat backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
                             return new_resp
                         else:
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
                 except Exception as e:
-                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_switch')
+                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
                     logging.error(e)
             logging.info(f"chat backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
     return resp
@@ -330,7 +395,7 @@ def prepare_embedding(vendor, auth_info, type):
 
 def embedding(vendor, prepare_info, model, text):
     module = get_module(vendor)
-    retry_times = 3
+    retry_times = 5
     for i in range(retry_times):
         try:
             resp = module.embedding(prepare_info, model, text)
@@ -360,9 +425,17 @@ def embedding(vendor, prepare_info, model, text):
                 logging.info(f"embedding schedule retry: {i}/{retry_times}, resp:{resp}")
                 time.sleep(0.5)
 
+def need_notify_failed(vendor):
+    if lanying_utils.is_preview_server():
+        return False
+    # if vendor == 'siliconflow' or vendor == 'deepseek':
+    #     return False
+    return True
+
 def embedding_retry(vendor, prepare_info, model, text, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
-    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', 'ai_embedding_resp_failed')
+    if need_notify_failed(vendor):
+        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_embedding_resp_failed_{vendor}')
     try:
         new_resp = do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id)
         if 'result' in new_resp and new_resp['result'] == 'ok':
@@ -408,12 +481,12 @@ def do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id):
                         new_resp = new_module.embedding(new_prepare_info, new_model, text)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"embedding backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_embedding_switch')
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
                             return new_resp
                         else:
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_embedding_switch')
+                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
                 except Exception as e:
-                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', 'ai_embedding_switch')
+                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
                     logging.error(e)
             logging.info(f"embedding backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
     return resp

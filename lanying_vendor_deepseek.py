@@ -3,15 +3,27 @@ import tiktoken
 import requests
 import json
 
+ASSISTANT_MESSAGE_DEFAULT = '好的'
+USER_MESSAGE_DEFAULT = '继续'
+
 def model_configs():
     return [
+        {
+            "model": 'deepseek-reasoner',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.96,
+            "token_limit": 64000,
+            'order': 1,
+            'function_call': False
+        },
         {
             "model": 'deepseek-chat',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.21,
-            "token_limit": 128000,
-            'order': 1,
+            "token_limit": 64000,
+            'order': 2,
             'function_call': False
         },
         {
@@ -19,8 +31,9 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 0.21,
-            "token_limit": 128000,
-            'order': 1,
+            "token_limit": 64000,
+            'order': 10,
+            'hidden': True,
             'function_call': False
         }
     ]
@@ -46,7 +59,7 @@ def chat(prepare_info, preset):
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        # logging.info(f"stream got line:{line_str}|")
+                        logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
@@ -56,6 +69,7 @@ def chat(prepare_info, preset):
                                     delta['finish_reason'] = choice['finish_reason']
                                 if 'usage' in data:
                                     delta['usage'] = data['usage']
+                                logging.info(f"yield delta:{delta}")
                                 yield delta
                             except Exception as e:
                                 pass
@@ -124,12 +138,28 @@ def format_preset(preset):
             if key == "messages":
                 messages = []
                 for message in preset['messages']:
-                    if 'role' in message and 'content' in message and message['role'] in ['user', 'system', 'assistant']:
-                        msg = {}
-                        for k,v in message.items():
-                            if k in ['role', 'content', 'name']:
-                                msg[k] = v
-                        messages.append(msg)
+                    if 'role' in message and 'content' in message:
+                        role = message['role']
+                        content = message['content']
+                        if role == 'system':
+                            new_message = {
+                                'role': role,
+                                'content': content
+                            }
+                            messages.append(new_message)
+                        elif role == "user":
+                            if len(messages) > 0 and messages[-1]['role'] == 'user':
+                                messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
+                            messages.append({'role': role, 'content':content})
+                        elif role == 'assistant':
+                            new_message = {
+                                'role': role,
+                                'content': content
+                            }
+                            if len(new_message['content']) > 0:
+                                if len(messages) > 0 and messages[-1]['role'] == 'assistant':
+                                    messages.append({'role':'user', 'content':USER_MESSAGE_DEFAULT})
+                                messages.append(new_message)
                 ret['messages'] = messages
             else:
                 ret[key] = preset[key]
