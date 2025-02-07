@@ -11,6 +11,7 @@ import lanying_vendor_volcengine
 import lanying_vendor_moonshot
 import lanying_vendor_aws
 import lanying_vendor_siliconflow
+import lanying_vendor_ppinfra
 import copy
 import logging
 import lanying_config
@@ -23,6 +24,7 @@ vendor_to_module = {
     'openai': lanying_vendor_openai,
     'aws': lanying_vendor_aws,
     'siliconflow': lanying_vendor_siliconflow,
+    'ppinfra': lanying_vendor_ppinfra,
     'minimax': lanying_vendor_minimax,
     'baidu': lanying_vendor_baidu,
     'zhipuai': lanying_vendor_zhipuai,
