@@ -21,7 +21,7 @@ def model_configs():
             'real_model': 'deepseek-ai/DeepSeek-V3',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.21,
+            "quota": 0.52,
             "token_limit": 64000,
             'order': 2,
             'function_call': False

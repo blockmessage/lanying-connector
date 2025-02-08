@@ -41,7 +41,7 @@ def model_configs():
             'endpoint': 'ep-20250207112323-lfwjs',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.96,
+            "quota": 0.52,
             "token_limit": 64000,
             'order': 2.2,
             'function_call': False
@@ -51,7 +51,7 @@ def model_configs():
             'endpoint': 'ep-20250207112344-8rg6v',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.21,
+            "quota": 0.30,
             "token_limit": 64000,
             'order': 2.3,
             'function_call': False

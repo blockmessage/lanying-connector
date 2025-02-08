@@ -23,17 +23,17 @@ import lanying_utils
 vendor_to_module = {
     'openai': lanying_vendor_openai,
     'aws': lanying_vendor_aws,
+    'volcengine': lanying_vendor_volcengine,
     'siliconflow': lanying_vendor_siliconflow,
-    'ppinfra': lanying_vendor_ppinfra,
+    'deepseek': lanying_vendor_deepseek,
+    # 'ppinfra': lanying_vendor_ppinfra,
     'minimax': lanying_vendor_minimax,
     'baidu': lanying_vendor_baidu,
     'zhipuai': lanying_vendor_zhipuai,
     "azure": lanying_vendor_azure,
     "azure2": lanying_vendor_azure2,
     "claude": lanying_vendor_claude,
-    'deepseek': lanying_vendor_deepseek,
     'aliyun': lanying_vendor_aliyun,
-    'volcengine': lanying_vendor_volcengine,
     'moonshot': lanying_vendor_moonshot
 }
 
@@ -76,6 +76,59 @@ def backup_rules():
                         'anthropic.claude-v2:1':'claude-2.1',
                         'anthropic.claude-v2':'claude-2.0',
                         'anthropic.claude-instant-v1':'claude-instant-1.2'
+                    }
+                }
+            ]
+        },
+        {
+            'vendor': 'deepseek',
+            'backups':[
+                {
+                    'vendor': 'volcengine',
+                    'transforms':{
+                        'deepseek-chat': 'DeepSeek-V3',
+                        'deepseek-reasoner': 'DeepSeek-R1'
+                    }
+                },
+                {
+                    'vendor': 'siliconflow',
+                    'transforms':{
+                        'deepseek-chat': 'DeepSeek-V3',
+                        'deepseek-reasoner': 'DeepSeek-R1'
+                    }
+                }
+            ]
+        },
+        {
+            'vendor': 'siliconflow',
+            'backups':[
+                {
+                    'vendor': 'volcengine',
+                    'transforms':{
+                    }
+                },
+                {
+                    'vendor': 'deepseek',
+                    'transforms':{
+                        'DeepSeek-V3': 'deepseek-chat',
+                        'DeepSeek-R1': 'deepseek-reasoner'
+                    }
+                }
+            ]
+        },
+        {
+            'vendor': 'volcengine',
+            'backups':[
+                {
+                    'vendor': 'siliconflow',
+                    'transforms':{
+                    }
+                },
+                {
+                    'vendor': 'deepseek',
+                    'transforms':{
+                        'DeepSeek-V3': 'deepseek-chat',
+                        'DeepSeek-R1': 'deepseek-reasoner'
                     }
                 }
             ]
