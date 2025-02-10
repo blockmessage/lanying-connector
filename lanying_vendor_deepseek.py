@@ -10,6 +10,7 @@ def model_configs():
     return [
         {
             "model": 'deepseek-reasoner',
+            'model_suffix': ' (r1)',
             "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
@@ -20,6 +21,7 @@ def model_configs():
         },
         {
             "model": 'deepseek-chat',
+            'model_suffix': ' (v3)',
             "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
