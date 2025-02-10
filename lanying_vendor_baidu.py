@@ -13,6 +13,7 @@ def model_configs():
     return [
         {
             "model": 'ERNIE-3.5-8K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.78,
@@ -24,6 +25,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-3.5-128K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.48,
@@ -35,6 +37,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-4.0-Turbo-8K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 4.03,
@@ -46,6 +49,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-4.0-8K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 7.10,
@@ -57,6 +61,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-Lite-8K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.08,
@@ -68,6 +73,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-Speed-8K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.08,
@@ -79,6 +85,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-Speed-128K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.08,
@@ -90,6 +97,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-3.5-4K-0205',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.2,
@@ -101,6 +109,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-3.5-8K-0205',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 4,
@@ -112,6 +121,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-Bot',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.13,
@@ -124,6 +134,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-Bot-8K',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 3.24,
@@ -136,6 +147,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-Bot-4',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 10.61,
@@ -148,6 +160,7 @@ def model_configs():
         },
         {
             "model": 'ERNIE-Bot-turbo',
+            "service": 'ernie',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.78,
@@ -159,6 +172,7 @@ def model_configs():
         },
         {
             "model": 'Embedding-V1',
+            "service": 'ernie',
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.15,

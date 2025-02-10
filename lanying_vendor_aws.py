@@ -22,6 +22,7 @@ def model_configs():
     return [
         {
             "model": 'anthropic.claude-3-5-haiku-20241022-v1:0',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.55,
@@ -31,6 +32,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 5.61,
@@ -40,6 +42,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-3-opus-20240229-v1:0',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 30.78,
@@ -50,6 +53,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-3-5-sonnet-20240620-v1:0',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 5.61,
@@ -59,6 +63,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-3-sonnet-20240229-v1:0',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 5.61,
@@ -68,6 +73,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-3-haiku-20240307-v1:0',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.54,
@@ -77,6 +83,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-v2:1',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 9.90,
@@ -86,6 +93,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-v2',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 9.90,
@@ -95,6 +103,7 @@ def model_configs():
         },
         {
             "model": 'anthropic.claude-instant-v1',
+            "service": 'claude',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.06,

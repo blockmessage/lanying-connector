@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'qwen-turbo',
+            "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.43,
@@ -17,6 +18,7 @@ def model_configs():
         },
         {
             "model": 'qwen-plus',
+            "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.78,
@@ -26,6 +28,7 @@ def model_configs():
         },
         {
             "model": 'qwen-max',
+            "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
             "quota": 7.10,
@@ -35,6 +38,7 @@ def model_configs():
         },
         {
             "model": 'qwen-max-longcontext',
+            "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
             "quota": 7.10,

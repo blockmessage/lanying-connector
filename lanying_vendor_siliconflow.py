@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'DeepSeek-R1',
+            "service": 'deepseek',
             'real_model': 'deepseek-ai/DeepSeek-R1',
             "type": "chat",
             "is_prefix": False,
@@ -18,6 +19,7 @@ def model_configs():
         },
         {
             "model": 'DeepSeek-V3',
+            "service": 'deepseek',
             'real_model': 'deepseek-ai/DeepSeek-V3',
             "type": "chat",
             "is_prefix": False,

@@ -10,6 +10,7 @@ def model_configs():
     return [
         {
             "model": 'deepseek-reasoner',
+            "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.96,
@@ -19,6 +20,7 @@ def model_configs():
         },
         {
             "model": 'deepseek-chat',
+            "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.52,
@@ -28,6 +30,7 @@ def model_configs():
         },
         {
             "model": 'deepseek-coder',
+            "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.52,

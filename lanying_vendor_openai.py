@@ -11,6 +11,7 @@ def model_configs():
     return [
         {
             "model": 'gpt-4o-mini',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.32,
@@ -21,6 +22,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.69,
@@ -30,6 +32,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4o',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 6.22,
@@ -40,6 +43,7 @@ def model_configs():
         },
         {
             "model": 'o1-mini',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 4.99,
@@ -53,6 +57,7 @@ def model_configs():
         },
         {
             "model": 'o1-mini-2024-09-12',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 4.99,
@@ -66,6 +71,7 @@ def model_configs():
         },
         {
             "model": 'o1-preview',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 24.64,
@@ -79,6 +85,7 @@ def model_configs():
         },
         {
             "model": 'o1-preview-2024-09-12',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 24.64,
@@ -92,6 +99,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-turbo',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 12.36,
@@ -102,6 +110,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 27.71,
@@ -111,6 +120,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo-0125',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.69,
@@ -120,6 +130,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo-1106',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.69,
@@ -129,6 +140,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4o-2024-05-13',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 6.22,
@@ -139,6 +151,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-turbo-2024-04-09',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 12.36,
@@ -149,6 +162,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-1106-preview',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 12.36,
@@ -158,6 +172,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-0125-preview',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 12.36,
@@ -167,6 +182,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4o-mini-2024-07-18',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.32,
@@ -177,6 +193,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo-16k',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 2,
@@ -187,6 +204,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-32k',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 40,
@@ -197,6 +215,7 @@ def model_configs():
         },
         {
             "model": 'text-embedding-ada-002',
+            "service": 'chatgpt',
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.1,
@@ -207,6 +226,7 @@ def model_configs():
         },
         {
             "model": 'text-embedding-3-small',
+            "service": 'chatgpt',
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.02,
@@ -217,6 +237,7 @@ def model_configs():
         },
         {
             "model": 'text-embedding-3-large',
+            "service": 'chatgpt',
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.1,
@@ -227,6 +248,7 @@ def model_configs():
         },
         {
             "model": 'dall-e-3',
+            "service": 'chatgpt',
             "type": "image",
             "is_prefix": False,
             "quota": 100,
@@ -244,6 +266,7 @@ def model_configs():
         },
         {
             "model": 'dall-e-2',
+            "service": 'chatgpt',
             "type": "image",
             "is_prefix": False,
             "quota": 100,
@@ -258,6 +281,7 @@ def model_configs():
         },
         {
             "model": 'whisper-1',
+            "service": 'chatgpt',
             "type": "speech_to_text",
             "is_prefix": False,
             "quota": 1,
@@ -269,6 +293,7 @@ def model_configs():
         },
         {
             "model": 'tts-1',
+            "service": 'chatgpt',
             "type": "text_to_speech",
             "is_prefix": False,
             "quota": 1.5,
@@ -280,6 +305,7 @@ def model_configs():
         },
         {
             "model": 'tts-1-hd',
+            "service": 'chatgpt',
             "type": "text_to_speech",
             "is_prefix": False,
             "quota": 3,

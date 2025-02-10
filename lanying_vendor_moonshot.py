@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'moonshot-v1-8k',
+            "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.13,
@@ -17,6 +18,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-32k',
+            "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
             "quota": 2.18,
@@ -26,6 +28,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-128k',
+            "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
             "quota": 5.34,

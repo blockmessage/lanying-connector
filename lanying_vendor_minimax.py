@@ -7,6 +7,7 @@ def model_configs():
     return [
         {
             "model": 'abab5.5-chat',
+            "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.39,
@@ -16,6 +17,7 @@ def model_configs():
         },
         {
             "model": 'abab5.5s-chat',
+            "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.52,
@@ -25,6 +27,7 @@ def model_configs():
         },
         {
             "model": 'abab6-chat',
+            "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
             "quota": 17.62,
@@ -34,6 +37,7 @@ def model_configs():
         },
         {
             "model": 'embo-01',
+            "service": 'minimax',
             "type": "embedding",
             "is_prefix": True,
             "quota": 0.0005,

@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'gpt-4-32k',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 40,
@@ -19,6 +20,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 20,
@@ -30,6 +32,7 @@ def model_configs():
         },
         {
             "model": 'gpt-35-turbo-16k',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 2,
@@ -42,6 +45,7 @@ def model_configs():
         },
         {
             "model": 'gpt-35-turbo',
+            "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
             "quota": 1,
@@ -54,6 +58,7 @@ def model_configs():
         },
         {
             "model": 'text-embedding-ada-002',
+            "service": 'chatgpt',
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.05,

@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'Doubao-pro-32k',
+            "service": 'doubao',
             'endpoint': 'ep-20241026172834-pt64n',
             "type": "chat",
             "is_prefix": False,
@@ -18,6 +19,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-128k',
+            "service": 'doubao',
             'endpoint': 'ep-20241026172902-59tzn',
             "type": "chat",
             "is_prefix": False,
@@ -28,6 +30,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-256k',
+            "service": 'doubao',
             'endpoint': 'ep-20250102115354-hrz4z',
             "type": "chat",
             "is_prefix": False,
@@ -38,6 +41,7 @@ def model_configs():
         },
         {
             "model": 'DeepSeek-R1',
+            "service": 'deepseek',
             'endpoint': 'ep-20250207112323-lfwjs',
             "type": "chat",
             "is_prefix": False,
@@ -48,6 +52,7 @@ def model_configs():
         },
         {
             "model": 'DeepSeek-V3',
+            "service": 'deepseek',
             'endpoint': 'ep-20250207112344-8rg6v',
             "type": "chat",
             "is_prefix": False,
@@ -58,6 +63,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-4k',
+            "service": 'doubao',
             'endpoint': 'ep-20241026172733-mvz6c',
             "type": "chat",
             "is_prefix": False,
@@ -68,6 +74,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-4k',
+            "service": 'doubao',
             'endpoint': 'ep-20241026172923-4dh9k',
             "type": "chat",
             "is_prefix": False,
@@ -78,6 +85,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-128k',
+            "service": 'doubao',
             'endpoint': 'ep-20241026173030-2jz9w',
             "type": "chat",
             "is_prefix": False,
@@ -88,6 +96,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-32k',
+            "service": 'doubao',
             'endpoint': 'ep-20241026173004-lnrlx',
             "type": "chat",
             "is_prefix": False,
@@ -98,6 +107,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-8k',
+            "service": 'kimi',
             'endpoint': 'ep-20241026173110-jcbwp',
             "type": "chat",
             "is_prefix": False,
@@ -108,6 +118,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-32k',
+            "service": 'kimi',
             'endpoint': 'ep-20241026173141-9hs7f',
             "type": "chat",
             "is_prefix": False,
@@ -118,6 +129,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-128k',
+            "service": 'kimi',
             'endpoint': 'ep-20241026173205-522lk',
             "type": "chat",
             "is_prefix": False,

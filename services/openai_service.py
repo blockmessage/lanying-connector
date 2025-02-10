@@ -37,6 +37,7 @@ import lanying_image
 from lanying_async import executor
 import lanying_message_quota_usage
 from concurrent.futures import Future
+import lanying_slack
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -1199,6 +1200,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         else:
             break
     reply = response['reply']
+    if reply == '' and vendor == 'deepseek':
+        if lanying_vendor.need_notify_failed(vendor):
+            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回空白内容, vendor:{vendor}, model:{model}', f'ai_chat_resp_failed_{vendor}')
+        reply = '抱歉，我暂时无法回答你的问题。'
     finish_reason = response.get('finish_reason', '')
     reply_ext['ai']['finish_reason'] = finish_reason
     command = None
@@ -4450,6 +4455,8 @@ def add_debug_message(config, content, opt = {}):
                 'request_msg_id': request_msg_id
             }
         }
+        if is_last_msg:
+            ext['ai']['finish'] = True
         config['debug_msg_seq'] = debug_msg_seq + 1
         send_msg_type = 1 if reply_msg_type == 'CHAT' else 2
         last_debug_msg_id = config.get('last_debug_msg_id')
