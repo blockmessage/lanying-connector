@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'Doubao-pro-32k',
+            "is_origin_vendor": True,
             "service": 'doubao',
             'endpoint': 'ep-20241026172834-pt64n',
             "type": "chat",
@@ -19,6 +20,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-128k',
+            "is_origin_vendor": True,
             "service": 'doubao',
             'endpoint': 'ep-20241026172902-59tzn',
             "type": "chat",
@@ -30,6 +32,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-256k',
+            "is_origin_vendor": True,
             "service": 'doubao',
             'endpoint': 'ep-20250102115354-hrz4z',
             "type": "chat",
@@ -63,6 +66,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-pro-4k',
+            "is_origin_vendor": True,
             "service": 'doubao',
             'endpoint': 'ep-20241026172733-mvz6c',
             "type": "chat",
@@ -74,6 +78,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-4k',
+            "is_origin_vendor": True,
             "service": 'doubao',
             'endpoint': 'ep-20241026172923-4dh9k',
             "type": "chat",
@@ -85,6 +90,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-128k',
+            "is_origin_vendor": True,
             "service": 'doubao',
             'endpoint': 'ep-20241026173030-2jz9w',
             "type": "chat",
@@ -96,6 +102,7 @@ def model_configs():
         },
         {
             "model": 'Doubao-lite-32k',
+            "is_origin_vendor": True,
             "service": 'doubao',
             'endpoint': 'ep-20241026173004-lnrlx',
             "type": "chat",

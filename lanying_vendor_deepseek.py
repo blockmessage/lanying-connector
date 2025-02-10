@@ -10,7 +10,8 @@ def model_configs():
     return [
         {
             "model": 'deepseek-reasoner',
-            'model_suffix': ' (r1)',
+            'model_show_name': 'deepseek-reasoner (R1)',
+            "is_origin_vendor": True,
             "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
@@ -21,7 +22,8 @@ def model_configs():
         },
         {
             "model": 'deepseek-chat',
-            'model_suffix': ' (v3)',
+            'model_show_name': 'deepseek-reasoner (V3)',
+            "is_origin_vendor": True,
             "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
@@ -32,6 +34,7 @@ def model_configs():
         },
         {
             "model": 'deepseek-coder',
+            "is_origin_vendor": True,
             "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,

@@ -12,6 +12,7 @@ def model_configs():
     return [
         {
             "model": 'glm-3-turbo',
+            "is_origin_vendor": True,
             "service": 'zhipuai',
             "type": "chat",
             "is_prefix": False,
@@ -22,6 +23,7 @@ def model_configs():
         },
         {
             "model": 'glm-4',
+            "is_origin_vendor": True,
             "service": 'zhipuai',
             "type": "chat",
             "is_prefix": False,
@@ -32,6 +34,7 @@ def model_configs():
         },
         {
             "model": 'chatglm_pro',
+            "is_origin_vendor": True,
             "service": 'zhipuai',
             "type": "chat",
             "is_prefix": False,
@@ -43,6 +46,7 @@ def model_configs():
         },
         {
             "model": 'chatglm_std',
+            "is_origin_vendor": True,
             "service": 'zhipuai',
             "type": "chat",
             "is_prefix": False,
@@ -54,6 +58,7 @@ def model_configs():
         },
         {
             "model": 'chatglm_lite',
+            "is_origin_vendor": True,
             "service": 'zhipuai',
             "type": "chat",
             "is_prefix": False,

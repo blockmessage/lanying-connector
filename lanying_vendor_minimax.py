@@ -7,6 +7,7 @@ def model_configs():
     return [
         {
             "model": 'abab5.5-chat',
+            "is_origin_vendor": True,
             "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
@@ -17,6 +18,7 @@ def model_configs():
         },
         {
             "model": 'abab5.5s-chat',
+            "is_origin_vendor": True,
             "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
@@ -27,6 +29,7 @@ def model_configs():
         },
         {
             "model": 'abab6-chat',
+            "is_origin_vendor": True,
             "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
@@ -37,6 +40,7 @@ def model_configs():
         },
         {
             "model": 'embo-01',
+            "is_origin_vendor": True,
             "service": 'minimax',
             "type": "embedding",
             "is_prefix": True,

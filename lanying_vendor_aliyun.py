@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'qwen-turbo',
+            "is_origin_vendor": True,
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
@@ -18,6 +19,7 @@ def model_configs():
         },
         {
             "model": 'qwen-plus',
+            "is_origin_vendor": True,
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
@@ -28,6 +30,7 @@ def model_configs():
         },
         {
             "model": 'qwen-max',
+            "is_origin_vendor": True,
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
@@ -38,6 +41,7 @@ def model_configs():
         },
         {
             "model": 'qwen-max-longcontext',
+            "is_origin_vendor": True,
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,

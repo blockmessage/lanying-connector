@@ -21,6 +21,7 @@ def model_configs():
     return [
         {
             "model": 'claude-3-5-haiku-20241022',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
@@ -31,6 +32,7 @@ def model_configs():
         },
         {
             "model": 'claude-3-5-sonnet-20241022',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
@@ -41,6 +43,7 @@ def model_configs():
         },
         {
             "model": 'claude-3-opus-20240229',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
@@ -51,6 +54,7 @@ def model_configs():
         },
         {
             "model": 'claude-3-sonnet-20240229',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
@@ -61,6 +65,7 @@ def model_configs():
         },
         {
             "model": 'claude-3-haiku-20240307',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
@@ -71,6 +76,7 @@ def model_configs():
         },
         {
             "model": 'claude-2.1',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
@@ -81,6 +87,7 @@ def model_configs():
         },
         {
             "model": 'claude-2.0',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
@@ -91,6 +98,7 @@ def model_configs():
         },
         {
             "model": 'claude-instant-1.2',
+            "is_origin_vendor": True,
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,

@@ -11,6 +11,7 @@ def model_configs():
     return [
         {
             "model": 'gpt-4o-mini',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -22,6 +23,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -32,6 +34,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4o',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -43,6 +46,7 @@ def model_configs():
         },
         {
             "model": 'o1-mini',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -57,6 +61,7 @@ def model_configs():
         },
         {
             "model": 'o1-mini-2024-09-12',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -71,6 +76,7 @@ def model_configs():
         },
         {
             "model": 'o1-preview',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -85,6 +91,7 @@ def model_configs():
         },
         {
             "model": 'o1-preview-2024-09-12',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -99,6 +106,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-turbo',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -110,6 +118,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -120,6 +129,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo-0125',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -130,6 +140,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo-1106',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -140,6 +151,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4o-2024-05-13',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -151,6 +163,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-turbo-2024-04-09',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -162,6 +175,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-1106-preview',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -172,6 +186,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-0125-preview',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -182,6 +197,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4o-mini-2024-07-18',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -193,6 +209,7 @@ def model_configs():
         },
         {
             "model": 'gpt-3.5-turbo-16k',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -204,6 +221,7 @@ def model_configs():
         },
         {
             "model": 'gpt-4-32k',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
@@ -215,6 +233,7 @@ def model_configs():
         },
         {
             "model": 'text-embedding-ada-002',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "embedding",
             "is_prefix": False,
@@ -226,6 +245,7 @@ def model_configs():
         },
         {
             "model": 'text-embedding-3-small',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "embedding",
             "is_prefix": False,
@@ -237,6 +257,7 @@ def model_configs():
         },
         {
             "model": 'text-embedding-3-large',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "embedding",
             "is_prefix": False,
@@ -248,6 +269,7 @@ def model_configs():
         },
         {
             "model": 'dall-e-3',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "image",
             "is_prefix": False,
@@ -266,6 +288,7 @@ def model_configs():
         },
         {
             "model": 'dall-e-2',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "image",
             "is_prefix": False,
@@ -281,6 +304,7 @@ def model_configs():
         },
         {
             "model": 'whisper-1',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "speech_to_text",
             "is_prefix": False,
@@ -293,6 +317,7 @@ def model_configs():
         },
         {
             "model": 'tts-1',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "text_to_speech",
             "is_prefix": False,
@@ -305,6 +330,7 @@ def model_configs():
         },
         {
             "model": 'tts-1-hd',
+            "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "text_to_speech",
             "is_prefix": False,

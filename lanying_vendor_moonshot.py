@@ -8,6 +8,7 @@ def model_configs():
     return [
         {
             "model": 'moonshot-v1-8k',
+            "is_origin_vendor": True,
             "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
@@ -18,6 +19,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-32k',
+            "is_origin_vendor": True,
             "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
@@ -28,6 +30,7 @@ def model_configs():
         },
         {
             "model": 'moonshot-v1-128k',
+            "is_origin_vendor": True,
             "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
