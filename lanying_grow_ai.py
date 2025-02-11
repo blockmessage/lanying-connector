@@ -25,6 +25,7 @@ import yaml
 import lanying_cdn
 import lanying_cert
 import lanying_slack
+import lanying_google_analytics
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
@@ -72,8 +73,9 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number):
+    def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number):
         self.app_id = app_id
+        self.tenement_id = tenement_id
         self.name = name
         self.type = type
         self.github_url = github_url
@@ -97,6 +99,7 @@ class SiteSetting:
     def to_hmset_fields(self):
         return {
             'app_id': self.app_id,
+            'tenement_id': self.tenement_id,
             'name': self.name,
             'type': self.type,
             'github_url': self.github_url,
@@ -1890,6 +1893,8 @@ def create_site(site_setting: SiteSetting):
     site_info = get_site(app_id, site_id)
     logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
     maybe_register_github_site(app_id, site_info)
+    maybe_init_analytics(app_id, site_id)
+    site_info = get_site(app_id, site_id)
     maybe_sync_to_github(site_info)
     return {
         'result': 'ok',
@@ -1914,6 +1919,8 @@ def configure_site(site_id, site_setting: SiteSetting):
     redis.hmset(get_site_key(app_id, site_id), fields)
     new_site_info = get_site(app_id, site_id)
     maybe_register_github_site(app_id, new_site_info)
+    maybe_init_analytics(app_id, site_id)
+    new_site_info = get_site(app_id, site_id)
     maybe_sync_to_github(new_site_info)
     return {
         'result': 'ok',
@@ -2127,6 +2134,8 @@ def get_site(app_id, site_id):
             dto['domain_id'] = ''
         if 'icp_number' not in dto:
             dto['icp_number'] = ''
+        if 'tenement_id' not in dto:
+            dto['tenement_id'] = ''
         maybe_add_site_url(dto)
         return dto
     return None
@@ -2833,6 +2842,7 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info, ten
         lanying_cdn.set_cdn_domain_cert(domain_name, domain_info['cert_pem'], domain_info['cert_key'])
         update_custom_domain_info(app_id, site_id, domain_id, "state", 'ready')
         update_custom_domain_info(app_id, site_id, domain_id, "cert_ready", "ready")
+        maybe_init_analytics(app_id, site_id)
         site = get_site(app_id, site_id)
         if site:
             maybe_sync_to_github(site)
@@ -3015,3 +3025,62 @@ def do_custom_domain_renew_internal(app_id, site_id, domain_id, domain_info, ind
             'message': 'cert_config_not_ready'
         }
 
+def maybe_init_analytics(app_id, site_id):
+    site_info = get_site(app_id, site_id)
+    if site_info:
+        try:
+            app_id = site_info['app_id']
+            tenement_id = site_info['tenement_id']
+            property_name = ''
+            if 'google_analytics_property_name' not in site_info:
+                logging.info(f"maybe_init_analytics create property start | app_id:{app_id}, site_id:{site_id}")
+                response = lanying_google_analytics.create_properties(app_id,tenement_id,site_id)
+                logging.info(f"maybe_init_analytics create property finish | app_id:{app_id}, site_id:{site_id}, response:{response}")
+                if response['result'] == 'ok':
+                    if 'data' in response and  'name' in response['data']:
+                        logging.info(f"maybe_init_analytics update site property start | app_id:{app_id}, site_id:{site_id}")
+                        property_name = response['data']['name']
+                        update_site_field(app_id, site_id, 'google_analytics_property_name', property_name)
+            else:
+                property_name = site_info['google_analytics_property_name']
+            if 'google_analytics_streams' not in site_info:
+                google_analytics_streams = {}
+            else:
+                google_analytics_streams = lanying_utils.safe_json_loads(site_info['google_analytics_streams'])
+            if 'custom_site_url' in site_info:
+                site_url = site_info['custom_site_url']
+            elif 'site_url' in site_info:
+                site_url = site_info['site_url']
+            else:
+                site_url = ''
+            if site_url != '':
+                old_token = site_info.get('google_token','').strip()
+                need_new_code = False
+                if old_token == '' or old_token == 'G-EE5J5LB4MD':
+                    need_new_code = True
+                else:
+                    for now_site_url,stream_info in google_analytics_streams.items():
+                        if stream_info['token'] == old_token and now_site_url != site_url:
+                            need_new_code = True
+                if need_new_code:
+                    if site_url not in google_analytics_streams:
+                        if property_name != '':
+                            logging.info(f"maybe_init_analytics generate new stream start | app_id:{app_id}, site_id:{site_id}")
+                            response = lanying_google_analytics.create_stream(app_id,tenement_id,site_id, property_name, site_url)
+                            logging.info(f"maybe_init_analytics generate new stream finish | app_id:{app_id}, site_id:{site_id}, response:{response}")
+                            if response['result'] == 'ok':
+                                if 'data' in response and 'name' in response['data']:
+                                    logging.info(f"maybe_init_analytics update site new stream start | app_id:{app_id}, site_id:{site_id}")
+                                    stream_name = response['data']['name']
+                                    new_token = response['data']['webStreamData']['measurementId']
+                                    google_analytics_streams[site_url] = {
+                                        'token': new_token,
+                                        'stream_name': stream_name
+                                    }
+                                    new_google_analytics_streams = json.dumps(google_analytics_streams)
+                                    update_site_field(app_id, site_id, 'google_token', new_token)
+                                    update_site_field(app_id, site_id, 'google_analytics_streams', new_google_analytics_streams)
+                    else:
+                        update_site_field(app_id, site_id, 'google_token', google_analytics_streams[site_url]['token'])
+        except Exception as e:
+            logging.exception(e)

@@ -416,6 +416,7 @@ def create_site():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
+    tenement_id = str(data.get('tenement_id', ''))
     name = str(data['name'])
     type = str(data['type'])
     github_url = str(data['github_url'])
@@ -437,6 +438,7 @@ def create_site():
     icp_number = str(data.get('icp_number','')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
+        tenement_id = tenement_id,
         name = name,
         type = type,
         github_url = github_url,
@@ -472,6 +474,7 @@ def configure_site():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
+    tenement_id = str(data.get('tenement_id', ''))
     site_id = str(data['site_id'])
     name = str(data['name'])
     type = str(data['type'])
@@ -494,6 +497,7 @@ def configure_site():
     icp_number = str(data.get('icp_number','')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
+        tenement_id = tenement_id,
         name = name,
         type = type,
         github_url = github_url,
