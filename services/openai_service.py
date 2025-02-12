@@ -4452,7 +4452,8 @@ def add_debug_message(config, content, opt = {}):
                 'stream': True,
                 'stream_interval': stream_interval,
                 'seq': debug_msg_seq,
-                'request_msg_id': request_msg_id
+                'request_msg_id': request_msg_id,
+                'finish': False
             }
         }
         if is_last_msg:
