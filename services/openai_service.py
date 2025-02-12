@@ -1036,9 +1036,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 for function_info in user_functions:
                     functions_with_distance += f"[distance:{function_info.get('distance')}, function_name:{function_info.get('short_name','')}, priority:{function_info.get('priority')}]\n\n"
             if is_use_old_embeddings:
-                add_debug_message(config, f"使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}")
+                add_debug_message(config, f"使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}", {'need_antispam_check': True})
             else:
-                add_debug_message(config, f"prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n")
+                add_debug_message(config, f"prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n", {'need_antispam_check': True})
     if msg_type == 'CHAT':
         history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
@@ -1175,7 +1175,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         reasoning_content_count = 0
                         reasoning_content_collect = []
                         collect_start_time = collect_now
-                        add_debug_message(config, message_to_send, {'stream_interval': stream_interval, 'is_reasoning_msg': True})
+                        add_debug_message(config, message_to_send, {'stream_interval': stream_interval, 'is_reasoning_msg': True, 'need_antispam_check': True})
             except Exception as e:
                 logging.info("stream got error")
                 logging.exception(e)
@@ -1194,7 +1194,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 function_name_debug = function_call_debug['name']
                 if function_name_debug in function_names:
                     function_call_debug['name'] = function_names[function_name_debug]
-            add_debug_message(config, f"触发函数：{function_call_debug}")
+            add_debug_message(config, f"触发函数：{function_call_debug}", {'need_antispam_check': True})
             response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext)
             function_call_times -= 1
         else:
@@ -1219,7 +1219,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         except Exception as e:
             pass
     if command:
-        add_debug_message(config, f"收到如下JSON:\n{reply}")
+        add_debug_message(config, f"收到如下JSON:\n{reply}", {'need_antispam_check': True})
         if 'preset_welcome' in command:
             reply = command['preset_welcome']
     if command and 'ai_generate' in command and command['ai_generate'] == True:
@@ -1511,7 +1511,7 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                         logging.exception(e)
                         pass
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
-                add_debug_message(config, f"函数调用结果：{function_content}")
+                add_debug_message(config, f"函数调用结果：{function_content}", {'need_antispam_check': True})
                 function_message = {
                     "role": "function",
                     "name": function_name,
@@ -3123,7 +3123,7 @@ def calc_embedding_query_text(config, content, historyListKey, embedding_history
             else:
                 break
     embedding_query_text = '\n'.join(result)
-    add_debug_message(config, f"使用问题历史算向量:\n{embedding_query_text}")
+    add_debug_message(config, f"使用问题历史算向量:\n{embedding_query_text}", {'need_antispam_check': True})
     return embedding_query_text
 
 def handle_chat_file(msg, config):
@@ -4428,10 +4428,13 @@ def add_debug_message(config, content, opt = {}):
     is_last_msg = opt.get('is_last_msg', False)
     is_reasoning_msg = opt.get('is_reasoning_msg', False)
     stream_interval = opt.get('stream_interval', 3)
+    need_antispam_check = opt.get('need_antispam_check', False)
     enable_debug_message = config.get('enable_debug_message', False)
     if not enable_debug_message:
         return
     if 'reply_msg_type' in config:
+        if need_antispam_check:
+            config['need_antispam_check'] = True
         is_debug = config.get('is_debug', False)
         status_bar = config.get('status_bar', False)
         if not is_debug and not status_bar:
@@ -4453,7 +4456,8 @@ def add_debug_message(config, content, opt = {}):
                 'stream_interval': stream_interval,
                 'seq': debug_msg_seq,
                 'request_msg_id': request_msg_id,
-                'finish': False
+                'finish': False,
+                'need_antispam_check': config.get('need_antispam_check', False)
             }
         }
         if is_last_msg:
@@ -4474,6 +4478,7 @@ def add_debug_message(config, content, opt = {}):
                     final_content = f'\n[蓝莺AI][{timestr}] {content}'
                 else:
                     final_content = content
+            config['final_debug_message'] = config.get('final_debug_message', '') + final_content
             if last_debug_msg_id is None:
                 extra = {
                     'ext': ext
@@ -4487,7 +4492,11 @@ def add_debug_message(config, content, opt = {}):
                     'related_mid': last_debug_msg_id,
                     'online_only': False if is_last_msg else True
                 }
-                lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 11, final_content, extra)
+                if is_last_msg:
+                    final_debug_message = config.get('final_debug_message', '')
+                    lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_debug_message, extra)
+                else:
+                    lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 11, final_content, extra)
         elif status_bar:
             trunc_size = 150
             if not is_reasoning_msg:
