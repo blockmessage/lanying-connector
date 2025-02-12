@@ -5,6 +5,7 @@ import lanying_redis
 import json
 import lanying_chatbot
 import logging
+import lanying_slack
 
 def get_authorization(app_id):
     return os.getenv('WECHAT_CHATBOT_AUTHORIZATION', '')
@@ -130,6 +131,7 @@ def change_wid_status(app_id, wid, status, reason):
                     update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", "offline")
                     update_wechat_chatbot_field(app_id, wechat_chatbot_id, "reason", reason)
                     logging.info(f"wechat chatbot change status to offline: app_id:{app_id}, wid:{wid}, wechat_chatbot_id:{wechat_chatbot_id}")
+                    lanying_slack.async_send_message(f'微信机器人离线, app_id:{app_id}, wid:{wid}, reason:{reason}')
 
 def get_login_info(app_id, w_id):
     wid_info = get_wid_info(app_id, w_id)
