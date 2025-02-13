@@ -100,6 +100,60 @@ def create_stream(app_id, tenement_id, site_id, property_name, site_url):
                 'message': 'fail_to_create'
             }
 
+def get_report(property_name, start_date, end_date, metric_names):
+    logging.info(f"get_report start | property_name:{property_name}, start_date:{start_date}, end_date:{end_date}, metric_names:{metric_names}")
+    if lanying_api_proxy.client_enabled():
+        args = {
+            'property_name': property_name,
+            'start_date': str(start_date),
+            'end_date': str(end_date),
+            'metric_names': metric_names
+        }
+        return lanying_api_proxy.proxy_request(module_name,  'get_report', args)
+    else:
+        from google.analytics.data_v1beta.types import (
+            DateRange,
+            Dimension,
+            Metric,
+            RunReportRequest,
+        )
+        try:
+            date_range = DateRange(start_date=str(start_date), end_date=str(end_date))
+            metrics = [Metric(name=name) for name in metric_names]
+            dimensions = [Dimension(name='date')]
+            request = {
+                'property': property_name,
+                'date_ranges': [date_range],
+                'metrics': metrics,
+                'dimensions': dimensions
+            }
+            service = get_data_service()
+            # 发起请求获取数据
+            response = service.run_report(request)
+            logging.info(f"get_report response | property_name:{property_name}, start_date:{start_date}, end_date:{end_date}, metric_names:{metric_names}, response:{response}")
+            data_list = []
+            for row in response.rows:
+                row_data = {
+                    'date' : row.dimension_values[0].value
+                }
+                metric_index = 0
+                for metric in metric_names:
+                    row_data[metric] = row.metric_values[metric_index].value
+                    metric_index += 1
+                data_list.append(row_data)
+            return {
+                'result': 'ok',
+                'data': {
+                    'list': data_list
+                }
+            }
+        except Exception as e:
+            logging.exception(e)
+            return {
+                'result': 'error',
+                'message': 'exception'
+            }
+
 def get_credentials():
     global service_account_info
     if service_account_info is None:
@@ -117,6 +171,21 @@ def get_service():
     from googleapiclient.discovery import build
     # 构建 Admin API 客户端
     service = build("analyticsadmin", "v1beta", credentials=credentials)
+    return service
+
+def get_data_credentials():
+    global service_account_info
+    if service_account_info is None:
+        service_account_json_str = base64.b64decode(os.getenv('LANYING_CONNECTOR_GOOGLE_ANALYTICS_AUTH_INFO'))
+        service_account_info = json.loads(service_account_json_str)
+    from google.oauth2 import service_account
+    credentials = service_account.Credentials.from_service_account_info(service_account_info)
+    return credentials
+
+def get_data_service():
+    credentials = get_data_credentials()
+    from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    service = BetaAnalyticsDataClient(credentials=credentials)
     return service
 
 def get_account_id():

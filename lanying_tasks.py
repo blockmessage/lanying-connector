@@ -38,6 +38,10 @@ slow_queue.conf.beat_schedule = {
     'lanying_custom_domain_schedule_task': {
         'task': 'lanying_task.lanying_custom_domain_schedule_task',
         'schedule': crontab(hour=11, minute=0)
+    },
+    'lanying_daily_task': {
+        'task': 'lanying_task.lanying_daily_task',
+        'schedule': crontab(hour=2, minute=0)
     }
 }
 # normal_queue.conf.update(
@@ -500,6 +504,25 @@ def custom_domain_renew_task(self, renew_schedules, min_delay, max_delay, index)
     if is_enable == '1':
         try:
             lanying_grow_ai.do_custom_domain_renew_task(renew_schedules, min_delay, max_delay, index)
+        except Exception as e:
+            retry_delay_time = 60
+            raise self.retry(exc=e, countdown=retry_delay_time)
+
+@slow_queue.task
+def lanying_daily_task():
+    is_enable = os.getenv("ENABLE_LANYING_DAILY_TASK", "0")
+    logging.info(f"lanying_daily_task flag: {is_enable}")
+    if is_enable == '1':
+        lanying_grow_ai.update_all_site_statistics()
+
+global_site_statistics_task_max_retries=5
+@slow_queue.task(bind=True, max_retries=global_site_statistics_task_max_retries)
+def site_statistics_task(self, site_schedules, min_delay, max_delay, index):
+    is_enable = os.getenv("ENABLE_LANYING_DAILY_TASK", "0")
+    logging.info(f"site_statistics_task flag: {is_enable}")
+    if is_enable == '1':
+        try:
+            lanying_grow_ai.do_site_statistics_task(site_schedules, min_delay, max_delay, index)
         except Exception as e:
             retry_delay_time = 60
             raise self.retry(exc=e, countdown=retry_delay_time)

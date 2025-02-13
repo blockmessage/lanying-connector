@@ -88,6 +88,10 @@ def get_proxy_list():
         {
             'module_name': 'lanying_google_analytics',
             'function_name': 'create_stream'
+        },
+        {
+            'module_name': 'lanying_google_analytics',
+            'function_name': 'get_report'
         }
     ]
 

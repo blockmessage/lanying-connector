@@ -3,6 +3,8 @@ import logging
 import time
 import lanying_chatbot
 from datetime import datetime
+from datetime import date as datetime_date
+from datetime import timedelta as datetime_timedelta
 import lanying_config
 import requests
 import json
@@ -1890,6 +1892,7 @@ def create_site(site_setting: SiteSetting):
     logging.info(f"create site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
     redis.rpush(get_site_list_key(app_id), site_id)
+    add_to_all_site_list(app_id, site_id)
     site_info = get_site(app_id, site_id)
     logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
     maybe_register_github_site(app_id, site_info)
@@ -2153,6 +2156,137 @@ def get_site_key(app_id, site_id):
 
 def get_site_list_key(app_id):
     return f"lanying_connector:grow_ai:site_list:{app_id}"
+
+def get_all_site_list_key():
+    return 'lanying_connector:grow_ai:all_site_list'
+
+def add_to_all_site_list(app_id, site_id):
+    redis = lanying_redis.get_redis_connection()
+    key = get_all_site_list_key()
+    redis.hset(key, site_id, app_id)
+
+def get_all_site_list():
+    redis = lanying_redis.get_redis_connection()
+    key = get_all_site_list_key()
+    return lanying_redis.redis_hgetall(redis, key)
+
+def init_all_site_list():
+    redis = lanying_redis.get_redis_connection()
+    keys = lanying_redis.redis_keys(redis, "lanying_connector:grow_ai:site:*")
+    for key in keys:
+        fields = key.split(':')
+        if len(fields) == 5:
+            add_to_all_site_list(fields[3], fields[4])
+
+def site_statistics_fields():
+    return ['activeUsers','newUsers','totalUsers','screenPageViews']
+
+def update_site_statistics(app_id, site_id):
+    site = get_site(app_id, site_id)
+    if site:
+        if 'google_analytics_property_name' in site:
+            property_name = site['google_analytics_property_name']
+            try:
+                today = datetime_date.today()
+                one_week_ago = today - datetime_timedelta(7)
+                fields = site_statistics_fields()
+                logging.info(f"update_site_statistics start | app_id: {app_id},site_id: {site_id}")
+                result = lanying_google_analytics.get_report(property_name, one_week_ago, today, fields)
+                logging.info(f"update_site_statistics result | app_id: {app_id},site_id: {site_id}, result:{result}")
+                if result['result'] == 'ok':
+                    data_list = result['data']['list']
+                    redis = lanying_redis.get_redis_connection()
+                    for data in data_list:
+                        date = format_statistics_date(data['date'])
+                        for category,value in data.items():
+                            if category != 'date':
+                                statistic_key = site_statistics_key(app_id, site_id, category)
+                                redis.hset(statistic_key, date, value)
+                    update_site_acc_statistics(app_id, site_id)
+                    return {'result': 'ok'}
+            except Exception as e:
+                logging.exception(e)
+    return {'result': 'error', 'message': 'not_updated'}
+
+def get_site_statistics(app_id, site_id):
+    redis = lanying_redis.get_redis_connection()
+    fields = site_statistics_fields()
+    dto = {}
+    for field in fields:
+        statistic_key = site_statistics_key(app_id, site_id, field)
+        dto[field] = lanying_redis.redis_hgetall(redis, statistic_key)
+    return dto
+
+def update_site_acc_statistics(app_id, site_id):
+    info = get_site_statistics(app_id, site_id)
+    if 'newUsers' in info:
+        sum = 0
+        for _,value in info['newUsers'].items():
+            try:
+                sum += int(value)
+            except Exception as e:
+                pass
+        update_site_field(app_id, site_id, 'total_new_users', sum)
+    if 'activeUsers' in info:
+        sum = 0
+        for _,value in info['activeUsers'].items():
+            try:
+                sum += int(value)
+            except Exception as e:
+                pass
+        update_site_field(app_id, site_id, 'total_active_users', sum)
+    if 'screenPageViews' in info:
+        sum = 0
+        for _,value in info['screenPageViews'].items():
+            try:
+                sum += int(value)
+            except Exception as e:
+                pass
+        update_site_field(app_id, site_id, 'total_page_views', sum)
+
+def update_all_site_statistics():
+    info = get_all_site_list()
+    for site_id, app_id in info.items():
+        update_site_statistics(app_id, site_id)
+
+def schedule_update_all_site_statistics():
+    logging.info("schedule_update_all_site_statistics start")
+    site_schedules = []
+    for site_id, app_id in get_all_site_list().items():
+        site = get_site(app_id, site_id)
+        if site:
+            if 'google_analytics_property_name' in site:
+                site_schedules.append((site_id, app_id))
+    logging.info(f"schedule_update_all_site_statistics site list size: {len(site_schedules)}")
+    if len(site_schedules) > 0:
+        max_delay = min(10, max(60,round(3600 * 1 / len(site_schedules))))
+        min_delay = max(60, round(max_delay / 2))
+        from lanying_tasks import site_statistics_task
+        delay = random.randint(1, 20)
+        logging.info(f"schedule_update_all_site_statistics schedule delay: {delay}")
+        site_statistics_task.apply_async(args = [site_schedules, min_delay, max_delay, 1], countdown=delay)
+
+def do_site_statistics_task(site_schedules, min_delay, max_delay, index):
+    if len(site_schedules) > 0:
+        site_id, app_id = site_schedules[0]
+        logging.info(f"do_site_statistics_task start | app_id:{app_id}, site_id:{site_id}, min_delay:{min_delay}, max_delay:{max_delay}, index:{index}")
+        try:
+            update_site_statistics(app_id, site_id)
+        except Exception as e:
+            logging.exception(e)
+        site_schedules = site_schedules[1:]
+        if len(site_schedules) > 0:
+            from lanying_tasks import site_statistics_task
+            delay = random.randint(min_delay, max_delay)
+            logging.info(f"do_site_statistics_task schedule delay: {delay}")
+            site_statistics_task.apply_async(args = [site_schedules, min_delay, max_delay, index+1], countdown=delay)
+
+def format_statistics_date(date_str):
+    date_obj = datetime.strptime(date_str, '%Y%m%d')
+    return date_obj.strftime('%Y-%m-%d')
+
+def site_statistics_key(app_id, site_id, category):
+    return f'lanying_connector:grow_ai:site_statistics:{app_id}:{site_id}:{category}'
 
 def check_site_setting(site_setting: SiteSetting):
     if site_setting.type not in ["gitbook"]:
@@ -2913,7 +3047,7 @@ def do_custom_domain_renew_task(renew_schedules, min_delay, max_delay, index):
         except Exception as e:
             logging.exception(e)
         renew_schedules = renew_schedules[1:]
-        if len(renew_schedule) > 0:
+        if len(renew_schedules) > 0:
             from lanying_tasks import custom_domain_renew_task
             delay = random.randint(min_delay, max_delay)
             logging.info(f"do_custom_domain_renew_task renew delay: {delay}")
