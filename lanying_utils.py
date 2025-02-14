@@ -9,7 +9,7 @@ import uuid
 import os
 import random
 import string
-
+from datetime import datetime
 
 def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
@@ -92,3 +92,6 @@ def generate_random_letters(size_in_bytes):
     characters = string.ascii_lowercase # 包含所有可能的字符
     random_text = ''.join(random.choices(characters, k=size_in_bytes))  # 生成随机文本
     return random_text
+
+def get_time_str():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')

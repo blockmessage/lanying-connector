@@ -513,7 +513,7 @@ def lanying_daily_task():
     is_enable = os.getenv("ENABLE_LANYING_DAILY_TASK", "0")
     logging.info(f"lanying_daily_task flag: {is_enable}")
     if is_enable == '1':
-        lanying_grow_ai.update_all_site_statistics()
+        lanying_grow_ai.schedule_update_all_site_statistics()
 
 global_site_statistics_task_max_retries=5
 @slow_queue.task(bind=True, max_retries=global_site_statistics_task_max_retries)

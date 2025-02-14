@@ -4,6 +4,8 @@ import os
 import json
 import lanying_grow_ai
 import lanying_cert
+from datetime import date as datetime_date
+from datetime import timedelta as datetime_timedelta
 service = 'grow_ai'
 bp = Blueprint(service, __name__)
 
@@ -620,6 +622,27 @@ def domain_num_limit_changed():
     max_domain_num = int(data['max_domain_num'])
     tenement_id = str(data['tenement_id'])
     result = lanying_grow_ai.domain_num_limit_changed(app_id, max_domain_num, tenement_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get("data",{})})
+    return resp
+
+@bp.route("/service/grow_ai/site_statistics", methods=["POST"])
+def site_statistics():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    site_id = str(data['site_id'])
+    default_end_date = datetime_date.today()
+    default_start_date = default_end_date - datetime_timedelta(14)
+    start_date = str(data.get('start_date', default_start_date))
+    end_date = str(data.get('end_date', default_end_date))
+    targets = list(data['targets'])
+    result = lanying_grow_ai.get_site_statistics(app_id, site_id, start_date, end_date, targets)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

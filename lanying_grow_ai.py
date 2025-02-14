@@ -2208,7 +2208,7 @@ def update_site_statistics(app_id, site_id):
                 logging.exception(e)
     return {'result': 'error', 'message': 'not_updated'}
 
-def get_site_statistics(app_id, site_id):
+def get_site_all_statistics(app_id, site_id):
     redis = lanying_redis.get_redis_connection()
     fields = site_statistics_fields()
     dto = {}
@@ -2217,8 +2217,40 @@ def get_site_statistics(app_id, site_id):
         dto[field] = lanying_redis.redis_hgetall(redis, statistic_key)
     return dto
 
+def get_site_statistics(app_id, site_id, start_date, end_date, targets):
+    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+    end_date = datetime.strptime(end_date, '%Y-%m-%d')
+    redis = lanying_redis.get_redis_connection()
+    fields = site_statistics_fields()
+    columns = []
+    now_date = start_date
+    cnt = 0
+    while now_date <= end_date and cnt < 365 * 3:
+        columns.append(now_date.strftime('%Y-%m-%d'))
+        cnt += 1
+        now_date = now_date + datetime_timedelta(1)
+    values = {}
+    for target in targets:
+        target_values = []
+        if target in fields:
+            statistic_key = site_statistics_key(app_id, site_id, target)
+            info = lanying_redis.redis_hgetall(redis, statistic_key)
+        else:
+            info = {}
+        for column in columns:
+            target_values.append(int(info.get(column, 0)))
+        values[target] = target_values
+    return {
+        'result': 'ok',
+        'data': {
+            'columns': columns,
+            'values': values
+        }
+    }
+
 def update_site_acc_statistics(app_id, site_id):
-    info = get_site_statistics(app_id, site_id)
+    info = get_site_all_statistics(app_id, site_id)
+    update_site_field(app_id, site_id, 'statistics_update_time', lanying_utils.get_time_str())
     if 'newUsers' in info:
         sum = 0
         for _,value in info['newUsers'].items():
