@@ -2301,8 +2301,8 @@ def schedule_update_all_site_statistics():
                 site_schedules.append((site_id, app_id))
     logging.info(f"schedule_update_all_site_statistics site list size: {len(site_schedules)}")
     if len(site_schedules) > 0:
-        max_delay = min(10, max(60,round(3600 * 1 / len(site_schedules))))
-        min_delay = max(60, round(max_delay / 2))
+        max_delay = min(60, max(30,round(3600 * 1 / len(site_schedules))))
+        min_delay = max(5, round(max_delay / 2))
         from lanying_tasks import site_statistics_task
         delay = random.randint(1, 20)
         logging.info(f"schedule_update_all_site_statistics schedule delay: {delay}")
