@@ -30,17 +30,18 @@ normal_queue = Celery('normal_queue',
 slow_queue = Celery('slow_queue',
              backend=lanying_redis.get_slow_task_redis_server(),
              broker=lanying_redis.get_slow_task_redis_server())
+slow_queue.conf.timezone = 'Asia/Shanghai'
 slow_queue.conf.beat_schedule = {
     'lanying_schedule_task': {
         'task': 'lanying_tasks.lanying_schedule_task',
         'schedule': crontab(minute='*/10')
     },
     'lanying_custom_domain_schedule_task': {
-        'task': 'lanying_task.lanying_custom_domain_schedule_task',
+        'task': 'lanying_tasks.lanying_custom_domain_schedule_task',
         'schedule': crontab(hour=11, minute=0)
     },
     'lanying_daily_task': {
-        'task': 'lanying_task.lanying_daily_task',
+        'task': 'lanying_tasks.lanying_daily_task',
         'schedule': crontab(hour=2, minute=0)
     }
 }

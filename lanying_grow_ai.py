@@ -28,6 +28,7 @@ import lanying_cdn
 import lanying_cert
 import lanying_slack
 import lanying_google_analytics
+from urllib.parse import urlparse,urlunparse
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
@@ -2170,6 +2171,15 @@ def get_all_site_list():
     key = get_all_site_list_key()
     return lanying_redis.redis_hgetall(redis, key)
 
+def get_all_site_detail_list():
+    dtos = []
+    for site_id, app_id in get_all_site_list().items():
+        site = get_site(app_id, site_id)
+        if site:
+            dtos.append(site)
+    dtos = sorted(dtos, key=lambda x: int(x['site_id']))
+    return dtos
+
 def init_all_site_list():
     redis = lanying_redis.get_redis_connection()
     keys = lanying_redis.redis_keys(redis, "lanying_connector:grow_ai:site:*")
@@ -3191,6 +3201,9 @@ def do_custom_domain_renew_internal(app_id, site_id, domain_id, domain_info, ind
             'message': 'cert_config_not_ready'
         }
 
+def is_maxim_top_im_gitbook(site_info):
+    return 'maxim-top/im.gitbook' in site_info.get('github_url', '')
+
 def maybe_init_analytics(app_id, site_id):
     site_info = get_site(app_id, site_id)
     if site_info:
@@ -3213,16 +3226,23 @@ def maybe_init_analytics(app_id, site_id):
                 google_analytics_streams = {}
             else:
                 google_analytics_streams = lanying_utils.safe_json_loads(site_info['google_analytics_streams'])
+            site_url = ''
+            if 'site_url' in site_info:
+                site_url = site_info['site_url']
             if 'custom_site_url' in site_info:
                 site_url = site_info['custom_site_url']
-            elif 'site_url' in site_info:
-                site_url = site_info['site_url']
-            else:
-                site_url = ''
+            if 'canonical_link' in site_info:
+                if site_info['canonical_link'] != '' and 'docs.lanyingim.com' not in site_info['canonical_link']:
+                    if len(google_analytics_streams) < 8:
+                        canonical_link = format_site_url(site_info['canonical_link'])
+                        if canonical_link != '':
+                            site_url = canonical_link
             if site_url != '':
                 old_token = site_info.get('google_token','').strip()
                 need_new_code = False
-                if old_token == '' or old_token == 'G-EE5J5LB4MD':
+                if is_maxim_top_im_gitbook(site_info):
+                    need_new_code = False
+                elif old_token == '' or old_token == 'G-EE5J5LB4MD':
                     need_new_code = True
                 else:
                     for now_site_url,stream_info in google_analytics_streams.items():
@@ -3250,3 +3270,14 @@ def maybe_init_analytics(app_id, site_id):
                         update_site_field(app_id, site_id, 'google_token', google_analytics_streams[site_url]['token'])
         except Exception as e:
             logging.exception(e)
+
+def format_site_url(site_url):
+    if is_valid_domain(site_url):
+        parse = urlparse(site_url)
+        return urlunparse(parse._replace(path='/', params='',query='',fragment=''))
+    else:
+        return ''
+
+def is_valid_domain(url):
+    pattern = re.compile(r'^(https?://)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,6}(/.*)?$')
+    return bool(pattern.match(url))
