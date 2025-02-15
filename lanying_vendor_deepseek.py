@@ -81,10 +81,27 @@ def chat(prepare_info, preset):
                                 yield delta
                             except Exception as e:
                                 pass
+                first_data = None
+                old_generator = generator()
+                for delta in old_generator:
+                    first_data = delta  # 获取第一个数据
+                    break  # 只取第一个数据
+
+                if first_data is None:
+                    return {
+                        'result': 'error',
+                        'reason': 'empty_reply'
+                    }
+
+                # 如果有数据，则创建一个新的 generator，包含第一个数据并继续后续的数据
+                def new_generator():
+                    yield first_data  # 先返回第一个数据
+                    yield from old_generator  # 然后返回剩余的 generator 数据
+
                 return {
                     'result': 'ok',
                     'reply' : '',
-                    'reply_generator': generator(),
+                    'reply_generator': new_generator(),
                     'usage' : {
                         'completion_tokens': 0,
                         'prompt_tokens': 0,
