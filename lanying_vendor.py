@@ -384,8 +384,7 @@ def chat_with_same_model_retry(module, vendor, prepare_info, preset):
 def chat_retry(vendor, prepare_info, preset, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
     model = preset['model']
-    if need_notify_failed(vendor):
-        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_chat_resp_failed_{vendor}')
+    async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_chat_resp_failed_{vendor}')
     try:
         new_resp = do_chat_retry(vendor, prepare_info, preset, resp, unique_id)
         if 'result' in new_resp and new_resp['result'] == 'ok':
@@ -430,12 +429,12 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
                         new_resp = chat_with_same_model_retry(new_module, new_vendor, new_prepare_info, new_preset)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"chat backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
+                            async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
                             return new_resp
                         else:
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
+                            async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
                 except Exception as e:
-                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
+                    async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
                     logging.error(e)
             logging.info(f"chat backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
     return resp
@@ -480,17 +479,9 @@ def embedding(vendor, prepare_info, model, text):
                 logging.info(f"embedding schedule retry: {i}/{retry_times}, resp:{resp}")
                 time.sleep(0.5)
 
-def need_notify_failed(vendor):
-    if lanying_utils.is_preview_server():
-        return False
-    # if vendor == 'siliconflow' or vendor == 'deepseek':
-    #     return False
-    return True
-
 def embedding_retry(vendor, prepare_info, model, text, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
-    if need_notify_failed(vendor):
-        lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_embedding_resp_failed_{vendor}')
+    async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_embedding_resp_failed_{vendor}')
     try:
         new_resp = do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id)
         if 'result' in new_resp and new_resp['result'] == 'ok':
@@ -536,12 +527,12 @@ def do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id):
                         new_resp = new_module.embedding(new_prepare_info, new_model, text)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"embedding backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
+                            async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
                             return new_resp
                         else:
-                            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
+                            async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
                 except Exception as e:
-                    lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
+                    async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回失败, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')
                     logging.error(e)
             logging.info(f"embedding backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
     return resp
@@ -549,3 +540,9 @@ def do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id):
 def encoding_for_model(vendor, model):
     module = get_module(vendor)
     return module.encoding_for_model(model)
+
+def async_send_message_with_filter(text, filter_name):
+    if lanying_utils.is_preview_server():
+        logging.info(f"async_send_message_with_filter skip for preview server | text: {text}, filter_name: {filter_name}")
+    else:
+        lanying_slack.async_send_message_with_filter(text, filter_name)

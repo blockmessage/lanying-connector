@@ -226,13 +226,11 @@ def embedding(prepare_info, model, text):
 def encoding_for_model(model): 
     if model.startswith("gpt-35-turbo"):
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
-    if model.startswith("o1-"):
-        return tiktoken.encoding_for_model("gpt-4o")
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
     model = preset.get('model', '')
-    if model.startswith("o1-"):
+    if model.startswith("o1"):
         return format_preset_for_o1(preset)
     support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream", "functions"]
     ret = dict()

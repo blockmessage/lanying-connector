@@ -32,12 +32,28 @@ def model_configs():
             'function_call': True,
             'api_type': 'openai'
         },
+        # {
+        #     "model": 'o3-mini',
+        #     "service": 'chatgpt',
+        #     "type": "chat",
+        #     "is_prefix": False,
+        #     "quota": 1.77,
+        #     "token_limit": 200000,
+        #     "support_vision": False,
+        #     'order': 2.5,
+        #     "url": '',
+        #     'function_call': False,
+        #     'support_stream': False,
+        #     'support_system_role': False,
+        #     'max_output_tokens': 100000,
+        #     'api_type': 'openai'
+        # },
         {
             "model": 'o1-mini',
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
-            "quota": 4.99,
+            "quota": 1.77,
             "token_limit": 128000,
             "support_vision": False,
             'order': 3,
@@ -46,6 +62,23 @@ def model_configs():
             'support_stream': False,
             'support_system_role': False,
             'max_output_tokens': 65536,
+            'api_type': 'openai'
+        },
+        {
+            "model": 'o1',
+            'real_model': 'o1-all',
+            "service": 'chatgpt',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 24.64,
+            "token_limit": 200000,
+            "support_vision": False,
+            'order': 4,
+            "url": '',
+            'function_call': False,
+            'support_stream': False,
+            'support_system_role': False,
+            'max_output_tokens': 100000,
             'api_type': 'openai'
         },
         {
@@ -145,25 +178,50 @@ def chat(prepare_info, preset):
         url = model_config['url']
         headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
     try:
-        logging.info(f"azure chat_completion start | preset={preset}, url:{url}")
-        logging.info(f"azure chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
+        logging.info(f"azure2 chat_completion start | preset={preset}, url:{url}")
+        logging.info(f"azure2 chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
         stream = final_preset.get("stream", False)
         if stream:
             response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
-            logging.info(f"azure chat_completion finish | code={response.status_code}, stream:{stream}")
+            logging.info(f"azure2 chat_completion finish | code={response.status_code}, stream:{stream}")
             if response.status_code == 200:
                 def generator():
+                    is_in_reasoning = False
+                    is_reasoning_finish = False
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        # logging.info(f"stream got line:{line_str}|")
+                        logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
-                                choice = data['choices'][0]
-                                delta = choice['delta']
-                                if 'finish_reason' in choice and choice['finish_reason'] is not None:
-                                    delta['finish_reason'] = choice['finish_reason']
-                                yield delta
+                                delta = None
+                                if 'choices' in data and len(data['choices']) > 0:
+                                    choice = data['choices'][0]
+                                    delta = choice['delta']
+                                    if 'finish_reason' in choice and choice['finish_reason'] is not None:
+                                        delta['finish_reason'] = choice['finish_reason']
+                                    if 'content' in delta and isinstance(delta['content'], str):
+                                        if not is_reasoning_finish:
+                                            if not is_in_reasoning and delta['content'].startswith('> Reasoning'):
+                                                is_in_reasoning = True
+                                            elif not is_in_reasoning and len(delta['content']) > 0:
+                                                is_reasoning_finish = True
+                                            elif is_in_reasoning and '\n\n' in delta['content']:
+                                                is_reasoning_finish = True
+                                    if is_in_reasoning:
+                                        if 'content' in delta:
+                                            delta['reasoning_content'] = delta['content']
+                                            del delta['content']
+                                    if is_reasoning_finish:
+                                        is_in_reasoning = False
+                                else:
+                                    if 'usage' in data and isinstance(data['usage'], dict):
+                                        delta = {
+                                            'usage' : data['usage']
+                                        }
+                                if delta:
+                                    logging.info(f"yield delta:{delta}")
+                                    yield delta
                             except Exception as e:
                                 pass
                 return {
@@ -190,7 +248,7 @@ def chat(prepare_info, preset):
                 }
         else:
             response = requests.request("POST", url, headers=headers, json=final_preset)
-            logging.info(f"azure chat_completion finish | code={response.status_code}, response={response.text}")
+            logging.info(f"azure2 chat_completion finish | code={response.status_code}, response={response.text}")
             res = response.json()
             usage = res.get('usage',{})
             response_message = res['choices'][0]['message']
@@ -241,12 +299,12 @@ def embedding(prepare_info, model, text):
         headers = {"Content-Type": "application/json", "api-key": prepare_info['api_key']}
     json_body = {"input":text, "model":model}
     try:
-        logging.info(f"azure embedding start")
+        logging.info(f"azure2 embedding start")
         response = requests.request("POST", url, headers=headers, json=json_body)
-        logging.info(f"azure embedding finish: response:{response}")
+        logging.info(f"azure2 embedding finish: response:{response}")
         res = response.json()
         if 'data' not in res:
-            logging.info(f"azure embedding finish with error:{res}")
+            logging.info(f"azure2 embedding finish with error:{res}")
         embedding = res['data'][0]['embedding']
         usage = res.get('usage',{})
         return {
@@ -270,13 +328,11 @@ def embedding(prepare_info, model, text):
 def encoding_for_model(model): 
     if model.startswith("gpt-35-turbo"):
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
-    if model.startswith("o1-"):
-        return tiktoken.encoding_for_model("gpt-4o")
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
     model = preset.get('model', '')
-    if model.startswith("o1-"):
+    if model.startswith("o1"):
         return format_preset_for_o1(preset)
     support_fields = ['model', "messages", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream", "functions"]
     ret = dict()
@@ -293,10 +349,14 @@ def format_preset(preset):
                 ret[key] = functions
             else:
                 ret[key] = preset[key]
+    if 'stream' in ret and ret['stream'] == True:
+        ret['stream_options'] = {
+            'include_usage': True
+        }
     return ret
 
 def format_preset_for_o1(preset):
-    support_fields = ['model', "messages", "max_completion_tokens"]
+    support_fields = ['model', "messages", "max_completion_tokens", "stream"]
     ret = dict()
     for key in support_fields:
         if key in preset:
@@ -316,6 +376,10 @@ def format_preset_for_o1(preset):
                 ret[key] = preset[key]
     if 'max_completion_tokens' not in ret:
         ret['max_completion_tokens'] = 25000
+    if 'stream' in ret and ret['stream'] == True:
+        ret['stream_options'] = {
+            'include_usage': True
+        }
     return ret
 
 def get_chat_model_url(model):

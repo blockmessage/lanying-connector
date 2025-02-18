@@ -1,11 +1,10 @@
 import logging
-import openai
 import tiktoken
 import os
 import types
-from openai.error import APIError, InvalidRequestError
 import time
 import json
+import requests
 
 def model_configs():
     return [
@@ -44,13 +43,28 @@ def model_configs():
             'order': 3,
             'function_call': True
         },
+        # {
+        #     "model": 'o3-mini',
+        #     "is_origin_vendor": True,
+        #     "service": 'chatgpt',
+        #     "type": "chat",
+        #     "is_prefix": False,
+        #     "quota": 1.77,
+        #     "token_limit": 200000,
+        #     "support_vision": False,
+        #     'order': 3,
+        #     'function_call': False,
+        #     'support_stream': False,
+        #     'support_system_role': False,
+        #     'max_output_tokens': 100000
+        # },
         {
             "model": 'o1-mini',
             "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
-            "quota": 4.99,
+            "quota": 1.77,
             "token_limit": 128000,
             "support_vision": False,
             'order': 3,
@@ -59,13 +73,28 @@ def model_configs():
             'support_system_role': False,
             'max_output_tokens': 65536
         },
+        # {
+        #     "model": 'o1',
+        #     "is_origin_vendor": True,
+        #     "service": 'chatgpt',
+        #     "type": "chat",
+        #     "is_prefix": False,
+        #     "quota": 24.64,
+        #     "token_limit": 200000,
+        #     "support_vision": False,
+        #     'order': 4,
+        #     'function_call': False,
+        #     'support_stream': False,
+        #     'support_system_role': False,
+        #     'max_output_tokens': 100000
+        # },
         {
             "model": 'o1-mini-2024-09-12',
             "is_origin_vendor": True,
             "service": 'chatgpt',
             "type": "chat",
             "is_prefix": False,
-            "quota": 4.99,
+            "quota": 1.77,
             "token_limit": 128000,
             "support_vision": False,
             'order': 103,
@@ -103,6 +132,20 @@ def model_configs():
             'support_stream': False,
             'support_system_role': False,
             'max_output_tokens': 32768
+        },
+        {
+            "model": 'gpt-4o-mini-audio-preview',
+            "is_origin_vendor": True,
+            "service": 'chatgpt',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 9.29,
+            "token_limit": 128000,
+            "support_vision": False,
+            "support_audio": True,
+            'order': 4,
+            'function_call': True,
+            'max_output_tokens': 16384
         },
         {
             "model": 'gpt-4-turbo',
@@ -359,92 +402,113 @@ def prepare_chat(auth_info, preset):
     }
 
 def chat(prepare_info, preset):
-    openai.api_key = prepare_info['api_key']
+    api_base, headers = get_api_base_and_headers(prepare_info)
+    url = api_base + '/chat/completions'
     final_preset = format_preset(preset)
-    headers = maybe_add_proxy_headers(prepare_info)
     logging.info(f"vendor openai chat request: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
-    retry_times = 3
-    response = None
-    task_id = time.time()
-    for i in range(retry_times):
-        logging.info(f"start try task_id:{task_id}, {i}/{retry_times}")
-        try:
-            response = openai.ChatCompletion.create(**final_preset, headers = headers)
-            break
-        except APIError as e:
-            if i == retry_times - 1:
-                logging.info(f"chat complete stop retry: task_id:{task_id}, {i}/{retry_times}")
-                raise e
-            else:
-                logging.info(f"chat complete got exception: task_id:{task_id}, {i}/{retry_times}")
-                logging.exception(e)
-                try:
-                    logging.info(dir(e))
-                except Exception as ee:
-                    pass
-                time.sleep(2)
-        except InvalidRequestError as e:
-            if e.user_message == 'Invalid image.':
-                if i == retry_times - 1:
-                    logging.info(f"chat complete stop retry: task_id:{task_id}, {i}/{retry_times}, invalid image error")
-                    raise e
-                else:
-                    logging.info(f"chat complete got exception: task_id:{task_id}, {i}/{retry_times}, invalid image error")
-                    logging.exception(e)
-                    try:
-                        logging.info(dir(e))
-                    except Exception as ee:
-                        pass
-                    time.sleep(0.1)
-            else:
-                raise e
-    logging.info(f"vendor openai chat response: task_id:{task_id}, {response}")
-    if isinstance(response, types.GeneratorType):
-        def generator():
-            for chunk in response:
-                choice = chunk['choices'][0]
-                delta = choice['delta']
-                if 'finish_reason' in choice and choice['finish_reason'] is not None:
-                    delta['finish_reason'] = choice['finish_reason']
-                yield delta
-        return {
-            'result': 'ok',
-            'reply' : '',
-            'reply_generator': generator(),
-            'usage' : {
-                'completion_tokens': 0,
-                'prompt_tokens': 0,
-                'total_tokens': 0
-            }
-        }
     try:
-        usage = response.get('usage',{})
-        response_message = response['choices'][0]['message']
-        finish_reason = response['choices'][0].get('finish_reason', '')
-        reply = response_message.get('content', "")
-        if reply:
-            reply = reply.strip()
+        stream = final_preset.get("stream", False)
+        if stream:
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
+            logging.info(f"openai chat_completion finish | code={response.status_code}, stream:{stream}")
+            if response.status_code == 200:
+                def generator():
+                    for line in response.iter_lines():
+                        line_str = line.decode('utf-8')
+                        logging.info(f"stream got line:{line_str}|")
+                        if line_str.startswith('data:'):
+                            try:
+                                data = json.loads(line_str[5:])
+                                delta = None
+                                if 'choices' in data and len(data['choices']) > 0:
+                                    choice = data['choices'][0]
+                                    delta = choice['delta']
+                                    if 'finish_reason' in choice and choice['finish_reason'] is not None:
+                                        delta['finish_reason'] = choice['finish_reason']
+                                else:
+                                    if 'usage' in data and isinstance(data['usage'], dict):
+                                        delta = {
+                                            'usage' : data['usage']
+                                        }
+                                if delta:
+                                    logging.info(f"yield delta:{delta}")
+                                    yield delta
+                            except Exception as e:
+                                pass
+                return {
+                    'result': 'ok',
+                    'reply' : '',
+                    'reply_generator': generator(),
+                    'usage' : {
+                        'completion_tokens': 0,
+                        'prompt_tokens': 0,
+                        'total_tokens': 0
+                    }
+                }
+            else:
+                logging.info(f"fail to get stream: response:{response.text}")
+                response_json = {}
+                try:
+                    response_json = response.json()
+                except Exception as e:
+                    pass
+                return {
+                    'result': 'error',
+                    'reason': 'bad_status_code',
+                    'response': response_json
+                }
         else:
-            reply = ''
-        function_call = response_message.get('function_call')
-        return {
-            'result': 'ok',
-            'reply' : reply,
-            'finish_reason': finish_reason,
-            'function_call': function_call,
-            'usage' : {
-                'completion_tokens' : usage.get('completion_tokens',0),
-                'prompt_tokens' : usage.get('prompt_tokens', 0),
-                'total_tokens' : usage.get('total_tokens', 0)
-            }
-        }
+            response = requests.request("POST", url, headers=headers, json=final_preset)
+            logging.info(f"openai chat_completion finish | code={response.status_code}, response={response.text}")
+            if response.status_code == 200:
+                res = response.json()
+                usage = res.get('usage',{})
+                response_message = res['choices'][0]['message']
+                reply = response_message.get('content', "")
+                if reply:
+                    reply = reply.strip()
+                else:
+                    reply = ''
+                if 'audio' in response_message and isinstance(response_message['audio'], dict):
+                    audio = response_message['audio']
+                    if 'transcript' in audio:
+                        reply = audio['transcript']
+                else:
+                    audio = None
+                function_call = response_message.get('function_call')
+                finish_reason = ''
+                try:
+                    finish_reason = res['choices'][0]['finish_reason']
+                except Exception as e:
+                    pass
+                return {
+                    'result': 'ok',
+                    'reply' : reply,
+                    'audio': audio,
+                    'finish_reason': finish_reason,
+                    'function_call': function_call,
+                    'usage' : {
+                        'completion_tokens' : usage.get('completion_tokens',0),
+                        'prompt_tokens' : usage.get('prompt_tokens', 0),
+                        'total_tokens' : usage.get('total_tokens', 0)
+                    }
+                }
+            else:
+                response_json = {}
+                try:
+                    response_json = response.json()
+                except Exception as e:
+                    pass
+                return {
+                    'result': 'error',
+                    'reason': 'bad_status_code',
+                    'response': response_json
+                }
     except Exception as e:
         logging.exception(e)
-        logging.info(f"fail to transform response:{response}")
         return {
             'result': 'error',
-            'reason': 'unknown',
-            'response': response 
+            'reason': 'exception'
         }
 
 def prepare_embedding(auth_info, _):
@@ -453,22 +517,24 @@ def prepare_embedding(auth_info, _):
     }
 
 def embedding(prepare_info, model, text):
-    api_key = prepare_info['api_key']
-    openai.api_key = api_key
+    api_base, headers = get_api_base_and_headers(prepare_info)
+    url = api_base + '/embeddings'
     type = prepare_info.get('type', '')
     if model == '':
         model = 'text-embedding-ada-002'
-    headers = maybe_add_proxy_headers(prepare_info)
-    logging.info(f"openai embedding start | type={type}, api_key:{api_key[:4]}...{api_key[-4:]}")
+    json_body = {"input":text, "model":model}
     if model == 'text-embedding-3-large':
-        response = openai.Embedding.create(input=text, engine=model, headers=headers, dimensions=1536)
-    else:
-        response = openai.Embedding.create(input=text, engine=model, headers=headers)
+        json_body['dimensions'] = 1536
     try:
-        embedding = response['data'][0]['embedding']
-        if model == 'text-embedding-3-large':
-            logging.info(f"embedding len: {len(embedding)}")
-        usage = response.get('usage',{})
+        logging.info(f"openai embedding start | type={type}")
+        response = requests.request("POST", url, headers=headers, json=json_body)
+        logging.info(f"openai embedding finish: response:{response}")
+        res = response.json()
+        if 'data' not in res:
+            logging.info(f"openai embedding finish with error:{res}")
+        #logging.info(f"openai embedding detail | res={res}")
+        embedding = res['data'][0]['embedding']
+        usage = res.get('usage',{})
         return {
             'result':'ok',
             'embedding': embedding,
@@ -481,23 +547,20 @@ def embedding(prepare_info, model, text):
         }
     except Exception as e:
         logging.exception(e)
-        logging.info(f"fail to transform response:{response}")
         return {
             'result': 'error',
             'reason': 'unknown',
-            'model': model,
-            'response': response
+            'model': model
         }
 
 def encoding_for_model(model):
-    if model.startswith("o1-"):
-        return tiktoken.encoding_for_model("gpt-4o")
     return tiktoken.encoding_for_model(model)
 
 def format_preset(preset):
     model = preset.get('model', '')
-    if model.startswith("o1-"):
+    if model.startswith("o1") or model.startswith("o3-"):
         return format_preset_for_o1(preset)
+    model_config = get_chat_model_config(preset['model'])
     support_fields = ['model', "messages", "functions", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
     ret = dict()
     for key in support_fields:
@@ -513,6 +576,19 @@ def format_preset(preset):
                 ret[key] = functions
             else:
                 ret[key] = preset[key]
+    if 'stream' in ret and ret['stream'] == True:
+        ret['stream_options'] = {
+            'include_usage': True
+        }
+    if model_config.get('support_audio', False) == True:
+        if 'modalities' not in ret:
+            ret['modalities'] = ["text", "audio"]
+        if 'audio' not in ret:
+            ret['audio'] = {"voice": "alloy", "format": "mp3"}
+        if 'stream' in ret:
+            del ret['stream']
+        if 'stream_options' in ret:
+            del ret['stream_options']
     return ret
 
 def format_preset_for_o1(preset):
@@ -538,15 +614,27 @@ def format_preset_for_o1(preset):
         ret['max_completion_tokens'] = 25000
     return ret
 
-def maybe_add_proxy_headers(prepare_info):
+def get_api_base_and_headers(prepare_info):
     proxy_api_base = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_BASE", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
     api_key = prepare_info['api_key']
     if len(proxy_api_base) > 0:
-        openai.api_base = proxy_api_base
-        return {
+        api_base = proxy_api_base
+        headers = {
+            "Content-Type": "application/json",
             "Authorization": f"Basic {proxy_api_key}",
             "Authorization-Next": f"Bearer {api_key}"
         }
     else:
-        return {}
+        api_base = 'https://api.openai.com/v1'
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+    return (api_base, headers)
+
+def get_chat_model_config(model):
+    for config in model_configs():
+        if model == config['model']:
+            return config
+    return None

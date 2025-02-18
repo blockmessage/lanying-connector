@@ -38,6 +38,7 @@ from lanying_async import executor
 import lanying_message_quota_usage
 from concurrent.futures import Future
 import lanying_slack
+import base64
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -205,27 +206,37 @@ def handle_request(request, request_type):
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}, vendor={vendor}, model:{model}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
     if vendor == 'openai':
-        stream,response = forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info)
+        stream,response,drop_stream_usage_line = forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info)
         if response.status_code == 200:
             if stream:
                 def generate_response():
                     contents = []
+                    usage = {}
                     try:
                         for line in response.iter_lines():
                             line_str = line.decode('utf-8')
                             # logging.info(f"stream got line:{line_str}|")
+                            is_usage_line = False
+                            content = None
                             if line_str.startswith('data:'):
                                 try:
                                     data = json.loads(line_str[5:])
+                                    if 'usage' in data and isinstance(data['usage'], dict):
+                                        usage = data['usage']
+                                        logging.info(f"stream got usage:{usage}")
+                                        is_usage_line = True
                                     content = data['choices'][0]['delta']['content']
                                     if content is not None:
                                         contents.append(content)
                                 except Exception as e:
                                     pass
-                            yield line_str + '\n'
+                            if drop_stream_usage_line and is_usage_line and content is None:
+                                pass
+                            else:
+                                yield line_str + '\n'
                     finally:
                         reply = ''.join(contents)
-                        response_json = stream_lines_to_response(preset, reply, vendor, {}, "", "","")
+                        response_json = stream_lines_to_response(preset, reply, vendor, usage, "", "","")
                         logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
                         add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
                 return {'result':'ok', 'response':response, 'iter': generate_response}
@@ -366,16 +377,24 @@ def forward_request(app_id, request, auth_info, force_no_stream, request_type, f
         stream = request_json.get('stream', False)
         if force_no_stream:
             stream = False
+        drop_stream_usage_line = False
         if stream:
             logging.info(f"forward request stream start: app_id:{app_id}, url:{url}")
+            if 'stream' in request_json and request_json['stream'] == True:
+                if request_json.get('stream_options', {}).get('include_usage', False) == False:
+                    drop_stream_usage_line = True
+                    request_json['stream_options'] = {
+                        'include_usage': True
+                    }
+                    data = json.dumps(request_json)
             response = requests.post(url, data=data, headers=headers, stream=True)
             logging.info(f"forward request stream finish: app_id:{app_id}, status_code: {response.status_code}")
-            return (stream, response)
+            return (stream, response, drop_stream_usage_line)
         else:
             logging.info(f"forward request start: app_id:{app_id}, url:{url}")
             response = requests.post(url, data=data, headers=headers)
             logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}")
-            return (stream, response)
+            return (stream, response, drop_stream_usage_line)
     else:
         form_data = request.form
         files = {}
@@ -849,8 +868,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     msg_type = msg['type']
     if msg_type == 'CHAT':
         historyListKey = historyListChatGPTKey(app_id, fromUserId, toUserId)
+        maybe_delete_old_model_history(historyListKey, model)
     elif msg_type == 'GROUPCHAT':
         historyListKey = historyListGroupKey(app_id, toUserId)
+        maybe_delete_old_model_history(historyListKey, model)
     redis = lanying_redis.get_redis_connection()
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
@@ -1200,9 +1221,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         else:
             break
     reply = response['reply']
+    audio_reply = response.get('audio')
     if reply == '' and vendor == 'deepseek':
-        if lanying_vendor.need_notify_failed(vendor):
-            lanying_slack.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回空白内容, vendor:{vendor}, model:{model}', f'ai_chat_resp_failed_{vendor}')
+        lanying_vendor.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回空白内容, vendor:{vendor}, model:{model}', f'ai_chat_resp_failed_{vendor}')
         reply = '抱歉，我暂时无法回答你的问题。'
     finish_reason = response.get('finish_reason', '')
     reply_ext['ai']['finish_reason'] = finish_reason
@@ -1374,9 +1395,15 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             if is_stream:
                 reply_ext['ai']['seq'] += 1
                 reply_ext['ai']['finish'] = True
-                replyMessageAsync(config, reply, reply_ext)
             else:
                 reply_ext['ai']['stream'] = False
+            if audio_reply:
+                audio_data = base64.b64decode(audio_reply['data'])
+                audio_filename = f"/tmp/audio_{int(time.time())}_{uuid.uuid4()}.mp3"
+                with open(audio_filename, 'wb') as f:
+                    f.write(audio_data)
+                replyAudioMessageAsync(config, reply, audio_filename, reply_ext)
+            else:
                 replyMessageAsync(config, reply, reply_ext)
     return ''
 
@@ -2053,6 +2080,18 @@ def historyListChatGPTKey(app_id, fromUserId, toUserId):
 def historyListGroupKey(app_id, groupId):
     return "lanying:connector:history:list:group:" + app_id + ":" + groupId
 
+def maybe_delete_old_model_history(history_key, model):
+    key = f'{history_key}:model'
+    redis = lanying_redis.get_redis_connection()
+    old_model = lanying_redis.redis_get(redis, key)
+    if old_model:
+        if old_model != model:
+            logging.info(f"maybe_delete_old_model_history delete old history | history_key = {history_key}, old_model:{old_model}, new_model:{model}")
+            redis.delete(history_key)
+            redis.set(key, model)
+    else:
+        redis.set(key, model)
+
 # KEYS:
 
 # time, type=group, content, group_id, from=reply_from, mention_list=[send_from]
@@ -2123,7 +2162,10 @@ def format_content_and_metadata(content, metadata):
         return content, metadata
     ctype = metadata.get('ctype', 'TEXT')
     if ctype == 'AUDIO':
-        prefix = '[语音] '
+        if isinstance(content, list):
+            prefix = ''
+        else:
+            prefix = '[语音] '
     elif ctype == 'IMAGE':
         msg_id = metadata.get('msg_id', 'None')
         prefix = f'[图片][image_id:{msg_id}] '
@@ -2131,7 +2173,10 @@ def format_content_and_metadata(content, metadata):
         prefix = ''
     prefix_size = len(prefix)
     metadata['prefix_size'] = prefix_size
-    new_content = prefix + content
+    if prefix == '':
+        new_content = content
+    else:
+        new_content = prefix + content
     return new_content, metadata
 
 def getHistoryList(redis, historyListKey):
@@ -3333,23 +3378,51 @@ def maybe_transcription_audio_msg(config, msg):
     ctype = msg.get('ctype')
     from_user_id = str(msg['from']['uid'])
     content = msg.get('content', '')
-    if ctype == 'AUDIO' and content == '' and is_chatbot_audio_to_text_on(config):
-        attachment = lanying_utils.safe_json_loads(msg.get('attachment',''))
-        url = attachment.get('url', '')
-        if len(url) > 0:
-            if lanying_utils.is_lanying_url(url):
-                url += '&format=mp3'
-            audio_filename = f"/tmp/audio_{app_id}_{from_user_id}_{int(time.time())}_{uuid.uuid4()}.mp3"
-            res = lanying_im_api.download_url(config, app_id, from_user_id, url, audio_filename)
-            logging.info(f"transcription_audio_msg result: {res}")
-            if res['result'] == 'ok':
-                res = speech_to_text(config, audio_filename)
-                logging.info(f"speech_to_text | result: {res}")
+    if ctype == 'AUDIO' and content == '':
+        support_audio = is_model_support_audio(config)
+        if is_chatbot_audio_to_text_on(config) or support_audio:
+            attachment = lanying_utils.safe_json_loads(msg.get('attachment',''))
+            url = attachment.get('url', '')
+            if len(url) > 0:
+                if lanying_utils.is_lanying_url(url):
+                    url += '&format=mp3'
+                audio_filename = f"/tmp/audio_{app_id}_{from_user_id}_{int(time.time())}_{uuid.uuid4()}.mp3"
+                res = lanying_im_api.download_url(config, app_id, from_user_id, url, audio_filename)
+                logging.info(f"transcription_audio_msg result: {res}")
                 if res['result'] == 'ok':
-                    audio_text = res['data']['text']
-                    logging.info(f"mark audio msg text: msg:{msg}, audio_text:{audio_text}")
-                    msg['content'] = audio_text
-                    executor.submit(add_audio_msg_text, config, msg)
+                    if support_audio:
+                        logging.info(f"speech_to_audio_input | app_id:{app_id}")
+                        with open(audio_filename, "rb") as f:
+                            audio_data = f.read()
+                            encoded_string = base64.b64encode(audio_data).decode('utf-8')
+                            msg['content'] = [{
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": encoded_string,
+                                        "format": "mp3"
+                                    }
+                                }]
+                    else:
+                        res = speech_to_text(config, audio_filename)
+                        logging.info(f"speech_to_text | result: {res}")
+                        if res['result'] == 'ok':
+                            audio_text = res['data']['text']
+                            logging.info(f"mark audio msg text: msg:{msg}, audio_text:{audio_text}")
+                            msg['content'] = audio_text
+                            executor.submit(add_audio_msg_text, config, msg)
+
+def is_model_support_audio(config):
+    chatbot = config.get('chatbot', {})
+    preset = chatbot.get('preset', {})
+    vendor = config.get('vendor', 'openai')
+    if 'vendor' in preset:
+        vendor = preset['vendor']
+    if 'model' in preset:
+        model_config = lanying_vendor.get_chat_model_config(vendor, preset['model'])
+        if model_config:
+            if model_config.get('support_audio', False) == True:
+                return True
+    return False
 
 def speech_to_text(config, audio_filename):
     try:
