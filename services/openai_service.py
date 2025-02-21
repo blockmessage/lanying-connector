@@ -37,7 +37,6 @@ import lanying_image
 from lanying_async import executor
 import lanying_message_quota_usage
 from concurrent.futures import Future
-import lanying_slack
 import base64
 
 service = 'openai_service'

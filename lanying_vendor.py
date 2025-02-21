@@ -197,6 +197,7 @@ def list_models(app_id):
             if 'endpoint' in new_config:
                 del new_config['endpoint']
             new_config['vendor'] = vendor
+            new_config['is_custom_vendor'] = False
             models.append(new_config)
     custom_vendor_list = get_vendor_list(app_id)['data']['list']
     for vendor_info in custom_vendor_list:
@@ -213,6 +214,9 @@ def list_models(app_id):
                 new_config['vendor'] = vendor_id
                 new_config['is_custom_vendor'] = True
                 new_config['quota'] = get_custom_vendor_quota()
+                if 'image_quota' in config:
+                    for k,_ in config['image_quota'].items():
+                        new_config['image_quota'][k] = get_custom_vendor_quota()
                 models.append(new_config)
     return models
 
@@ -233,6 +237,7 @@ def get_model_config(app_id, vendor, model, type):
                     if model == now_model:
                         newConfig = copy.deepcopy(config)
                         newConfig['vendor'] = vendor
+                        newConfig['is_custom_vendor'] = False
                         return newConfig
     custom_vendor_info = get_vendor(app_id, vendor)
     if custom_vendor_info:
@@ -247,6 +252,11 @@ def get_model_config(app_id, vendor, model, type):
                         if model == now_model:
                             newConfig = copy.deepcopy(config)
                             newConfig['vendor'] = vendor
+                            newConfig['is_custom_vendor'] = True
+                            newConfig['quota'] = get_custom_vendor_quota()
+                            if 'image_quota' in config:
+                                for k,_ in config['image_quota'].items():
+                                    newConfig['image_quota'][k] = get_custom_vendor_quota()
                             maybe_update_custom_vendor_model_config(newConfig, custom_vendor_info, model)
                             return newConfig
     return None
