@@ -135,7 +135,10 @@ def list_models():
     if accessToken and accessToken == headerToken:
         service = "openai"
         service_module = get_service_module(service)
-        result = service_module.list_models()
+        text = request.get_data(as_text=True)
+        data = json.loads(text)
+        app_id = str(data.get('app_id', ''))
+        result = service_module.list_models(app_id)
         resp = app.make_response({'code':200, 'data':result})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})

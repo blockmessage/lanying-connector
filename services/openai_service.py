@@ -3293,8 +3293,8 @@ def get_user_default_embedding_name(app_id, user_id):
 
 def user_default_embedding_name_key(app_id, user_id):
     return f'lanying_connector:user_default_embedding_name:{app_id}:{user_id}'
-def list_models():
-    return lanying_vendor.list_models()
+def list_models(app_id):
+    return lanying_vendor.list_models(app_id)
 
 def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_function_name, stream_function_args, stream_function_id):
     if 'total_tokens' in usage:

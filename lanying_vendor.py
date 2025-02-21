@@ -177,10 +177,17 @@ def embedding_backup_rules():
         }
     ]
 
-def get_module(vendor):
-    return vendor_to_module.get(vendor)
+def get_module(app_id, vendor):
+    if vendor in vendor_to_module:
+        return vendor_to_module.get(vendor)
+    custom_vendor_info = get_vendor(app_id, vendor)
+    if custom_vendor_info:
+        vendor_type = custom_vendor_info['vendor_type']
+        if vendor_type in vendor_to_module:
+            return vendor_to_module.get(vendor_type)
+    raise Exception('vendor_not_exist')
 
-def list_models():
+def list_models(app_id):
     models = []
     for vendor,module in vendor_to_module.items():
         for config in module.model_configs():
@@ -191,101 +198,79 @@ def list_models():
                 del new_config['endpoint']
             new_config['vendor'] = vendor
             models.append(new_config)
+    custom_vendor_list = get_vendor_list(app_id)['data']['list']
+    for vendor_info in custom_vendor_list:
+        vendor_type = vendor_info['vendor_type']
+        vendor_id = vendor_info['vendor_id']
+        if vendor_type in vendor_to_module:
+            module = vendor_to_module[vendor_type]
+            for config in module.model_configs():
+                new_config = copy.deepcopy(config)
+                if 'url' in new_config:
+                    del new_config['url']
+                if 'endpoint' in new_config:
+                    del new_config['endpoint']
+                new_config['vendor'] = vendor_id
+                new_config['is_custom_vendor'] = True
+                new_config['quota'] = get_custom_vendor_quota()
+                models.append(new_config)
     return models
 
-def get_vendor_by_model(model):
-    for vendor,module in vendor_to_module.items():
-        for config in module.model_configs():
-            is_prefix = config.get('is_prefix', True)
-            now_model = config.get('model')
-            if is_prefix and model.startswith(now_model):
-                return vendor
-            if model == now_model:
-                return vendor
-    return None
+def get_custom_vendor_quota():
+    return 0.22
 
 def get_chat_model_config(app_id, vendor, model):
-    if vendor is None:
-        vendor = get_vendor_by_model(model)
-    module = get_module(vendor)
-    if module:
-        model_configs = module.model_configs()
-        for config in model_configs:
-            if config['type'] == "chat":
-                is_prefix = config.get('is_prefix', True)
-                now_model = config.get('model')
-                if is_prefix and model.startswith(now_model):
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
-                if model == now_model:
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
+    return get_model_config(app_id, vendor, model, 'chat')
+
+def get_model_config(app_id, vendor, model, type):
+    if vendor in vendor_to_module:
+        module = vendor_to_module.get(vendor)
+        if module:
+            model_configs = module.model_configs()
+            for config in model_configs:
+                if config['type'] == type:
+                    now_model = config.get('model')
+                    if model == now_model:
+                        newConfig = copy.deepcopy(config)
+                        newConfig['vendor'] = vendor
+                        return newConfig
+    custom_vendor_info = get_vendor(app_id, vendor)
+    if custom_vendor_info:
+        vendor_type = custom_vendor_info['vendor_type']
+        if vendor_type in vendor_to_module:
+            module = vendor_to_module.get(vendor_type)
+            if module:
+                model_configs = module.model_configs()
+                for config in model_configs:
+                    if config['type'] == type:
+                        now_model = config.get('model')
+                        if model == now_model:
+                            newConfig = copy.deepcopy(config)
+                            newConfig['vendor'] = vendor
+                            maybe_update_custom_vendor_model_config(newConfig, custom_vendor_info, model)
+                            return newConfig
     return None
+
+def maybe_update_custom_vendor_model_config(config, custom_vendor_info, model):
+    vendor_model_config = custom_vendor_info['model_config']
+    if model in vendor_model_config:
+        fields = ['url', 'api_type', 'endpoint']
+        model_config = vendor_model_config[model]
+        for field in fields:
+            if field in model_config:
+                config[field] = model_config[field]
 
 def get_image_model_config(app_id, vendor, model):
-    if vendor is None:
-        vendor = get_vendor_by_model(model)
-    module = get_module(vendor)
-    if module:
-        model_configs = module.model_configs()
-        for config in model_configs:
-            if config['type'] == "image":
-                is_prefix = config.get('is_prefix', True)
-                now_model = config.get('model')
-                if is_prefix and model.startswith(now_model):
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
-                if model == now_model:
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
-    return None
+    return get_model_config(app_id, vendor, model, 'image')
 
 def get_text_to_speech_model_config(app_id, vendor, model):
-    if vendor is None:
-        vendor = get_vendor_by_model(model)
-    module = get_module(vendor)
-    if module:
-        model_configs = module.model_configs()
-        for config in model_configs:
-            if config['type'] == "text_to_speech":
-                is_prefix = config.get('is_prefix', True)
-                now_model = config.get('model')
-                if is_prefix and model.startswith(now_model):
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
-                if model == now_model:
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
-    return None
+    return get_model_config(app_id, vendor, model, 'text_to_speech')
 
 def get_speech_to_text_model_config(app_id, vendor, model):
-    if vendor is None:
-        vendor = get_vendor_by_model(model)
-    module = get_module(vendor)
-    if module:
-        model_configs = module.model_configs()
-        for config in model_configs:
-            if config['type'] == "speech_to_text":
-                is_prefix = config.get('is_prefix', True)
-                now_model = config.get('model')
-                if is_prefix and model.startswith(now_model):
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
-                if model == now_model:
-                    newConfig = copy.deepcopy(config)
-                    newConfig['vendor'] = vendor
-                    return newConfig
-    return None
+    return get_model_config(app_id, vendor, model, 'speech_to_text')
 
 def get_embedding_model(app_id, vendor):
-    module = get_module(vendor)
+    module = get_module(app_id, vendor)
     if module:
         model_configs = module.model_configs()
         for config in model_configs:
@@ -294,32 +279,19 @@ def get_embedding_model(app_id, vendor):
     return None
 
 def get_embedding_model_config(app_id, vendor, model):
-    if vendor is None:
-        vendor = get_vendor_by_model(model)
-    module = get_module(vendor)
-    if module:
-        model_configs = module.model_configs()
-        for config in model_configs:
-            if config['type'] == "embedding":
-                is_prefix = config.get('is_prefix', True)
-                now_model = config.get('model')
-                if is_prefix and model.startswith(now_model):
-                    return config
-                if model == now_model:
-                    return config
-                if model == '':
-                    return config
-    return None
+    if model == '':
+        model = get_embedding_model(app_id, vendor)
+    return get_model_config(app_id, vendor, model, 'embedding')
 
 def prepare_chat(app_id, vendor, auth_info, preset):
-    module = get_module(vendor)
+    module = get_module(app_id, vendor)
     result = module.prepare_chat(auth_info, preset)
     if isinstance(result, dict):
         result['auth_info'] = auth_info
     return result
 
 def chat(app_id, vendor, prepare_info, preset):
-    module = get_module(vendor)
+    module = get_module(app_id, vendor)
     try:
         resp = chat_with_same_model_retry(module, vendor, prepare_info, preset)
         if 'result' in resp and resp['result'] == 'ok':
@@ -427,7 +399,7 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
                         logging.info(f"chat backup start | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
                         new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
                         new_prepare_info = prepare_chat(app_id, new_vendor, new_auth_info, new_preset)
-                        new_module = get_module(new_vendor)
+                        new_module = get_module(app_id, new_vendor)
                         new_resp = chat_with_same_model_retry(new_module, new_vendor, new_prepare_info, new_preset)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"chat backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
@@ -442,7 +414,7 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
     return resp
 
 def prepare_embedding(app_id, vendor, auth_info, type):
-    module = get_module(vendor)
+    module = get_module(app_id, vendor)
     result = module.prepare_embedding(auth_info, type)
     if isinstance(result, dict):
         result['auth_info'] = auth_info
@@ -450,7 +422,7 @@ def prepare_embedding(app_id, vendor, auth_info, type):
     return result
 
 def embedding(app_id, vendor, prepare_info, model, text):
-    module = get_module(vendor)
+    module = get_module(app_id, vendor)
     retry_times = 5
     for i in range(retry_times):
         try:
@@ -525,7 +497,7 @@ def do_embedding_retry(app_id, vendor, prepare_info, model, text, resp, unique_i
                         logging.info(f"embedding backup start | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
                         new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
                         new_prepare_info = prepare_embedding(app_id, new_vendor, new_auth_info, type)
-                        new_module = get_module(new_vendor)
+                        new_module = get_module(app_id, new_vendor)
                         new_resp = new_module.embedding(new_prepare_info, new_model, text)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"embedding backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
@@ -540,7 +512,7 @@ def do_embedding_retry(app_id, vendor, prepare_info, model, text, resp, unique_i
     return resp
 
 def encoding_for_model(app_id, vendor, model):
-    module = get_module(vendor)
+    module = get_module(app_id, vendor)
     return module.encoding_for_model(model)
 
 def async_send_message_with_filter(text, filter_name):
@@ -575,8 +547,11 @@ class VendorSetting:
 
 def create_vendor(vendor_setting: VendorSetting):
     now = int(time.time())
+    result = check_vendor_valid(vendor_setting)
+    if result['result'] == 'error':
+        return result
     app_id = vendor_setting.app_id
-    vendor_id = generate_vendor_id()
+    vendor_id = generate_vendor_id(vendor_setting.vendor_type)
     redis = lanying_redis.get_redis_connection()
     fields = vendor_setting.to_hmset_fields()
     fields['status'] = 'normal'
@@ -594,6 +569,9 @@ def create_vendor(vendor_setting: VendorSetting):
 
 def configure_vendor(vendor_id, vendor_setting: VendorSetting):
     now = int(time.time())
+    result = check_vendor_valid(vendor_setting)
+    if result['result'] == 'error':
+        return result
     app_id = vendor_setting.app_id
     vendor_info = get_vendor(app_id, vendor_id)
     if vendor_info is None:
@@ -610,6 +588,17 @@ def configure_vendor(vendor_id, vendor_setting: VendorSetting):
         }
     }
 
+def check_vendor_valid(vendor_setting: VendorSetting):
+    vendor_type = vendor_setting.vendor_type
+    if vendor_type not in vendor_to_module:
+        return {
+            'result': 'error',
+            'message': 'vendor_type_not_valid'
+        }
+    return {
+        'result': 'ok'
+    }
+    
 def hide_secret_info(vendor_info):
     new_vendor_info = copy.deepcopy(vendor_info)
     new_vendor_info['api_key'] = "****"
@@ -648,10 +637,10 @@ def get_vendor_list(app_id):
             }
     }
 
-def generate_vendor_id():
+def generate_vendor_id(vendor_type):
     redis = lanying_redis.get_redis_connection()
     raw_id = redis.incrby("lanying_connector:grow_ai:vendor_id_generator", 1)
-    return f'vendor_{raw_id}'
+    return f'custom_vendor_{vendor_type}_{raw_id}'
 
 def get_vendor_key(app_id, vendor_id):
     return f"lanying_connector:grow_ai:vendor:{app_id}:{vendor_id}"
