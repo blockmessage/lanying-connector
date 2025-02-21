@@ -4366,6 +4366,90 @@ def sync_messages():
         resp = make_response({'code':500, 'message':'server internal error'})
         return resp
 
+@bp.route("/service/openai/create_vendor", methods=["POST"])
+def create_vendor():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    tenement_id = str(data['tenement_id'])
+    vendor_type = str(data['vendor_type']).strip()
+    name = str(data['name']).strip()
+    api_key = str(data['api_key']).strip()
+    secret_key = str(data['secret_key']).strip()
+    api_group_id = str(data['api_group_id']).strip()
+    api_endpoint = str(data['api_endpoint']).strip()
+    model_config = dict(data['model_config'])
+    vendor_setting = lanying_vendor.VendorSetting(
+        app_id = app_id,
+        tenement_id = tenement_id,
+        vendor_type = vendor_type,
+        name = name,
+        api_key = api_key,
+        secret_key = secret_key,
+        api_group_id = api_group_id,
+        api_endpoint = api_endpoint,
+        model_config = model_config
+    )
+    result = lanying_vendor.create_vendor(vendor_setting)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get('data', {})})
+    return resp
+
+@bp.route("/service/openai/configure_vendor", methods=["POST"])
+def configure_vendor():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    tenement_id = str(data['tenement_id'])
+    vendor_id = str(data['vendor_id'])
+    vendor_type = str(data['vendor_type']).strip()
+    name = str(data['name']).strip()
+    api_key = str(data['api_key']).strip()
+    secret_key = str(data['secret_key']).strip()
+    api_group_id = str(data['api_group_id']).strip()
+    api_endpoint = str(data['api_endpoint']).strip()
+    model_config = dict(data['model_config'])
+    vendor_setting = lanying_vendor.VendorSetting(
+        app_id = app_id,
+        tenement_id = tenement_id,
+        vendor_type = vendor_type,
+        name = name,
+        api_key = api_key,
+        secret_key = secret_key,
+        api_group_id = api_group_id,
+        api_endpoint = api_endpoint,
+        model_config = model_config
+    )
+    result = lanying_vendor.configure_vendor(vendor_id, vendor_setting)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get('data', {})})
+    return resp
+
+@bp.route("/service/openai/get_vendor_list", methods=["POST"])
+def get_site_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    result = lanying_vendor.get_vendor_list(app_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 def wait_sync_messages(future: Future, msg, message_quota_trace_id):
     # send heartbeat for aliyun SLB idel timeout 60s
     heartbeat = '{"code": 200, "data": {"messages":'

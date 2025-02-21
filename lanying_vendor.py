@@ -19,6 +19,8 @@ import lanying_slack
 from datetime import datetime
 import time
 import lanying_utils
+import json
+import lanying_redis
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
@@ -546,3 +548,113 @@ def async_send_message_with_filter(text, filter_name):
         logging.info(f"async_send_message_with_filter skip for preview server | text: {text}, filter_name: {filter_name}")
     else:
         lanying_slack.async_send_message_with_filter(text, filter_name)
+
+class VendorSetting:
+    def __init__(self, app_id, tenement_id, vendor_type, name, api_key, secret_key, api_group_id, api_endpoint, model_config):
+        self.app_id = app_id
+        self.tenement_id = tenement_id
+        self.vendor_type = vendor_type
+        self.name = name
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.api_group_id = api_group_id
+        self.api_endpoint = api_endpoint
+        self.model_config = model_config
+    def to_hmset_fields(self):
+        return {
+            'app_id': self.app_id,
+            'tenement_id': self.tenement_id,
+            'vendor_type': self.vendor_type,
+            'name': self.name,
+            'api_key': self.api_key,
+            'secret_key': self.secret_key,
+            'api_group_id': self.api_group_id,
+            'api_endpoint':  self.api_endpoint,
+            'model_config': json.dumps(self.model_config, ensure_ascii=False)
+        }
+
+def create_vendor(vendor_setting: VendorSetting):
+    now = int(time.time())
+    app_id = vendor_setting.app_id
+    vendor_id = generate_vendor_id()
+    redis = lanying_redis.get_redis_connection()
+    fields = vendor_setting.to_hmset_fields()
+    fields['status'] = 'normal'
+    fields['create_time'] = now
+    fields['vendor_id'] = vendor_id
+    logging.info(f"create vendor start | app_id:{app_id}, vendor_info:{hide_secret_info(fields)}")
+    redis.hmset(get_vendor_key(app_id, vendor_id), fields)
+    redis.rpush(get_vendor_list_key(app_id), vendor_id)
+    return {
+        'result': 'ok',
+        'data': {
+            'vendor_id': vendor_id
+        }
+    }
+
+def configure_vendor(vendor_id, vendor_setting: VendorSetting):
+    now = int(time.time())
+    app_id = vendor_setting.app_id
+    vendor_info = get_vendor(app_id, vendor_id)
+    if vendor_info is None:
+        return {'result': 'error', 'message': 'vendor not exist'}
+    redis = lanying_redis.get_redis_connection()
+    fields = vendor_setting.to_hmset_fields()
+    fields['update_time'] = now
+    logging.info(f"configure vendor start | app_id:{app_id}, vendor_info:{hide_secret_info(fields)}")
+    redis.hmset(get_vendor_key(app_id, vendor_id), fields)
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True
+        }
+    }
+
+def hide_secret_info(vendor_info):
+    new_vendor_info = copy.deepcopy(vendor_info)
+    new_vendor_info['api_key'] = "****"
+    new_vendor_info['secret_key'] = "****"
+    return new_vendor_info
+
+def get_vendor(app_id, vendor_id):
+    redis = lanying_redis.get_redis_connection()
+    key = get_vendor_key(app_id, vendor_id)
+    info = lanying_redis.redis_hgetall(redis, key)
+    if "create_time" in info:
+        dto = {}
+        for key,value in info.items():
+            if key in ['create_time', 'update_time']:
+                dto[key] = int(value)
+            elif key in ['model_config']:
+                dto[key] = lanying_utils.safe_json_loads(value, {})
+            else:
+                dto[key] = value
+        return dto
+    return None
+
+def get_vendor_list(app_id):
+    redis = lanying_redis.get_redis_connection()
+    vendor_ids = reversed(lanying_redis.redis_lrange(redis, get_vendor_list_key(app_id), 0, -1))
+    vendor_list = []
+    for vendor_id in vendor_ids:
+        vendor_info = get_vendor(app_id, vendor_id)
+        if vendor_info:
+            vendor_list.append(vendor_info)
+    return {
+        'result': 'ok',
+        'data':
+            {
+                'list': vendor_info
+            }
+    }
+
+def generate_vendor_id():
+    redis = lanying_redis.get_redis_connection()
+    raw_id = redis.incrby("lanying_connector:grow_ai:vendor_id_generator", 1)
+    return f'vendor_{raw_id}'
+
+def get_vendor_key(app_id, vendor_id):
+    return f"lanying_connector:grow_ai:vendor:{app_id}:{vendor_id}"
+
+def get_vendor_list_key(app_id):
+    return f"lanying_connector:grow_ai:vendor_list:{app_id}"
