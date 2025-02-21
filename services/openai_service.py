@@ -78,8 +78,8 @@ def handle_embedding_request(request):
     openai_key_type = limit_res['openai_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}, vendor={vendor}, model={model}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
-    prepare_info = lanying_vendor.prepare_embedding(vendor,auth_info, 'db')
-    response = lanying_vendor.embedding(vendor, prepare_info, model, text)
+    prepare_info = lanying_vendor.prepare_embedding(app_id, vendor,auth_info, 'db')
+    response = lanying_vendor.embedding(app_id, vendor, prepare_info, model, text)
     return response
 
 def trace_finish(request):
@@ -143,15 +143,15 @@ def handle_request(request, request_type):
         config['message_quota_trace_id'] = message_quota_trace_id
     vendor = request.headers.get('vendor')
     model = preset['model']
-    model_config = lanying_vendor.get_chat_model_config(vendor, model)
+    model_config = lanying_vendor.get_chat_model_config(app_id, vendor, model)
     force_no_stream = False
     forward_file_info = None
     if model_config is None:
         vendor = 'openai'
-        model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+        model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
     if model_config is None:
         vendor = 'openai'
-        model_config = lanying_vendor.get_image_model_config(vendor, model)
+        model_config = lanying_vendor.get_image_model_config(app_id, vendor, model)
         if model_config is not None:
             image_quota_res = check_image_quota(model_config, preset)
             if image_quota_res['result'] == 'error':
@@ -165,7 +165,7 @@ def handle_request(request, request_type):
                 force_no_stream = True
     if model_config is None and path == '/v1/audio/speech':
         vendor = 'openai'
-        model_config = lanying_vendor.get_text_to_speech_model_config(vendor, model)
+        model_config = lanying_vendor.get_text_to_speech_model_config(app_id, vendor, model)
         if model_config is not None:
             quota_res = check_text_to_speech_quota(model_config, preset)
             if quota_res['result'] == 'error':
@@ -178,7 +178,7 @@ def handle_request(request, request_type):
                 force_no_stream = True
     if model_config is None and path == '/v1/audio/transcriptions':
         vendor = 'openai'
-        model_config = lanying_vendor.get_speech_to_text_model_config(vendor, model)
+        model_config = lanying_vendor.get_speech_to_text_model_config(app_id, vendor, model)
         if model_config is not None:
             quota_res = check_speech_to_text_quota(model_config, preset, request)
             if quota_res['result'] == 'error':
@@ -236,7 +236,7 @@ def handle_request(request, request_type):
                                 yield line_str + '\n'
                     finally:
                         reply = ''.join(contents)
-                        response_json = stream_lines_to_response(preset, reply, vendor, usage, "", "","")
+                        response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, "", "","")
                         logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
                         add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
                 return {'result':'ok', 'response':response, 'iter': generate_response}
@@ -252,8 +252,8 @@ def handle_request(request, request_type):
             logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
         return {'result':'ok', 'response':response}
     else:
-        prepare_info = lanying_vendor.prepare_chat(vendor, auth_info, preset)
-        response = lanying_vendor.chat(vendor, prepare_info, preset)
+        prepare_info = lanying_vendor.prepare_chat(app_id, vendor, auth_info, preset)
+        response = lanying_vendor.chat(app_id, vendor, prepare_info, preset)
         stream = 'reply_generator' in response
         logging.info(f"forward request other vendor: vendor:{vendor}, stream:{stream}, response:{response}")
         if response.get('result', '') == 'error':
@@ -323,7 +323,7 @@ def handle_request(request, request_type):
                     yield delta_line
                     yield 'data: [DONE]\n'
                     reply = ''.join(contents)
-                    response_json = stream_lines_to_response(preset, reply, vendor, usage, "", "","")
+                    response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, "", "","")
                     logging.info(f"forward request: stream response | response: {response}, response_json:{response_json}")
                     add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
@@ -819,7 +819,7 @@ def handle_chat_message_try(config, msg, retry_times):
     vendor = config.get('vendor', 'openai')
     if 'vendor' in preset:
         vendor = preset['vendor']
-    model_config = lanying_vendor.get_chat_model_config(vendor, preset['model'])
+    model_config = lanying_vendor.get_chat_model_config(app_id, vendor, preset['model'])
     if model_config:
         return handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
     else:
@@ -850,7 +850,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         is_fulldoc = command_ext.get('is_fulldoc', False)
         logging.info(f"using doc_id in command:{doc_id}, is_fulldoc:{is_fulldoc}")
     auth_info = get_preset_auth_info(config, openai_key_type, vendor)
-    prepare_info = lanying_vendor.prepare_chat(vendor, auth_info, preset)
+    prepare_info = lanying_vendor.prepare_chat(app_id, vendor, auth_info, preset)
     add_reference = presetExt.get('add_reference', 'none')
     reference = presetExt.get('reference')
     reference_list = []
@@ -973,7 +973,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             embedding_message =  {"role": embedding_role, "content": embedding_content}
             history_msg_size_max = config.get('history_msg_size_max', 1024)
             history_reserved = min(512, history_msg_size_max)
-            embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(messages, model, vendor) - preset.get('max_tokens', 1024) - calcMessageTokens(ask_message, model, vendor) - calcMessageTokens(embedding_message, model, vendor) - history_reserved
+            embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(app_id, messages, model, vendor) - preset.get('max_tokens', 1024) - calcMessageTokens(app_id, ask_message, model, vendor) - calcMessageTokens(app_id, embedding_message, model, vendor) - history_reserved
             logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
             search_result = multi_embedding_search(app_id, config, openai_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
             for doc in search_result:
@@ -1201,7 +1201,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 logging.info("stream got error")
                 logging.exception(e)
             reply += ''.join(content_collect)
-            stream_reponse = stream_lines_to_response(preset_maybe_vision, reply, vendor, stream_usage, stream_function_name, stream_function_args, stream_function_id)
+            stream_reponse = stream_lines_to_response(app_id, preset_maybe_vision, reply, vendor, stream_usage, stream_function_name, stream_function_args, stream_function_id)
             response['reply'] = reply
             response['finish_reason'] = stream_finish_reason
             response['usage'] = stream_reponse['usage']
@@ -1558,12 +1558,12 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                     logging.info(f"send_audio_to_client is set, so skip ai reply message")
                     return response
                 else:
-                    append_message(preset, model_config, response_message)
-                    append_message(preset, model_config, function_message)
+                    append_message(app_id, preset, model_config, response_message)
+                    append_message(app_id, preset, model_config, function_message)
                     function_messages.append(response_message)
                     function_messages.append(function_message)
                     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-                    response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
+                    response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
                     logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
                     return response
         elif function_call_type == 'system':
@@ -1579,12 +1579,12 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
                 "content": "",
                 "function_call": function_call
             }
-            append_message(preset, model_config, response_message)
-            append_message(preset, model_config, function_message)
+            append_message(app_id, preset, model_config, response_message)
+            append_message(app_id, preset, model_config, function_message)
             function_messages.append(response_message)
             function_messages.append(function_message)
             preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-            response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
+            response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
             logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
             return response
     else:
@@ -1599,12 +1599,12 @@ def handle_function_call(app_id, config, function_call, preset, openai_key_type,
             "content": "",
             "function_call": function_call
         }
-        append_message(preset, model_config, response_message)
-        append_message(preset, model_config, function_message)
+        append_message(app_id, preset, model_config, response_message)
+        append_message(app_id, preset, model_config, function_message)
         function_messages.append(response_message)
         function_messages.append(function_message)
         preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-        response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
+        response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
         logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
         return response
     raise Exception('bad_preset_function')
@@ -1730,13 +1730,13 @@ def fill_function_args(function_args, obj):
     else:
         return obj
 
-def append_message(preset, model_config, message):
+def append_message(app_id, preset, model_config, message):
     model = model_config['model']
     vendor = model_config['vendor']
     messages = preset.get('messages', [])
     completionTokens = preset.get('max_tokens', 1024)
     token_limit = model_token_limit(model_config)
-    message_size = calcMessageTokens(message, model, vendor)
+    message_size = calcMessageTokens(app_id, message, model, vendor)
     if message_size > (token_limit - completionTokens) / 2:
         trunc_size = max(100, round(len(message['content']) * (token_limit - completionTokens) / 2 / message_size))
         logging.info(f"trunc function message length | old: {len(message['content'])}, new: {trunc_size}, message:{message}")
@@ -1745,18 +1745,18 @@ def append_message(preset, model_config, message):
     token_cnt = 0
     token_cnt += lanying_embedding.calc_functions_tokens(preset.get('functions',[]), model, vendor)
     for msg in messages:
-        token_cnt += calcMessageTokens(msg, model, vendor)
+        token_cnt += calcMessageTokens(app_id, msg, model, vendor)
     while token_cnt + completionTokens > token_limit:
         delete_list = []
         for i in range(len(messages)):
             if i > 0 and i < len(messages) - 4:
                 if messages[i]['role'] == 'system':
                     delete_list.append(i)
-                    token_cnt -= calcMessageTokens(messages[i], model, vendor)
+                    token_cnt -= calcMessageTokens(app_id, messages[i], model, vendor)
                     break
                 elif messages[i]['role'] == 'user' and  messages[i+1]['role'] == 'assistant':
-                    token_cnt -= calcMessageTokens(messages[i], model, vendor)
-                    token_cnt -= calcMessageTokens(messages[i+1], model, vendor)
+                    token_cnt -= calcMessageTokens(app_id, messages[i], model, vendor)
+                    token_cnt -= calcMessageTokens(app_id, messages[i+1], model, vendor)
                     delete_list.append(i)
                     delete_list.append(i+1)
                     break
@@ -1768,7 +1768,7 @@ def append_message(preset, model_config, message):
         elif len(delete_list) == 0:
             logging.info(f"can not found message to delete in first stage | messages: {messages}, model_config:{model_config}")
             if messages[0]['role'] == 'system':
-                token_cnt -= calcMessageTokens(messages[0], model, vendor)
+                token_cnt -= calcMessageTokens(app_id, messages[0], model, vendor)
                 del messages[0]
             else:
                 logging.info(f"fail to limit message size: rest messages:{messages}")
@@ -1796,7 +1796,7 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
         embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
         vendor = embedding_uuid_info.get('vendor', 'openai')
         advised_model = embedding_uuid_info.get('model', '')
-        model_config = lanying_vendor.get_embedding_model_config(vendor, advised_model)
+        model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, advised_model)
         cache_key = vendor + ":" + model_config['model']
         if cache_key in embedding_cache:
             q_embedding = embedding_cache[cache_key]
@@ -1878,9 +1878,9 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
     completionTokens = preset.get('max_tokens', 1024)
     model = preset['model']
     token_limit = model_token_limit(model_config)
-    messagesSize = calcMessagesTokens(messages, model, vendor)
+    messagesSize = calcMessagesTokens(app_id, messages, model, vendor)
     askMessage = {"role": "user", "content": content}
-    nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
+    nowSize = calcMessageTokens(app_id, askMessage, model, vendor) + messagesSize
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
         return {'result':'error', 'code': 'message_too_long', 'msg': lanying_config.get_message_too_long(app_id)}
@@ -1906,7 +1906,7 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
-            historySize += calcMessageTokens(nowHistory, model, vendor)
+            historySize += calcMessageTokens(app_id, nowHistory, model, vendor)
             now_history_content = nowHistory.get('content','')
             now_history_bytes = text_byte_size(now_history_content)
             history_bytes += now_history_bytes
@@ -1937,11 +1937,11 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
     completionTokens = preset.get('max_tokens', 1024)
     model = preset['model']
     token_limit = model_token_limit(model_config)
-    messagesSize = calcMessagesTokens(messages, model, vendor)
+    messagesSize = calcMessagesTokens(app_id, messages, model, vendor)
     ask_user_id = config['send_from']
     ai_user_id = config['reply_from']
     askMessage = {"role": "user", "content": content, "name": ask_user_id}
-    nowSize = calcMessageTokens(askMessage, model, vendor) + messagesSize
+    nowSize = calcMessageTokens(app_id, askMessage, model, vendor) + messagesSize
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
         return {'result':'error', 'code': 'message_too_long', 'msg': lanying_config.get_message_too_long(app_id)}
@@ -1986,7 +1986,7 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
-            historySize += calcMessageTokens(nowHistory, model, vendor)
+            historySize += calcMessageTokens(app_id, nowHistory, model, vendor)
             now_history_content = nowHistory.get('content','')
             now_history_bytes = text_byte_size(now_history_content)
             history_bytes += now_history_bytes
@@ -2213,9 +2213,9 @@ def del_preset_name(redis, fromUserId, toUserId):
         key = preset_name_key(fromUserId,toUserId)
         redis.delete(key)
 
-def calcMessagesTokens(messages, model, vendor):
+def calcMessagesTokens(app_id, messages, model, vendor):
     try:
-        encoding = lanying_vendor.encoding_for_model(vendor, model)
+        encoding = lanying_vendor.encoding_for_model(app_id, vendor, model)
         num_tokens = 0
         for message in messages:
             num_tokens += 4
@@ -2245,9 +2245,9 @@ def calcMessagesTokens(messages, model, vendor):
         logging.exception(e)
         return MaxTotalTokens
 
-def calcMessageTokens(message, model, vendor):
+def calcMessageTokens(app_id, message, model, vendor):
     try:
-        encoding = lanying_vendor.encoding_for_model(vendor, model)
+        encoding = lanying_vendor.encoding_for_model(app_id, vendor, model)
         num_tokens = 0
         num_tokens += 4
         for key, value in message.items():
@@ -2786,8 +2786,8 @@ def fetch_embeddings(app_id, config, openai_key_type, text, vendor, model_config
     if auth_info is None:
         embedding_api_key_type = "share"
         auth_info = get_preset_auth_info(config, embedding_api_key_type, vendor)
-    prepare_info = lanying_vendor.prepare_embedding(vendor, auth_info, 'query')
-    response = lanying_vendor.embedding(vendor, prepare_info, model, text)
+    prepare_info = lanying_vendor.prepare_embedding(app_id, vendor, auth_info, 'query')
+    response = lanying_vendor.embedding(app_id, vendor, prepare_info, model, text)
     embedding = response['embedding']
     preset = {'model':model, 'input':text}
     add_message_statistic(app_id, config, preset, response, embedding_api_key_type, model_config)
@@ -3296,14 +3296,14 @@ def user_default_embedding_name_key(app_id, user_id):
 def list_models():
     return lanying_vendor.list_models()
 
-def stream_lines_to_response(preset, reply, vendor, usage, stream_function_name, stream_function_args, stream_function_id):
+def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_function_name, stream_function_args, stream_function_id):
     if 'total_tokens' in usage:
         total_tokens = usage['total_tokens']
         prompt_tokens = usage.get('prompt_tokens', 0)
         completion_tokens = usage.get('completion_tokens', total_tokens - prompt_tokens)
     else:
-        prompt_tokens = calcMessagesTokens(preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(preset.get('functions',[]), preset['model'], vendor)
-        completion_tokens = calcMessageTokens({'role':'assistant', 'content':reply}, preset['model'], vendor)
+        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(preset.get('functions',[]), preset['model'], vendor)
+        completion_tokens = calcMessageTokens(app_id, {'role':'assistant', 'content':reply}, preset['model'], vendor)
         total_tokens = prompt_tokens + completion_tokens
         logging.info(f"stream_lines_to_response calc tokens self | vendor:{vendor}, model:{preset['model']}")
     response = {
@@ -3379,7 +3379,7 @@ def maybe_transcription_audio_msg(config, msg):
     from_user_id = str(msg['from']['uid'])
     content = msg.get('content', '')
     if ctype == 'AUDIO' and content == '':
-        support_audio = is_model_support_audio(config)
+        support_audio = is_model_support_audio(app_id, config)
         if is_chatbot_audio_to_text_on(config) or support_audio:
             attachment = lanying_utils.safe_json_loads(msg.get('attachment',''))
             url = attachment.get('url', '')
@@ -3411,14 +3411,14 @@ def maybe_transcription_audio_msg(config, msg):
                             msg['content'] = audio_text
                             executor.submit(add_audio_msg_text, config, msg)
 
-def is_model_support_audio(config):
+def is_model_support_audio(app_id, config):
     chatbot = config.get('chatbot', {})
     preset = chatbot.get('preset', {})
     vendor = config.get('vendor', 'openai')
     if 'vendor' in preset:
         vendor = preset['vendor']
     if 'model' in preset:
-        model_config = lanying_vendor.get_chat_model_config(vendor, preset['model'])
+        model_config = lanying_vendor.get_chat_model_config(app_id, vendor, preset['model'])
         if model_config:
             if model_config.get('support_audio', False) == True:
                 return True
@@ -5096,7 +5096,7 @@ def image_edit_check_image_and_mask(config, app_id, function_args):
                     }
     return {'result': 'error', 'message': 'fail to get image from image_id'}
 
-def chat_or_force_function_call(config, vendor, prepare_info, preset):
+def chat_or_force_function_call(app_id, config, vendor, prepare_info, preset):
     force_call_finish_list = config.get('force_call_finish_list', [])
     functions = preset.get('functions', [])
     for function in functions:
@@ -5121,4 +5121,4 @@ def chat_or_force_function_call(config, vendor, prepare_info, preset):
                         'total_tokens' : 0
                     }
                 }
-    return lanying_vendor.chat(vendor, prepare_info, preset)
+    return lanying_vendor.chat(app_id, vendor, prepare_info, preset)

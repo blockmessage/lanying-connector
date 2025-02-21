@@ -204,7 +204,7 @@ def get_vendor_by_model(model):
                 return vendor
     return None
 
-def get_chat_model_config(vendor, model):
+def get_chat_model_config(app_id, vendor, model):
     if vendor is None:
         vendor = get_vendor_by_model(model)
     module = get_module(vendor)
@@ -224,7 +224,7 @@ def get_chat_model_config(vendor, model):
                     return newConfig
     return None
 
-def get_image_model_config(vendor, model):
+def get_image_model_config(app_id, vendor, model):
     if vendor is None:
         vendor = get_vendor_by_model(model)
     module = get_module(vendor)
@@ -244,7 +244,7 @@ def get_image_model_config(vendor, model):
                     return newConfig
     return None
 
-def get_text_to_speech_model_config(vendor, model):
+def get_text_to_speech_model_config(app_id, vendor, model):
     if vendor is None:
         vendor = get_vendor_by_model(model)
     module = get_module(vendor)
@@ -264,7 +264,7 @@ def get_text_to_speech_model_config(vendor, model):
                     return newConfig
     return None
 
-def get_speech_to_text_model_config(vendor, model):
+def get_speech_to_text_model_config(app_id, vendor, model):
     if vendor is None:
         vendor = get_vendor_by_model(model)
     module = get_module(vendor)
@@ -284,7 +284,7 @@ def get_speech_to_text_model_config(vendor, model):
                     return newConfig
     return None
 
-def get_embedding_model(vendor):
+def get_embedding_model(app_id, vendor):
     module = get_module(vendor)
     if module:
         model_configs = module.model_configs()
@@ -293,7 +293,7 @@ def get_embedding_model(vendor):
                 return config.get('model')
     return None
 
-def get_embedding_model_config(vendor, model):
+def get_embedding_model_config(app_id, vendor, model):
     if vendor is None:
         vendor = get_vendor_by_model(model)
     module = get_module(vendor)
@@ -311,14 +311,14 @@ def get_embedding_model_config(vendor, model):
                     return config
     return None
 
-def prepare_chat(vendor, auth_info, preset):
+def prepare_chat(app_id, vendor, auth_info, preset):
     module = get_module(vendor)
     result = module.prepare_chat(auth_info, preset)
     if isinstance(result, dict):
         result['auth_info'] = auth_info
     return result
 
-def chat(vendor, prepare_info, preset):
+def chat(app_id, vendor, prepare_info, preset):
     module = get_module(vendor)
     try:
         resp = chat_with_same_model_retry(module, vendor, prepare_info, preset)
@@ -420,13 +420,13 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
                 if new_model in transforms:
                     new_model = transforms[new_model]
                 try:
-                    new_model_config = get_chat_model_config(new_vendor, new_model)
+                    new_model_config = get_chat_model_config(app_id, new_vendor, new_model)
                     if new_model_config:
                         new_preset = copy.deepcopy(preset)
                         new_preset['model'] = new_model
                         logging.info(f"chat backup start | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
                         new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
-                        new_prepare_info = prepare_chat(new_vendor, new_auth_info, new_preset)
+                        new_prepare_info = prepare_chat(app_id, new_vendor, new_auth_info, new_preset)
                         new_module = get_module(new_vendor)
                         new_resp = chat_with_same_model_retry(new_module, new_vendor, new_prepare_info, new_preset)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
@@ -441,7 +441,7 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
             logging.info(f"chat backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
     return resp
 
-def prepare_embedding(vendor, auth_info, type):
+def prepare_embedding(app_id, vendor, auth_info, type):
     module = get_module(vendor)
     result = module.prepare_embedding(auth_info, type)
     if isinstance(result, dict):
@@ -449,7 +449,7 @@ def prepare_embedding(vendor, auth_info, type):
         result['type'] = type
     return result
 
-def embedding(vendor, prepare_info, model, text):
+def embedding(app_id, vendor, prepare_info, model, text):
     module = get_module(vendor)
     retry_times = 5
     for i in range(retry_times):
@@ -459,7 +459,7 @@ def embedding(vendor, prepare_info, model, text):
                 return resp
             if i == retry_times - 1:
                 logging.info(f"embedding finally failed: {i}/{retry_times}, resp:{resp}")
-                return embedding_retry(vendor, prepare_info, model, text, resp)
+                return embedding_retry(app_id, vendor, prepare_info, model, text, resp)
             else:
                 logging.info(f"embedding schedule retry: {i}/{retry_times}, resp:{resp}")
                 time.sleep(0.5)
@@ -476,16 +476,16 @@ def embedding(vendor, prepare_info, model, text):
             }
             if i == retry_times - 1:
                 logging.info(f"embedding finally failed: {i}/{retry_times}, resp:{resp}")
-                return embedding_retry(vendor, prepare_info, model, text, resp)
+                return embedding_retry(app_id, vendor, prepare_info, model, text, resp)
             else:
                 logging.info(f"embedding schedule retry: {i}/{retry_times}, resp:{resp}")
                 time.sleep(0.5)
 
-def embedding_retry(vendor, prepare_info, model, text, resp):
+def embedding_retry(app_id, vendor, prepare_info, model, text, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
-    async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_embedding_resp_failed_{vendor}')
+    async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, app_id:{app_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_embedding_resp_failed_{vendor}')
     try:
-        new_resp = do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id)
+        new_resp = do_embedding_retry(app_id, vendor, prepare_info, model, text, resp, unique_id)
         if 'result' in new_resp and new_resp['result'] == 'ok':
             return new_resp
         return resp
@@ -493,7 +493,7 @@ def embedding_retry(vendor, prepare_info, model, text, resp):
         logging.error(e)
         return resp
 
-def do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id):
+def do_embedding_retry(app_id, vendor, prepare_info, model, text, resp, unique_id):
     if 'auth_info' not in prepare_info:
         logging.info("do_embedding_retry | auth_info not exist")
         return resp
@@ -520,11 +520,11 @@ def do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id):
                 if new_model in transforms:
                     new_model = transforms[new_model]
                 try:
-                    new_model_config = get_embedding_model_config(new_vendor, new_model)
+                    new_model_config = get_embedding_model_config(app_id, new_vendor, new_model)
                     if new_model_config:
                         logging.info(f"embedding backup start | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
                         new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
-                        new_prepare_info = prepare_embedding(new_vendor, new_auth_info, type)
+                        new_prepare_info = prepare_embedding(app_id, new_vendor, new_auth_info, type)
                         new_module = get_module(new_vendor)
                         new_resp = new_module.embedding(new_prepare_info, new_model, text)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
@@ -539,7 +539,7 @@ def do_embedding_retry(vendor, prepare_info, model, text, resp, unique_id):
             logging.info(f"embedding backup failed | app_id:{app_id}, vendor:{vendor}, model:{model}")
     return resp
 
-def encoding_for_model(vendor, model):
+def encoding_for_model(app_id, vendor, model):
     module = get_module(vendor)
     return module.encoding_for_model(model)
 

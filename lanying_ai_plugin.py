@@ -205,7 +205,7 @@ def process_function_embedding(app_id, plugin_id, function_id):
     vendor = embedding_info.get('vendor', 'openai')
     model = embedding_info.get('model', '')
     if model == '':
-        model = lanying_vendor.get_embedding_model(vendor)
+        model = lanying_vendor.get_embedding_model(app_id, vendor)
     redis_stack = lanying_redis.get_redis_stack_connection()
     embedding_uuid = ai_plugin_info["embedding_uuid"]
     doc_id = ai_plugin_info["doc_id"]

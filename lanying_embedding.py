@@ -56,7 +56,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if old_embedding_name_info:
         return {'result':"error", 'message': 'embedding_name exist'}
-    model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+    model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
     if model_config is None:
         return {'result':"error", 'message': 'model not exist'}
     model = model_config['model']
@@ -127,7 +127,7 @@ def re_create_embedding_table(embedding_uuid):
         db_table_name = f"embedding_{embedding_uuid}_{app_id}_{int(time.time())}"
         vendor = embedding_uuid_info.get('vendor', 'openai')
         model = embedding_uuid_info.get('model', '')
-        model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+        model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
         if model_config:
             model_dim = model_config['dim']
             if db_type == 'pgvector':
@@ -321,7 +321,7 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
         return {'result':"error", 'message': 'embedding_name not exist'}
     if vendor == '':
         return {'result':"error", 'message': 'vendor not exist'}
-    model_config = lanying_vendor.get_embedding_model_config(vendor, model)
+    model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
     if model_config is None:
         return {'result':"error", 'message': 'model not exist'}
     model = model_config['model']
@@ -698,7 +698,8 @@ def get_embedding_uuid_info(embedding_uuid):
             update_embedding_uuid_info(embedding_uuid, "vendor", vendor)
         if 'model' not in info or info['model'] == '':
             vendor = info['vendor']
-            model_config = lanying_vendor.get_embedding_model_config(vendor, '')
+            app_id = info['app_ids']
+            model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, '')
             if model_config:
                 model = model_config['model']
                 info['model'] = model
@@ -968,7 +969,7 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
     vendor = config.get('vendor', 'openai')
     advised_model = config.get('model', '')
-    model_config = lanying_vendor.get_embedding_model_config(vendor, advised_model)
+    model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, advised_model)
     model = model_config['model']
     db_type = config.get('db_type', 'redis')
     is_dry_run = config.get("dry_run", "false") == "true"
