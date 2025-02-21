@@ -163,8 +163,7 @@ def prepare_chat(auth_info, preset):
         'api_key' : auth_info['api_key']
     }
 
-def chat(prepare_info, preset):
-    model_config = get_chat_model_config(preset['model'])
+def chat(prepare_info, preset, model_config):
     real_model = model_config.get('real_model', None)
     final_preset = format_preset(preset)
     if real_model:
@@ -286,9 +285,8 @@ def prepare_embedding(auth_info, _):
         'api_key' : auth_info['api_key']
     }
 
-def embedding(prepare_info, model, text):
+def embedding(prepare_info, model, text, model_config):
     model = 'text-embedding-ada-002'
-    model_config = get_chat_model_config(model)
     api_type = model_config.get('api_type', 'azure')
     if api_type == 'openai':
         api_endpoint = os.getenv('AZURE2_API_ENDPOINT', '')
@@ -381,27 +379,6 @@ def format_preset_for_o1(preset):
             'include_usage': True
         }
     return ret
-
-def get_chat_model_url(model):
-    for config in model_configs():
-        if model == config['model']:
-            return config['url']
-    return None
-
-def get_chat_model_real_model(model):
-    for config in model_configs():
-        if model == config['model']:
-            if 'real_model' in config:
-                return config['real_model']
-            else:
-                return model
-    return None
-
-def get_chat_model_config(model):
-    for config in model_configs():
-        if model == config['model']:
-            return config
-    return None
 
 def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
     domain = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_DOMAIN", '')

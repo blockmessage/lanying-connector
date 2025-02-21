@@ -51,7 +51,7 @@ def prepare_chat(auth_info, preset):
         'api_key' : auth_info['api_key']
     }
 
-def chat(prepare_info, preset):
+def chat(prepare_info, preset, model_config):
     url = 'https://api.deepseek.com/chat/completions'
     final_preset = format_preset(preset)
     api_key = prepare_info["api_key"]

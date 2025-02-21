@@ -229,7 +229,7 @@ def get_access_token(api_key, secret_key):
         logging.info("refresh baidu access_token: fail")
         return None
 
-def chat(prepare_info, preset):
+def chat(prepare_info, preset, model_config):
     api_key = prepare_info['api_key']
     secret_key = prepare_info['secret_key']
     access_token = get_access_token(api_key, secret_key)
@@ -239,7 +239,7 @@ def chat(prepare_info, preset):
             'result': 'error',
             'reason': 'fail_to_get_access_token'
         }
-    model_url = get_chat_model_url(preset['model'])
+    model_url = model_config['url']
     url = f"{model_url}?access_token={access_token}"
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json"}
@@ -345,7 +345,7 @@ def prepare_embedding(auth_info, type):
         'secret_key': auth_info['secret_key']
     }
 
-def embedding(prepare_info, model, text):
+def embedding(prepare_info, model, text, model_config):
     api_key = prepare_info['api_key']
     secret_key = prepare_info['secret_key']
     access_token = get_access_token(api_key, secret_key)
@@ -453,9 +453,3 @@ def access_token_key(api_key, secret_key):
     sha_value = hashlib.sha256((api_key+secret_key).encode('utf-8')).hexdigest()
     return f"lanying-connector:baidu:access-token:{api_key}:{sha_value}"
 
-
-def get_chat_model_url(model):
-    for config in model_configs():
-        if config['model'] == model:
-            return config['url']
-    return None

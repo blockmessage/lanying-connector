@@ -152,9 +152,9 @@ def prepare_chat(auth_info, preset):
         'api_key' : auth_info['api_key']
     }
 
-def chat(prepare_info, preset):
+def chat(prepare_info, preset, model_config):
     url = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
-    final_preset = format_preset(preset)
+    final_preset = format_preset(preset, model_config)
     api_key = prepare_info["api_key"]
     headers = {"Content-Type": "application/json", "Authorization": f'Bearer {api_key}'}
     try:
@@ -264,9 +264,9 @@ def chat(prepare_info, preset):
             'reason': 'exception'
         }
 
-def format_preset(preset):
+def format_preset(preset, model_config):
     support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'logprobs', 'top_logprobs', 'logit_bias', 'functions']
-    function_call_support = get_chat_model_function_call(preset['model'])
+    function_call_support = model_config.get('function_call', False)
     logging.info(f"function_call_support: {function_call_support}")
     ret = dict()
     for key in support_fields:
@@ -282,7 +282,7 @@ def format_preset(preset):
                         tools.append({'type':'function', 'function':function_obj})
                     ret['tools'] = tools
             elif key == 'model':
-                ret['model'] = get_chat_model_endpoint(preset[key])
+                ret['model'] = model_config['endpoint']
             elif key == "messages":
                 last_tool_call_id = ''
                 messages = []
@@ -331,14 +331,3 @@ def format_preset(preset):
 def encoding_for_model(model):
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-def get_chat_model_endpoint(model):
-    for config in model_configs():
-        if model == config['model']:
-            return config['endpoint']
-    return None
-
-def get_chat_model_function_call(model):
-    for config in model_configs():
-        if model == config['model']:
-            return config['function_call']
-    return False

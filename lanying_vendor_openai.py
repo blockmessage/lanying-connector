@@ -401,10 +401,10 @@ def prepare_chat(auth_info, preset):
         'api_key' : auth_info['api_key']
     }
 
-def chat(prepare_info, preset):
+def chat(prepare_info, preset, model_config):
     api_base, headers = get_api_base_and_headers(prepare_info)
     url = api_base + '/chat/completions'
-    final_preset = format_preset(preset)
+    final_preset = format_preset(preset, model_config)
     logging.info(f"vendor openai chat request: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
     try:
         stream = final_preset.get("stream", False)
@@ -516,7 +516,7 @@ def prepare_embedding(auth_info, _):
         'api_key' : auth_info['api_key']
     }
 
-def embedding(prepare_info, model, text):
+def embedding(prepare_info, model, text, model_config):
     api_base, headers = get_api_base_and_headers(prepare_info)
     url = api_base + '/embeddings'
     type = prepare_info.get('type', '')
@@ -556,11 +556,10 @@ def embedding(prepare_info, model, text):
 def encoding_for_model(model):
     return tiktoken.encoding_for_model(model)
 
-def format_preset(preset):
+def format_preset(preset, model_config):
     model = preset.get('model', '')
     if model.startswith("o1") or model.startswith("o3-"):
         return format_preset_for_o1(preset)
-    model_config = get_chat_model_config(preset['model'])
     support_fields = ['model', "messages", "functions", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
     ret = dict()
     for key in support_fields:
@@ -632,9 +631,3 @@ def get_api_base_and_headers(prepare_info):
             "Authorization": f"Bearer {api_key}",
         }
     return (api_base, headers)
-
-def get_chat_model_config(model):
-    for config in model_configs():
-        if model == config['model']:
-            return config
-    return None

@@ -82,7 +82,7 @@ def prepare_chat(auth_info, preset):
     }
 
 # {"created":0,"model":"","reply":"","choices":null,"base_resp":{"status_code":1008,"status_msg":"insufficient balance"}}
-def chat(prepare_info, preset):
+def chat(prepare_info, preset, model_config):
     api_key = prepare_info['api_key']
     api_group_id = prepare_info['api_group_id']
     url = f"https://api.minimax.chat/v1/text/chatcompletion_pro?GroupId={api_group_id}"
@@ -183,7 +183,7 @@ def prepare_embedding(auth_info, type):
         'type': type
     }
 
-def embedding(prepare_info, model, text):
+def embedding(prepare_info, model, text, model_config):
     api_key = prepare_info['api_key']
     api_group_id = prepare_info['api_group_id']
     type = prepare_info.get('type', 'db')

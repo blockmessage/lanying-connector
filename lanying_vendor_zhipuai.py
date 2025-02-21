@@ -75,7 +75,7 @@ def prepare_chat(auth_info, preset):
         'api_key' : auth_info['api_key']
     }
 
-def chat(prepare_info, preset):
+def chat(prepare_info, preset, model_config):
     client = ZhipuAI(api_key=prepare_info['api_key'])
     final_preset = format_preset(preset)
     response = None

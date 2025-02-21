@@ -292,8 +292,9 @@ def prepare_chat(app_id, vendor, auth_info, preset):
 
 def chat(app_id, vendor, prepare_info, preset):
     module = get_module(app_id, vendor)
+    model_config = get_chat_model_config(app_id, vendor, preset['model'])
     try:
-        resp = chat_with_same_model_retry(module, vendor, prepare_info, preset)
+        resp = chat_with_same_model_retry(module, vendor, prepare_info, preset, model_config)
         if 'result' in resp and resp['result'] == 'ok':
             return resp
         return chat_retry(vendor, prepare_info, preset, resp)
@@ -310,11 +311,11 @@ def chat(app_id, vendor, prepare_info, preset):
         }
         return chat_retry(vendor, prepare_info, preset, resp)
 
-def chat_with_same_model_retry(module, vendor, prepare_info, preset):
+def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_config):
     try_times = 3
     for i in range(try_times):
         try:
-            resp = module.chat(prepare_info, preset)
+            resp = module.chat(prepare_info, preset, model_config)
             if 'result' in resp and resp['result'] == 'ok':
                 return resp
         except Exception as e:
@@ -400,7 +401,7 @@ def do_chat_retry(vendor, prepare_info, preset, resp, unique_id):
                         new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
                         new_prepare_info = prepare_chat(app_id, new_vendor, new_auth_info, new_preset)
                         new_module = get_module(app_id, new_vendor)
-                        new_resp = chat_with_same_model_retry(new_module, new_vendor, new_prepare_info, new_preset)
+                        new_resp = chat_with_same_model_retry(new_module, new_vendor, new_prepare_info, new_preset, new_model_config)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"chat backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
                             async_send_message_with_filter(f'【蓝莺Connector】AI Chat 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_switch_{new_vendor}')
@@ -423,10 +424,11 @@ def prepare_embedding(app_id, vendor, auth_info, type):
 
 def embedding(app_id, vendor, prepare_info, model, text):
     module = get_module(app_id, vendor)
+    model_config = get_embedding_model_config(app_id, vendor, model)
     retry_times = 5
     for i in range(retry_times):
         try:
-            resp = module.embedding(prepare_info, model, text)
+            resp = module.embedding(prepare_info, model, text, model_config)
             if 'result' in resp and resp['result'] == 'ok':
                 return resp
             if i == retry_times - 1:
@@ -498,7 +500,7 @@ def do_embedding_retry(app_id, vendor, prepare_info, model, text, resp, unique_i
                         new_auth_info = lanying_config.get_lanying_connector_share_auth_info(new_vendor)
                         new_prepare_info = prepare_embedding(app_id, new_vendor, new_auth_info, type)
                         new_module = get_module(app_id, new_vendor)
-                        new_resp = new_module.embedding(new_prepare_info, new_model, text)
+                        new_resp = new_module.embedding(new_prepare_info, new_model, text, new_model_config)
                         if 'result' in new_resp and new_resp['result'] == 'ok':
                             logging.info(f"embedding backup success | app_id:{app_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}")
                             async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 切换厂商，新厂商返回成功, id:{unique_id}, vendor:{vendor}, model:{model}, new_vendor:{new_vendor}, new_model:{new_model}', f'ai_embedding_switch_{new_vendor}')

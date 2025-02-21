@@ -35,11 +35,10 @@ def prepare_chat(auth_info, preset):
         'api_key' : auth_info['api_key']
     }
 
-def chat(prepare_info, preset):
-    model_config = get_chat_model_config(preset['model'])
+def chat(prepare_info, preset, model_config):
     real_model = model_config.get('real_model', None)
     url = 'https://api.siliconflow.cn/v1/chat/completions'
-    final_preset = format_preset(preset)
+    final_preset = format_preset(preset, model_config)
     if real_model:
         final_preset['model'] = real_model
     api_key = prepare_info["api_key"]
@@ -162,9 +161,9 @@ def chat(prepare_info, preset):
             'reason': 'exception'
         }
 
-def format_preset(preset):
+def format_preset(preset, model_config):
     support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'logprobs', 'top_logprobs', 'logit_bias', 'functions']
-    function_call_support = get_chat_model_function_call(preset['model'])
+    function_call_support = model_config.get('function_call', False)
     logging.info(f"function_call_support: {function_call_support}")
     ret = dict()
     for key in support_fields:
@@ -216,15 +215,3 @@ def format_preset(preset):
 
 def encoding_for_model(model):
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
-
-def get_chat_model_config(model):
-    for config in model_configs():
-        if model == config['model']:
-            return config
-    return None
-
-def get_chat_model_function_call(model):
-    for config in model_configs():
-        if model == config['model']:
-            return config['function_call']
-    return False

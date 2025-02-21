@@ -114,9 +114,7 @@ def prepare_chat(auth_info, preset):
         'api_key' : auth_info['api_key']
     }
 
-def chat(prepare_info, preset):
-    from lanying_vendor import get_chat_model_config
-    model_config = get_chat_model_config('claude', preset['model'])
+def chat(prepare_info, preset, model_config):
     client = anthropic.Anthropic(
         api_key=prepare_info['api_key']
     )

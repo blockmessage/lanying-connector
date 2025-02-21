@@ -120,9 +120,7 @@ def prepare_chat(auth_info, preset):
         'region': 'us-west-2'
     }
 
-def chat(prepare_info, preset):
-    from lanying_vendor import get_chat_model_config
-    model_config = get_chat_model_config('aws', preset['model'])
+def chat(prepare_info, preset, model_config):
     client = AnthropicBedrock(
         aws_access_key=prepare_info['aws_access_key'],
         aws_secret_key=prepare_info['aws_secret_key'],
