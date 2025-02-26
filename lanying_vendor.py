@@ -198,6 +198,7 @@ def list_models(app_id):
                 del new_config['endpoint']
             new_config['vendor'] = vendor
             new_config['is_custom_vendor'] = False
+            new_config['api_key_type'] = 'share'
             models.append(new_config)
     custom_vendor_list = get_vendor_list(app_id)['data']['list']
     for vendor_info in custom_vendor_list:
@@ -213,6 +214,7 @@ def list_models(app_id):
                     del new_config['endpoint']
                 new_config['vendor'] = vendor_id
                 new_config['is_custom_vendor'] = True
+                new_config['api_key_type'] = 'self'
                 new_config['quota'] = get_custom_vendor_quota()
                 if 'image_quota' in config:
                     for k,_ in config['image_quota'].items():
@@ -238,6 +240,7 @@ def get_model_config(app_id, vendor, model, type):
                         newConfig = copy.deepcopy(config)
                         newConfig['vendor'] = vendor
                         newConfig['is_custom_vendor'] = False
+                        newConfig['api_key_type'] = 'share'
                         return newConfig
     custom_vendor_info = get_vendor(app_id, vendor)
     if custom_vendor_info:
@@ -253,6 +256,7 @@ def get_model_config(app_id, vendor, model, type):
                             newConfig = copy.deepcopy(config)
                             newConfig['vendor'] = vendor
                             newConfig['is_custom_vendor'] = True
+                            newConfig['api_key_type'] = 'self'
                             newConfig['quota'] = get_custom_vendor_quota()
                             if 'image_quota' in config:
                                 for k,_ in config['image_quota'].items():

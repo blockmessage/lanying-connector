@@ -70,15 +70,20 @@ def handle_embedding_request(request):
     vendor = data.get('vendor')
     model = data.get('model', '')
     text = data.get('text')
-    limit_res = check_message_limit(app_id, config, vendor, False)
+    model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
+    if model_config is None:
+        return {'result':"error", 'message': 'model not exist'}
+    limit_res = check_message_limit(app_id, config, model_config, False)
     if limit_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
-    openai_key_type = limit_res['openai_key_type']
-    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}, vendor={vendor}, model={model}")
-    auth_info = get_preset_auth_info(config, openai_key_type, vendor)
+    api_key_type = limit_res['api_key_type']
+    logging.info(f"check_message_limit ok: app_id={app_id}, api_key_type={api_key_type}, vendor={vendor}, model={model}")
+    auth_info = get_preset_auth_info(config, vendor, model_config)
     prepare_info = lanying_vendor.prepare_embedding(app_id, vendor,auth_info, 'db')
     response = lanying_vendor.embedding(app_id, vendor, prepare_info, model, text)
+    preset = {'model':model, 'input':text}
+    add_message_statistic(app_id, config, preset, response, model_config)
     return response
 
 def trace_finish(request):
@@ -197,13 +202,13 @@ def handle_request(request, request_type):
     if model_res['result'] == 'error':
         logging.info(f"check_model_allow deny: app_id={app_id}, msg={model_res['msg']}")
         return model_res
-    limit_res = check_message_limit(app_id, config, vendor, False)
+    limit_res = check_message_limit(app_id, config, model_config, False)
     if limit_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, msg={limit_res['msg']}")
         return limit_res
-    openai_key_type = limit_res['openai_key_type']
-    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}, vendor={vendor}, model:{model}")
-    auth_info = get_preset_auth_info(config, openai_key_type, vendor)
+    api_key_type = limit_res['api_key_type']
+    logging.info(f"check_message_limit ok: app_id={app_id}, api_key_type={api_key_type}, vendor={vendor}, model:{model}")
+    auth_info = get_preset_auth_info(config, vendor, model_config)
     if vendor == 'openai':
         stream,response,drop_stream_usage_line = forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info)
         if response.status_code == 200:
@@ -237,7 +242,7 @@ def handle_request(request, request_type):
                         reply = ''.join(contents)
                         response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, "", "","")
                         logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
-                        add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
+                        add_message_statistic(app_id, config, preset, response_json, model_config)
                 return {'result':'ok', 'response':response, 'iter': generate_response}
             else:
                 if path == '/v1/audio/speech':
@@ -246,7 +251,7 @@ def handle_request(request, request_type):
                 else:
                     logging.info(f"forward request: not stream response | status_code: {response.status_code}, response_content:{response.content}")
                     response_content = json.loads(response.content)
-                add_message_statistic(app_id, config, preset, response_content, openai_key_type, model_config)
+                add_message_statistic(app_id, config, preset, response_content, model_config)
         else:
             logging.info(f"forward request: bad response | status_code: {response.status_code}, response_content:{response.content}")
         return {'result':'ok', 'response':response}
@@ -324,7 +329,7 @@ def handle_request(request, request_type):
                     reply = ''.join(contents)
                     response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, "", "","")
                     logging.info(f"forward request: stream response | response: {response}, response_json:{response_json}")
-                    add_message_statistic(app_id, config, preset, response_json, openai_key_type, model_config)
+                    add_message_statistic(app_id, config, preset, response_json, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
         else:
             response_body = {
@@ -349,7 +354,7 @@ def handle_request(request, request_type):
             if 'function_call' in response and response.get('function_call') is not None:
                 response_body['choices'][0]['message']['function_call'] = response.get('function_call')
                 response_body['choices'][0]['finish_reason'] = 'function_call'
-            add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
+            add_message_statistic(app_id, config, preset, response, model_config)
             return {'result':'ok', 'response':response_body}
 
 def maybe_init_preset_default_model(preset, path):
@@ -832,12 +837,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     app_id = msg['appId']
     ctype = msg.get('ctype', '')
     model = preset['model']
-    check_res = check_message_limit(app_id, config, vendor, True)
+    check_res = check_message_limit(app_id, config, model_config, True)
     if check_res['result'] == 'error':
         logging.info(f"check_message_limit deny: app_id={app_id}, check_res={check_res}")
         return check_res
-    openai_key_type = check_res['openai_key_type']
-    logging.info(f"check_message_limit ok: app_id={app_id}, openai_key_type={openai_key_type}")
+    api_key_type = check_res['api_key_type']
+    logging.info(f"check_message_limit ok: app_id={app_id}, api_key_type={api_key_type}")
     doc_id = ""
     is_fulldoc = False
     content = msg['content']
@@ -848,7 +853,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         doc_id = command_ext['doc_id']
         is_fulldoc = command_ext.get('is_fulldoc', False)
         logging.info(f"using doc_id in command:{doc_id}, is_fulldoc:{is_fulldoc}")
-    auth_info = get_preset_auth_info(config, openai_key_type, vendor)
+    auth_info = get_preset_auth_info(config, vendor, model_config)
     prepare_info = lanying_vendor.prepare_chat(app_id, vendor, auth_info, preset)
     add_reference = presetExt.get('add_reference', 'none')
     reference = presetExt.get('reference')
@@ -974,7 +979,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history_reserved = min(512, history_msg_size_max)
             embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(app_id, messages, model, vendor) - preset.get('max_tokens', 1024) - calcMessageTokens(app_id, ask_message, model, vendor) - calcMessageTokens(app_id, embedding_message, model, vendor) - history_reserved
             logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
-            search_result = multi_embedding_search(app_id, config, openai_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
+            search_result = multi_embedding_search(app_id, config, api_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
             for doc in search_result:
                 if hasattr(doc, 'doc_id'):
                     if hasattr(doc, 'reference'):
@@ -1206,7 +1211,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             response['usage'] = stream_reponse['usage']
             if 'function_call' in stream_reponse:
                 response['function_call'] = stream_reponse['function_call']
-        add_message_statistic(app_id, config, preset, response, openai_key_type, model_config)
+        add_message_statistic(app_id, config, preset, response, model_config)
         function_call = response.get('function_call')
         if function_call and function_call_times > 0:
             function_call_debug = copy.deepcopy(function_call)
@@ -1215,7 +1220,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 if function_name_debug in function_names:
                     function_call_debug['name'] = function_names[function_name_debug]
             add_debug_message(config, f"触发函数：{function_call_debug}", {'need_antispam_check': True})
-            response = handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext)
+            response = handle_function_call(app_id, config, function_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext)
             function_call_times -= 1
         else:
             break
@@ -1411,7 +1416,7 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, function_call, preset, openai_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext):
+def handle_function_call(app_id, config, function_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext):
     function_name = function_call.get('name')
     function_args = json.loads(function_call.get('arguments', '{}'))
     functions = preset.get('functions', [])
@@ -1800,7 +1805,7 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
         if cache_key in embedding_cache:
             q_embedding = embedding_cache[cache_key]
         else:
-            q_embedding = fetch_embeddings(app_id, config, api_key_type, embedding_query_text, vendor, model_config)
+            q_embedding = fetch_embeddings(app_id, config, embedding_query_text, vendor, model_config)
             embedding_cache[cache_key] = q_embedding
         preset_idx = preset_idx + 1
         embedding_max_tokens = lanying_embedding.word_num_to_token_num(preset_embedding_info.get('embedding_max_tokens', 1024))
@@ -2262,11 +2267,12 @@ def calcMessageTokens(app_id, message, model, vendor):
         logging.exception(e)
         return MaxTotalTokens
 
-def get_preset_auth_info(config, openai_key_type, vendor):
-    if openai_key_type == 'share':
+def get_preset_auth_info(config, vendor, model_config):
+    api_key_type = model_config['api_key_type']
+    if api_key_type == 'share':
         auth_info = lanying_config.get_lanying_connector_share_auth_info(vendor)
         if auth_info:
-            auth_info['key_type'] = openai_key_type
+            auth_info['key_type'] = api_key_type
             auth_info['vendor'] = vendor
             auth_info['app_id'] = config.get('app_id', '')
             return auth_info
@@ -2274,14 +2280,10 @@ def get_preset_auth_info(config, openai_key_type, vendor):
         return get_preset_self_auth_info(config, vendor)
 
 def get_preset_self_auth_info(config, vendor):
-    auth_info = config.get('vendors', {}).get(vendor)
-    if auth_info is None and vendor == "openai": # for compatibility
-        api_key = config.get('openai_api_key', '')
-        if api_key != '':
-            auth_info = {
-                'api_key': api_key
-            }
-    return auth_info
+    app_id = config.get('app_id', '')
+    vendor_info = lanying_vendor.get_vendor(app_id, vendor)
+    if vendor_info:
+        return vendor_info
 
 def maybe_reply_message_read_ack(config, msg):
     msg_type = msg['type']
@@ -2353,7 +2355,8 @@ def maybe_trace_message_quota_usage(config, message_count_quota):
     except Exception as e:
         logging.exception(e)
 
-def add_message_statistic(app_id, config, preset, response, openai_key_type, model_config):
+def add_message_statistic(app_id, config, preset, response, model_config):
+    api_key_type = model_config['api_key_type']
     model_type = model_config.get('type', '')
     if model_type == 'image':
         logging.info(f"add_message_statistic {model_type} response: {response}, model_config: {model_config}")
@@ -2361,12 +2364,12 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
         if redis:
             model = preset['model']
             message_count_quota = model_config['quota']
-            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
                 redis.hincrby(key, 'image_message_count', 1)
-                if openai_key_type == 'share':
+                if api_key_type == 'share':
                     add_quota(redis, key, 'message_count_quota_share', message_count_quota)
                 else:
                     add_quota(redis, key, 'message_count_quota_self', message_count_quota)
@@ -2375,11 +2378,11 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
             maybe_trace_message_quota_usage(config, message_count_quota)
             # try:
-            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
+            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
             # except Exception as e:
             #     logging.exception(e)
         else:
-            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, openai_key_type:{openai_key_type}, model_config:{model_config}")
+            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, model_config:{model_config}")
     elif model_type in ['text_to_speech', 'speech_to_text'] :
         logging.info(f"add_message_statistic {model_type} response: {response}, model_config: {model_config}")
         redis = lanying_redis.get_redis_connection()
@@ -2389,12 +2392,12 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
             if model_type == 'speech_to_text':
                 speech_to_text_duration = config.get('speech_to_text_duration', 0)
                 logging.info(f"speech_to_text response | duration={speech_to_text_duration}, response:{response}")
-            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
                 redis.hincrby(key, f'{model_type}_message_count', 1)
-                if openai_key_type == 'share':
+                if api_key_type == 'share':
                     add_quota(redis, key, 'message_count_quota_share', message_count_quota)
                 else:
                     add_quota(redis, key, 'message_count_quota_self', message_count_quota)
@@ -2403,11 +2406,11 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
             maybe_trace_message_quota_usage(config, message_count_quota)
             # try:
-            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
+            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
             # except Exception as e:
             #     logging.exception(e)
         else:
-            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, openai_key_type:{openai_key_type}, model_config:{model_config}")
+            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, model_config:{model_config}")
     
     elif 'usage' in response:
         if 'no_cost' in response:
@@ -2423,17 +2426,17 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
         redis = lanying_redis.get_redis_connection()
         product_id = config.get('product_id', 0)
         if product_id == 0:
-            logging.info(f"skip message statistic for no product_id: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            logging.info(f"skip message statistic for no product_id: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             return
         if redis:
-            logging.info(f"add message statistic: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            logging.info(f"add message statistic: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
                 redis.hincrby(key, 'total_tokens', total_tokens)
                 redis.hincrby(key, 'text_size', text_size)
                 redis.hincrby(key, 'message_count', 1)
-                if openai_key_type == 'share':
+                if api_key_type == 'share':
                     add_quota(redis, key, 'message_count_quota_share', message_count_quota)
                 else:
                     add_quota(redis, key, 'message_count_quota_self', message_count_quota)
@@ -2442,25 +2445,25 @@ def add_message_statistic(app_id, config, preset, response, openai_key_type, mod
                     notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
             maybe_trace_message_quota_usage(config, message_count_quota)
             try:
-                maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type)
+                maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
             except Exception as e:
                 logging.exception(e)
         else:
-            logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, openai_key_type={openai_key_type}")
+            logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, api_key_type={api_key_type}")
 
-def maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, openai_key_type):
+def maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type):
     if 'linked_publish_capsule_id' in config:
         linked_publish_capsule_id = config['linked_publish_capsule_id']
         capsule = lanying_ai_capsule.get_publish_capsule(linked_publish_capsule_id)
         if capsule:
-            statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_key_type)
+            statistic_capsule(capsule, app_id, product_id, message_count_quota, api_key_type)
     if 'linked_capsule_id' in config:
         linked_capsule_id = config['linked_capsule_id']
         capsule = lanying_ai_capsule.get_capsule(linked_capsule_id)
         if capsule:
-            statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_key_type)
+            statistic_capsule(capsule, app_id, product_id, message_count_quota, api_key_type)
 
-def statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_key_type):
+def statistic_capsule(capsule, app_id, product_id, message_count_quota, api_key_type):
     now = datetime.now()
     capsule_app_id = capsule['app_id']
     capsule_id = capsule['capsule_id']
@@ -2470,7 +2473,7 @@ def statistic_capsule(capsule, app_id, product_id, message_count_quota, openai_k
     field = json.dumps({
         'capsule_id': capsule_id,
         'product_id': product_id,
-        'openai_key_type': openai_key_type,
+        'api_key_type': api_key_type,
         'day': now.strftime('%Y-%m-%d'),
         'app_id': app_id
     })
@@ -2496,33 +2499,34 @@ def check_deduct_message_quota(app_id, config, quota):
     if product_id == 0:
         return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
     enable_extra_price = False
-    if config.get('enable_extra_price', 0) == 1 and product_id >= 7005:
+    if product_id > 7001:
         enable_extra_price = True
     redis = lanying_redis.get_redis_connection()
     if redis:
         key = get_message_statistic_keys(config, app_id)[0]
         message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
         if message_count_quota + quota <= message_per_month:
-            return {'result':'ok', 'openai_key_type':'share'}
+            return {'result':'ok', 'api_key_type':'share'}
         else:
-            if enable_extra_price:
-                return {'result':'ok', 'openai_key_type':'share'}
+            message_count_quota_buy = redis.hincrby(key, 'message_count_quota_buy', 0)
+            if enable_extra_price  and message_count_quota + quota < message_per_month + message_count_quota_buy + 300:
+                return {'result':'ok', 'api_key_type':'share'}
             else:
                 return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
     else:
         return {'result':'error', 'code':'LanyingInternalError','message': 'Lanying internal error'}
 
-def deduct_message_quota(app_id, config, quota, openai_key_type, origin):
+def deduct_message_quota(app_id, config, quota, api_key_type, origin):
     message_count_quota = quota
-    logging.info(f"deduct_message_quota init | app_id:{app_id}, message_count_quota:{quota}, openai_key_type={openai_key_type}, origin:{origin}")
+    logging.info(f"deduct_message_quota init | app_id:{app_id}, message_count_quota:{quota}, api_key_type={api_key_type}, origin:{origin}")
     redis = lanying_redis.get_redis_connection()
     if redis:
-        logging.info(f"deduct_message_quota start | app_id={app_id}, quota={quota}, openai_key_type={openai_key_type}, origin:{origin}")
+        logging.info(f"deduct_message_quota start | app_id={app_id}, quota={quota}, api_key_type={api_key_type}, origin:{origin}")
         key_count = 0
         for key in get_message_statistic_keys(config, app_id):
             key_count += 1
             redis.hincrby(key, origin, quota)
-            if openai_key_type == 'share':
+            if api_key_type == 'share':
                 add_quota(redis, key, 'message_count_quota_share', message_count_quota)
             else:
                 add_quota(redis, key, 'message_count_quota_self', message_count_quota)
@@ -2530,30 +2534,28 @@ def deduct_message_quota(app_id, config, quota, openai_key_type, origin):
             if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
                 notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
     else:
-        logging.error(f"deduct_message_quota skip | app_id={app_id}, quota={quota}, openai_key_type={openai_key_type}, origin:{origin}")
+        logging.error(f"deduct_message_quota skip | app_id={app_id}, quota={quota}, api_key_type={api_key_type}, origin:{origin}")
 
-def check_message_limit(app_id, config, vendor, is_chat):
+def check_message_limit(app_id, config, model_config, is_chat):
     message_per_month = config.get('message_per_month', 0)
     product_id = config.get('product_id', 0)
     if product_id == 0:
-        return {'result':'ok', 'openai_key_type':'self'}
+        return {'result':'error', 'code': 'bad_product_id', 'msg': lanying_config.get_message_404(app_id)}
     enable_extra_price = False
-    if config.get('enable_extra_price', 0) == 1 and product_id >= 7005:
+    if product_id > 7001:
         enable_extra_price = True
     redis = lanying_redis.get_redis_connection()
     if redis:
         key = get_message_statistic_keys(config, app_id)[0]
         message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
         quota_pre_check = config.get('quota_pre_check', 0)
+        api_key_type = model_config['api_key_type']
         if message_count_quota + quota_pre_check < message_per_month:
-            return {'result':'ok', 'openai_key_type':'share'}
+            return {'result':'ok', 'api_key_type': api_key_type}
         else:
-            if enable_extra_price:
-                self_auth_info = get_preset_self_auth_info(config, vendor)
-                if self_auth_info:
-                    return {'result':'ok', 'openai_key_type':'self'}
-                else:
-                    return {'result':'ok', 'openai_key_type':'share'}
+            message_count_quota_buy = redis.hincrby(key, 'message_count_quota_buy', 0)
+            if enable_extra_price and message_count_quota + quota_pre_check < message_per_month + message_count_quota_buy + 300:
+                return {'result':'ok', 'api_key_type': api_key_type}
             elif is_chat:
                 msgs = []
                 error_msg = lanying_config.get_message_no_quota(app_id)
@@ -2644,6 +2646,7 @@ def buy_message_quota(app_id, type, value):
         redis = lanying_redis.get_redis_connection()
         if redis:
             key = get_message_statistic_keys(config, app_id)[0]
+            redis.hincrby(key, 'message_count_quota_buy', value)
             if type == "share":
                 return redis.hincrby(key, 'message_count_quota_buy_share', value)
             else:
@@ -2777,19 +2780,15 @@ def list_embedding_tasks(app_id, embedding_name):
         return task_list
     return []
 
-def fetch_embeddings(app_id, config, openai_key_type, text, vendor, model_config):
+def fetch_embeddings(app_id, config, text, vendor, model_config):
     model = model_config['model']
-    embedding_api_key_type = openai_key_type
     logging.info(f"fetch_embeddings: app_id={app_id}, vendor:{vendor}, model={model},text={text}")
-    auth_info = get_preset_auth_info(config, embedding_api_key_type, vendor)
-    if auth_info is None:
-        embedding_api_key_type = "share"
-        auth_info = get_preset_auth_info(config, embedding_api_key_type, vendor)
+    auth_info = get_preset_auth_info(config, vendor, model_config)
     prepare_info = lanying_vendor.prepare_embedding(app_id, vendor, auth_info, 'query')
     response = lanying_vendor.embedding(app_id, vendor, prepare_info, model, text)
     embedding = response['embedding']
     preset = {'model':model, 'input':text}
-    add_message_statistic(app_id, config, preset, response, embedding_api_key_type, model_config)
+    add_message_statistic(app_id, config, preset, response, model_config)
     return embedding
 
 def handle_embedding_command(msg, config):

@@ -67,7 +67,7 @@ def do_forward_bing_search(request):
     if limit_res['result'] == 'error':
         logging.info(f"check_deduct_message_quota deny: app_id={app_id}, msg={limit_res}")
         return limit_res
-    openai_key_type = limit_res['openai_key_type']
+    api_key_type = limit_res['api_key_type']
     packages = check_res['packages']
     response = None
     package_name = ''
@@ -115,7 +115,7 @@ def do_forward_bing_search(request):
         return {'result': 'error', 'message': 'Lanying internal error', 'code': 'LanyingInternalError'}
     if response.status_code == 200:
         logging.info(f"do_forward_bing_search success | app_id:{app_id}, quota:{quota}, package_name:{package_name}, origin_package_name:{origin_package_name}, path:{path}, request_args:{request_args}")
-        deduct_message_quota(app_id, config, quota, openai_key_type, 'bing_search')
+        deduct_message_quota(app_id, config, quota, api_key_type, 'bing_search')
     else:
         logging.info(f"do_forward_bing_search failed | app_id:{app_id}, quota:{quota}, package_name:{package_name}, request_args:{request_args}, response_json:{response_json}")
     return {'result':'ok', 'response': response}
