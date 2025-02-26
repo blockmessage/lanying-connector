@@ -151,10 +151,9 @@ def buy_message_quota(service):
         text = request.get_data(as_text=True)
         data = json.loads(text)
         app_id = data['app_id']
-        type = data['type']
         value = data['value']
         service_module = get_service_module(service)
-        result = service_module.buy_message_quota(app_id, type, value)
+        result = service_module.buy_message_quota(app_id, value)
         if result > 0:
             resp = app.make_response({'code':200, 'data':result})
             return resp

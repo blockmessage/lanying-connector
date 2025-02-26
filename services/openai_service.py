@@ -1101,7 +1101,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         'force_callback': True
     }
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-    response = chat_or_force_function_call(config, vendor, prepare_info, preset_maybe_vision)
+    response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
     if 'result' in response and response['result'] == 'error':
         error_code = response.get('code', response.get('reason', ''))
@@ -2640,17 +2640,13 @@ def get_message_limit_state(app_id):
             return ret
     return {}
 
-def buy_message_quota(app_id, type, value):
+def buy_message_quota(app_id, value):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         redis = lanying_redis.get_redis_connection()
         if redis:
             key = get_message_statistic_keys(config, app_id)[0]
-            redis.hincrby(key, 'message_count_quota_buy', value)
-            if type == "share":
-                return redis.hincrby(key, 'message_count_quota_buy_share', value)
-            else:
-                return redis.hincrby(key, 'message_count_quota_buy_self', value)
+            return redis.hincrby(key, 'message_count_quota_buy', value)
     return -1
 
 def check_model_allow(model_config, model):
