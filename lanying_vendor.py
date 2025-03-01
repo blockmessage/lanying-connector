@@ -290,6 +290,10 @@ def list_models(app_id):
             new_config['vendor'] = vendor
             new_config['is_custom_vendor'] = False
             new_config['api_key_type'] = 'share'
+            if new_config['type'] == 'chat':
+                new_config['quota_without_content_security'] = get_quota_when_content_security(new_config['quota'])
+            else:
+                new_config['quota_without_content_security'] = new_config['quota']
             models.append(new_config)
     custom_vendor_list = get_vendor_list(app_id)['data']['list']
     for vendor_info in custom_vendor_list:
@@ -312,11 +316,20 @@ def list_models(app_id):
                 new_config['is_custom_vendor'] = True
                 new_config['api_key_type'] = 'self'
                 new_config['quota'] = get_custom_vendor_quota()
+                new_config['quota_without_content_security'] = 0
                 if 'image_quota' in config:
+                    new_config['image_quota_without_content_security'] = {}
                     for k,_ in config['image_quota'].items():
                         new_config['image_quota'][k] = get_custom_vendor_quota()
+                        new_config['image_quota_without_content_security'][k] = 0
                 models.append(new_config)
     return models
+
+def get_quota_when_content_security(quota):
+    if quota > 0.01:
+        return round(100 * quota * 0.778) / 100
+    else:
+        return round(10000 * quota * 0.778) / 10000
 
 def get_custom_vendor_quota():
     return 0.22
@@ -337,6 +350,10 @@ def get_model_config(app_id, vendor, model, type):
                         new_config['vendor'] = vendor
                         new_config['is_custom_vendor'] = False
                         new_config['api_key_type'] = 'share'
+                        if new_config['type'] == 'chat':
+                            new_config['quota_without_content_security'] = get_quota_when_content_security(new_config['quota'])
+                        else:
+                            new_config['quota_without_content_security'] = new_config['quota']
                         return new_config
     custom_vendor_info = get_vendor(app_id, vendor)
     if custom_vendor_info:
@@ -359,9 +376,12 @@ def get_model_config(app_id, vendor, model, type):
                             new_config['is_custom_vendor'] = True
                             new_config['api_key_type'] = 'self'
                             new_config['quota'] = get_custom_vendor_quota()
+                            new_config['quota_without_content_security'] = 0
                             if 'image_quota' in config:
+                                new_config['image_quota_without_content_security'] = {}
                                 for k,_ in config['image_quota'].items():
                                     new_config['image_quota'][k] = get_custom_vendor_quota()
+                                    new_config['image_quota_without_content_security'][k] = 0
                             maybe_update_custom_vendor_model_config(new_config, custom_vendor_info, model)
                             return new_config
     return None

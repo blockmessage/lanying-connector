@@ -3844,13 +3844,14 @@ def create_chatbot():
     audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     link_profile = dict(data.get('link_profile', {}))
+    content_security = str(data.get('content_security', 'on'))
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
     result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link,
                                             preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                             message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                                             quota_exceed_reply_msg, group_history_use_mode,
-                                            audio_to_text, image_vision, audio_to_text_model, link_profile)
+                                            audio_to_text, image_vision, audio_to_text_model, link_profile, content_security)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -3886,13 +3887,14 @@ def configure_chatbot():
     audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     link_profile = dict(data.get('link_profile', {}))
+    content_security = str(data.get('content_security', 'on'))
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
     result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
                                                quota_exceed_reply_msg, group_history_use_mode,
-                                               audio_to_text, image_vision, audio_to_text_model, link_profile)
+                                               audio_to_text, image_vision, audio_to_text_model, link_profile, content_security)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

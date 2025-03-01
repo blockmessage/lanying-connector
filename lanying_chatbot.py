@@ -13,7 +13,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
-                   audio_to_text, image_vision, audio_to_text_model, link_profile, preset_protect = 'off'):
+                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect = 'off'):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -50,6 +50,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "image_vision": image_vision,
         "audio_to_text_model": audio_to_text_model,
         "link_profile": json.dumps(link_profile, ensure_ascii=False),
+        "content_security": content_security,
         "preset_protect": preset_protect
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
@@ -132,12 +133,13 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
     preset = capsule_chatbot['preset']
     if preset_protect == 'on':
         preset['messages'] = []
+    content_security = 'on'
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link,
                                    preset, capsule_chatbot['history_msg_count_max'],
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model, link_profile, preset_protect)
+                                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -204,12 +206,13 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
     preset = capsule_chatbot['preset']
     if preset_protect == 'on':
         preset['messages'] = []
+    content_security = 'on'
     create_result = create_chatbot(app_id, name, nickname, capsule_chatbot['desc'], avatar, user_id, lanying_link,
                                    preset, capsule_chatbot['history_msg_count_max'],
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model, link_profile, preset_protect)
+                                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect)
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -246,7 +249,7 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
                       preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                       message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                       quota_exceed_reply_msg, group_history_use_mode,
-                      audio_to_text, image_vision, audio_to_text_model, link_profile):
+                      audio_to_text, image_vision, audio_to_text_model, link_profile, content_security):
     logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -280,7 +283,8 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         "audio_to_text": audio_to_text,
         "image_vision": image_vision,
         "audio_to_text_model": audio_to_text_model,
-        "link_profile": json.dumps(link_profile, ensure_ascii=False)
+        "link_profile": json.dumps(link_profile, ensure_ascii=False),
+        "content_security": content_security
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -521,6 +525,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['preset_protect'] = 'off'
         if 'link_profile' not in dto:
             dto['link_profile'] = get_default_link_profile()
+        if 'content_security' not in dto:
+            dto['content_security'] = 'on'
         return dto
     return None
 
