@@ -159,9 +159,12 @@ def prepare_chat(auth_info, preset):
                         msg[k] = v
                 messages.append(msg)
         preset['messages'] = messages
-    return {
+    prepare_info = {
         'api_key' : auth_info['api_key']
     }
+    if 'api_endpoint' in auth_info and auth_info['api_endpoint'] != '':
+        prepare_info['api_endpoint'] = auth_info['api_endpoint']
+    return prepare_info
 
 def chat(prepare_info, preset, model_config):
     real_model = model_config.get('real_model', None)
@@ -281,9 +284,12 @@ def chat(prepare_info, preset, model_config):
         }
 
 def prepare_embedding(auth_info, _):
-    return {
+    prepare_info = {
         'api_key' : auth_info['api_key']
     }
+    if 'api_endpoint' in auth_info and auth_info['api_endpoint'] != '':
+        prepare_info['api_endpoint'] = auth_info['api_endpoint']
+    return prepare_info
 
 def embedding(prepare_info, model, text, model_config):
     model = 'text-embedding-ada-002'
@@ -381,6 +387,8 @@ def format_preset_for_o1(preset):
     return ret
 
 def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
+    if 'api_endpoint' in prepare_info:
+        return prepare_info['api_endpoint']
     domain = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_DOMAIN", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_API_KEY", '')
     if len(domain) > 0:

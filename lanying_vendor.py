@@ -21,6 +21,7 @@ import time
 import lanying_utils
 import json
 import lanying_redis
+import re
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
@@ -38,6 +39,96 @@ vendor_to_module = {
     'aliyun': lanying_vendor_aliyun,
     'moonshot': lanying_vendor_moonshot
 }
+
+def vendor_configs():
+    return [
+        {
+            'vendor': 'openai',
+            'fields': ['api_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'aws',
+            'fields': ['api_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'volcengine',
+            'fields': ['api_key'],
+            'model_fields': ['endpoint'],
+            'models': [
+                'Doubao-pro-32k',
+                'Doubao-pro-128k',
+                'Doubao-pro-256k',
+                'DeepSeek-R1',
+                'DeepSeek-V3',
+                'Doubao-pro-4k',
+                'Doubao-lite-4k',
+                'Doubao-lite-128k',
+                'Doubao-lite-32k',
+                'moonshot-v1-8k',
+                'moonshot-v1-32k',
+                'moonshot-v1-128k'
+            ],
+        },
+        {
+            'vendor': 'siliconflow',
+            'fields': ['api_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'deepseek',
+            'fields': ['api_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'minimax',
+            'fields': ['api_key', 'api_group_id'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'baidu',
+            'fields': ['api_key', 'secret_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'zhipuai',
+            'fields': ['api_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'azure',
+            'fields': ['api_key', 'api_endpoint'],
+            'model_fields': ['api_type', 'deployment'],
+            'models': [
+                'gpt-4-32k',
+                'gpt-4',
+                'gpt-35-turbo-16k',
+                'gpt-35-turbo',
+                'text-embedding-ada-002'
+            ],
+        },
+        {
+            'vendor': 'azure2',
+            'fields': ['api_key', 'api_endpoint'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'claude',
+            'fields': ['api_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'aliyun',
+            'fields': ['api_key'],
+            'model_fields': []
+        },
+        {
+            'vendor': 'moonshot',
+            'fields': ['api_key'],
+            'model_fields': []
+        }
+    ]
 
 def backup_rules():
     return [
@@ -203,16 +294,21 @@ def list_models(app_id):
     custom_vendor_list = get_vendor_list(app_id)['data']['list']
     for vendor_info in custom_vendor_list:
         vendor_type = vendor_info['vendor_type']
+        vender_show_name = vendor_info['name']
         vendor_id = vendor_info['vendor_id']
         if vendor_type in vendor_to_module:
             module = vendor_to_module[vendor_type]
             for config in module.model_configs():
                 new_config = copy.deepcopy(config)
+                if not model_config_valid(new_config, vendor_info):
+                    continue
                 if 'url' in new_config:
                     del new_config['url']
                 if 'endpoint' in new_config:
                     del new_config['endpoint']
                 new_config['vendor'] = vendor_id
+                new_config['vendor_show_name'] = vender_show_name
+                new_config['is_origin_vendor'] = False
                 new_config['is_custom_vendor'] = True
                 new_config['api_key_type'] = 'self'
                 new_config['quota'] = get_custom_vendor_quota()
@@ -237,14 +333,15 @@ def get_model_config(app_id, vendor, model, type):
                 if config['type'] == type:
                     now_model = config.get('model')
                     if model == now_model:
-                        newConfig = copy.deepcopy(config)
-                        newConfig['vendor'] = vendor
-                        newConfig['is_custom_vendor'] = False
-                        newConfig['api_key_type'] = 'share'
-                        return newConfig
+                        new_config = copy.deepcopy(config)
+                        new_config['vendor'] = vendor
+                        new_config['is_custom_vendor'] = False
+                        new_config['api_key_type'] = 'share'
+                        return new_config
     custom_vendor_info = get_vendor(app_id, vendor)
     if custom_vendor_info:
         vendor_type = custom_vendor_info['vendor_type']
+        vender_show_name = custom_vendor_info['name']
         if vendor_type in vendor_to_module:
             module = vendor_to_module.get(vendor_type)
             if module:
@@ -253,26 +350,55 @@ def get_model_config(app_id, vendor, model, type):
                     if config['type'] == type:
                         now_model = config.get('model')
                         if model == now_model:
-                            newConfig = copy.deepcopy(config)
-                            newConfig['vendor'] = vendor
-                            newConfig['is_custom_vendor'] = True
-                            newConfig['api_key_type'] = 'self'
-                            newConfig['quota'] = get_custom_vendor_quota()
+                            new_config = copy.deepcopy(config)
+                            if not model_config_valid(new_config, custom_vendor_info):
+                                continue
+                            new_config['vendor'] = vendor
+                            new_config['vendor_show_name'] = vender_show_name
+                            new_config['is_origin_vendor'] = False
+                            new_config['is_custom_vendor'] = True
+                            new_config['api_key_type'] = 'self'
+                            new_config['quota'] = get_custom_vendor_quota()
                             if 'image_quota' in config:
                                 for k,_ in config['image_quota'].items():
-                                    newConfig['image_quota'][k] = get_custom_vendor_quota()
-                            maybe_update_custom_vendor_model_config(newConfig, custom_vendor_info, model)
-                            return newConfig
+                                    new_config['image_quota'][k] = get_custom_vendor_quota()
+                            maybe_update_custom_vendor_model_config(new_config, custom_vendor_info, model)
+                            return new_config
     return None
 
 def maybe_update_custom_vendor_model_config(config, custom_vendor_info, model):
     vendor_model_config = custom_vendor_info['model_config']
-    if model in vendor_model_config:
-        fields = ['url', 'api_type', 'endpoint']
-        model_config = vendor_model_config[model]
-        for field in fields:
-            if field in model_config:
-                config[field] = model_config[field]
+    for vmc in vendor_model_config:
+        if vmc['model'] == model:
+            fields = ['deployment', 'api_type', 'endpoint']
+            for field in fields:
+                if field in vmc:
+                    if field == 'deployment':
+                        url = config['url']
+                        api_endpoint = custom_vendor_info['api_endpoint']
+                        api_endpoint = api_endpoint.strip('/') + '/'
+                        url = url.replace('https://xiaolanai-eastus.openai.azure.com/', api_endpoint)
+                        url = re.sub(r"(/deployments/).*/",r"\1"+ model +"/",url)
+                        logging.info(f"maybe_update_custom_vendor_model_config | new_url:{url}")
+                        config['url'] = url
+                    else:
+                        config[field] = vmc[field]
+
+def model_config_valid(new_config, vendor_info):
+    model_config = vendor_info.get('model_config', [])
+    if model_config == []:
+        return True
+    model = new_config['model']
+    for now_model_config in model_config:
+        if now_model_config['model'] == model:
+            fields = ['deployment', 'endpoint']
+            hasConfig = False
+            for field in fields:
+                if field in now_model_config and now_model_config[field].strip() != '':
+                    hasConfig = True
+            if hasConfig:
+                return True
+    return False
 
 def get_image_model_config(app_id, vendor, model):
     return get_model_config(app_id, vendor, model, 'image')
@@ -614,7 +740,15 @@ def check_vendor_valid(vendor_setting: VendorSetting):
     return {
         'result': 'ok'
     }
-    
+
+def delete_vendor(app_id, vendor_id):
+    vendor_info = get_vendor(app_id, vendor_id)
+    if vendor_info is None:
+        return {'result': 'error', 'message': 'vendor not exist'}
+    redis = lanying_redis.get_redis_connection()
+    redis.delete(get_vendor_key(app_id, vendor_id))
+    redis.lrem(get_vendor_list_key(app_id), 1, vendor_id)
+
 def hide_secret_info(vendor_info):
     new_vendor_info = copy.deepcopy(vendor_info)
     new_vendor_info['api_key'] = "****"
@@ -631,7 +765,7 @@ def get_vendor(app_id, vendor_id):
             if key in ['create_time', 'update_time']:
                 dto[key] = int(value)
             elif key in ['model_config']:
-                dto[key] = lanying_utils.safe_json_loads(value, {})
+                dto[key] = lanying_utils.safe_json_loads(value, [])
             else:
                 dto[key] = value
         return dto
@@ -639,7 +773,7 @@ def get_vendor(app_id, vendor_id):
 
 def get_vendor_list(app_id):
     redis = lanying_redis.get_redis_connection()
-    vendor_ids = reversed(lanying_redis.redis_lrange(redis, get_vendor_list_key(app_id), 0, -1))
+    vendor_ids = lanying_redis.redis_lrange(redis, get_vendor_list_key(app_id), 0, -1)
     vendor_list = []
     for vendor_id in vendor_ids:
         vendor_info = get_vendor(app_id, vendor_id)
@@ -649,7 +783,7 @@ def get_vendor_list(app_id):
         'result': 'ok',
         'data':
             {
-                'list': vendor_info
+                'list': vendor_list
             }
     }
 
