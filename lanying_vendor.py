@@ -337,7 +337,17 @@ def get_custom_vendor_quota():
 def get_chat_model_config(app_id, vendor, model):
     return get_model_config(app_id, vendor, model, 'chat')
 
+def get_vendor_by_model(model):
+    for vendor,module in vendor_to_module.items():
+       for config in module.model_configs():
+           now_model = config.get('model')
+           if model == now_model:
+               return vendor
+    return None
+
 def get_model_config(app_id, vendor, model, type):
+    if vendor is None:
+        vendor = get_vendor_by_model(model)
     if vendor in vendor_to_module:
         module = vendor_to_module.get(vendor)
         if module:
