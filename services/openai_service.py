@@ -38,6 +38,7 @@ from lanying_async import executor
 import lanying_message_quota_usage
 from concurrent.futures import Future
 import base64
+import lanying_grow_ai
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -2358,13 +2359,16 @@ def maybe_trace_message_quota_usage(config, message_count_quota):
 def add_message_statistic(app_id, config, preset, response, model_config):
     api_key_type = model_config['api_key_type']
     model_type = model_config.get('type', '')
+    vendor = model_config.get('vendor', '')
     if model_type == 'image':
-        logging.info(f"add_message_statistic {model_type} response: {response}, model_config: {model_config}")
+        logging.info(f"add_message_statistic {model_type} response: {response}, vendor:{vendor}, model_config: {model_config}")
         redis = lanying_redis.get_redis_connection()
         if redis:
             model = preset['model']
             message_count_quota = model_config['quota']
-            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+            if message_count_quota < 0:
+                message_count_quota = 0
+            logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
@@ -2384,15 +2388,17 @@ def add_message_statistic(app_id, config, preset, response, model_config):
         else:
             logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, model_config:{model_config}")
     elif model_type in ['text_to_speech', 'speech_to_text'] :
-        logging.info(f"add_message_statistic {model_type} response: {response}, model_config: {model_config}")
+        logging.info(f"add_message_statistic {model_type} response: {response}, vendor:{vendor}, model_config: {model_config}")
         redis = lanying_redis.get_redis_connection()
         if redis:
             model = preset['model']
             message_count_quota = model_config['quota']
+            if message_count_quota < 0:
+                message_count_quota = 0
             if model_type == 'speech_to_text':
                 speech_to_text_duration = config.get('speech_to_text_duration', 0)
                 logging.info(f"speech_to_text response | duration={speech_to_text_duration}, response:{response}")
-            logging.info(f"add message statistic: app_id={app_id}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+            logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
@@ -2410,8 +2416,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
             # except Exception as e:
             #     logging.exception(e)
         else:
-            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, model_config:{model_config}")
-    
+            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, vendor:{vendor}, model_config:{model_config}")
     elif 'usage' in response:
         if 'no_cost' in response:
             logging.info(f"skip message statistic for no cost | app_id={app_id}")
@@ -2422,14 +2427,22 @@ def add_message_statistic(app_id, config, preset, response, model_config):
         total_tokens = usage.get('total_tokens', 0)
         text_size = calc_used_text_size(preset, response, model_config)
         model = preset['model']
-        message_count_quota = calc_message_quota(model_config, total_tokens)
+        content_security = 'off'
+        if model_type == 'chat' or model_type == 'embedding':
+            if 'chatbot' in config:
+                chatbot = config['chatbot']
+                if 'content_security' in chatbot:
+                    content_security = chatbot['content_security']
+        message_count_quota = calc_message_quota(model_config, total_tokens, content_security)
+        if message_count_quota < 0:
+            message_count_quota = 0
         redis = lanying_redis.get_redis_connection()
         product_id = config.get('product_id', 0)
         if product_id == 0:
-            logging.info(f"skip message statistic for no product_id: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+            logging.info(f"skip message statistic for no product_id: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             return
         if redis:
-            logging.info(f"add message statistic: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+            logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
@@ -2449,7 +2462,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
             except Exception as e:
                 logging.exception(e)
         else:
-            logging.error(f"fail to statistic message: app_id={app_id}, model={model}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+            logging.error(f"fail to statistic message: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, api_key_type={api_key_type}")
 
 def maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type):
     if 'linked_publish_capsule_id' in config:
@@ -2654,8 +2667,11 @@ def check_model_allow(model_config, model):
         return {'result':'ok'}
     return {'result':'error', 'msg':f'model {model} is not supported'}
 
-def calc_message_quota(model_config, total_tokens):
-    multi = model_config['quota']
+def calc_message_quota(model_config, total_tokens, content_security):
+    if content_security == 'off' and 'quota_without_content_security' in model_config:
+        multi = model_config['quota_without_content_security']
+    else:
+        multi = model_config['quota']
     count = round(total_tokens / 2048)
     if  count < 1:
         count = 1
@@ -3844,7 +3860,7 @@ def create_chatbot():
     audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     link_profile = dict(data.get('link_profile', {}))
-    content_security = str(data.get('content_security', 'on'))
+    content_security = 'on'
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
     result = lanying_chatbot.create_chatbot(app_id, name, nickname, desc, avatar, user_id, lanying_link,
@@ -3888,6 +3904,8 @@ def configure_chatbot():
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     link_profile = dict(data.get('link_profile', {}))
     content_security = str(data.get('content_security', 'on'))
+    if content_security not in ['on', 'off']:
+        content_security = 'on'
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
     result = lanying_chatbot.configure_chatbot(app_id, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
@@ -4000,6 +4018,7 @@ def list_chatbots():
     data = json.loads(text)
     app_id = str(data['app_id'])
     chatbots = lanying_chatbot.list_chatbots(app_id)
+    custom_site_chatbot_ids = lanying_grow_ai.get_chatbot_ids_has_custom_site(app_id)
     dtos = []
     for chatbot in chatbots:
         linked_embedding_names = []
@@ -4018,6 +4037,10 @@ def list_chatbots():
                 linked_plugin_names.extend(capsule_info['plugin_names'])
         chatbot['linked_embedding_names'] = linked_embedding_names
         chatbot['linked_plugin_names'] = linked_plugin_names
+        if chatbot['chatbot_id'] in custom_site_chatbot_ids:
+            chatbot['is_bind_to_custom_site'] = True
+        else:
+            chatbot['is_bind_to_custom_site'] = False
         dtos.append(chatbot)
     resp = make_response({'code':200, 'data':{'list': dtos}})
     return resp

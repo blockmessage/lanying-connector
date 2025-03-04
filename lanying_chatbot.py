@@ -262,6 +262,11 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
     if old_name != name:
         if get_name_chatbot_id(app_id, name):
             return {'result':'error', 'message': 'name already exist'}
+    from lanying_grow_ai import get_chatbot_ids_has_custom_site
+    if content_security == 'off':
+        custom_site_chatbot_ids = get_chatbot_ids_has_custom_site(app_id)
+        if chatbot_id not in custom_site_chatbot_ids:
+            return {'result':'error', 'message': 'content_security cannot closed'}
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "name": name,
