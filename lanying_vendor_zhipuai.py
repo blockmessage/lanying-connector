@@ -16,7 +16,7 @@ def model_configs():
             "service": 'zhipuai',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.52,
+            "quota": 0.96,
             "token_limit": 128000,
             'order': 1,
             'function_call': True
@@ -27,7 +27,7 @@ def model_configs():
             "service": 'zhipuai',
             "type": "chat",
             "is_prefix": False,
-            "quota": 8.85,
+            "quota": 15.04,
             "token_limit": 128000,
             'order': 2,
             'function_call': True

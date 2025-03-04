@@ -25,7 +25,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1.55,
+            "quota": 1.88,
             "token_limit": 200000,
             'order': 1,
             'function_call': True
@@ -36,7 +36,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 5.61,
+            "quota": 6.44,
             "token_limit": 200000,
             'order': 2,
             'function_call': True
@@ -47,7 +47,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 30.78,
+            "quota": 31.33,
             "token_limit": 200000,
             'order': 3,
             'function_call': True
@@ -58,7 +58,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 5.61,
+            "quota": 6.44,
             "token_limit": 200000,
             'order': 4,
             'function_call': True
@@ -69,7 +69,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.54,
+            "quota": 0.74,
             "token_limit": 200000,
             'order': 5,
             'function_call': True
@@ -80,7 +80,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 10,
+            "quota": 12.67,
             "token_limit": 200000,
             'order': 8,
             'function_call': False
@@ -91,7 +91,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 10,
+            "quota": 12.67,
             "token_limit": 100000,
             'order': 9,
             'function_call': False
@@ -102,7 +102,7 @@ def model_configs():
             "service": 'claude',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1,
+            "quota": 1.47,
             "token_limit": 100000,
             'order': 10,
             'function_call': False

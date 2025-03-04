@@ -12,7 +12,7 @@ def model_configs():
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.43,
+            "quota": 0.67,
             "token_limit": 6000,
             'order': 1,
             'function_call': True
@@ -23,7 +23,7 @@ def model_configs():
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.78,
+            "quota": 1.11,
             "token_limit": 30000,
             'order': 2,
             'function_call': True
@@ -34,7 +34,7 @@ def model_configs():
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
-            "quota": 7.10,
+            "quota": 9.11,
             "token_limit": 6000,
             'order': 3,
             'function_call': True
@@ -45,7 +45,7 @@ def model_configs():
             "service": 'qwen',
             "type": "chat",
             "is_prefix": False,
-            "quota": 7.10,
+            "quota": 9.11,
             "token_limit": 28000,
             'order': 4,
             'function_call': True

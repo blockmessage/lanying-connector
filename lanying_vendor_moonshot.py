@@ -12,7 +12,7 @@ def model_configs():
             "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1.13,
+            "quota": 2.00,
             "token_limit": 8000,
             'order': 1,
             'function_call': True
@@ -23,7 +23,7 @@ def model_configs():
             "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
-            "quota": 2.18,
+            "quota": 3.78,
             "token_limit": 32000,
             'order': 2,
             'function_call': True
@@ -34,7 +34,7 @@ def model_configs():
             "service": 'kimi',
             "type": "chat",
             "is_prefix": False,
-            "quota": 5.34,
+            "quota": 9.11,
             "token_limit": 128000,
             'order': 3,
             'function_call': True

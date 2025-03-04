@@ -11,7 +11,7 @@ def model_configs():
             "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1.39,
+            "quota": 2.59,
             'order': 1,
             "token_limit": 11000,
             'function_call': True
@@ -22,7 +22,7 @@ def model_configs():
             "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.52,
+            "quota": 0.96,
             'order': 2,
             "token_limit": 8000,
             'function_call': False
@@ -33,7 +33,7 @@ def model_configs():
             "service": 'minimax',
             "type": "chat",
             "is_prefix": False,
-            "quota": 17.62,
+            "quota": 32.67,
             'order': 3,
             "token_limit": 32000,
             'function_call': True

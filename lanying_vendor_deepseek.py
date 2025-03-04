@@ -15,7 +15,7 @@ def model_configs():
             "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.96,
+            "quota": 1.26,
             "token_limit": 64000,
             'order': 1,
             'function_call': False
@@ -27,7 +27,7 @@ def model_configs():
             "service": 'deepseek',
             "type": "chat",
             "is_prefix": False,
-            "quota": 0.52,
+            "quota": 0.74,
             "token_limit": 64000,
             'order': 2,
             'function_call': False
