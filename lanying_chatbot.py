@@ -245,12 +245,12 @@ def delete_chatbots(app_id):
         delete_chatbot(app_id, chatbot_id)
     return {'result':'ok', 'data':{}}
 
-def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link,
+def configure_chatbot(app_id, account_status, chatbot_id, name,nickname, desc, avatar, user_id, lanying_link,
                       preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                       message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                       quota_exceed_reply_msg, group_history_use_mode,
                       audio_to_text, image_vision, audio_to_text_model, link_profile, content_security):
-    logging.info(f"start configure chatbot: app_id={app_id}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
+    logging.info(f"start configure chatbot: app_id={app_id}, account_status={account_status}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
         return {'result':'error', 'message': 'chatbot not exist'}
@@ -263,10 +263,12 @@ def configure_chatbot(app_id, chatbot_id, name,nickname, desc, avatar, user_id, 
         if get_name_chatbot_id(app_id, name):
             return {'result':'error', 'message': 'name already exist'}
     if content_security == 'off':
+        if account_status != '1':
+            return {'result':'error', 'message': 'content_security closed need account verify'}
         from lanying_grow_ai import get_force_content_security_chatbot_ids
         force_content_security_chatbot_ids = get_force_content_security_chatbot_ids(app_id)
         if chatbot_id in force_content_security_chatbot_ids:
-            return {'result':'error', 'message': 'content_security cannot closed'}
+            return {'result':'error', 'message': 'content_security closed need custom site'}
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "name": name,
