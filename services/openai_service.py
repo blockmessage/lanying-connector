@@ -4018,7 +4018,7 @@ def list_chatbots():
     data = json.loads(text)
     app_id = str(data['app_id'])
     chatbots = lanying_chatbot.list_chatbots(app_id)
-    custom_site_chatbot_ids = lanying_grow_ai.get_chatbot_ids_has_custom_site(app_id)
+    force_content_security_chatbot_ids = lanying_grow_ai.get_force_content_security_chatbot_ids(app_id)
     dtos = []
     for chatbot in chatbots:
         linked_embedding_names = []
@@ -4037,10 +4037,10 @@ def list_chatbots():
                 linked_plugin_names.extend(capsule_info['plugin_names'])
         chatbot['linked_embedding_names'] = linked_embedding_names
         chatbot['linked_plugin_names'] = linked_plugin_names
-        if chatbot['chatbot_id'] in custom_site_chatbot_ids:
-            chatbot['is_bind_to_custom_site'] = True
+        if chatbot['chatbot_id'] in force_content_security_chatbot_ids:
+            chatbot['force_content_security'] = True
         else:
-            chatbot['is_bind_to_custom_site'] = False
+            chatbot['force_content_security'] = False
         dtos.append(chatbot)
     resp = make_response({'code':200, 'data':{'list': dtos}})
     return resp

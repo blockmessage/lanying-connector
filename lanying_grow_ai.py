@@ -285,6 +285,9 @@ def get_service_statistic_key_list(app_id, field):
 def create_task(task_setting: TaskSetting):
     now = int(time.time())
     app_id = task_setting.app_id
+    result = check_task_content_security(app_id, task_setting)
+    if result['result'] == 'error':
+        return result
     set_admin_token(app_id)
     task_id = generate_task_id()
     result = handle_task_file_list(app_id, task_id, task_setting.file_list)
@@ -323,10 +326,12 @@ def configure_task(task_id, task_setting: TaskSetting):
     task_info = get_task(app_id, task_id)
     if task_info is None:
         return {'result': 'error', 'message': 'task_id not exist'}
+    result = check_task_content_security(app_id, task_setting)
+    if result['result'] == 'error':
+        return result
     result = handle_task_file_list(app_id, task_id, task_setting.file_list)
     if result['result'] == 'error':
         return result
-    old_chatbot_ids = get_chatbot_ids_has_custom_site(app_id)
     redis = lanying_redis.get_redis_connection()
     fields = task_setting.to_hmset_fields()
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
@@ -356,22 +361,11 @@ def configure_task(task_id, task_setting: TaskSetting):
                 result = lanying_schedule.create_schedule(new_task_info['cycle_interval'], 'lanying_grow_ai', {'app_id':app_id, 'task_id':task_id})
                 schedule_id = result['data']['schedule_id']
                 update_task_field(app_id, task_id, "schedule_id", schedule_id)
-    new_chatbot_ids = get_chatbot_ids_has_custom_site(app_id)
-    maybe_changed_chatbot_ids = list(old_chatbot_ids - new_chatbot_ids)
-    changed_chatbot_ids = []
-    if len(maybe_changed_chatbot_ids) > 0:
-        for chatbot_id in maybe_changed_chatbot_ids:
-            chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-            if chatbot:
-                if chatbot['content_security'] == 'off':
-                    lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "content_security", 'on')
-                    changed_chatbot_ids.append(chatbot_id)
-        logging.info(f"configure_task maybe_changed_chatbot_ids: {maybe_changed_chatbot_ids}, changed_chatbot_ids:{changed_chatbot_ids}")
     return {
         'result': 'ok',
         'data': {
             'success': True,
-            'changed_chatbot_ids': changed_chatbot_ids
+            'changed_chatbot_ids': []
         }
     }
 
@@ -3295,26 +3289,64 @@ def is_valid_domain(url):
     pattern = re.compile(r'^(https?://)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,6}(/.*)?$')
     return bool(pattern.match(url))
 
-def get_chatbot_ids_has_custom_site(app_id):
+def get_force_content_security_site_ids(app_id):
     site_list = get_site_list(app_id)['data']['list']
-    custom_site_ids = set()
+    force_site_ids = set()
     for site in site_list:
         site_id = site['site_id']
         domain_id = site.get('domain_id', '')
+        is_force_site_id = True
         if domain_id != '':
             domain_info = get_custom_domain_info(app_id, site_id, domain_id)
             if domain_info:
                 if domain_info['state'] == 'ready':
                     if domain_info.get('cdn_status', 'online') != 'offline':
-                        custom_site_ids.add(site_id)
+                        is_force_site_id = False
+        if is_force_site_id:
+            force_site_ids.add(site_id)
+    return force_site_ids
+
+def get_force_content_security_chatbot_ids(app_id):
+    force_site_ids = get_force_content_security_site_ids(app_id)
     chatbot_ids = set()
-    if len(custom_site_ids) == 0:
-        return chatbot_ids
     task_list = get_task_list(app_id)['data']['list']
     for task in task_list:
         site_id_list = task['site_id_list']
         chatbot_id = task['chatbot_id']
-        for site_id in site_id_list:
-            if site_id in custom_site_ids:
-                chatbot_ids.add(chatbot_id)
+        if len(site_id_list) == 0:
+            chatbot_ids.add(chatbot_id)
+        else:
+            for site_id in site_id_list:
+                if site_id in force_site_ids:
+                    chatbot_ids.add(chatbot_id)
     return chatbot_ids
+
+def check_task_content_security(app_id, task_setting: TaskSetting):
+    chatbot_id = task_setting.chatbot_id
+    chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot is None:
+        return {
+            'result': 'error',
+            'message': 'chatbot id not exist'
+        }
+    if chatbot['content_security'] == 'on':
+        return {
+            'result': 'ok'
+        }
+    force_site_ids = get_force_content_security_site_ids(app_id)
+    site_id_list = task_setting.site_id_list
+    if len(site_id_list) == 0:
+        return {
+            'result': 'error',
+            'message': 'cannot bind to chatbot without content security'
+        }
+    else:
+        for site_id in site_id_list:
+            if site_id in force_site_ids:
+                return {
+                    'result': 'error',
+                    'message': 'cannot bind to chatbot without content security'
+                }
+    return {
+        'result': 'ok'
+    }
