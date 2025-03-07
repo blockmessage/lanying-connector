@@ -431,6 +431,7 @@ def get_task_list(app_id):
                 site = get_site(app_id, site_id)
                 if site and 'site_url' in site and len(site['site_url']) > 0:
                     task_info['site_url'] = site['site_url']
+                    task_info['site_cdn_token'] = site['site_cdn_token']
                 if site and 'custom_site_url' in site and len(site['custom_site_url']) > 0:
                     task_info['custom_site_url'] = site['custom_site_url']
             task_list.append(task_info)
@@ -1373,7 +1374,7 @@ def parse_content_metadata(content):
         metadata = ''
     logging.info(f"got metadata: {metadata}")
     content = re.sub(r'<metadata>.*?</metadata>\n*', '', content, flags=re.DOTALL)
-    description = find_metadata_key(metadata, 'description', '')
+    description = collect_description_from_content(content)
     keywords = find_metadata_key(metadata, 'keywords', '')
     extra_keywords = find_metadata_key(metadata, 'extra_keywords', '')
     if extra_keywords != '':
@@ -1386,6 +1387,14 @@ def parse_content_metadata(content):
     header = f'---\ndescription: {description_escaped}\nkeywords: {keywords_escaped}\n---\n'
     content = f'{header}{content}\n'
     return metadata, content
+
+def collect_description_from_content(content):
+    for line in content.split('\n'):
+        if '# ' not in line and len(line) > 10:
+            if len(line) > 500:
+                line = line[:500]
+            return line
+    return content[:500]
 
 def make_clean_url(url):
     # 将下划线替换成连字符
@@ -1429,11 +1438,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
     image_placeholder_prompt = f'需要包含有且只有 1 个的插图占位标记,用于之后放置图片, 使用 {image_placeholder_text} 表示, 注意此占位符需要独占一行，且不要有加粗等格式修饰；\n' if image_count > 0 else ''
-    meta_prompt = (f'请在文章中输出一份文章的元数据，位于文章摘要或文章标题后，元数据只能输出一份，不要多次输出，元数据为XML格式，如：<metadata><title></title><description></description><keywords></keywords><url></url>{meta_keywords_prompt_1}</metadata>。字段要求如下：\n'
+    meta_prompt = (f'请在文章中输出一份文章的元数据，位于文章摘要或文章标题后，元数据只能输出一份，不要多次输出，元数据为XML格式，如：<metadata><title></title><keywords></keywords><url></url>{meta_keywords_prompt_1}</metadata>。字段要求如下：\n'
                    '1. title: 文章标题。\n'
-                   '2. description: 文章描述，用于搜索引擎SEO。\n'
-                   '3. keywords: 搜索引擎SEO关键词, 最多 2 个关键词, 字符串类型，多个关键词请以英文逗号连接。\n'
-                   f'4. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n{meta_keywords_prompt_2}')
+                   '2. keywords: 搜索引擎SEO关键词, 最多 2 个关键词, 字符串类型，多个关键词请以英文逗号连接。\n'
+                   f'3. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n{meta_keywords_prompt_2}')
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
     keyword_prompt = f'文章标题必须为：{keyword}\n'
     if site_language == 'en':
@@ -2105,6 +2113,12 @@ def maybe_add_site_url(site_info):
             site_url = make_site_full_url(site_name)
             site_info['site_name'] = site_name
             site_info['site_url'] = site_url
+            cdn_token = calc_site_cdn_token(site_name)
+            site_info['site_cdn_token'] = cdn_token
+
+def calc_site_cdn_token(site_name):
+    secret_key = os.getenv('LANYING_CONNECTOR_GROW_AI_CDN_SECRET')
+    return lanying_utils.md5hex(f"{secret_key}{site_name}{secret_key}")
 
 def get_site(app_id, site_id):
     redis = lanying_redis.get_redis_connection()

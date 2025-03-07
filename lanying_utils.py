@@ -67,6 +67,9 @@ def sha256(text):
     value = hashlib.sha256(text.encode('utf-8')).hexdigest()
     return value
 
+def md5hex(text):
+    return hashlib.md5(text.encode('utf-8')).hexdigest()
+
 def is_lanying_url(url):
     parsed = urlparse(url)
     host = parsed.netloc.split(':')[0]
