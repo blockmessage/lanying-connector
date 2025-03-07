@@ -1391,10 +1391,10 @@ def parse_content_metadata(content):
 def collect_description_from_content(content):
     for line in content.split('\n'):
         if '# ' not in line and len(line) > 10:
-            if len(line) > 500:
-                line = line[:500]
+            if len(line) > 1000:
+                line = line[:1000]
             return line
-    return content[:500]
+    return content[:1000]
 
 def make_clean_url(url):
     # 将下划线替换成连字符
