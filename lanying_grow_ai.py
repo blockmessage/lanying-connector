@@ -3364,3 +3364,55 @@ def check_task_content_security(app_id, task_setting: TaskSetting):
     return {
         'result': 'ok'
     }
+
+def update_site_github_file(site, filename, commit_msg, content_func):
+    github_url = site.get('github_url', '')
+    github_token = site.get('github_token', '')
+    result = parse_github_url(github_url)
+    if result['result'] == 'error':
+        return result
+    github_owner = result['github_owner']
+    github_repo = result['github_repo']
+    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
+    base_branch = site.get('github_base_branch', 'master')
+    base_dir = site.get('github_base_dir', '/').strip("/")
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    github_file_path = os.path.join(base_dir, filename)
+    github_file_url = f"{github_api_url}/contents/{github_file_path}"
+    # 发送 GET 请求获取文件内容
+    response = requests.get(github_file_url, headers=headers)
+    if response.status_code != 200:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github file not found'}
+    file_info = response.json()
+    sha = file_info['sha']
+    file_content = base64.b64decode(file_info['content']).decode('utf-8')
+    result = content_func(file_content)
+    if result['result'] != 'ok':
+        return result
+    new_file_content = result['new_content']
+    if file_content == new_file_content:
+        return {'result': 'ok', 'changed': False}
+    new_file_content_base64 = base64.b64encode(new_file_content.encode()).decode()
+    update_data = {
+        "message": commit_msg,
+        "content": new_file_content_base64,
+        "encoding": "base64",
+        "sha": sha
+    }
+    response = requests.put(github_file_url, headers=headers, json=update_data)
+    if response.status_code != 200:
+        logging.info(f"github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to commit'}
+    return {'result': 'ok'}
+
+def replace_site_github_file(site, filename, commit_msg, text, new_text):
+    def replace_site_github_file_replace_text(content):
+        return {
+            'result': 'ok',
+            'new_content': content.replace(text, new_text)
+        }
+    return update_site_github_file(site, filename, commit_msg, replace_site_github_file_replace_text)

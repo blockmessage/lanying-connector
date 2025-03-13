@@ -53,6 +53,35 @@ app.register_blueprint(grow_ai_service.bp)
 import bing_search_service
 app.register_blueprint(bing_search_service.bp)
 
+@app.before_request
+def log_request_info():
+    try:
+        log_data = f"Method: {request.method}, URL: {request.url}, Headers: {dict(request.headers)}"
+        
+        if request.method in ['POST', 'PUT', 'PATCH']:
+            if request.content_type and 'multipart/form-data' in request.content_type:
+                # 处理文件上传
+                for file_key in request.files:
+                    file = request.files[file_key]
+                    log_data += f"\nUploaded File: {file.filename}, Size: {len(file.read())} bytes, Type: {file.content_type}"
+                    file.seek(0)  # 重新回到文件起始位置，以免影响后续操作
+            else:
+                log_data += f"\nBody: {request.get_data(as_text=True)[:8192]}"
+
+        logging.info(log_data)
+    except Exception as e:
+        logging.error("log_request_info failed:")
+        logging.exception(e)
+
+@app.after_request
+def log_response_info(response):
+    try:
+        logging.info(f"Response Status: {response.status}, Body: {response.get_data(as_text=True)[:8192]}")
+    except Exception as e:
+        logging.error("log_response_info failed:")
+        logging.exception(e)
+    return response
+
 @app.route("/", methods=["GET"])
 def index():
     if lanying_config.is_show_info_page():
