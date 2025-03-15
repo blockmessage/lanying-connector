@@ -29,6 +29,7 @@ import lanying_cert
 import lanying_slack
 import lanying_google_analytics
 from urllib.parse import urlparse,urlunparse
+import lanying_baidu
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
@@ -2344,6 +2345,71 @@ def do_site_statistics_task(site_schedules, min_delay, max_delay, index):
             logging.info(f"do_site_statistics_task schedule delay: {delay}")
             site_statistics_task.apply_async(args = [site_schedules, min_delay, max_delay, index+1], countdown=delay)
 
+def schedule_update_all_site_baidu_index():
+    logging.info("schedule_update_all_site_baidu_index start")
+    tasks = []
+    for site_id, app_id in get_all_site_list().items():
+        site = get_site(app_id, site_id)
+        if site:
+            task = {
+                'site_id': site_id,
+                'app_id': app_id,
+                'times': 0
+            }
+            tasks.append(task)
+    logging.info(f"schedule_update_all_site_baidu_index tasks list size: {len(tasks)}")
+    if len(tasks) > 0:
+        max_delay = min(180, max(30,round(3600 * 4 / len(tasks))))
+        min_delay = max(5, round(max_delay / 2))
+        from lanying_tasks import site_baidu_index_task
+        delay = random.randint(1, 20)
+        logging.info(f"schedule_update_all_site_baidu_index schedule delay: {delay}")
+        site_baidu_index_task.apply_async(args = [tasks, min_delay, max_delay, 1], countdown=delay)
+
+def do_site_baidu_index_task(site_schedules, min_delay, max_delay, index):
+    if len(site_schedules) > 0:
+        schedule = site_schedules[0]
+        app_id = schedule['app_id']
+        site_id = schedule['site_id']
+        times = schedule['times']
+        logging.info(f"do_site_baidu_index_task start | app_id:{app_id}, site_id:{site_id}, times:{times}, min_delay:{min_delay}, max_delay:{max_delay}, index:{index}")
+        need_delay = False
+        need_retry = False
+        try:
+            site = get_site(app_id, site_id)
+            if site:
+                canonical_domain = get_site_hostname(site.get('canonical_link',''))
+                if canonical_domain != '' and 'site.chatai101.com' not in canonical_domain:
+                    need_delay = True
+                    logging.info(f"do_site_baidu_index_task baidu start | app_id:{app_id}, site_id:{site_id}, times:{times}, canonical_domain:{canonical_domain}")
+                    result = lanying_baidu.check_baidu_index(canonical_domain)
+                    logging.info(f"do_site_baidu_index_task baidu finish | app_id:{app_id}, site_id:{site_id}, times:{times}, canonical_domain:{canonical_domain}, result:{result}")
+                    if result['result'] == 'ok':
+                        update_site_field(app_id, site_id, 'baidu_index_pages', result['count'])
+                        update_site_field(app_id, site_id, 'baidu_index_update_time', lanying_utils.get_time_str())
+                        update_site_field(app_id, site_id, 'baidu_index_domain', canonical_domain)
+                    else:
+                        need_retry = True
+        except Exception as e:
+            logging.exception(e)
+        site_schedules = site_schedules[1:]
+        if need_retry:
+            times += 1
+            if times <= 5:
+                schedule['times'] = times
+                site_schedules.append(schedule)
+                logging.info(f"do_site_baidu_index_task schedule retry | app_id:{app_id}, site_id:{site_id}, times:{times}")
+            else:
+                logging.info(f"do_site_baidu_index_task stop retry | app_id:{app_id}, site_id:{site_id}, times:{times}")
+        if len(site_schedules) > 0:
+            from lanying_tasks import site_baidu_index_task
+            if need_delay:
+                delay = random.randint(min_delay, max_delay)
+            else:
+                delay = 1
+            logging.info(f"do_site_baidu_index_task schedule delay: {delay}")
+            site_baidu_index_task.apply_async(args = [site_schedules, min_delay, max_delay, index+1], countdown=delay)
+
 def format_statistics_date(date_str):
     date_obj = datetime.strptime(date_str, '%Y%m%d')
     return date_obj.strftime('%Y-%m-%d')
@@ -3296,6 +3362,13 @@ def format_site_url(site_url):
     if is_valid_domain(site_url):
         parse = urlparse(site_url)
         return urlunparse(parse._replace(path='/', params='',query='',fragment=''))
+    else:
+        return ''
+
+def get_site_hostname(site_url):
+    if is_valid_domain(site_url):
+        parse = urlparse(site_url)
+        return parse.hostname
     else:
         return ''
 

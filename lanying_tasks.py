@@ -514,7 +514,14 @@ def lanying_daily_task():
     is_enable = os.getenv("ENABLE_LANYING_DAILY_TASK", "0")
     logging.info(f"lanying_daily_task flag: {is_enable}")
     if is_enable == '1':
-        lanying_grow_ai.schedule_update_all_site_statistics()
+        try:
+            lanying_grow_ai.schedule_update_all_site_statistics()
+        except Exception as e:
+            logging.exception(e)
+        try:
+            lanying_grow_ai.schedule_update_all_site_baidu_index()
+        except Exception as e:
+            logging.exception(e)
 
 global_site_statistics_task_max_retries=5
 @slow_queue.task(bind=True, max_retries=global_site_statistics_task_max_retries)
@@ -527,3 +534,12 @@ def site_statistics_task(self, site_schedules, min_delay, max_delay, index):
         except Exception as e:
             retry_delay_time = 60
             raise self.retry(exc=e, countdown=retry_delay_time)
+
+global_site_baidu_index_task_max_retries=5
+@slow_queue.task(bind=True, max_retries=global_site_baidu_index_task_max_retries)
+def site_baidu_index_task(self, schedules, min_delay, max_delay, index):
+    try:
+        lanying_grow_ai.do_site_baidu_index_task(schedules, min_delay, max_delay, index)
+    except Exception as e:
+        retry_delay_time = 60
+        raise self.retry(exc=e, countdown=retry_delay_time)
