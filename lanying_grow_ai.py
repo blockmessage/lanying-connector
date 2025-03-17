@@ -435,6 +435,10 @@ def get_task_list(app_id):
                     task_info['site_cdn_token'] = site['site_cdn_token']
                 if site and 'custom_site_url' in site and len(site['custom_site_url']) > 0:
                     task_info['custom_site_url'] = site['custom_site_url']
+                if site:
+                    for field in ['baidu_index_pages', 'baidu_index_domain', 'baidu_index_update_time']:
+                        if field in site:
+                            task_info[field] = site[field]
             task_list.append(task_info)
     return {
         'result': 'ok',
@@ -2162,6 +2166,12 @@ def get_site(app_id, site_id):
             dto['icp_number'] = ''
         if 'tenement_id' not in dto:
             dto['tenement_id'] = ''
+        if 'baidu_index_pages' not in dto:
+            dto['baidu_index_pages'] = 0
+        if 'baidu_index_domain' not in dto:
+            dto['baidu_index_domain'] = ''
+        if 'baidu_index_update_time' not in dto:
+            dto['baidu_index_update_time'] = ''
         maybe_add_site_url(dto)
         return dto
     return None
