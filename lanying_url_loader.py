@@ -104,7 +104,12 @@ def load_url_content(url):
         for site in splash_click_site_list:
             if site in url:
                 return load_url_content_with_click(url)
-        return load_url_content_with_splash(url)
+        response = load_url_content_with_splash(url)
+        if response.status_code >=500:
+            logging.info(f"load_url_content fallback to requests lib | url:{url}")
+            return requests.get(url,timeout=(20.0, 60.0))
+        else:
+            return response
     else:
         return requests.get(url,timeout=(20.0, 60.0))
 
