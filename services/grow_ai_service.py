@@ -649,6 +649,20 @@ def site_statistics():
         resp = make_response({'code':200, 'data':result.get("data",{})})
     return resp
 
+@bp.route("/service/grow_ai/site_baidu_index_info_list", methods=["POST"])
+def site_baidu_index_info_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    result = lanying_grow_ai.get_site_baidu_index_info_list()
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result.get("data",{})})
+    return resp
+
 def check_access_token_valid():
     headerToken = request.headers.get('access-token', "")
     accessToken = os.getenv('LANYING_CONNECTOR_ACCESS_TOKEN')

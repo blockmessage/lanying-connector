@@ -3447,3 +3447,18 @@ def check_task_content_security(app_id, task_setting: TaskSetting):
     return {
         'result': 'ok'
     }
+
+def get_site_baidu_index_info_list():
+    site_list = get_all_site_detail_list()
+    dtos = []
+    for site in site_list:
+        dto = {}
+        for field in ['app_id', 'site_id', 'name', 'site_url', 'canonical_link', 'baidu_index_pages', 'baidu_index_domain', 'baidu_index_update_time']:
+            dto[field] = site[field]
+        dtos.append(dto)
+    return {
+        'result': 'ok',
+        'data': {
+            'list': dtos
+        }
+    }
