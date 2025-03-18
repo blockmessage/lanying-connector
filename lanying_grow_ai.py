@@ -3399,6 +3399,8 @@ def get_force_content_security_site_ids(app_id):
                 if domain_info['state'] == 'ready':
                     if domain_info.get('cdn_status', 'online') != 'offline':
                         is_force_site_id = False
+        if site.get('custom_cdn', 'off') == 'on':
+            is_force_site_id = False
         if is_force_site_id:
             force_site_ids.add(site_id)
     return force_site_ids
