@@ -688,6 +688,11 @@ def is_article_title_used(app_id, task_id, title):
     key = article_title_used_key(app_id, task_id)
     return redis.hexists(key, title)
 
+def get_article_used(app_id, task_id):
+    redis = lanying_redis.get_redis_connection()
+    key = article_title_used_key(app_id, task_id)
+    return lanying_redis.redis_hgetall(redis, key)
+
 def article_title_used_key(app_id, task_id):
     return f'lanying_connector:grow_ai:article_title_used:{app_id}:{task_id}'
 
