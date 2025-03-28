@@ -649,14 +649,14 @@ def site_statistics():
         resp = make_response({'code':200, 'data':result.get("data",{})})
     return resp
 
-@bp.route("/service/grow_ai/site_baidu_index_info_list", methods=["POST"])
-def site_baidu_index_info_list():
+@bp.route("/service/grow_ai/site_index_info_list", methods=["POST"])
+def site_index_info_list():
     if not check_access_token_valid():
         resp = make_response({'code':401, 'message':'bad authorization'})
         return resp
     text = request.get_data(as_text=True)
     data = json.loads(text)
-    result = lanying_grow_ai.get_site_baidu_index_info_list()
+    result = lanying_grow_ai.get_site_index_info_list()
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

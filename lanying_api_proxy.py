@@ -92,6 +92,10 @@ def get_proxy_list():
         {
             'module_name': 'lanying_google_analytics',
             'function_name': 'get_report'
+        },
+        {
+            'module_name': 'lanying_google',
+            'function_name': 'check_index'
         }
     ]
 
