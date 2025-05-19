@@ -479,6 +479,7 @@ def init_chatbot_config(config, msg):
             preset_ext = preset.get('ext', {})
             is_debug = True if 'debug' in preset_ext and preset_ext['debug'] == True else False
             status_bar = True if 'status_bar' in preset_ext and preset_ext['status_bar'] == True else False
+            noreply = True if 'noreply' in preset_ext and preset_ext['noreply'] == True else False
             config['is_debug'] = is_debug
             config['status_bar'] = status_bar
             fromUserId = str(msg['from']['uid'])
@@ -491,6 +492,7 @@ def init_chatbot_config(config, msg):
                 config['send_to'] = toUserId
                 config['reply_msg_type'] = 'CHAT'
                 config['request_msg_id'] = msg['msgId']
+                config['noreply'] = noreply
             elif msg_type == 'GROUPCHAT':
                 group_id = toUserId
                 config['reply_from'] = chatbot_user_id
@@ -499,6 +501,7 @@ def init_chatbot_config(config, msg):
                 config['send_to'] = group_id
                 config['reply_msg_type'] = 'GROUPCHAT'
                 config['request_msg_id'] = msg['msgId']
+                config['noreply'] = noreply
         else:
             logging.warning(f"cannot get chatbot info: app_id={app_id}, chatbot_user_id:{chatbot_user_id}, chatbot_id:{chatbot_id}")
 
@@ -1189,6 +1192,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                             try:
                                 reply_ext['ai']['seq'] += 1
                                 stream_msg_id = replyMessageSync(config, message_to_send, reply_ext)
+                                if stream_msg_id is None:
+                                    stream_msg_id = 0
                             except Exception as e:
                                 pass
                         reply += message_to_send
@@ -4592,9 +4597,16 @@ def sendMessageAsync(app_id, notify_from, user_id, content, ext = {}):
     add_ai_message_cnt(content)
     return lanying_connector.sendMessageAsync(app_id, notify_from, user_id, content, ext)
 
+def can_reply_msg(config):
+    if 'reply_msg_type' in config:
+        if 'noreply' in config and config['noreply']:
+            return False
+        return True
+    return False
+
 def replyMessageAsync(config, content, ext = {}):
     add_ai_message_cnt(content)
-    if 'reply_msg_type' in config:
+    if can_reply_msg(config):
         app_id = config['app_id']
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
@@ -4618,7 +4630,7 @@ def add_debug_message(config, content, opt = {}):
     enable_debug_message = config.get('enable_debug_message', False)
     if not enable_debug_message:
         return
-    if 'reply_msg_type' in config:
+    if can_reply_msg(config):
         if need_antispam_check:
             config['need_antispam_check'] = True
         is_debug = config.get('is_debug', False)
@@ -4720,7 +4732,7 @@ def add_debug_message(config, content, opt = {}):
 
 def replyAudioMessageAsync(config, content, audio_filename, ext = {}):
     add_ai_message_cnt(content)
-    if 'reply_msg_type' in config:
+    if can_reply_msg(config):
         app_id = config['app_id']
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
@@ -4767,7 +4779,7 @@ def replyAudioMessageAsync(config, content, audio_filename, ext = {}):
 
 def replyMessageImageAsync(config, url, ext = {}):
     add_ai_message_cnt(url)
-    if 'reply_msg_type' in config:
+    if can_reply_msg(config):
         app_id = config['app_id']
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
@@ -4808,7 +4820,7 @@ def replyMessageImageAsync(config, url, ext = {}):
 
 def replyMessageSync(config, content, ext = {}):
     add_ai_message_cnt(content)
-    if 'reply_msg_type' in config:
+    if can_reply_msg(config):
         app_id = config['app_id']
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
@@ -4823,9 +4835,11 @@ def replyMessageSync(config, content, ext = {}):
             return lanying_connector.sendMessage(app_id, reply_from, reply_to, content, ext)
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_sync(config, app_id, reply_from, reply_to, content, ext)
+    else:
+        return 1
 
 def replyMessageOperAsync(config, stream_msg_id, oper_type, content, ext, msg_config, online_only):
-    if 'reply_msg_type' in config:
+    if can_reply_msg(config):
         app_id = config['app_id']
         reply_msg_type = config['reply_msg_type']
         reply_from = config['reply_from']
