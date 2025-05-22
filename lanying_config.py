@@ -138,7 +138,7 @@ def get_lanying_connector_function_num_limit(appId):
 
 def get_lanying_connector_deduct_failed(appId):
     if mode == 'etcd':
-        return get_config(appId, 'lanying_connector.deduct_failed', False)
+        return get_config(appId, 'lanying_connector.deduct_failed', False) or get_config(appId, 'lanying_connector.new_deduct_failed', False)
     return False
 
 def get_lanying_connector(appId):
