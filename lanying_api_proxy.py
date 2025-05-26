@@ -96,6 +96,11 @@ def get_proxy_list():
         {
             'module_name': 'lanying_google',
             'function_name': 'check_index'
+        },
+        {
+            'module_name': 'lanying_email',
+            'function_name': 'send_mail',
+            'sensitive': True
         }
     ]
 
@@ -130,9 +135,16 @@ if enable_api_proxy_server:
                             loaded_modules[module_name] = now_module
                         func = getattr(now_module, function_name)
                         try:
-                            logging.info(f"api proxy start | module:{module_name}, function:{function_name}, args: {args}")
+                            sensitive = proxy.get('sensitive', False)
+                            if sensitive:
+                                logging.info(f"api proxy start | module:{module_name}, function:{function_name}")
+                            else:
+                                logging.info(f"api proxy start | module:{module_name}, function:{function_name}, args: {args}")
                             result = func(**args)
-                            logging.info(f"api proxy finish | module:{module_name}, function:{function_name}, args: {args}, result:{result}")
+                            if sensitive:
+                                logging.info(f"api proxy finish | module:{module_name}, function:{function_name}, result:{result}")
+                            else:
+                                logging.info(f"api proxy finish | module:{module_name}, function:{function_name}, args: {args}, result:{result}")
                             resp = app.make_response({'code':200, 'data':result})
                             return resp
                         except Exception as e:
