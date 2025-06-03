@@ -104,14 +104,14 @@ def parse_wechat_content(content):
             if app_msg.find('title') is not None:
                 if refermsg is not None:
                     new_content += app_msg.find('title').text + "\n"
-                else:
+                elif app_msg.find('title').text is not None:
                     new_content += '<title>' + app_msg.find('title').text + "</title>\n"
-            if app_msg.find('des') is not None:
-                new_content += '<desc>' + app_msg.find('des').text + "</desc>\n"
-            if app_msg.find('url') is not None:
+            if app_msg.find('des') is not None and app_msg.find('des').text is not None:
+                    new_content += '<desc>' + app_msg.find('des').text + "</desc>\n"
+            if app_msg.find('url') is not None and app_msg.find('url').text is not None:
                 new_content += '<url>' + app_msg.find('url').text + "</url>\n"
             if refermsg is not None:
-                if refermsg.find('content') is not None:
+                if refermsg.find('content') is not None and refermsg.find('content').text is not None:
                     refermsg_content = parse_wechat_content(refermsg.find('content').text)
                     if refermsg_content is not None:
                         new_content += '<refermsg>' + refermsg_content + '</refermsg>'
@@ -121,7 +121,10 @@ def parse_wechat_content(content):
             return new_content
         else:
             return None
+    except ET.ParseError as e:
+        return content
     except Exception as e:
+        logging.error("error:", e)
         return content
 
 @bp.route("/service/wechat/login", methods=["POST"])
