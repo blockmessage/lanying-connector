@@ -762,9 +762,11 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     keywords = parse_keywords(task['keywords'])
     file_keywords = parse_file_keywords(app_id, task_id, task['file_list'])
     keywords.extend(file_keywords)
-    if len(keywords) == 0:
-        return {'result': 'error', 'message': 'article title not exist', 'retry': False}
     cycle_type = task_run.get('cycle_type', 'none')
+    if len(keywords) == 0:
+        if cycle_type == 'cycle':
+            set_task_schedule(app_id, task_id, "off", 'article titles are exhausted')
+        return {'result': 'error', 'message': 'article title not exist', 'retry': False}
     if cycle_type == 'none':
         article_count = len(keywords)
         update_task_run_field(app_id, task_run_id, "article_count", article_count)
