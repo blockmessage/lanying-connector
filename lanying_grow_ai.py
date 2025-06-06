@@ -437,7 +437,7 @@ def get_task_list(app_id):
                 if site and 'custom_site_url' in site and len(site['custom_site_url']) > 0:
                     task_info['custom_site_url'] = site['custom_site_url']
                 if site:
-                    for field in ['baidu_index_pages', 'baidu_index_domain', 'baidu_index_update_time', 'google_index_pages', 'google_index_domain', 'google_index_update_time']:
+                    for field in ['deploy_result', 'deploy_failed_reason', 'baidu_index_pages', 'baidu_index_domain', 'baidu_index_update_time', 'google_index_pages', 'google_index_domain', 'google_index_update_time']:
                         if field in site:
                             task_info[field] = site[field]
             task_list.append(task_info)
