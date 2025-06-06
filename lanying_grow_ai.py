@@ -815,6 +815,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     site_list = get_task_site_list(task)
     if site_list != []:
         from lanying_tasks import grow_ai_deply_task_run
+        update_task_run_field(app_id, task_run_id, "deploy_status", "pending")
         grow_ai_deply_task_run.apply_async(args = [app_id, task_run_id], countdown=5)
     return {'result': 'ok'}
 
@@ -879,7 +880,7 @@ def deploy_task_run(app_id, task_run_id):
     if task_run['status'] != 'success':
         if 'zip_file' not in task_run:
             return {'result': 'error', 'message': 'task_run status cannot deploy'}
-    if task_run['deploy_status'] not in ["wait", "error", "success"]:
+    if task_run['deploy_status'] not in ["wait", "error", "success", "pending"]:
         return {'result': 'error', 'message': 'task_run deploy_status cannot deploy'}
     if 'zip_file' not in task_run:
         return {'result': 'error', 'message': 'zip file not exist'}
