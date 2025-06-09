@@ -114,7 +114,7 @@ def parse_wechat_content(content):
                 if refermsg.find('content') is not None and refermsg.find('content').text is not None:
                     refermsg_content = parse_wechat_content(refermsg.find('content').text)
                     if refermsg_content is not None:
-                        new_content += '<refermsg>' + refermsg_content + '</refermsg>'
+                        new_content += '<refermsg>' + maybe_remove_partical_xml_content(refermsg_content) + '</refermsg>'
                     else:
                         new_content += '<refermsg>' + '</refermsg>'
         if new_content != '':
@@ -126,6 +126,9 @@ def parse_wechat_content(content):
     except Exception as e:
         logging.error("error:", e)
         return content
+
+def maybe_remove_partical_xml_content(content):
+    return re.sub(r'<msg>.*?</msg>', '', content, flags=re.DOTALL)
 
 @bp.route("/service/wechat/login", methods=["POST"])
 def login():
