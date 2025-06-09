@@ -2543,7 +2543,10 @@ def deduct_message_quota(app_id, config, quota, api_key_type, origin):
         key_count = 0
         for key in get_message_statistic_keys(config, app_id):
             key_count += 1
-            redis.hincrby(key, origin, quota)
+            try:
+                add_quota(redis, key, origin, quota)
+            except Exception as e:
+                logging.exception(e)
             if api_key_type == 'share':
                 add_quota(redis, key, 'message_count_quota_share', message_count_quota)
             else:

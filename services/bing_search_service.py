@@ -215,19 +215,19 @@ def get_all_packages():
             'name': 'S1',
             'features': ['Webpages', 'News', 'Images', 'Videos', 'Entities'],
             'month_limit': -1,
-            'quota': 10
+            'quota': 33.33
         },
         {
             'name': 'S5',
             'features': ['Webpages', 'News'],
             'month_limit': -1,
-            'quota': 6
+            'quota': 24.00
         },
         {
             'name': 'S8',
             'features': ['Webpages', 'News', 'Images', 'Videos'],
             'month_limit': -1,
-            'quota': 8
+            'quota': 29.33
         }
     ]
 

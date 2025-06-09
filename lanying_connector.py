@@ -39,6 +39,8 @@ import grow_ai_service
 app.register_blueprint(grow_ai_service.bp)
 import bing_search_service
 app.register_blueprint(bing_search_service.bp)
+import tavily_service
+app.register_blueprint(tavily_service.bp)
 
 @app.route("/", methods=["GET"])
 def index():
