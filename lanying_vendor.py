@@ -155,6 +155,16 @@ def backup_rules():
             ]
         },
         {
+            'vendor': 'openai',
+            'backups':[
+                {
+                    'vendor': 'azure2',
+                    'transforms':{
+                    }
+                }
+            ]
+        },
+        {
             'vendor': 'aws',
             'backups':[
                 {
