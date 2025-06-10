@@ -8,7 +8,8 @@ from datetime import datetime
 import time
 from urllib.parse import urlencode
 from openai_service import check_deduct_message_quota, deduct_message_quota
-
+from lanying_async import executor
+import lanying_slack
 service = 'bing_search'
 bp = Blueprint(service, __name__)
 
@@ -115,6 +116,10 @@ def do_forward_bing_search(request):
         return {'result': 'error', 'message': 'Lanying internal error', 'code': 'LanyingInternalError'}
     if response.status_code == 200:
         logging.info(f"do_forward_bing_search success | app_id:{app_id}, quota:{quota}, package_name:{package_name}, origin_package_name:{origin_package_name}, path:{path}, request_args:{request_args}")
+        try:
+            executor.submit(add_bing_quota_used, app_id, quota)
+        except Exception as e:
+            logging.exception(e)
         deduct_message_quota(app_id, config, quota, api_key_type, 'bing_search')
     else:
         logging.info(f"do_forward_bing_search failed | app_id:{app_id}, quota:{quota}, package_name:{package_name}, request_args:{request_args}, response_json:{response_json}")
@@ -255,3 +260,15 @@ def set_in_traffic_limit(now_datetime, seconds):
 
 def in_traffic_limit_key(now_datetime, seconds):
     return f"lanying_connector:bing_search:in_traffic_limit:{now_datetime.strftime('%Y-%m-%d')}:{seconds}"
+
+def add_bing_quota_used(app_id, quota):
+    now = datetime.now()
+    everyday_key = f"lanying-connector:bing_quota_everyday:{now.strftime('%Y-%m-%d')}"
+    total_key = 'lanying-connector:bing_quota_total'
+    redis = lanying_redis.get_redis_connection()
+    if redis:
+        new_total = redis.incrbyfloat(total_key, quota)
+        notify_size = 1000
+        if (new_total // notify_size) > ((new_total - quota) // notify_size):
+            lanying_slack.async_send_message(f'[Bing Search]累计用量：{new_total} lanying quota')
+        redis.hincrbyfloat(everyday_key, app_id, quota)

@@ -39,6 +39,7 @@ import lanying_message_quota_usage
 from concurrent.futures import Future
 import base64
 import lanying_grow_ai
+import lanying_slack
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -2375,6 +2376,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 message_count_quota = 0
             logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
+            add_quota_used_statistic(app_id, message_count_quota)
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
                 redis.hincrby(key, 'image_message_count', 1)
@@ -2405,6 +2407,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 logging.info(f"speech_to_text response | duration={speech_to_text_duration}, response:{response}")
             logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
+            add_quota_used_statistic(app_id, message_count_quota)
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
                 redis.hincrby(key, f'{model_type}_message_count', 1)
@@ -2449,6 +2452,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
         if redis:
             logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
             key_count = 0
+            add_quota_used_statistic(app_id, message_count_quota)
             for key in get_message_statistic_keys(config, app_id):
                 key_count += 1
                 redis.hincrby(key, 'total_tokens', total_tokens)
@@ -5168,3 +5172,21 @@ def chat_or_force_function_call(app_id, config, vendor, prepare_info, preset):
                     }
                 }
     return lanying_vendor.chat(app_id, vendor, prepare_info, preset)
+
+def add_quota_used_statistic(app_id, quota):
+    try:
+        executor.submit(add_quota_used_statistic_internal, app_id, quota)
+    except Exception as e:
+        logging.exception(e)
+
+def add_quota_used_statistic_internal(app_id, quota):
+    now = datetime.now()
+    everyday_key = f"lanying-connector:quota_everyday:{now.strftime('%Y-%m-%d')}"
+    total_key = 'lanying-connector:quota_total'
+    redis = lanying_redis.get_redis_connection()
+    if redis:
+        new_total = redis.incrbyfloat(total_key, quota)
+        notify_size = 1000
+        if (new_total // notify_size) > ((new_total - quota) // notify_size):
+            lanying_slack.async_send_message(f'[智能消息]累计用量：{new_total} quota')
+        redis.hincrbyfloat(everyday_key, app_id, quota)
