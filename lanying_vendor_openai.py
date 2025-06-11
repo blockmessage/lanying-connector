@@ -455,6 +455,7 @@ def chat(prepare_info, preset, model_config):
                 return {
                     'result': 'error',
                     'reason': 'bad_status_code',
+                    'status_code': response.status_code,
                     'response': response_json
                 }
         else:
@@ -502,6 +503,7 @@ def chat(prepare_info, preset, model_config):
                 return {
                     'result': 'error',
                     'reason': 'bad_status_code',
+                    'status_code': response.status_code,
                     'response': response_json
                 }
     except Exception as e:

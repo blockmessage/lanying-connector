@@ -251,6 +251,12 @@ def chat_same_model_retry_rules():
             'type': 'status_code',
             'status_code': '504',
             'sleep_time': 5
+        },
+        {
+            'vendor': 'openai',
+            'type': 'status_code_min',
+            'status_code_min': 500,
+            'sleep_time': 5
         }
     ]
 
@@ -525,6 +531,15 @@ def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_confi
                         need_retry = True
                         sleep_time = rule.get('sleep_time', sleep_time)
                         break
+                elif type == 'status_code_min':
+                    try:
+                        status_code = resp.get('status_code', 0)
+                        if status_code >= rule['status_code_min']:
+                            need_retry = True
+                            sleep_time = rule.get('sleep_time', sleep_time)
+                            break
+                    except Exception as e:
+                        logging.exception(e)
         if need_retry:
             if i >= try_times - 1:
                 logging.info(f"chat_with_same_model_retry no retry times| vendor:{vendor}, resp:{resp}, sleep_time:{sleep_time}, progress: {i}/{try_times}")
