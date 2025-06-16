@@ -134,6 +134,9 @@ def handle_schedule(schedule_info):
         logging.info(f"grow_ai handle_schedule run task| {schedule_info}")
         app_id = args['app_id']
         task_id = args['task_id']
+        if is_deduct_failed(app_id):
+            logging.info(f"handle_schedule skip deduct failed app_id:{app_id}task_id:{task_id}")
+            return
         task_info = get_task(app_id, task_id)
         if task_info:
             schedule = task_info['schedule']
@@ -638,6 +641,9 @@ def get_website_storage_limit(app_id):
 
 def get_website_traffic_limit(app_id):
     return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_website_traffic_limit')
+
+def is_deduct_failed(app_id):
+    return lanying_config.get_app_config_boolean_from_redis(app_id, 'lanying_connector.new_deduct_failed', False)
 
 def find_title(app_id, task_id, task_run_id, keywords, title_reuse):
     article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 0)
@@ -2439,6 +2445,9 @@ def schedule_update_all_site_google_index():
     logging.info("schedule_update_all_site_google_index start")
     tasks = []
     for site_id, app_id in get_all_site_list().items():
+        if is_deduct_failed(app_id):
+            logging.info(f"schedule_update_all_site_google_index skip deduct failed app_id:{app_id}")
+            continue
         site = get_site(app_id, site_id)
         if site:
             task = {
@@ -3237,6 +3246,9 @@ def custom_domain_run_renew_schedules():
             app_id = schedule['app_id']
             site_id = schedule['site_id']
             domain_id = schedule['domain_id']
+            if is_deduct_failed(app_id):
+                logging.info(f"custom_domain_run_renew_schedules skip deduct failed app_id:{app_id}，site_id:{site_id}")
+                continue
             site = get_site(app_id, site_id)
             if site and domain_id == site.get('domain_id', ''):
                 domain_info = get_custom_domain_info(app_id, site_id, domain_id)

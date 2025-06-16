@@ -209,5 +209,16 @@ def get_app_config_int_from_redis(app_id, key):
     name = get_redis_app_config_key(app_id)
     return redis.hincrby(name, key, 0)
 
+def get_app_config_boolean_from_redis(app_id, field, default):
+    redis = lanying_redis.get_redis_stack_connection()
+    key = get_redis_app_config_key(app_id)
+    value = lanying_redis.redis_hget(redis, key, field)
+    if value == 'true' or value == 'True' :
+        return True
+    elif value == 'false' or value == 'False' :
+        return False
+    else:
+        return default
+
 def get_redis_app_config_key(app_id):
     return f"embedding:app_config:{app_id}"
