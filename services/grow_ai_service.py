@@ -438,6 +438,8 @@ def create_site():
     language = str(data.get('language', 'zh-hans'))
     commit_type = str(data.get('commit_type','branch')).strip()
     icp_number = str(data.get('icp_number','')).strip()
+    hook_sentence_slogan = str(data.get('hook_sentence_slogan', ''))
+    hook_sentence_image = str(data.get('hook_sentence_image', '')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -459,7 +461,9 @@ def create_site():
         max_latest_num = max_latest_num,
         language = language,
         commit_type = commit_type,
-        icp_number = icp_number
+        icp_number = icp_number,
+        hook_sentence_slogan = hook_sentence_slogan,
+        hook_sentence_image = hook_sentence_image
     )
     result = lanying_grow_ai.create_site(site_setting)
     if result['result'] == 'error':
@@ -497,6 +501,8 @@ def configure_site():
     language = str(data.get('language', 'zh-hans'))
     commit_type = str(data.get('commit_type','branch')).strip()
     icp_number = str(data.get('icp_number','')).strip()
+    hook_sentence_slogan = str(data.get('hook_sentence_slogan', ''))
+    hook_sentence_image = str(data.get('hook_sentence_image', '')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -518,7 +524,9 @@ def configure_site():
         max_latest_num = max_latest_num,
         language = language,
         commit_type = commit_type,
-        icp_number = icp_number
+        icp_number = icp_number,
+        hook_sentence_slogan = hook_sentence_slogan,
+        hook_sentence_image = hook_sentence_image
     )
     result = lanying_grow_ai.configure_site(site_id, site_setting)
     if result['result'] == 'error':
@@ -661,6 +669,23 @@ def site_index_info_list():
         resp = make_response({'code':400, 'message':result['message']})
     else:
         resp = make_response({'code':200, 'data':result.get("data",{})})
+    return resp
+
+@bp.route("/service/grow_ai/upload_image", methods=["POST"])
+def upload_image():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    site_id = str(data['site_id'])
+    file_name = str(data['file_name'])
+    result = lanying_grow_ai.upload_image(app_id, site_id, file_name)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
 def check_access_token_valid():

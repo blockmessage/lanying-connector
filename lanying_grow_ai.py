@@ -31,6 +31,7 @@ import lanying_google_analytics
 from urllib.parse import urlparse,urlunparse
 import lanying_baidu
 import lanying_google
+import lanying_oss
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
@@ -78,7 +79,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number):
+    def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number, hook_sentence_slogan, hook_sentence_image):
         self.app_id = app_id
         self.tenement_id = tenement_id
         self.name = name
@@ -100,6 +101,8 @@ class SiteSetting:
         self.language = language
         self.commit_type = commit_type
         self.icp_number = icp_number
+        self.hook_sentence_slogan = hook_sentence_slogan
+        self.hook_sentence_image = hook_sentence_image
 
     def to_hmset_fields(self):
         return {
@@ -123,7 +126,9 @@ class SiteSetting:
             'max_latest_num': self.max_latest_num,
             'language': self.language,
             'commit_type': self.commit_type,
-            'icp_number': self.icp_number
+            'icp_number': self.icp_number,
+            'hook_sentence_slogan': self.hook_sentence_slogan,
+            'hook_sentence_image': self.hook_sentence_image
         }
 
 def handle_schedule(schedule_info):
@@ -1934,7 +1939,7 @@ def create_site(site_setting: SiteSetting):
     maybe_register_github_site(app_id, site_info)
     maybe_init_analytics(app_id, site_id)
     site_info = get_site(app_id, site_id)
-    maybe_sync_to_github(site_info)
+    maybe_sync_to_github(site_info, site_info)
     return {
         'result': 'ok',
         'data': {
@@ -1960,7 +1965,7 @@ def configure_site(site_id, site_setting: SiteSetting):
     maybe_register_github_site(app_id, new_site_info)
     maybe_init_analytics(app_id, site_id)
     new_site_info = get_site(app_id, site_id)
-    maybe_sync_to_github(new_site_info)
+    maybe_sync_to_github(site_info, new_site_info)
     return {
         'result': 'ok',
         'data': {
@@ -1968,18 +1973,25 @@ def configure_site(site_id, site_setting: SiteSetting):
         }
     }
 
-def maybe_sync_to_github(site):
+def maybe_sync_to_github(old_site, site):
     try:
-        executor.submit(sync_to_github, site)
+        executor.submit(sync_to_github, old_site, site)
     except Exception as e:
         pass
 
-def sync_to_github(site):
+def sync_to_github(old_site, site):
     github_url = site.get('github_url', '')
     github_token = site.get('github_token', '')
     result = parse_github_url(github_url)
     if result['result'] == 'error':
         return result
+    if old_site.get('hook_sentence_image', '') != site.get('hook_sentence_image', '') and site.get('hook_sentence_image', '') != '':
+        download_url = site.get('hook_sentence_image', '')
+        try:
+            upload_file_to_github(site, download_url, "Update hook sentence image from LanyingIM Console")
+        except Exception as e:
+            logging.error(f"fail to upload_file_to_github | download_url:{download_url}")
+            logging.exception(e)
     github_owner = result['github_owner']
     github_repo = result['github_repo']
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
@@ -2020,9 +2032,58 @@ def sync_to_github(site):
         return {'result': 'error', 'message': 'github fail to commit'}
     return {'result': 'ok'}
 
+def upload_file_to_github(site, download_url, commit_message):
+    github_url = site.get('github_url', '')
+    github_token = site.get('github_token', '')
+    result = parse_github_url(github_url)
+    if result['result'] == 'error':
+        return result
+    cdn_url = lanying_oss.get_cdn_url()
+    if not download_url.startswith(cdn_url):
+        return {
+            'result': 'error',
+            'message': 'bad download_url'
+        }
+    response = requests.get(download_url)
+    if response.status_code != 200:
+        logging.info(f"upload_file_to_github fail to download | {download_url}")
+        return {
+            'result': 'error',
+            'message': 'file not exist'
+        }
+    file_content = response.content
+    github_owner = result['github_owner']
+    github_repo = result['github_repo']
+    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
+    base_branch = site.get('github_base_branch', 'master')
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    asset_file = make_hook_sentence_image(site, download_url)
+    asset_url = f"{github_api_url}/contents/{asset_file}"
+    content_base64 = base64.b64encode(file_content).decode("utf-8")
+
+    payload = {
+        "message": commit_message,
+        "content": content_base64,
+        "branch": base_branch
+    }
+
+    response = requests.put(asset_url, headers=headers, json=payload)
+    if response.status_code != 200:
+        logging.info(f"upload_file_to_github response | {response.content}")
+        return {'result': 'error', 'message': 'github fail to commit'}
+    return {'result': 'ok'}
+
+def get_url_filename(url):
+    path = urlparse(url).path
+    filename = os.path.basename(path)
+    return filename
+
 def transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch):
     new_book_json = copy.deepcopy(book_json)
-    for field in ['language','title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname', 'google_token']:
+    for field in ['language','title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname', 'google_token', 'hook_sentence_slogan', 'hook_sentence_image']:
         try:
             if field == 'title':
                 title = site.get('title', '')
@@ -2101,10 +2162,32 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                 lanying_link = site.get('lanying_link', '')
                 if len(lanying_link) > 0:
                     new_book_json['pluginsConfig']['lanying-grow-ai']['lanying_link'] = lanying_link
+            elif field == 'hook_sentence_slogan':
+                hook_sentence_slogan = site.get('hook_sentence_slogan', '')
+                old_hook_sentence_slogan = new_book_json['pluginsConfig']['lanying-grow-ai'].get('hook_sentence_slogan', '')
+                if hook_sentence_slogan != old_hook_sentence_slogan:
+                    new_book_json['pluginsConfig']['lanying-grow-ai']['hook_sentence_slogan'] = hook_sentence_slogan
+            elif field == 'hook_sentence_image':
+                hook_sentence_image = site.get('hook_sentence_image', '')
+                old_hook_sentence_image = new_book_json['pluginsConfig']['lanying-grow-ai'].get('hook_sentence_image', '')
+                if hook_sentence_image != '':
+                    asset_file = make_hook_sentence_image_relative(site, hook_sentence_image)
+                    new_book_json['pluginsConfig']['lanying-grow-ai']['hook_sentence_image'] = asset_file
+                elif hook_sentence_image != old_hook_sentence_image:
+                    new_book_json['pluginsConfig']['lanying-grow-ai']['hook_sentence_image'] = ''
         except Exception as e:
             pass
     logging.info(f"transform_site_to_book_json | site:{site}, book_json:{book_json}, new_book_json:{new_book_json}")
     return new_book_json
+
+def make_hook_sentence_image(site, download_url):
+    filename = get_url_filename(download_url)
+    base_dir = site.get('github_base_dir', '/').strip("/")
+    return os.path.join(base_dir, "assets", "hook-sentence", filename)
+
+def make_hook_sentence_image_relative(site, download_url):
+    filename = get_url_filename(download_url)
+    return os.path.join("assets", "hook-sentence", filename)
 
 def get_site_list(app_id):
     redis = lanying_redis.get_redis_connection()
@@ -2193,6 +2276,10 @@ def get_site(app_id, site_id):
             dto['google_index_domain'] = ''
         if 'google_index_update_time' not in dto:
             dto['google_index_update_time'] = ''
+        if 'hook_sentence_slogan' not in dto:
+            dto['hook_sentence_slogan'] = ''
+        if 'hook_sentence_image' not in dto:
+            dto['hook_sentence_image'] = ''
         maybe_add_site_url(dto)
         return dto
     return None
@@ -3207,7 +3294,7 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info, ten
         maybe_init_analytics(app_id, site_id)
         site = get_site(app_id, site_id)
         if site:
-            maybe_sync_to_github(site)
+            maybe_sync_to_github(site,site)
         return {
             'result': 'ok'
         }
@@ -3555,4 +3642,22 @@ def get_site_index_info_list():
         'data': {
             'list': dtos
         }
+    }
+
+def upload_image(app_id, site_id, file_name):
+    site_info = get_site(app_id, site_id)
+    if site_info is None:
+        return {'result': 'error', 'message': 'site not exist'}
+    _,ext = os.path.splitext(file_name)
+    ext = ext.lower()
+    if ext not in ['.png', '.jpg', '.jpeg', '.webp']:
+        return {'result': 'error', 'message': 'bad image format'}
+    timestr = datetime.now().strftime('%Y%m%d%H%M%S%f')
+    object_name = f'site-image/{app_id}/{site_id}/{timestr}{ext}'
+    result = lanying_oss.sign_upload(object_name)
+    if result['result'] == 'error':
+        return result
+    return {
+        'result': 'ok',
+        'data': result['data']
     }

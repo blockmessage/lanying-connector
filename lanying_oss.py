@@ -17,6 +17,8 @@ upload_url =  endpoint.replace('https://', f'https://{bucket}.')
 expire_time = 20 * 60
 max_file_size = 5 * 1024 * 1024
 
+def get_cdn_url():
+    return cdn_url
 
 def generate_expiration(seconds):
     """
