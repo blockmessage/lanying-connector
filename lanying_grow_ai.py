@@ -32,6 +32,7 @@ from urllib.parse import urlparse,urlunparse
 import lanying_baidu
 import lanying_google
 import lanying_oss
+from github import Github
 
 class TaskSetting:
     def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
@@ -79,7 +80,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number, hook_sentence_slogan, hook_sentence_image):
+    def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number, hook_sentence_slogan, hook_sentence_image, github_hosting):
         self.app_id = app_id
         self.tenement_id = tenement_id
         self.name = name
@@ -103,6 +104,7 @@ class SiteSetting:
         self.icp_number = icp_number
         self.hook_sentence_slogan = hook_sentence_slogan
         self.hook_sentence_image = hook_sentence_image
+        self.github_hosting = github_hosting
 
     def to_hmset_fields(self):
         return {
@@ -128,7 +130,8 @@ class SiteSetting:
             'commit_type': self.commit_type,
             'icp_number': self.icp_number,
             'hook_sentence_slogan': self.hook_sentence_slogan,
-            'hook_sentence_image': self.hook_sentence_image
+            'hook_sentence_image': self.hook_sentence_image,
+            'github_hosting': self.github_hosting
         }
 
 def handle_schedule(schedule_info):
@@ -1936,6 +1939,7 @@ def create_site(site_setting: SiteSetting):
     add_to_all_site_list(app_id, site_id)
     site_info = get_site(app_id, site_id)
     logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
+    site_info = maybe_init_github_site_repo(app_id, site_info, site_info)
     maybe_register_github_site(app_id, site_info)
     maybe_init_analytics(app_id, site_id)
     site_info = get_site(app_id, site_id)
@@ -1959,9 +1963,13 @@ def configure_site(site_id, site_setting: SiteSetting):
     redis = lanying_redis.get_redis_connection()
     fields = site_setting.to_hmset_fields()
     fields['update_time'] = now
+    if fields['github_hosting'] == 'on':
+        for field in ['github_url', 'github_token', 'github_base_branch', 'github_base_dir']:
+            del fields[field]
     logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
     new_site_info = get_site(app_id, site_id)
+    new_site_info = maybe_init_github_site_repo(app_id, site_info, new_site_info)
     maybe_register_github_site(app_id, new_site_info)
     maybe_init_analytics(app_id, site_id)
     new_site_info = get_site(app_id, site_id)
@@ -2280,6 +2288,8 @@ def get_site(app_id, site_id):
             dto['hook_sentence_slogan'] = ''
         if 'hook_sentence_image' not in dto:
             dto['hook_sentence_image'] = ''
+        if 'github_hosting' not in dto:
+            dto['github_hosting'] = 'off'
         maybe_add_site_url(dto)
         return dto
     return None
@@ -2606,6 +2616,8 @@ def site_statistics_key(app_id, site_id, category):
 def check_site_setting(site_setting: SiteSetting):
     if site_setting.type not in ["gitbook"]:
         return {'result': 'error', 'message': 'invalid site type'}
+    if site_setting.github_hosting == 'on':
+        return {'result': 'ok'}
     github_url = site_setting.github_url
     result = parse_github_url(github_url)
     if result['result'] == 'error':
@@ -2626,6 +2638,47 @@ def check_site_setting(site_setting: SiteSetting):
     if response.status_code != 200:
         return {'result': 'error', 'message': 'github token is bad'}
     return {'result': 'ok'}
+
+def maybe_init_github_site_repo(app_id, old_site_info, site_info):
+    if site_info['github_hosting'] == 'on':
+        site_id = site_info['site_id']
+        if 'github_hosting_url' in site_info:
+            if old_site_info['github_hosting'] == 'off':
+                update_site_field(app_id, site_id, "github_url", site_info['github_hosting_url'])
+                update_site_field(app_id, site_id, "github_token", '')
+                update_site_field(app_id, site_id, "github_base_branch", 'master')
+                update_site_field(app_id, site_id, "github_base_dir", '')
+                site_info = get_site(app_id, site_id)
+            return site_info
+        repo_org = get_github_org()
+        repo_name = f'growai-gitbook-{site_id}-{int(time.time())}'
+        try:
+            logging.info(f"create github repo start | repo_name:{repo_name}")
+            github = get_github()
+            me = github.get_user()
+            template = github.get_repo("maxim-top/growai-gitbook")
+            result = me.create_repo_from_template(
+                repo=template,
+                name=repo_name,
+                description="Create from maxim-top/growai-gitbook",
+                private=True,
+                include_all_branches=False
+            )
+            logging.info(f"create github repo finish | repo_name:{repo_name}, result:{result}")
+            github_url = f'https://github.com/{repo_org}/{repo_name}'
+            update_site_field(app_id, site_id, "github_hosting_url", github_url)
+            update_site_field(app_id, site_id, "github_hosting_org", repo_org)
+            update_site_field(app_id, site_id, "github_url", github_url)
+            update_site_field(app_id, site_id, "github_token", '')
+            update_site_field(app_id, site_id, "github_base_branch", 'master')
+            update_site_field(app_id, site_id, "github_base_dir", '/')
+            site_info = get_site(app_id, site_id)
+            lanying_slack.async_send_grafana_message(f'create github repo success: {repo_name}')
+        except Exception as e:
+            logging.error(f'create github repo failed: {repo_name}')
+            logging.exception(e)
+            lanying_slack.async_send_grafana_message(f'create github repo failed: {repo_name}')
+    return site_info
 
 def maybe_register_github_site(app_id, site_info):
     if site_info['type'] == 'gitbook':
@@ -3661,3 +3714,10 @@ def upload_image(app_id, site_id, file_name):
         'result': 'ok',
         'data': result['data']
     }
+
+def get_github():
+    github_token = os.getenv('GITHUB_HOSTING_TOKEN')
+    return Github(github_token)
+
+def get_github_org():
+    return os.getenv('GITHUB_HOSTING_ORG')

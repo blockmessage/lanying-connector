@@ -30,6 +30,32 @@ def send_message(text, retry_times):
 
 def async_send_message(text):
     executor.submit(send_message, text, 3)
+    
+def send_grafana_message(text, retry_times):
+    url = os.getenv('LANYING_CONNECTOR_SLACK_GRAFANA_NOTIFY_URL')
+    if url is None:
+        return
+    logging.info(f"send slack grafana message start | text={text}, retry_times={retry_times}")
+    try:
+        headers = {"Content-Type": "application/json"}
+        body = {
+            'text': text
+        }
+        response = requests.post(url, headers=headers, json=body)
+        if response.status_code == 200:
+            logging.info(f"send slack grafana message success | text={text}, retry_times={retry_times}")
+            return
+        logging.info(f"send slack grafana message bad status | text={text}, retry_times={retry_times}, status:{response.status_code}, resp:{response.text}")
+    except Exception as e:
+        pass
+    if retry_times > 0:
+        logging.info(f"send slack grafana message retrying | text={text}, retry_times={retry_times}")
+        executor.submit(send_message, retry_times - 1)
+    else:
+        logging.info(f"send slack grafana message finally failed | text={text}, retry_times={retry_times}")
+
+def async_send_grafana_message(text):
+    executor.submit(send_grafana_message, text, 3)
 
 def async_send_message_with_filter(text, filter_name):
     executor.submit(send_message_with_filter, text, filter_name)

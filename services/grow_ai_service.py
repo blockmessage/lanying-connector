@@ -421,10 +421,10 @@ def create_site():
     tenement_id = str(data.get('tenement_id', ''))
     name = str(data['name'])
     type = str(data['type'])
-    github_url = str(data['github_url'])
-    github_token = str(data['github_token'])
-    github_base_branch = str(data['github_base_branch'])
-    github_base_dir = str(data['github_base_dir'])
+    github_url = str(data.get('github_url', ''))
+    github_token = str(data.get('github_token', ''))
+    github_base_branch = str(data.get('github_base_branch', 'master'))
+    github_base_dir = str(data.get('github_base_dir', '/'))
     footer_note = str(data['footer_note'])
     lanying_link = maybe_add_https_prefix(str(data['lanying_link']))
     title = str(data.get('title', ''))
@@ -440,6 +440,7 @@ def create_site():
     icp_number = str(data.get('icp_number','')).strip()
     hook_sentence_slogan = str(data.get('hook_sentence_slogan', ''))
     hook_sentence_image = str(data.get('hook_sentence_image', '')).strip()
+    github_hosting = ensure_value_on_off(str(data.get('github_hosting', 'off')))
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -463,7 +464,8 @@ def create_site():
         commit_type = commit_type,
         icp_number = icp_number,
         hook_sentence_slogan = hook_sentence_slogan,
-        hook_sentence_image = hook_sentence_image
+        hook_sentence_image = hook_sentence_image,
+        github_hosting = github_hosting
     )
     result = lanying_grow_ai.create_site(site_setting)
     if result['result'] == 'error':
@@ -484,10 +486,10 @@ def configure_site():
     site_id = str(data['site_id'])
     name = str(data['name'])
     type = str(data['type'])
-    github_url = str(data['github_url'])
-    github_token = str(data['github_token'])
-    github_base_branch = str(data['github_base_branch'])
-    github_base_dir = str(data['github_base_dir'])
+    github_url = str(data.get('github_url', ''))
+    github_token = str(data.get('github_token', ''))
+    github_base_branch = str(data.get('github_base_branch', 'master'))
+    github_base_dir = str(data.get('github_base_dir', '/'))
     footer_note = str(data['footer_note'])
     lanying_link = maybe_add_https_prefix(str(data['lanying_link']))
     title = str(data.get('title', ''))
@@ -503,6 +505,7 @@ def configure_site():
     icp_number = str(data.get('icp_number','')).strip()
     hook_sentence_slogan = str(data.get('hook_sentence_slogan', ''))
     hook_sentence_image = str(data.get('hook_sentence_image', '')).strip()
+    github_hosting = ensure_value_on_off(str(data.get('github_hosting', 'off')))
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -526,7 +529,8 @@ def configure_site():
         commit_type = commit_type,
         icp_number = icp_number,
         hook_sentence_slogan = hook_sentence_slogan,
-        hook_sentence_image = hook_sentence_image
+        hook_sentence_image = hook_sentence_image,
+        github_hosting = github_hosting
     )
     result = lanying_grow_ai.configure_site(site_id, site_setting)
     if result['result'] == 'error':
@@ -703,3 +707,9 @@ def maybe_add_https_prefix(url):
     if url.startswith('http'):
         return url
     return f'https://{url}'
+
+def ensure_value_on_off(value):
+    if value == 'on':
+        return 'on'
+    else:
+        return 'off'
