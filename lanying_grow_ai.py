@@ -80,7 +80,7 @@ class TaskSetting:
         }
 
 class SiteSetting:
-    def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number, hook_sentence_slogan, hook_sentence_image, github_hosting):
+    def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number, hook_sentence_slogan, hook_sentence_image, github_hosting, collaborator):
         self.app_id = app_id
         self.tenement_id = tenement_id
         self.name = name
@@ -105,6 +105,7 @@ class SiteSetting:
         self.hook_sentence_slogan = hook_sentence_slogan
         self.hook_sentence_image = hook_sentence_image
         self.github_hosting = github_hosting
+        self.collaborator = collaborator
 
     def to_hmset_fields(self):
         return {
@@ -131,7 +132,8 @@ class SiteSetting:
             'icp_number': self.icp_number,
             'hook_sentence_slogan': self.hook_sentence_slogan,
             'hook_sentence_image': self.hook_sentence_image,
-            'github_hosting': self.github_hosting
+            'github_hosting': self.github_hosting,
+            'collaborator': self.collaborator
         }
 
 def handle_schedule(schedule_info):
@@ -989,6 +991,8 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     github_owner = result['github_owner']
     github_repo = result['github_repo']
     github_token = site.get('github_token', '')
+    if site['github_hosting'] == 'on' and github_url.startswith(f'https://github.com/{get_github_org()}/'):
+        github_token = get_github_token()
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
     commit_type = site.get('commit_type', 'branch')
@@ -1923,10 +1927,13 @@ def parse_github_url(github_url):
 
 def create_site(site_setting: SiteSetting):
     now = int(time.time())
+    app_id = site_setting.app_id
+    result = check_site_num_limit(app_id)
+    if result['result'] == 'error':
+        return result
     result = check_site_setting(site_setting)
     if result['result'] == 'error':
         return result
-    app_id = site_setting.app_id
     site_id = generate_site_id()
     redis = lanying_redis.get_redis_connection()
     fields = site_setting.to_hmset_fields()
@@ -1940,6 +1947,7 @@ def create_site(site_setting: SiteSetting):
     site_info = get_site(app_id, site_id)
     logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
     site_info = maybe_init_github_site_repo(app_id, site_info, site_info)
+    maybe_invite_github_member(app_id, {}, site_info)
     maybe_register_github_site(app_id, site_info)
     maybe_init_analytics(app_id, site_id)
     site_info = get_site(app_id, site_id)
@@ -1950,6 +1958,14 @@ def create_site(site_setting: SiteSetting):
             'site_id': site_id
         }
     }
+
+def check_site_num_limit(app_id):
+    count = get_site_count(app_id)
+    if app_id == 'ddabwkppllo':
+        return {'result': "ok"}
+    if count >= 5:
+        return {'result': 'error', 'message': 'site count limit exceeded'}
+    return {'result': "ok"}
 
 def configure_site(site_id, site_setting: SiteSetting):
     now = int(time.time())
@@ -1964,12 +1980,13 @@ def configure_site(site_id, site_setting: SiteSetting):
     fields = site_setting.to_hmset_fields()
     fields['update_time'] = now
     if fields['github_hosting'] == 'on':
-        for field in ['github_url', 'github_token', 'github_base_branch', 'github_base_dir']:
+        for field in ['github_url', 'github_token', 'github_base_branch']:
             del fields[field]
     logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
     new_site_info = get_site(app_id, site_id)
     new_site_info = maybe_init_github_site_repo(app_id, site_info, new_site_info)
+    maybe_invite_github_member(app_id, site_info, new_site_info)
     maybe_register_github_site(app_id, new_site_info)
     maybe_init_analytics(app_id, site_id)
     new_site_info = get_site(app_id, site_id)
@@ -1990,6 +2007,8 @@ def maybe_sync_to_github(old_site, site):
 def sync_to_github(old_site, site):
     github_url = site.get('github_url', '')
     github_token = site.get('github_token', '')
+    if site['github_hosting'] == 'on' and github_url.startswith(f'https://github.com/{get_github_org()}/'):
+        github_token = get_github_token()
     result = parse_github_url(github_url)
     if result['result'] == 'error':
         return result
@@ -2043,6 +2062,8 @@ def sync_to_github(old_site, site):
 def upload_file_to_github(site, download_url, commit_message):
     github_url = site.get('github_url', '')
     github_token = site.get('github_token', '')
+    if site['github_hosting'] == 'on' and github_url.startswith(f'https://github.com/{get_github_org()}/'):
+        github_token = get_github_token()
     result = parse_github_url(github_url)
     if result['result'] == 'error':
         return result
@@ -2213,6 +2234,10 @@ def get_site_list(app_id):
             }
     }
 
+def get_site_count(app_id):
+    redis = lanying_redis.get_redis_connection()
+    return redis.llen(get_site_list_key(app_id))
+
 def maybe_add_site_url(site_info):
     if site_info['type'] == 'gitbook':
         github_url = site_info['github_url']
@@ -2290,6 +2315,8 @@ def get_site(app_id, site_id):
             dto['hook_sentence_image'] = ''
         if 'github_hosting' not in dto:
             dto['github_hosting'] = 'off'
+        if 'collaborator' not in dto:
+            dto['collaborator'] = ''
         maybe_add_site_url(dto)
         return dto
     return None
@@ -2642,30 +2669,31 @@ def check_site_setting(site_setting: SiteSetting):
 def maybe_init_github_site_repo(app_id, old_site_info, site_info):
     if site_info['github_hosting'] == 'on':
         site_id = site_info['site_id']
-        if 'github_hosting_url' in site_info:
+        if 'github_hosting_url' in site_info and site_info['github_hosting_url'] != '':
             if old_site_info['github_hosting'] == 'off':
                 update_site_field(app_id, site_id, "github_url", site_info['github_hosting_url'])
                 update_site_field(app_id, site_id, "github_token", '')
                 update_site_field(app_id, site_id, "github_base_branch", 'master')
-                update_site_field(app_id, site_id, "github_base_dir", '')
                 site_info = get_site(app_id, site_id)
             return site_info
         repo_org = get_github_org()
         repo_name = f'growai-gitbook-{site_id}-{int(time.time())}'
+        repo_full_name = f'{repo_org}/{repo_name}'
         try:
             logging.info(f"create github repo start | repo_name:{repo_name}")
             github = get_github()
-            me = github.get_user()
+            my_org = github.get_organization(get_github_org())
             template = github.get_repo("maxim-top/growai-gitbook")
-            result = me.create_repo_from_template(
+            result = my_org.create_repo_from_template(
                 repo=template,
                 name=repo_name,
                 description="Create from maxim-top/growai-gitbook",
-                private=True,
+                private=False,
                 include_all_branches=False
             )
-            logging.info(f"create github repo finish | repo_name:{repo_name}, result:{result}")
-            github_url = f'https://github.com/{repo_org}/{repo_name}'
+            logging.info(f"create github repo finish | app_id:{app_id}, repo_full_name:{repo_full_name}, result:{result}")
+            ## enable_workflow_action(f'{repo_org}/{repo_name}')
+            github_url = f'https://github.com/{repo_full_name}'
             update_site_field(app_id, site_id, "github_hosting_url", github_url)
             update_site_field(app_id, site_id, "github_hosting_org", repo_org)
             update_site_field(app_id, site_id, "github_url", github_url)
@@ -2673,12 +2701,35 @@ def maybe_init_github_site_repo(app_id, old_site_info, site_info):
             update_site_field(app_id, site_id, "github_base_branch", 'master')
             update_site_field(app_id, site_id, "github_base_dir", '/')
             site_info = get_site(app_id, site_id)
-            lanying_slack.async_send_grafana_message(f'create github repo success: {repo_name}')
+            lanying_slack.async_send_grafana_message(f'create github repo success: app_id:{app_id}, repo_full_name: {repo_full_name}')
         except Exception as e:
             logging.error(f'create github repo failed: {repo_name}')
             logging.exception(e)
-            lanying_slack.async_send_grafana_message(f'create github repo failed: {repo_name}')
+            lanying_slack.async_send_grafana_message(f'create github repo failed: app_id:{app_id}, repo_full_name: {repo_full_name}')
     return site_info
+
+# def enable_workflow_action(repo_full_name):
+#     try:
+#         token = get_github_token()
+#         HEADERS = {
+#             "Authorization": f"token {token}",
+#             "Accept": "application/vnd.github+json"
+#         }
+#         url = f"https://api.github.com/repos/{repo_full_name}/actions/permissions"
+#         resp = requests.put(
+#             url, headers=HEADERS,
+#             json={
+#             "enabled": True,
+#             "allowed_actions": "all"
+#             }
+#         )
+#         if resp.status_code == 204:
+#             return {'result': 'ok'}
+#         else:
+#             logging.info(f"enable_workflow_action failed | resp:{resp.content}")
+#             return {'result': 'error', 'message': 'bad_status_code'}
+#     except Exception as e:
+#         return {'result': 'error', 'message': 'exception'}
 
 def maybe_register_github_site(app_id, site_info):
     if site_info['type'] == 'gitbook':
@@ -3715,9 +3766,38 @@ def upload_image(app_id, site_id, file_name):
         'data': result['data']
     }
 
+def maybe_invite_github_member(app_id, old_site_info, new_site_info):
+    collaborator = new_site_info['collaborator']
+    old_collaborator = old_site_info.get('collaborator','')
+    if new_site_info['github_hosting'] == 'on' and collaborator != old_collaborator and collaborator != '':
+        site_id = new_site_info['site_id']
+        result = parse_github_url(new_site_info['github_url'])
+        if result['result'] == 'error':
+            return result
+        github_owner = result['github_owner']
+        github_repo = result['github_repo']
+        repo_full_name = f'{github_owner}/{github_repo}'
+        g = get_github()
+        repo = g.get_repo(repo_full_name)
+        perrmission = 'push'
+        # 发送邀请
+        try:
+            logging.info(f"maybe_invite_github_member invite start | app_id:{app_id}, site_id:{site_id}, username:{collaborator}, repo_full_name:{repo_full_name}")
+            lanying_slack.async_send_grafana_message(f"maybe_invite_github_member invite start | app_id:{app_id}, site_id:{site_id}, username:{collaborator}, repo_full_name:{repo_full_name}")
+            result = repo.add_to_collaborators(collaborator, permission=perrmission)
+            logging.info(f"maybe_invite_github_member invite finish | app_id:{app_id}, site_id:{site_id}, username:{collaborator}, repo_full_name:{repo_full_name}, result:{result}")
+            lanying_slack.async_send_grafana_message(f"maybe_invite_github_member invite finish | app_id:{app_id}, site_id:{site_id}, username:{collaborator}, repo_full_name:{repo_full_name}")
+        except Exception as e:
+            logging.exception(e)
+            logging.info(f"maybe_invite_github_member invite finish | app_id:{app_id}, site_id:{site_id}, username:{collaborator}, repo_full_name:{repo_full_name}, result:exception")
+            lanying_slack.async_send_grafana_message(f"maybe_invite_github_member invite finish | app_id:{app_id}, site_id:{site_id}, username:{collaborator}, repo_full_name:{repo_full_name}, result:exception")
+
 def get_github():
-    github_token = os.getenv('GITHUB_HOSTING_TOKEN')
+    github_token = get_github_token()
     return Github(github_token)
+
+def get_github_token():
+    return os.getenv('GITHUB_HOSTING_TOKEN')
 
 def get_github_org():
     return os.getenv('GITHUB_HOSTING_ORG')

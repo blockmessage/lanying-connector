@@ -441,6 +441,7 @@ def create_site():
     hook_sentence_slogan = str(data.get('hook_sentence_slogan', ''))
     hook_sentence_image = str(data.get('hook_sentence_image', '')).strip()
     github_hosting = ensure_value_on_off(str(data.get('github_hosting', 'off')))
+    collaborator = str(data.get('collaborator', '')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -465,7 +466,8 @@ def create_site():
         icp_number = icp_number,
         hook_sentence_slogan = hook_sentence_slogan,
         hook_sentence_image = hook_sentence_image,
-        github_hosting = github_hosting
+        github_hosting = github_hosting,
+        collaborator = collaborator
     )
     result = lanying_grow_ai.create_site(site_setting)
     if result['result'] == 'error':
@@ -506,6 +508,7 @@ def configure_site():
     hook_sentence_slogan = str(data.get('hook_sentence_slogan', ''))
     hook_sentence_image = str(data.get('hook_sentence_image', '')).strip()
     github_hosting = ensure_value_on_off(str(data.get('github_hosting', 'off')))
+    collaborator = str(data.get('collaborator', '')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -530,7 +533,8 @@ def configure_site():
         icp_number = icp_number,
         hook_sentence_slogan = hook_sentence_slogan,
         hook_sentence_image = hook_sentence_image,
-        github_hosting = github_hosting
+        github_hosting = github_hosting,
+        collaborator = collaborator
     )
     result = lanying_grow_ai.configure_site(site_id, site_setting)
     if result['result'] == 'error':
