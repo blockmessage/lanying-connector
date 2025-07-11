@@ -21,6 +21,22 @@ def acme_challenge(key):
     else:
         abort(404)
 
+@bp.route("/service/grow_ai/generate_ssl_cert", methods=["POST"])
+def generate_ssl_cert():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    domain = str(data['domain'])
+    result = lanying_grow_ai.generate_ssl_cert(app_id, domain)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/grow_ai/open_service", methods=["POST"])
 def open_service():
     if not check_access_token_valid():

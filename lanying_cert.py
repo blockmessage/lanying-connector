@@ -40,7 +40,7 @@ def get_acme_challenge_value(key):
 
 def set_acme_challenge_value(key, value):
     redis = lanying_redis.get_redis_connection()
-    redis.set(make_acme_challenge_key(key), value)
+    redis.setex(make_acme_challenge_key(key), 3600, value)
 
 def make_acme_challenge_key(key):
     return f'lanying-connector:acme_challenge_key:{key}'

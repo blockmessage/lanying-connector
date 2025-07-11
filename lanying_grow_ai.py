@@ -3801,3 +3801,60 @@ def get_github_token():
 
 def get_github_org():
     return os.getenv('GITHUB_HOSTING_ORG')
+
+def generate_ssl_cert(app_id, domain_name):
+    logging.info(f"generate_ssl_cert start | app_id:{app_id}, domain_name:{domain_name}")
+    test_key = f'{app_id}_{domain_name}_{int(time.time())}'
+    test_value = f'{app_id}_{domain_name}_{int(time.time())}_{random.randint(1,100000000)}'
+    lanying_cert.set_acme_challenge_value(test_key,test_value)
+    try:
+        url = f'http://{domain_name}/.well-known/acme-challenge/{test_key}'
+        logging.info(f"generate_ssl_cert http check start | app_id:{app_id}, domain_name:{domain_name}, url: {url}")
+        response = requests.get(url, timeout=(10.0, 10.0))
+        logging.info(f"generate_ssl_cert http check response | app_id:{app_id}, domain_name:{domain_name}, response: {response.text}")
+        if response.text == test_value:
+            logging.info(f"generate_ssl_cert http check success | app_id:{app_id}, domain_name:{domain_name}")
+        else:
+            logging.info(f"generate_ssl_cert http check failed | app_id:{app_id}, domain_name:{domain_name}")
+            return {
+                'result': 'error',
+                'message': 'http_not_ready'
+            }
+    except Exception as e:
+        logging.exception(e)
+        logging.info(f"generate_ssl_cert http check exception | app_id:{app_id}, domain_name:{domain_name}")
+        return {
+            'result': 'error',
+            'message': 'http_not_ready'
+        }
+    try:
+        logging.info(f"generate_ssl_cert start cert request | app_id:{app_id}, domain_name:{domain_name}")
+        client_acme = lanying_cert.get_acme_client()
+        pkey_pem, csr_pem = lanying_cert.new_csr_comp(domain_name)
+        orderr = client_acme.new_order(csr_pem)
+        try:
+            logging.info(f"generate_ssl_cert cert start challenge cert order | app_id:{app_id}, domain_name:{domain_name}")
+            challb = lanying_cert.select_http01_chall(orderr)
+            finalized_orderr = lanying_cert.perform_http01(client_acme, challb, orderr)
+            logging.info(f"generate_ssl_cert cert finish | app_id:{app_id}, domain_name:{domain_name}")
+            return {
+                'result': 'ok',
+                'data': {
+                    'cert_pem': str(finalized_orderr.fullchain_pem),
+                    'cert_key': pkey_pem.decode('utf-8')
+                }
+            }
+        except Exception as e:
+            logging.exception(e)
+            logging.info(f"generate_ssl_cert cert exception | app_id:{app_id}, domain_name:{domain_name}")
+            return {
+                'result': 'error',
+                'message': 'cert_not_ready'
+            }
+    except Exception as e:
+        logging.exception(e)
+        logging.info(f"generate_ssl_cert cert order exception | app_id:{app_id}, domain_name:{domain_name}")
+        return {
+            'result': 'error',
+            'message': 'cert_not_ready'
+        }
