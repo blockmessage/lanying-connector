@@ -142,7 +142,13 @@ def login():
     wechat_chatbot_id = str(data.get('wechat_chatbot_id',''))
     proxy = int(data.get('proxy', 0))
     ttuid = str(data.get('ttuid', ''))
-    result = lanying_wechat_chatbot.login(app_id, type, wechat_chatbot_id, proxy, ttuid)
+    device_type = str(data.get('device_type', 'mac'))
+    auto_check = str(data.get('auto_check', 'on'))
+    if device_type not in ['mac', 'ipad']:
+        device_type = 'mac'
+    if auto_check not in ['on', 'off']:
+        auto_check = 'on'
+    result = lanying_wechat_chatbot.login(app_id, type, wechat_chatbot_id, proxy, ttuid, device_type, auto_check)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

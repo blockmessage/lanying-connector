@@ -22,7 +22,7 @@ def get_headers(app_id):
         'Authorization': get_authorization(app_id)
     }
 
-def login(app_id, type, wechat_chatbot_id, proxy, ttuid):
+def login(app_id, type, wechat_chatbot_id, proxy, ttuid, device_type, auto_check):
     wc_id = ''
     if wechat_chatbot_id != "":
         wechat_chatbot_info = get_wechat_chatbot(app_id, wechat_chatbot_id)
@@ -37,11 +37,12 @@ def login(app_id, type, wechat_chatbot_id, proxy, ttuid):
             headers = get_headers(app_id)
             body = {
                 'wcId': wc_id,
-                'ttuid': ttuid
+                'ttuid': ttuid,
+                'deviceType': device_type
             }
             response = requests.post(url, headers=headers, json=body)
             logging.info(f"wechat_chatbot login result: body={body}, response: {response.text}")
-            return handle_login_response(app_id, wechat_chatbot_id, response)
+            return handle_login_response(app_id, wechat_chatbot_id, response, device_type, auto_check)
         else:
             return {'result':'error', 'message': 'bad ttuid'}
     elif type == 'proxy':
@@ -50,20 +51,21 @@ def login(app_id, type, wechat_chatbot_id, proxy, ttuid):
             headers = get_headers(app_id)
             body = {
                 'wcId': wc_id,
-                'proxy': proxy
+                'proxy': proxy,
+                'deviceType': 'mac'
             }
             response = requests.post(url, headers=headers, json=body)
             logging.info(f"wechat_chatbot login result: body={body}, response: {response.text}")
-            return handle_login_response(app_id, wechat_chatbot_id, response)
+            return handle_login_response(app_id, wechat_chatbot_id, response, device_type, auto_check)
         else:
             return {'result': 'error', 'message': 'bad proxy id '}
 
-def handle_login_response(app_id, wechat_chatbot_id, response):
+def handle_login_response(app_id, wechat_chatbot_id, response, device_type, auto_check):
     result = response.json()
     if result["code"] == "1000":
         w_id = result["data"]["wId"]
         qr_code_url = result["data"]["qrCodeUrl"]
-        create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url)
+        create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url, device_type, auto_check)
         if wechat_chatbot_id != "":
             update_wechat_chatbot_field(app_id, wechat_chatbot_id, "w_id", w_id)
         return {'result': "ok",
@@ -83,7 +85,7 @@ def get_global_wid_info(w_id):
         return get_wid_info(app_id, w_id)
     return None
 
-def create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url):
+def create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url, device_type, auto_check):
     now = int(time.time())
     redis = lanying_redis.get_redis_connection()
     key = get_wid_info_key(app_id, w_id)
@@ -93,7 +95,9 @@ def create_wid_info(app_id, w_id, wechat_chatbot_id, qr_code_url):
         'qr_code_url': qr_code_url,
         'create_time': now,
         "status": "wait",
-        "reason": "ok"
+        "reason": "ok",
+        "device_type": device_type,
+        "auto_check": auto_check
     })
     redis.hset(get_wid_info_ids_key(), w_id, app_id)
     redis.hset(get_wid_info_ids_app_key(app_id), w_id, now)
@@ -141,10 +145,16 @@ def get_login_info(app_id, w_id):
         return {"result": "ok", "data":{"wc_id": wid_info['wc_id'], "w_account": wid_info['w_account']}}
     url = get_api_server() + "/getIPadLoginInfo"
     headers = get_headers(app_id)
+    if wid_info.get('auto_check', 'on') == 'on':
+        auto_check = True
+    else:
+        auto_check = False
     body = {
-        'wId': w_id
+        'wId': w_id,
+        'autoCheck': auto_check
     }
     try:
+        logging.info(f"wechat_chatbot get_login_info start: body={body}")
         response = requests.post(url, headers=headers, json=body,timeout=(10.0, 15.0))
         logging.info(f"wechat_chatbot get_login_info result: body={body}, response: {response.text}")
         result = response.json()
@@ -153,6 +163,8 @@ def get_login_info(app_id, w_id):
     if result["code"] == "1000":
         wc_id = result["data"]["wcId"]
         w_account = result["data"]["wAccount"]
+        if w_account is None:
+            w_account = ''
         wid_info_result = json.dumps(result["data"], ensure_ascii=False)
         set_wid_info_field(app_id, w_id, "wc_id", wc_id)
         set_wid_info_field(app_id, w_id, "w_account", w_account)
@@ -166,6 +178,8 @@ def get_login_info(app_id, w_id):
             update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", "online")
         logging.info(f"wechat chatbot login success | wc_id:{wc_id}, w_account:{w_account}, wid_info:{wid_info}, result:{result}")
         return {'result': "ok", "data":{"wc_id":wc_id, "w_account": w_account}}
+    elif result["code"] == "200":
+        return {'result': 'ok', 'data': result['data']}
     else:
         if result['message'] == '二维码已过期':
             result['message'] = 'expired'
