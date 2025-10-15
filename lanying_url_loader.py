@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 import json
 import os
 import time
+import lanying_url_loader_selenium
 
 # this file is edit from source of langchain.document_loaders.recursive_url_loader
 
@@ -94,16 +95,21 @@ def do_task(task_id, urls, max_depth, filters)-> Iterator[Document]:
             logging.exception(e)
 
 def load_url_content(url):
+    scroll_site_list = ['mp.weixin.qq.com/mp/appmsgalbum?']
+    for site in scroll_site_list:
+        if site in url:
+            return load_url_content_with_scroll(url)
+    splash_click_site_list = ['tgo.infoq.cn']
+    for site in splash_click_site_list:
+        if site in url:
+            return load_url_content_with_click(url)
+    redis = lanying_redis.get_redis_connection()
+    chrome_site_list = lanying_redis.redis_lrange(redis, "lanying_connector_chrome_site_list", 0, -1)
+    for site in chrome_site_list:
+        if site in url:
+            return lanying_url_loader_selenium.load_url_content(url)
     engine = os.getenv("URL_LOAD_ENGINE", "requests")
     if engine == "splash":
-        scroll_site_list = ['mp.weixin.qq.com/mp/appmsgalbum?']
-        for site in scroll_site_list:
-            if site in url:
-                return load_url_content_with_scroll(url)
-        splash_click_site_list = ['tgo.infoq.cn']
-        for site in splash_click_site_list:
-            if site in url:
-                return load_url_content_with_click(url)
         response = load_url_content_with_splash(url)
         if response.status_code >=500:
             logging.info(f"load_url_content fallback to requests lib | url:{url}")
