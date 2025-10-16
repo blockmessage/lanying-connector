@@ -9,14 +9,23 @@ import time
 import os
 import random
 import requests
+from datetime import datetime
 
 SELENIUM_URL = os.getenv('LANYING_CONNECTOR_SELENIUM_URL')
 
+
+screenshot_dir = '/data/screenshot'
+os.makedirs(screenshot_dir, exist_ok=True)
+
 def load_url_content(url):
     driver = get_driver()
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     try:
         driver.get(url)
-        time.sleep(random.uniform(5, 7))  # 等待页面加载
+        time.sleep(random.uniform(8, 10))  # 等待页面加载
+        filename = f"{screenshot_dir}/screenshot_{timestamp}.png"
+        driver.save_screenshot(filename)
+        logging.info(f"load_url_content finish | url: {url}, screenshot: {filename}")
         return driver_to_response(driver)
     except Exception as e:
         logging.info("error:", e)
