@@ -460,7 +460,7 @@ def grow_ai_run_task(self, app_id, task_run_id):
     except Exception as e:
         raise self.retry(exc=e, countdown=5)
 
-global_grow_ai_deply_task_run_max_retries=0
+global_grow_ai_deply_task_run_max_retries=2
 @slow_queue.task(bind=True, max_retries=global_grow_ai_deply_task_run_max_retries)
 def grow_ai_deply_task_run(self, app_id, task_run_id):
     has_retry_times = (self.request.retries != global_grow_ai_deply_task_run_max_retries)

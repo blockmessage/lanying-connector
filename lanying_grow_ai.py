@@ -995,171 +995,142 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         github_token = get_github_token()
     if len(github_token) == 0:
         return {'result': 'error', 'message': 'deploy token is bad'}
-    commit_type = site.get('commit_type', 'branch')
-    github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
-    base_branch = site.get('github_base_branch', 'master')
-    abs_base_dir, base_dir = parse_dir(site.get('github_base_dir', '/'), '/')
-    abs_target_dir, target_dir = parse_dir(task['target_dir'], abs_base_dir)
-    target_relative_dir = os.path.relpath(abs_target_dir,abs_base_dir)
-    if target_relative_dir == '.':
-        target_relative_dir = ''
-    target_summary_dir_abs_or_relative = task['target_dir'] if task['target_summary_dir'] == '' else task['target_summary_dir']
-    abs_target_summary_dir, target_summary_dir = parse_dir(target_summary_dir_abs_or_relative, abs_base_dir)
-    target_summary_relative_dir = os.path.relpath(abs_target_summary_dir,abs_base_dir)
-    if target_summary_relative_dir == '.':
-        target_summary_relative_dir = ''
-    logging.info(f"do_deploy_task_run_internal dir: abs_base_dir:{abs_base_dir}, abs_target_dir:{abs_target_dir}, abs_target_summary_dir:{abs_target_summary_dir},target_relative_dir:{target_relative_dir}")
-    if commit_type == 'pull_request':
-        new_branch = f"grow-ai-{task_run_id}-{timestr}"
-    else:
-        new_branch = base_branch
-    headers = {
-        "Authorization": f"token {github_token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    # 获取基础分支的最后一次提交SHA
-    response = requests.get(f"{github_api_url}/git/refs/heads/{base_branch}", headers=headers)
-    if response.status_code != 200:
-        return {'result': 'error', 'message': 'github get branch info failed'}
-    commit_sha = response.json()["object"]["sha"]
-    zip_object_name = task_run['zip_file']
-    zip_filename = lanying_utils.get_temp_filename(app_id, ".zip")
-    result = lanying_file_storage.download(zip_object_name, zip_filename)
-    if result['result'] == 'error':
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'fail to download zip file'}
-    summary_file = os.path.join(base_dir, "SUMMARY.md")
-    summary_url = f"https://api.github.com/repos/{github_owner}/{github_repo}/contents/{summary_file}?ref={commit_sha}"
-    # 发送 GET 请求获取文件内容
-    response = requests.get(summary_url, headers=headers)
-    if response.status_code != 200:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github SUMMARY.md not found'}
-    file_info = response.json()
-    summary_text = base64.b64decode(file_info['content']).decode('utf-8')
-    if commit_type == 'pull_request':
-        # 创建新分支
-        data = {
-            "ref": f"refs/heads/{new_branch}",
-            "sha": commit_sha
+    redis_lock = lanying_redis.get_redis_connection()
+    lock_key = f'lanying-connector-deploy-task-lock:{github_owner}/{github_repo}'
+    lock_start_time = time.perf_counter()
+    logging.info(f"start wait for lock: {lock_key}")
+    with redis_lock.lock(lock_key, timeout=120):
+        elapsed = time.perf_counter() - lock_start_time
+        logging.info(f"get lock {lock_key} after {elapsed:.3f} seconds")
+        commit_type = site.get('commit_type', 'branch')
+        github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
+        base_branch = site.get('github_base_branch', 'master')
+        abs_base_dir, base_dir = parse_dir(site.get('github_base_dir', '/'), '/')
+        abs_target_dir, target_dir = parse_dir(task['target_dir'], abs_base_dir)
+        target_relative_dir = os.path.relpath(abs_target_dir,abs_base_dir)
+        if target_relative_dir == '.':
+            target_relative_dir = ''
+        target_summary_dir_abs_or_relative = task['target_dir'] if task['target_summary_dir'] == '' else task['target_summary_dir']
+        abs_target_summary_dir, target_summary_dir = parse_dir(target_summary_dir_abs_or_relative, abs_base_dir)
+        target_summary_relative_dir = os.path.relpath(abs_target_summary_dir,abs_base_dir)
+        if target_summary_relative_dir == '.':
+            target_summary_relative_dir = ''
+        logging.info(f"do_deploy_task_run_internal dir: abs_base_dir:{abs_base_dir}, abs_target_dir:{abs_target_dir}, abs_target_summary_dir:{abs_target_summary_dir},target_relative_dir:{target_relative_dir}")
+        if commit_type == 'pull_request':
+            new_branch = f"grow-ai-{task_run_id}-{timestr}"
+        else:
+            new_branch = base_branch
+        headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github.v3+json"
         }
-        response = requests.post(f"{github_api_url}/git/refs", headers=headers, json=data)
-        if response.status_code != 201:
+        # 获取基础分支的最后一次提交SHA
+        response = requests.get(f"{github_api_url}/git/refs/heads/{base_branch}", headers=headers)
+        if response.status_code != 200:
+            return {'result': 'error', 'message': 'github get branch info failed'}
+        commit_sha = response.json()["object"]["sha"]
+        zip_object_name = task_run['zip_file']
+        zip_filename = lanying_utils.get_temp_filename(app_id, ".zip")
+        result = lanying_file_storage.download(zip_object_name, zip_filename)
+        if result['result'] == 'error':
             logging.info(f"github response | {response.content}")
-            return {'result': 'error', 'message': 'github create branch failed'}
-    # 获取基础分支的树对象SHA
-    response = requests.get(f"{github_api_url}/git/trees/{commit_sha}", headers=headers)
-    if response.status_code != 200:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github get sha failed'}
-    base_tree_sha = response.json()["sha"]
-    tree = []
-    summary_link_list = []
-    with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
-        file_list = zip_ref.namelist()
-        def parse_article_index(x):
-            pattern = re.compile(r'(\d{8})-(\d+)-(\d+)')
-            match = pattern.search(x)
-            if match:
-                try:
-                    return int(match.group(3))
-                except Exception as e:
-                    pass
-            return 0
-        sorted_file_list = sorted(file_list, key=parse_article_index)
-        for filename in sorted_file_list:
-            with zip_ref.open(filename) as file:
-                bytes = file.read()
-                base64_content = base64.b64encode(bytes).decode()
-                blob_data = {
-                    "content": base64_content,
-                    "encoding": "base64"
-                }
-                response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-                if response.status_code != 201:
-                    logging.info(f"github response | {response.content}")
-                    return {'result': 'error', 'message': 'github fail to add blobs'}
-                blob_sha = response.json()["sha"]
-                github_path = os.path.join(target_dir, filename)
-                link_path = os.path.join(target_relative_dir, filename)
-                logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
-                if filename.endswith(".md"):
-                    content = bytes.decode()
-                    title = find_title_from_content(content)
-                    summary_link_list.append({'title': title, 'link': link_path})
-                    # summary_link_list.append(f"    * [{title}]({link_path})")
-                tree.append({
-                    "path": github_path,
-                    "mode": "100644",
-                    "type": "blob",
-                    "sha": blob_sha
-                })
-    target_link = os.path.join(target_summary_relative_dir, "README.md")
-    summary = GitBookSummary(summary_text = summary_text)
-    if not summary.has_link(target_link):
-        summary.append_summary(target_summary_relative_dir, target_link)
-        readme_content = f"# {target_summary_dir.capitalize()}"
-        readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
-        blob_data = {
-        "content": readme_content_base64,
-        "encoding": "base64"
-        }
-        response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-        if response.status_code != 201:
+            return {'result': 'error', 'message': 'fail to download zip file'}
+        summary_file = os.path.join(base_dir, "SUMMARY.md")
+        summary_url = f"https://api.github.com/repos/{github_owner}/{github_repo}/contents/{summary_file}?ref={commit_sha}"
+        # 发送 GET 请求获取文件内容
+        response = requests.get(summary_url, headers=headers)
+        if response.status_code != 200:
             logging.info(f"github response | {response.content}")
-            return {'result': 'error', 'message': 'github fail to add target_dir blobs'}
-        blob_sha = response.json()["sha"]
-        github_path = os.path.join(target_summary_dir, "README.md")
-        logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
-        tree.append({
-            "path": github_path,
-            "mode": "100644",
-            "type": "blob",
-            "sha": blob_sha
-        })
-    target_summary = summary.get_summary_by_link(target_link)
-    latest = 'latest'
-    latest_title = '最新'
-    latest_link = os.path.join(target_summary_relative_dir, latest, "README.md")
-    if not summary.has_link(latest_link):
-        summary.add_summary_link_after_parent(latest_title, latest_link, target_summary)
-        readme_content = f"# {os.path.join(target_summary_relative_dir, latest_title).capitalize()}"
-        readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
-        blob_data = {
-        "content": readme_content_base64,
-        "encoding": "base64"
-        }
-        response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-        if response.status_code != 201:
+            return {'result': 'error', 'message': 'github SUMMARY.md not found'}
+        file_info = response.json()
+        summary_text = base64.b64decode(file_info['content']).decode('utf-8')
+        if commit_type == 'pull_request':
+            # 创建新分支
+            data = {
+                "ref": f"refs/heads/{new_branch}",
+                "sha": commit_sha
+            }
+            response = requests.post(f"{github_api_url}/git/refs", headers=headers, json=data)
+            if response.status_code != 201:
+                logging.info(f"github response | {response.content}")
+                return {'result': 'error', 'message': 'github create branch failed'}
+        # 获取基础分支的树对象SHA
+        response = requests.get(f"{github_api_url}/git/trees/{commit_sha}", headers=headers)
+        if response.status_code != 200:
             logging.info(f"github response | {response.content}")
-            return {'result': 'error', 'message': 'github fail to add date blobs'}
-        blob_sha = response.json()["sha"]
-        github_path = os.path.join(target_summary_dir, latest, "README.md")
-        logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
-        tree.append({
-            "path": github_path,
-            "mode": "100644",
-            "type": "blob",
-            "sha": blob_sha
-        })
-    latest_summary = summary.get_summary_by_link(latest_link)
-    summary.add_summary_link_list_after_parent(summary_link_list, latest_summary)
-    truncate_list = summary.truncate_summary(latest_summary, max_latest_num)
-    if len(truncate_list) > 0:
-        datestr = None
-        for truncate_summary in truncate_list:
-            truncate_summary_link = truncate_summary['link']
-            date_pattern = re.compile(r'(?<!\d)(\d{8})(?!\d)')
-            match = date_pattern.search(truncate_summary_link)
-            if match:
-                datestr = match.group(1)
-                break
-        if datestr is None:
-            datestr = datetime.now().strftime('%Y%m%d')
-        datestr_link = os.path.join(target_summary_relative_dir, datestr, "README.md")
-        if not summary.has_link(datestr_link):
-            summary.add_summary_link_after_brother(datestr, datestr_link, latest_summary)
-            readme_content = f"# {os.path.join(target_summary_relative_dir, datestr).capitalize()}"
+            return {'result': 'error', 'message': 'github get sha failed'}
+        base_tree_sha = response.json()["sha"]
+        tree = []
+        summary_link_list = []
+        with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
+            file_list = zip_ref.namelist()
+            def parse_article_index(x):
+                pattern = re.compile(r'(\d{8})-(\d+)-(\d+)')
+                match = pattern.search(x)
+                if match:
+                    try:
+                        return int(match.group(3))
+                    except Exception as e:
+                        pass
+                return 0
+            sorted_file_list = sorted(file_list, key=parse_article_index)
+            for filename in sorted_file_list:
+                with zip_ref.open(filename) as file:
+                    bytes = file.read()
+                    base64_content = base64.b64encode(bytes).decode()
+                    blob_data = {
+                        "content": base64_content,
+                        "encoding": "base64"
+                    }
+                    response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+                    if response.status_code != 201:
+                        logging.info(f"github response | {response.content}")
+                        return {'result': 'error', 'message': 'github fail to add blobs'}
+                    blob_sha = response.json()["sha"]
+                    github_path = os.path.join(target_dir, filename)
+                    link_path = os.path.join(target_relative_dir, filename)
+                    logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
+                    if filename.endswith(".md"):
+                        content = bytes.decode()
+                        title = find_title_from_content(content)
+                        summary_link_list.append({'title': title, 'link': link_path})
+                        # summary_link_list.append(f"    * [{title}]({link_path})")
+                    tree.append({
+                        "path": github_path,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": blob_sha
+                    })
+        target_link = os.path.join(target_summary_relative_dir, "README.md")
+        summary = GitBookSummary(summary_text = summary_text)
+        if not summary.has_link(target_link):
+            summary.append_summary(target_summary_relative_dir, target_link)
+            readme_content = f"# {target_summary_dir.capitalize()}"
+            readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
+            blob_data = {
+            "content": readme_content_base64,
+            "encoding": "base64"
+            }
+            response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+            if response.status_code != 201:
+                logging.info(f"github response | {response.content}")
+                return {'result': 'error', 'message': 'github fail to add target_dir blobs'}
+            blob_sha = response.json()["sha"]
+            github_path = os.path.join(target_summary_dir, "README.md")
+            logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
+            tree.append({
+                "path": github_path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob_sha
+            })
+        target_summary = summary.get_summary_by_link(target_link)
+        latest = 'latest'
+        latest_title = '最新'
+        latest_link = os.path.join(target_summary_relative_dir, latest, "README.md")
+        if not summary.has_link(latest_link):
+            summary.add_summary_link_after_parent(latest_title, latest_link, target_summary)
+            readme_content = f"# {os.path.join(target_summary_relative_dir, latest_title).capitalize()}"
             readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
             blob_data = {
             "content": readme_content_base64,
@@ -1170,7 +1141,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                 logging.info(f"github response | {response.content}")
                 return {'result': 'error', 'message': 'github fail to add date blobs'}
             blob_sha = response.json()["sha"]
-            github_path = os.path.join(target_summary_dir, datestr, "README.md")
+            github_path = os.path.join(target_summary_dir, latest, "README.md")
             logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
             tree.append({
                 "path": github_path,
@@ -1178,79 +1149,115 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
                 "type": "blob",
                 "sha": blob_sha
             })
-        datestr_summary = summary.get_summary_by_link(datestr_link)
-        summary.add_summary_link_list_after_parent(truncate_list, datestr_summary)
-    new_summary_content = summary.to_markdown()
-    new_summary_content_base64 = base64.b64encode(new_summary_content.encode()).decode()
-    blob_data = {
-        "content": new_summary_content_base64,
-        "encoding": "base64"
-    }
-    response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-    if response.status_code != 201:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github fail to add summary blobs'}
-    blob_sha = response.json()["sha"]
-    github_path = os.path.join(base_dir, "SUMMARY.md")
-    logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
-    tree.append({
-        "path": github_path,
-        "mode": "100644",
-        "type": "blob",
-        "sha": blob_sha
-    })
-    # 创建新的树对象
-    data = {
-        "base_tree": base_tree_sha,
-        "tree": tree
-    }
-    response = requests.post(f"{github_api_url}/git/trees", headers=headers, json=data)
-    if response.status_code != 201:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github fail to create new tree object'}
-    new_tree_sha = response.json()["sha"]
-    # 创建新的提交对象
-    commit_message = f"Grow AI deploy: {task_run_id}"
-    data = {
-        "message": commit_message,
-        "parents": [commit_sha],
-        "tree": new_tree_sha
-    }
-    response = requests.post(f"{github_api_url}/git/commits", headers=headers, json=data)
-    if response.status_code != 201:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github fail to create commit'}
-    new_commit_sha = response.json()["sha"]
-    # 更新新分支的引用，使其指向新的提交
-    data = {
-        "sha": new_commit_sha
-    }
-    response = requests.patch(f"{github_api_url}/git/refs/heads/{new_branch}", headers=headers, json=data)
-    if response.status_code != 200:
-        logging.info(f"github response | {response.content}")
-        return {'result': 'error', 'message': 'github fail to move commit'}
-    if commit_type == 'pull_request':
-        # 提交Pull Request
-        title = f"Grow AI PR: {task_run_id}"
-        body = f"Grow AI PR: {task_run_id}"
-        pr_data = {
-            "title": title,
-            "body": body,
-            "head": new_branch,
-            "base": base_branch
+        latest_summary = summary.get_summary_by_link(latest_link)
+        summary.add_summary_link_list_after_parent(summary_link_list, latest_summary)
+        truncate_list = summary.truncate_summary(latest_summary, max_latest_num)
+        if len(truncate_list) > 0:
+            datestr = None
+            for truncate_summary in truncate_list:
+                truncate_summary_link = truncate_summary['link']
+                date_pattern = re.compile(r'(?<!\d)(\d{8})(?!\d)')
+                match = date_pattern.search(truncate_summary_link)
+                if match:
+                    datestr = match.group(1)
+                    break
+            if datestr is None:
+                datestr = datetime.now().strftime('%Y%m%d')
+            datestr_link = os.path.join(target_summary_relative_dir, datestr, "README.md")
+            if not summary.has_link(datestr_link):
+                summary.add_summary_link_after_brother(datestr, datestr_link, latest_summary)
+                readme_content = f"# {os.path.join(target_summary_relative_dir, datestr).capitalize()}"
+                readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
+                blob_data = {
+                "content": readme_content_base64,
+                "encoding": "base64"
+                }
+                response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
+                if response.status_code != 201:
+                    logging.info(f"github response | {response.content}")
+                    return {'result': 'error', 'message': 'github fail to add date blobs'}
+                blob_sha = response.json()["sha"]
+                github_path = os.path.join(target_summary_dir, datestr, "README.md")
+                logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
+                tree.append({
+                    "path": github_path,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": blob_sha
+                })
+            datestr_summary = summary.get_summary_by_link(datestr_link)
+            summary.add_summary_link_list_after_parent(truncate_list, datestr_summary)
+        new_summary_content = summary.to_markdown()
+        new_summary_content_base64 = base64.b64encode(new_summary_content.encode()).decode()
+        blob_data = {
+            "content": new_summary_content_base64,
+            "encoding": "base64"
         }
-        response = requests.post(f"{github_api_url}/pulls", headers=headers, json=pr_data)
+        response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
         if response.status_code != 201:
             logging.info(f"github response | {response.content}")
-            return {'result': 'error', 'message': 'github fail to commit PR'}
-        pr_url = response.json().get("html_url")
-        update_task_run_field(app_id, task_run_id, "pr_url", pr_url)
-    else:
-        pr_url = ''
-    logging.info(f"deploy task_run success | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}, pr_url:{pr_url}")
-    return {'result': 'ok', 'data':{
-        'pr_url': pr_url
-    }}
+            return {'result': 'error', 'message': 'github fail to add summary blobs'}
+        blob_sha = response.json()["sha"]
+        github_path = os.path.join(base_dir, "SUMMARY.md")
+        logging.info(f"blob data | filename:{filename}, github_path:{github_path}, sha:{blob_sha}")
+        tree.append({
+            "path": github_path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": blob_sha
+        })
+        # 创建新的树对象
+        data = {
+            "base_tree": base_tree_sha,
+            "tree": tree
+        }
+        response = requests.post(f"{github_api_url}/git/trees", headers=headers, json=data)
+        if response.status_code != 201:
+            logging.info(f"github response | {response.content}")
+            return {'result': 'error', 'message': 'github fail to create new tree object'}
+        new_tree_sha = response.json()["sha"]
+        # 创建新的提交对象
+        commit_message = f"Grow AI deploy: {task_run_id}"
+        data = {
+            "message": commit_message,
+            "parents": [commit_sha],
+            "tree": new_tree_sha
+        }
+        response = requests.post(f"{github_api_url}/git/commits", headers=headers, json=data)
+        if response.status_code != 201:
+            logging.info(f"github response | {response.content}")
+            return {'result': 'error', 'message': 'github fail to create commit'}
+        new_commit_sha = response.json()["sha"]
+        # 更新新分支的引用，使其指向新的提交
+        data = {
+            "sha": new_commit_sha
+        }
+        response = requests.patch(f"{github_api_url}/git/refs/heads/{new_branch}", headers=headers, json=data)
+        if response.status_code != 200:
+            logging.info(f"github response | {response.content}")
+            return {'result': 'error', 'message': 'github fail to move commit'}
+        if commit_type == 'pull_request':
+            # 提交Pull Request
+            title = f"Grow AI PR: {task_run_id}"
+            body = f"Grow AI PR: {task_run_id}"
+            pr_data = {
+                "title": title,
+                "body": body,
+                "head": new_branch,
+                "base": base_branch
+            }
+            response = requests.post(f"{github_api_url}/pulls", headers=headers, json=pr_data)
+            if response.status_code != 201:
+                logging.info(f"github response | {response.content}")
+                return {'result': 'error', 'message': 'github fail to commit PR'}
+            pr_url = response.json().get("html_url")
+            update_task_run_field(app_id, task_run_id, "pr_url", pr_url)
+        else:
+            pr_url = ''
+        logging.info(f"deploy task_run success | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}, pr_url:{pr_url}")
+        return {'result': 'ok', 'data':{
+            'pr_url': pr_url
+        }}
 
 def task_run_retry(app_id, task_run_id):
     logging.info(f"task_run_retry start | app_id:{app_id}, task_run_id:{task_run_id}")
