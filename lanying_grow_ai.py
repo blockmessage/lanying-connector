@@ -969,16 +969,16 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     timestr = datetime.now().strftime('%Y%m%d%H%M%S')
     task_run = get_task_run(app_id, task_run_id)
     if task_run is None:
-        return {'result': 'error', 'message': 'task_run not exist'}
+        return {'result': 'error', 'message': 'task_run not exist', 'retry': False}
     if task_run['status'] != 'success':
         if 'zip_file' not in task_run:
-            return {'result': 'error', 'message': 'task_run status cannot deploy'}
+            return {'result': 'error', 'message': 'task_run status cannot deploy', 'retry': False}
     if 'zip_file' not in task_run:
-        return {'result': 'error', 'message': 'zip file not exist'}
+        return {'result': 'error', 'message': 'zip file not exist', 'retry': False}
     task_id = task_run['task_id']
     task = get_task(app_id, task_id)
     if task is None:
-        return {'result': 'error', 'message': 'task not exist'}
+        return {'result': 'error', 'message': 'task not exist', 'retry': False}
     site_list = get_task_site_list(task)
     if site_list == []:
         return {'result': 'error', 'message': 'no site to deploy', 'retry': False}
@@ -994,7 +994,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     if site['github_hosting'] == 'on' and github_url.startswith(f'https://github.com/{get_github_org()}/'):
         github_token = get_github_token()
     if len(github_token) == 0:
-        return {'result': 'error', 'message': 'deploy token is bad'}
+        return {'result': 'error', 'message': 'deploy token is bad', 'retry': False}
     redis_lock = lanying_redis.get_redis_connection()
     lock_key = f'lanying-connector-deploy-task-lock:{github_owner}/{github_repo}'
     lock_start_time = time.perf_counter()
@@ -1027,6 +1027,13 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         # 获取基础分支的最后一次提交SHA
         response = requests.get(f"{github_api_url}/git/refs/heads/{base_branch}", headers=headers)
         if response.status_code != 200:
+            logging.info(f"failed to get current sha: {github_api_url}, code: {response.status_code}, text: {response.text}")
+            try:
+                response_json = response.json()
+                if response_json['message'] == 'Bad credentials':
+                    return {'result': 'error', 'message': 'github get branch info failed', 'retry': False}
+            except Exception as e:
+                pass
             return {'result': 'error', 'message': 'github get branch info failed'}
         commit_sha = response.json()["object"]["sha"]
         zip_object_name = task_run['zip_file']
@@ -1914,7 +1921,7 @@ def parse_github_url(github_url):
     if github_url.startswith("https://github.com/"):
         fields = github_url.split("/")
         if len(fields) < 5 or fields[2] != 'github.com':
-            return {'result': 'error', 'message': 'github_url is bad'}
+            return {'result': 'error', 'message': 'github_url is bad', 'retry': False}
         github_owner = fields[3]
         github_repo = fields[4]
         if github_repo.endswith(".git"):
@@ -1923,13 +1930,13 @@ def parse_github_url(github_url):
     elif github_url.startswith("git@github.com:"):
         fields = re.split("[:/]{1,}", github_url)
         if len(fields) < 3:
-            return {'result': 'error', 'message': 'github_url is bad'}
+            return {'result': 'error', 'message': 'github_url is bad', 'retry': False}
         github_owner = fields[1]
         github_repo = fields[2]
         if github_repo.endswith(".git"):
             github_repo = github_repo[:-4]
         return {'result': 'ok', 'github_owner': github_owner, "github_repo": github_repo}
-    return {'result': 'error', 'message': 'github_url is bad'}
+    return {'result': 'error', 'message': 'github_url is bad', 'retry': False}
 
 
 def create_site(site_setting: SiteSetting):

@@ -467,7 +467,7 @@ def grow_ai_deply_task_run(self, app_id, task_run_id):
     try:
         lanying_grow_ai.do_deploy_task_run(app_id, task_run_id, has_retry_times)
     except Exception as e:
-        raise self.retry(exc=e, countdown=5)
+        raise self.retry(exc=e, countdown=10)
 
 global_grow_ai_cdn_config_task_run_max_retries=60
 @normal_queue.task(bind=True, max_retries=global_grow_ai_cdn_config_task_run_max_retries)
