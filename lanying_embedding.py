@@ -110,7 +110,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     elif db_type == 'pgvector':
         with lanying_pgvector.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
+            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags text[] DEFAULT '{{}}');")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
             conn.commit()
@@ -119,6 +119,19 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
+
+def maybe_add_table_tags(embedding_uuid):
+    embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+    if embedding_uuid_info:
+        db_type = embedding_uuid_info.get('db_type', 'redis')
+        db_table_name = embedding_uuid_info.get('db_table_name', '')
+        if db_type == 'pgvector' and db_table_name != '':
+            with lanying_pgvector.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"ALTER TABLE {db_table_name} ADD COLUMN IF NOT EXISTS tags text[];")
+                conn.commit()
+                cursor.close()
+                lanying_pgvector.put_connection(conn)
 
 def re_create_embedding_table(embedding_uuid):
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
@@ -135,7 +148,7 @@ def re_create_embedding_table(embedding_uuid):
             if db_type == 'pgvector':
                 with lanying_pgvector.get_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
+                    cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags text[] DEFAULT '{{}}');")
                     cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
                     cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
                     conn.commit()
@@ -171,7 +184,7 @@ def migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name):
     with lanying_pgvector.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(f"DROP TABLE IF EXISTS {db_table_name};")
-        cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100));")
+        cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags text[] DEFAULT '{{}}');")
         cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
         cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
         conn.commit()
@@ -392,6 +405,10 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
             logging.info(f"configure_embedding re_run_all_doc_to_embedding: app_id:{app_id}, embedding_uuid:{embedding_uuid}")
             re_run_all_doc_to_embedding(app_id, embedding_uuid)
         is_table_changed = True
+    try:
+        maybe_add_table_tags(embedding_uuid)
+    except Exception as e:
+        logging.error("failed to maybe_add_table_tags:", e)
     return {"result":"ok", "data":{"is_table_changed": is_table_changed}}
 
 def is_valid_pg_identifier(name: str) -> bool:
