@@ -29,6 +29,7 @@ import lanying_ai_capsule
 import lanying_vendor
 import lanying_utils
 from pptx import Presentation
+from lanying_async import executor
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -126,12 +127,20 @@ def maybe_add_table_tags(embedding_uuid):
         db_type = embedding_uuid_info.get('db_type', 'redis')
         db_table_name = embedding_uuid_info.get('db_table_name', '')
         if db_type == 'pgvector' and db_table_name != '':
-            with lanying_pgvector.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(f"ALTER TABLE {db_table_name} ADD COLUMN IF NOT EXISTS tags text[];")
-                conn.commit()
-                cursor.close()
-                lanying_pgvector.put_connection(conn)
+            executor.submit(maybe_add_table_tags_internal, embedding_uuid, db_table_name)
+
+def maybe_add_table_tags_internal(embedding_uuid, db_table_name):
+    try:
+        logging.info(f"maybe_add_table_tags_internal start for embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
+        with lanying_pgvector.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"ALTER TABLE {db_table_name} ADD COLUMN IF NOT EXISTS tags text[] DEFAULT '{{}}';")
+            conn.commit()
+            cursor.close()
+            lanying_pgvector.put_connection(conn)
+        logging.info(f"maybe_add_table_tags_internal finish for embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
+    except Exception as e:
+        logging.error("maybe_add_table_tags_internal failed:", e)
 
 def re_create_embedding_table(embedding_uuid):
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
@@ -405,10 +414,7 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
             logging.info(f"configure_embedding re_run_all_doc_to_embedding: app_id:{app_id}, embedding_uuid:{embedding_uuid}")
             re_run_all_doc_to_embedding(app_id, embedding_uuid)
         is_table_changed = True
-    try:
-        maybe_add_table_tags(embedding_uuid)
-    except Exception as e:
-        logging.error("failed to maybe_add_table_tags:", e)
+    maybe_add_table_tags(embedding_uuid)
     return {"result":"ok", "data":{"is_table_changed": is_table_changed}}
 
 def is_valid_pg_identifier(name: str) -> bool:
@@ -1055,6 +1061,13 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                     embedding_text = question + text
             else:
                 embedding_text = question + text
+            embedding_tags = config['tags']
+            doc_tags = doc_info['tags']
+            block_tags = []
+            for embedding_tag in embedding_tags:
+                if embedding_tag in doc_tags and doc_tags[embedding_tag] != '':
+                    tag_value = doc_tags[embedding_tag]
+                    block_tags.append(f'{tag_value}:{embedding_tag}')
             embedding = fetch_embedding(app_id, vendor, model_config, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
@@ -1064,8 +1077,12 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                 def insert_fun():
                     with lanying_pgvector.get_connection() as conn:
                         cursor = conn.cursor()
-                        insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-                        cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
+                        if len(embedding_tags) > 0:
+                            insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id, tags) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                            cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id, block_tags))
+                        else:
+                            insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id, tags) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                            cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
                         conn.commit()
                         cursor.close()
                         lanying_pgvector.put_connection(conn)
@@ -1638,6 +1655,10 @@ def get_doc(embedding_uuid, doc_id):
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
     info = redis_hgetall(redis, info_key)
     if "filename" in info:
+        if 'tags' not in info:
+            info['tags'] = []
+        else:
+            info['tags'] = lanying_utils.safe_json_loads(info['tags'], {})
         return info
     return None
 
