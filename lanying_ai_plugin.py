@@ -22,7 +22,7 @@ def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_bl
     max_block_size = 500
     overlapping_size = 0
     old_embedding_info = get_ai_plugin_embedding(app_id)
-    lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model)
+    lanying_embedding.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model, [])
     new_embedding_info = get_ai_plugin_embedding(app_id)
     if old_embedding_info.get('vendor', 'openai') != new_embedding_info.get('vendor', 'openai') or old_embedding_info.get('model', '') != new_embedding_info.get('model', ''):
         logging.info("configure_ai_plugin_embedding | regenerate function embedding")

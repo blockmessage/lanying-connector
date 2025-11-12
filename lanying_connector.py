@@ -300,9 +300,10 @@ def configure_embedding(service):
         overlapping_size = data.get('overlapping_size', 0)
         vendor = str(data.get('vendor', 'openai'))
         model = str(data.get('model', ''))
+        tags = data.get('tags', [])
         logging.info(f"configure_embedding | {data}")
         service_module = get_service_module(service)
-        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model)
+        result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model, tags)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:

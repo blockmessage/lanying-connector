@@ -27,6 +27,7 @@ import lanying_chatbot
 import lanying_config
 import lanying_ai_capsule
 import lanying_vendor
+import lanying_utils
 from pptx import Presentation
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
@@ -78,7 +79,8 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
         "preset_name":preset_name,
         "embedding_max_tokens":8192 if type == 'function' else 2048,
         "embedding_max_blocks":5,
-        "embedding_content": "请严格按照下面的知识回答我之后的所有问题:"
+        "embedding_content": "请严格按照下面的知识回答我之后的所有问题:",
+        'tags': '[]'
     })
     if type != 'function':
         redis.rpush(get_embedding_names_key(app_id), embedding_name)
@@ -315,7 +317,7 @@ def delete_embedding(app_id, embedding_name):
                 return True
     return False
 
-def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model):
+def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model, tags):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if embedding_name_info is None:
         return {'result':"error", 'message': 'embedding_name not exist'}
@@ -324,6 +326,26 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
     model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
     if model_config is None:
         return {'result':"error", 'message': 'model not exist'}
+    new_tags = []
+    tag_name_list = []
+    if isinstance(tags, list):
+        for tag in tags:
+            if isinstance(tag, dict):
+                if 'name' in tag and 'desc' in tag:
+                    new_name = str(tag['name'])
+                    new_desc = str(tag['desc'])
+                    if not is_valid_pg_identifier(new_name):
+                        return {'result':"error", 'message': 'tag name invalid'}
+                    if new_name in tag_name_list:
+                        return {'result':"error", 'message': 'tag name duplicated'}
+                    new_tag = {
+                        'name': new_name,
+                        'desc': new_desc
+                    }
+                    new_tags.append(new_tag)
+                    tag_name_list.append(new_name)
+    else:
+        return {'result':"error", 'message': 'tags must be list'}
     model = model_config['model']
     embedding_uuid = embedding_name_info["embedding_uuid"]
     old_embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
@@ -350,7 +372,8 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
         "embedding_name": embedding_name,
         "embedding_max_tokens":embedding_max_tokens,
         "embedding_max_blocks":embedding_max_blocks,
-        "embedding_content": embedding_content
+        "embedding_content": embedding_content,
+        "tags": json.dumps(new_tags, ensure_ascii=False)
     })
     if max_block_size > 0:
         update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"max_block_size", max_block_size)
@@ -370,6 +393,13 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
             re_run_all_doc_to_embedding(app_id, embedding_uuid)
         is_table_changed = True
     return {"result":"ok", "data":{"is_table_changed": is_table_changed}}
+
+def is_valid_pg_identifier(name: str) -> bool:
+    # 长度限制
+    if not (1 <= len(name) <= 32):
+        return False
+    # 必须以字母或下划线开头，后面只能是字母、数字或下划线
+    return re.match(r'^[a-z_][a-z0-9_]*$', name) is not None
 
 def re_run_all_doc_to_embedding(app_id, embedding_uuid):
     trace_id = create_trace_id()
@@ -684,6 +714,10 @@ def get_embedding_name_info(app_id, embedding_name):
     key = get_embedding_name_key(app_id, embedding_name)
     info = redis_hgetall(redis, key)
     if "embedding_uuid" in info:
+        if 'tags' not in info:
+            info['tags'] = []
+        else:
+            info['tags'] = lanying_utils.safe_json_loads(info['tags'], [])
         return info
     return None
 
