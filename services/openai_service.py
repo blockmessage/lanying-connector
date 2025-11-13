@@ -3026,7 +3026,7 @@ def search_on_fulldoc_by_preset(msg, config, preset_name, doc_id, new_content):
 def search_by_preset(msg, config, preset_name, new_content):
     return {'result':'continue', 'command_ext':{'preset_name':preset_name, "new_content":new_content}}
 
-def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_depth, filters, urls, generate_lanying_links):
+def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_depth, filters, urls, generate_lanying_links, tags):
     config = lanying_config.get_lanying_connector(app_id)
     if lanying_chatbot.is_chatbot_mode(app_id):
         user_id = lanying_chatbot.get_default_user_id(app_id)
@@ -3039,7 +3039,8 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
     if embedding_info:
         trace_id = lanying_embedding.create_trace_id()
         opts = {
-            'generate_lanying_links': generate_lanying_links == True
+            'generate_lanying_links': generate_lanying_links == True,
+            'tags': tags
         }
         if type == 'site':
             embedding_uuid = embedding_info['embedding_uuid']
@@ -3048,6 +3049,7 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
             site_task_id = lanying_url_loader.create_task(urls)
             lanying_embedding.update_task_field(embedding_uuid, task_id, "site_task_id", site_task_id)
             lanying_embedding.update_task_field(embedding_uuid, task_id, "generate_lanying_links", str(generate_lanying_links == True))
+            lanying_embedding.update_task_field(embedding_uuid, task_id, "tags", json.dumps(tags, ensure_ascii=False))
             prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, urls, 0, limit, task_id, max_depth, filters, opts])
         else:
             result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit, opts])
@@ -4338,6 +4340,52 @@ def set_doc_metadata():
     lanying_embedding.set_doc_metadata(app_id, embedding_name, doc_id, metadata)
     resp = make_response({'code':200, 'data':{'success':True}})
     return resp
+
+@bp.route("/service/openai/get_doc_tags", methods=["POST"])
+def get_doc_tags():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    embedding_name = str(data['embedding_name'])
+    doc_id = str(data['doc_id'])
+    result = lanying_embedding.get_doc_tags(app_id, embedding_name, doc_id)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
+@bp.route("/service/openai/set_doc_tags", methods=["POST"])
+def set_doc_tags():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    embedding_name = str(data['embedding_name'])
+    doc_id = str(data['doc_id'])
+    tags = data.get('tags', {})
+    if not isinstance(tags, dict):
+        resp = make_response({'code':400, 'message': 'tags must be dict'})
+        return resp
+    new_tags = {}
+    for k,v in tags.items():
+        if isinstance(k, str) and isinstance(v, str):
+            new_tags[k] = v
+        else:
+            resp = make_response({'code':400, 'message': 'tags must be dict(string,string)'})
+            return resp
+    result = lanying_embedding.set_doc_tags(app_id, embedding_name, doc_id, new_tags)
+    if result['result'] == 'ok':
+        resp = make_response({'code':200, 'data': result.get('data', {})})
+        return resp
+    else:
+        resp = make_response({'code':400, 'message': result['message']})
+        return resp
 
 @bp.route("/service/openai/get_app_capsule_quota_incomes", methods=["POST"])
 def get_app_capsule_quota_incomes():

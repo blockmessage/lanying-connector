@@ -30,6 +30,7 @@ import lanying_vendor
 import lanying_utils
 from pptx import Presentation
 from lanying_async import executor
+import lanying_slack
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -80,8 +81,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
         "preset_name":preset_name,
         "embedding_max_tokens":8192 if type == 'function' else 2048,
         "embedding_max_blocks":5,
-        "embedding_content": "请严格按照下面的知识回答我之后的所有问题:",
-        'tags': '[]'
+        "embedding_content": "请严格按照下面的知识回答我之后的所有问题:"
     })
     if type != 'function':
         redis.rpush(get_embedding_names_key(app_id), embedding_name)
@@ -111,7 +111,7 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     elif db_type == 'pgvector':
         with lanying_pgvector.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags text[] DEFAULT '{{}}');")
+            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
             conn.commit()
@@ -134,7 +134,7 @@ def maybe_add_table_tags_internal(embedding_uuid, db_table_name):
         logging.info(f"maybe_add_table_tags_internal start for embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
         with lanying_pgvector.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"ALTER TABLE {db_table_name} ADD COLUMN IF NOT EXISTS tags text[] DEFAULT '{{}}';")
+            cursor.execute(f"ALTER TABLE {db_table_name} ADD COLUMN IF NOT EXISTS tags jsonb DEFAULT '{{}}'::jsonb;")
             conn.commit()
             cursor.close()
             lanying_pgvector.put_connection(conn)
@@ -157,7 +157,7 @@ def re_create_embedding_table(embedding_uuid):
             if db_type == 'pgvector':
                 with lanying_pgvector.get_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags text[] DEFAULT '{{}}');")
+                    cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
                     cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
                     cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
                     conn.commit()
@@ -193,7 +193,7 @@ def migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name):
     with lanying_pgvector.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(f"DROP TABLE IF EXISTS {db_table_name};")
-        cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags text[] DEFAULT '{{}}');")
+        cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
         cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
         cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
         conn.commit()
@@ -394,16 +394,17 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
         "embedding_name": embedding_name,
         "embedding_max_tokens":embedding_max_tokens,
         "embedding_max_blocks":embedding_max_blocks,
-        "embedding_content": embedding_content,
-        "tags": json.dumps(new_tags, ensure_ascii=False)
+        "embedding_content": embedding_content
     })
     if max_block_size > 0:
         update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"max_block_size", max_block_size)
     update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"overlapping_size", overlapping_size)
     update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"vendor", vendor)
     update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"model", model)
+    update_embedding_uuid_info(embedding_name_info['embedding_uuid'],"tags", json.dumps(new_tags, ensure_ascii=False))
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
+    maybe_add_table_tags(embedding_uuid)
     new_embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
     is_table_changed = False
     if old_embedding_uuid_info['vendor'] != new_embedding_uuid_info['vendor'] or old_embedding_uuid_info['model'] != new_embedding_uuid_info['model']:
@@ -414,7 +415,6 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
             logging.info(f"configure_embedding re_run_all_doc_to_embedding: app_id:{app_id}, embedding_uuid:{embedding_uuid}")
             re_run_all_doc_to_embedding(app_id, embedding_uuid)
         is_table_changed = True
-    maybe_add_table_tags(embedding_uuid)
     return {"result":"ok", "data":{"is_table_changed": is_table_changed}}
 
 def is_valid_pg_identifier(name: str) -> bool:
@@ -449,13 +449,13 @@ def get_embedding_info_with_details(app_id, embedding_name):
         embedding_info['admin_user_ids'] = embedding_info['admin_user_ids'].split(',')
         embedding_uuid = embedding_info["embedding_uuid"]
         embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
-        for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size", "vendor", "model"]:
+        for key in ["max_block_size","algo","embedding_count","embedding_size","text_size", "token_cnt", "preset_name", "embedding_max_tokens", "embedding_max_blocks", "embedding_content", "char_cnt", "storage_file_size", "overlapping_size", "vendor", "model", "tags"]:
             if key in embedding_uuid_info:
                 embedding_info[key] = embedding_uuid_info[key]
         if "embedding_content" not in embedding_info:
             embedding_info["embedding_content"] = "请严格按照下面的知识回答我之后的所有问题:"
         return embedding_info
-    
+
 def list_embedding_names(app_id):
     redis = lanying_redis.get_redis_stack_connection()
     list_key = get_embedding_names_key(app_id)
@@ -737,10 +737,6 @@ def get_embedding_name_info(app_id, embedding_name):
     key = get_embedding_name_key(app_id, embedding_name)
     info = redis_hgetall(redis, key)
     if "embedding_uuid" in info:
-        if 'tags' not in info:
-            info['tags'] = []
-        else:
-            info['tags'] = lanying_utils.safe_json_loads(info['tags'], [])
         return info
     return None
 
@@ -763,6 +759,10 @@ def get_embedding_uuid_info(embedding_uuid):
                 update_embedding_uuid_info(embedding_uuid, "model", model)
             else:
                 info['model'] = ''
+        if 'tags' not in info:
+            info['tags'] = []
+        else:
+            info['tags'] = lanying_utils.safe_json_loads(info['tags'], [])
         return info
     return None
 
@@ -1063,11 +1063,10 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                 embedding_text = question + text
             embedding_tags = config['tags']
             doc_tags = doc_info['tags']
-            block_tags = []
+            block_tags = {}
             for embedding_tag in embedding_tags:
-                if embedding_tag in doc_tags and doc_tags[embedding_tag] != '':
-                    tag_value = doc_tags[embedding_tag]
-                    block_tags.append(f'{tag_value}:{embedding_tag}')
+                if embedding_tag in doc_tags and isinstance(doc_tags[embedding_tag], str):
+                    block_tags[embedding_tag] = doc_tags[embedding_tag]
             embedding = fetch_embedding(app_id, vendor, model_config, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
@@ -1081,7 +1080,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                             insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id, tags) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                             cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id, block_tags))
                         else:
-                            insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id, tags) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                            insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                             cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
                         conn.commit()
                         cursor.close()
@@ -1095,6 +1094,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                         logging.exception(e)
                         if i == retry_time -1:
                             logging.info(f"insert embedding fail at last retry:{i}")
+                            lanying_slack.async_send_message_with_filter(f"【GrowAI】插入embedding失败 | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, block_id:{block_id}", "insert_embedding_failed")
                             raise e
                         else:
                             logging.info(f"insert embedding fail, schedule retry:{i}")
@@ -1458,6 +1458,10 @@ def get_task(embedding_uuid, task_id):
     info_key = get_embedding_task_info_key(embedding_uuid, task_id)
     info = redis_hgetall(redis, info_key)
     if "type" in info:
+        if 'tags' not in info:
+            info['tags'] = {}
+        else:
+            info['tags'] = lanying_utils.safe_json_loads(info['tags'], {})
         return info
     return None
 
@@ -1518,6 +1522,7 @@ def create_doc_info(app_id, embedding_uuid, filename, object_name, doc_id, file_
             link_res = generate_lanying_links(app_id, filename)
             if link_res['result'] == 'ok':
                 lanying_link = link_res['link']
+    tags = opts.get('tags', {})
     logging.info(f"create_doc_info | app_id:{app_id}, embedding_uuid:{embedding_uuid}, filename:{filename}, doc_id:{doc_id}, type:{type}, lanying_link:{lanying_link}, opts:{opts}")
     redis.hmset(info_key, {"filename":filename,
                            "object_name":object_name,
@@ -1528,6 +1533,7 @@ def create_doc_info(app_id, embedding_uuid, filename, object_name, doc_id, file_
                            "source": source,
                            "vendor": vendor,
                            "lanying_link": lanying_link,
+                           'tags': json.dumps(tags, ensure_ascii=False),
                            "status": "wait"})
 
 def generate_lanying_links(app_id, long_link):
@@ -1656,7 +1662,7 @@ def get_doc(embedding_uuid, doc_id):
     info = redis_hgetall(redis, info_key)
     if "filename" in info:
         if 'tags' not in info:
-            info['tags'] = []
+            info['tags'] = {}
         else:
             info['tags'] = lanying_utils.safe_json_loads(info['tags'], {})
         return info
@@ -1693,6 +1699,66 @@ def set_doc_metadata(app_id, embedding_name, doc_id, metadata):
         doc_info = get_doc(embedding_uuid, doc_id)
         if doc_info:
             update_doc_field(embedding_uuid, doc_id, "metadata", json.dumps(metadata, ensure_ascii=False))
+
+def get_doc_tags(app_id, embedding_name, doc_id):
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info is None:
+        return {'result': 'error', 'message': 'embedding name not exist'}
+    embedding_uuid = embedding_name_info['embedding_uuid']
+    doc_info = get_doc(embedding_uuid, doc_id)
+    if doc_info is None:
+        return {'result': 'error', 'message': 'doc_id not exist'}
+    return {
+        'result': 'ok',
+        'data': {
+            'tags' : doc_info['tags']
+        }
+    }
+
+def set_doc_tags(app_id, embedding_name, doc_id, tags):
+    embedding_name_info = get_embedding_name_info(app_id, embedding_name)
+    if embedding_name_info:
+        embedding_uuid = embedding_name_info['embedding_uuid']
+        embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
+        if embedding_uuid_info is None:
+            return {'result': 'error', 'message': 'embedding_name not exist'}
+        doc_info = get_doc(embedding_uuid, doc_id)
+        if doc_info:
+            update_doc_field(embedding_uuid, doc_id, "tags", json.dumps(tags, ensure_ascii=False))
+            update_doc_block_tags_internal(app_id, embedding_uuid, doc_id, tags, embedding_uuid_info)
+            return {'result': 'ok', 'data': {'success': True}}
+        else:
+            return {'result': 'error', 'message': 'doc_id not exist'}
+    else:
+        return {'result': 'error', 'message': 'embedding_name not exist'}
+
+def update_doc_block_tags_internal(app_id, embedding_uuid, doc_id, tags, embedding_uuid_info):
+    executor.submit(update_doc_block_tags_internal, app_id, embedding_uuid, doc_id, tags, embedding_uuid_info)
+
+def update_doc_block_tags_internal(app_id, embedding_uuid, doc_id, tags, embedding_uuid_info):
+    db_table_name = embedding_uuid_info.get('db_table_name', '')
+    def update_fun():
+        with lanying_pgvector.get_connection() as conn:
+            cursor = conn.cursor()
+            update_query = f"Update {db_table_name} set tags = %s where doc_id = %s;"
+            cursor.execute(update_query, (tags, doc_id))
+            conn.commit()
+            cursor.close()
+            lanying_pgvector.put_connection(conn)
+    retry_time = 10
+    for i in range(retry_time):
+        try:
+            update_fun()
+            break
+        except Exception as e:
+            logging.exception(e)
+            if i == retry_time -1:
+                logging.info(f"update_doc_block_tags fail at last retry:{i}")
+                lanying_slack.async_send_message_with_filter(f"【GrowAI】更新doc tags 失败 | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, tags:{tags}", "update_doc_tags")
+                raise e
+            else:
+                logging.info(f"update_doc_block_tags fail, schedule retry:{i}")
+            time.sleep(2)
 
 def check_storage_size(app_id):
     redis = lanying_redis.get_redis_stack_connection()

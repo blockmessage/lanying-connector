@@ -18,6 +18,7 @@ import json
 import lanying_ai_plugin
 import lanying_grow_ai
 import lanying_schedule
+import lanying_utils
 from celery.schedules import crontab
 
 download_dir = os.getenv("EMBEDDING_DOWNLOAD_DIR", "/data/download")
@@ -201,7 +202,11 @@ def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
             ttl = 20
             is_finish = True
             generate_lanying_links = task_info.get('generate_lanying_links', 'False') == 'True'
-            opts = {'generate_lanying_links': generate_lanying_links}
+            tags = task_info['tags']
+            opts = {
+                'generate_lanying_links': generate_lanying_links,
+                'tags': tags
+            }
             for url,_ in lanying_embedding.get_task_details_iterator(embedding_uuid, task_id):
                 ttl -= 1
                 urls.append(url)

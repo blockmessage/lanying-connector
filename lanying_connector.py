@@ -406,6 +406,18 @@ def add_doc_to_embedding(service):
         app_id = data['app_id']
         embedding_name = data['embedding_name']
         type = data.get('type', 'file')
+        raw_tags = data.get('tags', {})
+        tags = {}
+        if isinstance(raw_tags, dict):
+            for tag_name,tag_value in raw_tags:
+                if isinstance(tag_name, str) and isinstance(tag_value, str):
+                    tags[tag_name] = tag_value
+                else:
+                    resp = app.make_response({'code':400, 'message':'tag name and value must be string'})
+                    return resp
+        else:
+            resp = app.make_response({'code':400, 'message':'tags must be string dict'})
+            return resp
         generate_lanying_links = data.get('generate_lanying_links', False)
         if type in ["file", "url", "site"]:
             limit = data.get('limit', -1)
@@ -425,9 +437,9 @@ def add_doc_to_embedding(service):
             else:
                 name = data.get('file_name','')
                 content = data.get('file_url','')
-            logging.info(f"add_doc_to_embedding | {data}")
+            logging.info(f"add_doc_to_embedding | {data}, tags:{tags}")
             service_module = get_service_module(service)
-            service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit, max_depth, filters, urls, generate_lanying_links)
+            service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit, max_depth, filters, urls, generate_lanying_links, tags)
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
