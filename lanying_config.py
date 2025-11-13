@@ -22,11 +22,12 @@ def init():
     if etcdServer != None and etcdPort != None:
         global mode
         global etcd
-        mode = 'etcd'
-        etcd = etcd3.client(host = etcdServer, port=etcdPort)
-        for (value, meta) in etcd.get_prefix(prefix):
-            configs[meta.key.decode("utf-8") ] = parse_value(value)
-        etcd.add_watch_prefix_callback(prefix, key_changed)
+        if etcd is None:
+            mode = 'etcd'
+            etcd = etcd3.client(host = etcdServer, port=etcdPort)
+            for (value, meta) in etcd.get_prefix(prefix):
+                configs[meta.key.decode("utf-8") ] = parse_value(value)
+            etcd.add_watch_prefix_callback(prefix, key_changed)
 
 def parse_value(value):
     try:
