@@ -57,6 +57,9 @@ def send_grafana_message(text, retry_times):
 def async_send_grafana_message(text):
     executor.submit(send_grafana_message, text, 3)
 
+def async_send_grafana_message_with_filter(text, filter_name):
+    executor.submit(send_grafana_message_with_filter, text, filter_name)
+
 def async_send_message_with_filter(text, filter_name):
     executor.submit(send_message_with_filter, text, filter_name)
 
@@ -77,4 +80,19 @@ def send_message_with_filter(text, filter_name):
         if count % 100 == 0:
             async_send_message(text)
 
-        
+def send_grafana_message_with_filter(text, filter_name):
+    date_str = datetime.now().strftime('%Y%m%d')
+    redis = lanying_redis.get_redis_connection()
+    key = f"lanying_connector:slack_notify:{date_str}:{filter_name}"
+    count = redis.incr(key)
+    text = f"{text} [count: {count}]"
+    if count == 1:
+        redis.expire(key, 86400 * 3)
+    if count < 20:
+        async_send_grafana_message(text)
+    elif count < 1000:
+        if count % 10 == 0:
+            async_send_grafana_message(text)
+    else:
+        if count % 100 == 0:
+            async_send_grafana_message(text)

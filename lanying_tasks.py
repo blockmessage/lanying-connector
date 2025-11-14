@@ -406,6 +406,8 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
             exception_str = str(e)
             if exception_str in ["bad_authorization","no_quota", "deduct_failed"]:
                 reason = exception_str
+            else:
+                logging.error("error:", e)
         except Exception as ee:
             pass
         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")

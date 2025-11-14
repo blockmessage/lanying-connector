@@ -2,6 +2,7 @@ import lanying_config
 import lanying_chatbot
 import lanying_embedding
 import json
+import lanying_pgvector
 lanying_config.init()
 
 cache = {}
@@ -13,7 +14,7 @@ def set_cache(key, value):
     cache[key] = value
 
 def get_cache(key):
-    return cache.get(key)
+    return cache[key]
 
 def info():
     while True:
@@ -40,7 +41,18 @@ def dump_results(list):
             print('')
 
 def info1(any):
-    rules = [info_chatbot_ids, info_embedding_ids, info_lanying_connector, info_embedding_uuid_info, info_embedding_doc_id_list, info_chatbot, info_embedding_name_info, info_embedding_doc_info]
+    rules = [info_chatbot_ids,
+             info_embedding_ids,
+             info_lanying_connector,
+             info_embedding_uuid_info,
+             info_embedding_doc_id_list_by_embedding_name,
+             info_embedding_doc_id_list,
+             info_chatbot,
+             info_embedding_name_info,
+             info_embedding_doc_info,
+             info_embedding_doc_block_ids,
+             info_embedding_doc_block_info
+             ]
     results = []
     for rule in rules:
         try:
@@ -155,6 +167,13 @@ def info_embedding_uuid_info(embedding_uuid):
                 'embedding_uuid_info': embedding_uuid_info
             }
         }
+def info_embedding_doc_id_list_by_embedding_name(embedding_name):
+    app_id = get_cache('app_id')
+    if is_app_id(app_id):
+        embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+        if embedding_name_info:
+            embedding_uuid = embedding_name_info['embedding_uuid']
+            return info_embedding_doc_id_list(embedding_uuid)
 
 def info_embedding_doc_id_list(embedding_uuid):
     embedding_doc_id_list = lanying_embedding.get_embedding_doc_id_list(embedding_uuid, 0, -1)
@@ -170,12 +189,67 @@ def info_embedding_doc_info(doc_id):
     embedding_uuid = get_cache('embedding_uuid')
     doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
     if doc_info:
+        set_cache('doc_id', doc_id)
         return {
             'result': 'ok',
             'data': {
                 'doc_info': doc_info
             }
         }
+
+def info_embedding_doc_block_ids(doc_id):
+    embedding_uuid = get_cache('embedding_uuid')
+    doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
+    if doc_info:
+        embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
+        db_table_name = embedding_uuid_info['db_table_name']
+        count = 200
+        with lanying_pgvector.get_connection() as conn:
+            cursor = conn.cursor()
+            query = f"SELECT block_id FROM {db_table_name} where doc_id = %s ORDER BY block_id LIMIT %s;"
+            args =  [doc_id, count]
+            cursor.execute(query, args)
+            rows = cursor.fetchall()
+            cursor.close()
+            lanying_pgvector.put_connection(conn)
+            ret = []
+            for row in rows:
+                ret.append(row[0])
+            return {
+                'result': 'ok',
+                'data': {
+                    'embedding_doc_block_ids': ret
+                }
+            }
+
+def info_embedding_doc_block_info(block_id):
+    doc_id = get_cache('doc_id')
+    if block_id.startswith(doc_id):
+        embedding_uuid = get_cache('embedding_uuid')
+        embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
+        db_table_name = embedding_uuid_info['db_table_name']
+        count = 10
+        with lanying_pgvector.get_connection() as conn:
+            cursor = conn.cursor()
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,tags FROM {db_table_name} where doc_id = %s and block_id = %s LIMIT %s;"
+            args =  [doc_id, block_id, count]
+            cursor.execute(query, args)
+            rows = cursor.fetchall()
+            cursor.close()
+            lanying_pgvector.put_connection(conn)
+            names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id', 'tags']
+            ret = []
+            for row in rows:
+                data = {}
+                for index,name in enumerate(names):
+                    data[name] = row[index]
+                ret.append(data)
+            return {
+                'result': 'ok',
+                'data': {
+                    'embedding_doc_block_id_info': ret
+                }
+            }
 
 def info_lanying_connector(app_id):
     lanying_connector = lanying_config.get_lanying_connector(app_id)

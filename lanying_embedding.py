@@ -31,6 +31,7 @@ import lanying_utils
 from pptx import Presentation
 from lanying_async import executor
 import lanying_slack
+from psycopg2.extras import Json
 
 global_embedding_rate_limit = int(os.getenv("EMBEDDING_RATE_LIMIT", "30"))
 global_embedding_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
@@ -360,6 +361,8 @@ def configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, emb
                         return {'result':"error", 'message': 'tag name invalid'}
                     if new_name in tag_name_list:
                         return {'result':"error", 'message': 'tag name duplicated'}
+                    if len(new_name) > 64:
+                        return {'result':"error", 'message': 'tag name length must less than 64'}
                     new_tag = {
                         'name': new_name,
                         'desc': new_desc
@@ -496,13 +499,13 @@ def show_blocks(app_id, embedding_name, doc_id, count):
         db_table_name = embedding_uuid_info['db_table_name']
         with lanying_pgvector.get_connection() as conn:
             cursor = conn.cursor()
-            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id FROM {db_table_name} where doc_id = %s ORDER BY block_id LIMIT %s;"
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,tags FROM {db_table_name} where doc_id = %s ORDER BY block_id LIMIT %s;"
             args =  [doc_id, count]
             cursor.execute(query, args)
             rows = cursor.fetchall()
             cursor.close()
             lanying_pgvector.put_connection(conn)
-            names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id']
+            names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id', 'tags']
             ret = []
             for row in rows:
                 data = {}
@@ -1065,8 +1068,9 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             doc_tags = doc_info['tags']
             block_tags = {}
             for embedding_tag in embedding_tags:
-                if embedding_tag in doc_tags and isinstance(doc_tags[embedding_tag], str):
-                    block_tags[embedding_tag] = doc_tags[embedding_tag]
+                tag_name = embedding_tag['name']
+                if tag_name in doc_tags and isinstance(doc_tags[tag_name], str):
+                    block_tags[tag_name] = doc_tags[tag_name]
             embedding = fetch_embedding(app_id, vendor, model_config, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
@@ -1078,7 +1082,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                         cursor = conn.cursor()
                         if len(embedding_tags) > 0:
                             insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id, tags) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-                            cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id, block_tags))
+                            cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id, Json(block_tags)))
                         else:
                             insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                             cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
@@ -1094,7 +1098,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                         logging.exception(e)
                         if i == retry_time -1:
                             logging.info(f"insert embedding fail at last retry:{i}")
-                            lanying_slack.async_send_message_with_filter(f"【GrowAI】插入embedding失败 | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, block_id:{block_id}", "insert_embedding_failed")
+                            lanying_slack.async_send_grafana_message_with_filter(f"【GrowAI】插入embedding失败 | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, block_id:{block_id}", "insert_embedding_failed")
                             raise e
                         else:
                             logging.info(f"insert embedding fail, schedule retry:{i}")
@@ -1754,7 +1758,7 @@ def update_doc_block_tags_internal(app_id, embedding_uuid, doc_id, tags, embeddi
             logging.exception(e)
             if i == retry_time -1:
                 logging.info(f"update_doc_block_tags fail at last retry:{i}")
-                lanying_slack.async_send_message_with_filter(f"【GrowAI】更新doc tags 失败 | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, tags:{tags}", "update_doc_tags")
+                lanying_slack.async_send_grafana_message_with_filter(f"【GrowAI】更新doc tags 失败 | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, tags:{tags}", "update_doc_tags")
                 raise e
             else:
                 logging.info(f"update_doc_block_tags fail, schedule retry:{i}")
