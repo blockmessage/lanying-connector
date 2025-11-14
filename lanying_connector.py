@@ -409,7 +409,7 @@ def add_doc_to_embedding(service):
         raw_tags = data.get('tags', {})
         tags = {}
         if isinstance(raw_tags, dict):
-            for tag_name,tag_value in raw_tags:
+            for tag_name,tag_value in raw_tags.items():
                 if isinstance(tag_name, str) and isinstance(tag_value, str):
                     tags[tag_name] = tag_value
                 else:

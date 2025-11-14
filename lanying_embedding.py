@@ -1741,11 +1741,14 @@ def update_doc_block_tags_internal(app_id, embedding_uuid, doc_id, tags, embeddi
 
 def update_doc_block_tags_internal(app_id, embedding_uuid, doc_id, tags, embedding_uuid_info):
     db_table_name = embedding_uuid_info.get('db_table_name', '')
+    if len(embedding_uuid_info['tags']) == 0:
+        logging.info(f"update_doc_block_tags_internal skip for no tags | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, tags:{tags}")
+        return
     def update_fun():
         with lanying_pgvector.get_connection() as conn:
             cursor = conn.cursor()
             update_query = f"Update {db_table_name} set tags = %s where doc_id = %s;"
-            cursor.execute(update_query, (tags, doc_id))
+            cursor.execute(update_query, (Json(tags), doc_id))
             conn.commit()
             cursor.close()
             lanying_pgvector.put_connection(conn)
