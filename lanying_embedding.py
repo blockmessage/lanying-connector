@@ -965,26 +965,37 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     total_tokens = 0
     redis = lanying_redis.get_redis_stack_connection()
     columns = df.columns.to_list()
-    if 'text' in columns or ('question' in columns and 'answer' in columns):
+    tag_prefix = 'custom_tag_'
+    has_custom_tag = any(s.startswith(tag_prefix) for s in columns)
+    if 'question' in columns and 'answer' in columns:
         for i, row in df.iterrows():
             if 'question' in row and 'answer' in row:
-                block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''))
+                tags = {}
+                for key, value in row.items():
+                    if key.startswith(tag_prefix):
+                        tag_name = key[len(tag_prefix):]
+                        tags[tag_name] = str(value)
+                block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''), tags)
                 total_tokens += block_tokens
                 total_blocks += len(block_blocks)
                 update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
                 insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
-            # elif 'text' in row and 'function' in row:
-            #     block_tokens, block_blocks = process_function(config, str(row['text']), str(row['function']))
-            #     total_tokens += block_tokens
-            #     total_blocks += len(block_blocks)
-            #     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
-            #     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
-            elif 'text' in row:
-                block_tokens, block_blocks = process_block(config, str(row['text']))
-                total_tokens += block_tokens
-                total_blocks += len(block_blocks)
-                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
-                insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+    elif has_custom_tag:
+        for i, row in df.iterrows():
+            texts = []
+            tags = {}
+            for key, value in row.items():
+                if key.startswith(tag_prefix):
+                    tag_name = key[len(tag_prefix):]
+                    tags[tag_name] = str(value)
+                else:
+                    texts.append(f"{key}: {value}\n")
+            content = "".join(texts)
+            block_tokens, block_blocks = process_block(config, content, tags)
+            total_tokens += block_tokens
+            total_blocks += len(block_blocks)
+            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+            insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
     else:
         df = pd.read_csv(filename, header=None)
         lines = []
@@ -1011,26 +1022,37 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
         logging.info(f"embeddings: size={size}, sheet_name={sheet_name}")
         redis = lanying_redis.get_redis_stack_connection()
         columns = df.columns.to_list()
-        if 'text' in columns or ('question' in columns and 'answer' in columns):
+        tag_prefix = 'custom_tag_'
+        has_custom_tag = any(s.startswith(tag_prefix) for s in columns)
+        if 'question' in columns and 'answer' in columns:
             for i, row in df.iterrows():
                 if 'question' in row and 'answer' in row:
-                    block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''))
+                    tags = {}
+                    for key, value in row.items():
+                        if key.startswith(tag_prefix):
+                            tag_name = key[len(tag_prefix):]
+                            tags[tag_name] = str(value)
+                    block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''), tags)
                     total_tokens += block_tokens
                     total_blocks += len(block_blocks)
                     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
                     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
-                # elif 'text' in row and 'function' in row:
-                #     block_tokens, block_blocks = process_function(config, str(row['text']), str(row['function']))
-                #     total_tokens += block_tokens
-                #     total_blocks += len(block_blocks)
-                #     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
-                #     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
-                elif 'text' in row:
-                    block_tokens, block_blocks = process_block(config, str(row['text']))
-                    total_tokens += block_tokens
-                    total_blocks += len(block_blocks)
-                    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
-                    insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
+        elif has_custom_tag:
+            for i, row in df.iterrows():
+                texts = []
+                tags = {}
+                for key, value in row.items():
+                    if key.startswith(tag_prefix):
+                        tag_name = key[len(tag_prefix):]
+                        tags[tag_name] = str(value)
+                    else:
+                        texts.append(f"{key}: {value}\n")
+                content = "".join(texts)
+                block_tokens, block_blocks = process_block(config, content, tags)
+                total_tokens += block_tokens
+                total_blocks += len(block_blocks)
+                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
         else:
             df = pd.read_excel(filename, sheet_name=sheet_name, header=None)
             lines = []
@@ -1059,20 +1081,21 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
     question_answer_index_mode = config.get("question_answer_index_mode", "all")
     logging.info(f"insert_embeddings | app_id:{app_id}, embedding_uuid:{embedding_uuid}, origin_filename:{origin_filename}, doc_id:{doc_id}, is_dry_run:{is_dry_run}, block_count:{len(blocks)}, dry_run_from_config:{config.get('dry_run', 'None')}, vendor:{vendor}, model:{model}, max_block_size:{max_block_size}")
     for block in blocks:
-        if len(block) == 2:
-            token_cnt,text = block
+        if len(block) == 3:
+            token_cnt,text, custom_tags = block
             question = ''
             function = ''
             reference = ''
             advised_block_id = ''
-        elif len(block) == 5 and block[1] == 'question':
-            token_cnt, _, question, text, reference = block
+        elif len(block) == 6 and block[1] == 'question':
+            token_cnt, _, question, text, reference, custom_tags = block
             function = ''
             advised_block_id = ''
         elif len(block) == 5 and block[1] == 'function':
             token_cnt, _, text, function, advised_block_id = block
             question = ''
             reference = ''
+            custom_tags = {}
         else:
             raise Exception(f"bad_block: {block}")
         doc_info = get_doc(embedding_uuid, doc_id)
@@ -1093,6 +1116,8 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                 tag_name = embedding_tag['name']
                 if tag_name in doc_tags and isinstance(doc_tags[tag_name], str):
                     block_tags[tag_name] = doc_tags[tag_name]
+                if tag_name in custom_tags and isinstance(custom_tags[tag_name], str):
+                    block_tags[tag_name] = custom_tags[tag_name]
             embedding = fetch_embedding(app_id, vendor, model_config, embedding_text, is_dry_run)
             key = get_embedding_data_key(embedding_uuid, block_id)
             embedding_bytes = np.array(embedding).tobytes()
@@ -1187,7 +1212,7 @@ def fetch_embedding(app_id, vendor, model_config, text, is_dry_run=False, retry 
             return fetch_embedding(app_id, vendor, model_config, text, is_dry_run, retry-1, sleep * sleep_multi, sleep_multi)
         raise e
 
-def process_block(config, block):
+def process_block(config, block, tags = {}):
     block = remove_space_line(block)
     block = block.replace('\0','')
     chunks = []
@@ -1207,10 +1232,10 @@ def process_block(config, block):
         if len(text) > 0:
             token_count = num_of_tokens(text)
             total_tokens += token_count
-            chunks.append((token_count,text))
+            chunks.append((token_count,text, tags))
     return (total_tokens, chunks)
 
-def process_question(config, question, answer, reference):
+def process_question(config, question, answer, reference, tags = {}):
     question_token_cnt = num_of_tokens(question)
     answer_token_cnt = num_of_tokens(answer)
     token_limit = embedding_model_token_limit()
@@ -1218,7 +1243,7 @@ def process_question(config, question, answer, reference):
     if question_token_cnt == 0 or answer_token_cnt == 0:
         return (0,[])
     if token_cnt <= token_limit:
-        return (token_cnt, [(token_cnt, "question", question, answer, reference)])
+        return (token_cnt, [(token_cnt, "question", question, answer, reference, tags)])
     else:
         logging.info(f"process_question | skip too large question answer: question_token_cnt:{question_token_cnt}, answer_token_cnt:{answer_token_cnt}")
         return (0, [])
