@@ -415,7 +415,7 @@ def chat(prepare_info, preset, model_config):
                 def generator():
                     for line in response.iter_lines():
                         line_str = line.decode('utf-8')
-                        logging.info(f"stream got line:{line_str}|")
+                        # logging.info(f"stream got line:{line_str}|")
                         if line_str.startswith('data:'):
                             try:
                                 data = json.loads(line_str[5:])
@@ -431,7 +431,7 @@ def chat(prepare_info, preset, model_config):
                                             'usage' : data['usage']
                                         }
                                 if delta:
-                                    logging.info(f"yield delta:{delta}")
+                                    # logging.info(f"yield delta:{delta}")
                                     yield delta
                             except Exception as e:
                                 pass

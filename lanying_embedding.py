@@ -464,13 +464,13 @@ def list_embedding_names(app_id):
     list_key = get_embedding_names_key(app_id)
     return redis_lrange(redis, list_key, 0, -1)
 
-def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, doc_ids, check_storage_limit = True):
+def search_embeddings(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, doc_ids, check_storage_limit, embedding_condition):
     if max_blocks > 100:
         max_blocks = 100
     result = []
     for extra_block_num in [10, 100, 500, 2000, 5000]:
         page_size = max_blocks+extra_block_num
-        is_finish,result = search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids, check_storage_limit)
+        is_finish,result = search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids, check_storage_limit, embedding_condition)
         if is_finish:
             break
         logging.info(f"search_embeddings not finish: app_id:{app_id}, page_size:{page_size}, extra_block_num:{extra_block_num}")
@@ -514,7 +514,7 @@ def show_blocks(app_id, embedding_name, doc_id, count):
                 ret.append(data)
             return ret
 
-def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids):
+def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids, sql, param):
     page_size = int(page_size)
     db_table_name = embedding_uuid_info['db_table_name']
     db_ivfflat_probes = int(embedding_uuid_info.get('db_ivfflat_probes', '32'))
@@ -523,22 +523,33 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
     if embedding_count < max_embedding_count and db_ivfflat_probes < 100:
         logging.info(f"using full table scan: embedding_count:{embedding_count}")
         db_ivfflat_probes = 100
+    embedding_tags = embedding_uuid_info['tags']
+    and_sql = ""
+    where_sql = ""
+    sql_part_tags = ""
+    sql_extra_fields = []
+    if len(sql) > 0:
+        and_sql = f" AND ({sql})"
+        where_sql = f" where {sql}"
+    if len(embedding_tags) > 0:
+        sql_part_tags = ",tags"
+        sql_extra_fields = ['tags']
     start_time = time.time()
     with lanying_pgvector.get_connection() as conn:
         cursor = conn.cursor()
         embedding_str = f"{embedding}"
         if len(doc_ids) > 0:
-            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score FROM {db_table_name} where doc_id in %s ORDER BY embedding <=> %s LIMIT %s;"
-            args =  [embedding_str, tuple(doc_ids), embedding_str, page_size]
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score {sql_part_tags} FROM {db_table_name} where doc_id in %s {and_sql} ORDER BY embedding <=> %s LIMIT %s;"
+            args =  [embedding_str, tuple(doc_ids)] + param + [embedding_str, page_size]
         elif doc_id == "":
-            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score FROM {db_table_name} ORDER BY embedding <=> %s LIMIT %s;"
-            args = [embedding_str, embedding_str, page_size]
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score {sql_part_tags} FROM {db_table_name} {where_sql} ORDER BY embedding <=> %s LIMIT %s;"
+            args = [embedding_str] + param + [embedding_str, page_size]
         elif is_fulldoc:
-            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,'0.0' AS vector_score FROM {db_table_name} where doc_id = %s ORDER BY doc_id LIMIT %s;"
-            args =  [doc_id, page_size]
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,'0.0' AS vector_score {sql_part_tags} FROM {db_table_name} where doc_id = %s {and_sql} ORDER BY doc_id LIMIT %s;"
+            args =  [doc_id] + param + [page_size]
         else:
-            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score FROM {db_table_name} where doc_id = %s ORDER BY embedding <=> %s LIMIT %s;"
-            args = [embedding_str, doc_id, embedding_str, page_size]
+            query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,embedding <=> %s AS vector_score {sql_part_tags} FROM {db_table_name} where doc_id = %s {and_sql} ORDER BY embedding <=> %s LIMIT %s;"
+            args = [embedding_str, doc_id] + param + [embedding_str, page_size]
         # logging.info(f"query:{query},args:{args}")
         cursor.execute(f"SET LOCAL ivfflat.probes = {db_ivfflat_probes};")
         cursor.execute(query, args)
@@ -551,17 +562,27 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
             pass
         results = MyDocument()
         docs = []
-        names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id', 'vector_score']
+        names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id', 'vector_score'] + sql_extra_fields
         for row in rows:
             doc = MyDocument()
             for index,name in enumerate(names):
                 doc.__dict__[name] = row[index]
-            logging.info(f"doc: block_id:{doc.block_id}, num_of_tokens:{doc.num_of_tokens}, text:\n{doc.text}, function:\n{doc.function}")
+            if not hasattr(doc, 'tags'):
+                doc.__dict__['tags'] = {}
+            tags = {}
+            for embedding_tag in embedding_tags:
+                tag_name = embedding_tag['name']
+                if tag_name in doc.tags:
+                    tags[tag_name] = doc.tags[tag_name]
+                else:
+                    tags[tag_name] = ""
+            doc.__dict__['tags'] = tags
+            logging.info(f"doc: block_id:{doc.block_id}, num_of_tokens:{doc.num_of_tokens}, text:\n{doc.text}, function:\n{doc.function}, tags:{doc.tags}")
             docs.append(doc)
         setattr(results, 'docs', docs)
         return results
 
-def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids, check_storage_limit):
+def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, doc_ids, check_storage_limit, embedding_condition):
     if check_storage_limit:
         result = check_storage_size(app_id)
         if result['result'] == 'error':
@@ -576,7 +597,8 @@ def search_embeddings_internal(app_id, embedding_name, doc_id, embedding, max_to
             embedding_uuid_info = get_embedding_uuid_info(embedding_name_info['embedding_uuid'])
             db_type = embedding_uuid_info.get('db_type', 'redis')
             if db_type == 'pgvector':
-                results = search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids)
+                sql, param = parse_embedding_conditions(embedding_uuid_info, embedding_condition)
+                results = search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_uuid_info, doc_ids, sql, param)
             else:
                 results = search_in_redis(app_id, embedding_name, doc_id, embedding, max_tokens, max_blocks, is_fulldoc, page_size, embedding_index, doc_ids)
             # logging.info(f"topk result:{results.docs[:1]}")
@@ -2010,3 +2032,39 @@ def calc_functions_tokens(functions, model, vendor):
 
 def calc_function_tokens(function, model, vendor):
     return calc_functions_tokens([function], model, vendor)
+
+def parse_embedding_conditions(embedding_uuid_info, condition):
+    tags = embedding_uuid_info['tags']
+    app_id = embedding_uuid_info['app_id']
+    embedding_name = embedding_uuid_info['embedding_name']
+    sql, param = build_sql(condition, tags, embedding_name)
+    logging.info(f"parse_embedding_conditions result | app_id:{app_id}, embedding_name:{embedding_name}, condition:{condition}, tags:{tags}, sql:{sql}, param:{param}")
+    return sql,param
+
+def build_sql(condition, tags, embedding_name):
+    if "key" in condition and "value" in condition:
+        key = condition["key"]
+        value = condition["value"]
+        if not (isinstance(value, str) or isinstance(value, int)):
+            raise Exception("bad_embedding_condition")
+        if 'embedding_name' in condition and len(condition['embedding_name']) > 0 and condition['embedding_name'] != embedding_name:
+            return "",[]
+        for tag in tags:
+            if tag['name'] == key:
+                return f"tags->>'{key}' = %s", [value]
+        return "",[]
+
+    if "op" in condition:
+        op = condition["op"].upper()
+        if op in ['AND', 'OR']:
+            sql_parts = []
+            params = []
+            for cond in condition["conditions"]:
+                sql, param = build_sql(cond, tags, embedding_name)
+                if len(sql) > 0:
+                    sql_parts.append(f"({sql})")
+                    params.extend(param)
+            return f" {op} ".join(sql_parts), params
+    if len(condition) == 0:
+        return "",[]
+    raise Exception("bad_embedding_condition")

@@ -891,6 +891,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         expect_history_msg_size_max = max(config.get('history_msg_size_max', 1024), expect_history_msg_size_max)
         logging.info(f"Using history_msg_size_max in AI Ext | old:{config.get('history_msg_size_max', 'None')} new:{expect_history_msg_size_max}")
         config['history_msg_size_max'] = expect_history_msg_size_max
+    if 'embedding_condition' in presetExt and isinstance(presetExt['embedding_condition'], dict):
+        config['embedding_condition'] = presetExt['embedding_condition']
+    if 'embedding_condition' in lcExt and isinstance(lcExt['embedding_condition'], dict):
+        config['embedding_condition'] = lcExt['embedding_condition']
     if 'max_tokens' in lcExt:
         expect_max_tokens = int(lcExt['max_tokens'])
         token_limit = model_token_limit(model_config)
@@ -997,7 +1001,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 if embedding_min_distance > now_distance:
                     embedding_min_distance = now_distance
                 segment_id = lanying_embedding.parse_segment_id_int_value(doc)
-                segment_begin = f'\n<KNOWLEDGE id="{doc.block_id}">\n'
+                tags_attr = parse_doc_tags_attr(doc)
+                segment_begin = f'\n<KNOWLEDGE id="{doc.block_id}"{tags_attr}>\n'
                 segment_end = '\n</KNOWLEDGE>\n'
                 if hasattr(doc, 'question') and doc.question != "":
                     line_sep = "\n------\n"
@@ -1007,7 +1012,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     ## qa_text = f"<QUESTION>\n{doc.question}\n</QUESTION>\n<ANSWER>\n{doc.text}\n</ANSWER>"
                     ## qa_text = "\n问: " + doc.question + "\n答: " + doc.text + "\n\n"
                     context = context + segment_begin + qa_text + segment_end
-                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + qa_text + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}, tags:{doc.tags}]" + qa_text + "\n\n"
                 elif hasattr(doc, 'function') and doc.function != "":
                     function_info = json.loads(doc.function)
                     if 'priority' not in function_info:
@@ -1041,10 +1046,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     user_functions.append(function_info)
                 elif embedding_content_type == 'summary':
                     context = context + segment_begin + doc.summary + segment_end + "\n\n"
-                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.summary + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}, tags:{doc.tags}]" + doc.summary + "\n\n"
                 else:
                     context = context + segment_begin + doc.text + segment_end+ "\n\n"
-                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}]" + doc.text + "\n\n"
+                    context_with_distance = context_with_distance + f"[distance:{now_distance}, doc_id:{doc.doc_id if hasattr(doc, 'doc_id') else '-'}, segment_id:{segment_id}, tags:{doc.tags}]" + doc.text + "\n\n"
             if using_embedding == 'auto':
                 if last_embedding_name != embedding_names_str or last_embedding_text == '' or embedding_min_distance <= embedding_max_distance:
                     embedding_info['last_embedding_name'] = embedding_names_str
@@ -1829,7 +1834,8 @@ def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, p
         if 'app_id' in preset_embedding_info and len(preset_embedding_info['app_id']) > 0:
             embedding_owner_app_id = preset_embedding_info['app_id']
         check_storage_limit = (embedding_owner_app_id == app_id) # TODO: refine
-        docs = lanying_embedding.search_embeddings(embedding_owner_app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc, doc_ids, check_storage_limit)
+        embedding_condition = config.get('embedding_condition', {})
+        docs = lanying_embedding.search_embeddings(embedding_owner_app_id, embedding_name, doc_id, q_embedding, embedding_max_tokens, embedding_max_blocks, is_fulldoc, doc_ids, check_storage_limit, embedding_condition)
         idx = 0
         for doc in docs:
             if hasattr(doc, 'text_hash'):
@@ -5238,3 +5244,10 @@ def add_quota_used_statistic_internal(app_id, quota):
         if (new_total // notify_size) > ((new_total - quota) // notify_size):
             lanying_slack.async_send_message(f'[智能消息]累计用量：{new_total} quota')
         redis.hincrbyfloat(everyday_key, app_id, quota)
+
+def parse_doc_tags_attr(doc):
+    results = []
+    if hasattr(doc, 'tags'):
+        for key,value in doc.tags.items():
+            results.append(f' {key}="{value}"')
+    return "".join(results)
