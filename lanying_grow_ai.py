@@ -35,7 +35,7 @@ import lanying_oss
 from github import Github
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -55,6 +55,7 @@ class TaskSetting:
         self.target_dir = target_dir
         self.commit_type = commit_type
         self.target_summary_dir = target_summary_dir
+        self.embedding_condition = embedding_condition
 
     def to_hmset_fields(self):
         return {
@@ -76,7 +77,8 @@ class TaskSetting:
             'site_id_list': json.dumps(self.site_id_list, ensure_ascii=False),
             'target_dir': self.target_dir,
             'commit_type': self.commit_type,
-            'target_summary_dir': self.target_summary_dir
+            'target_summary_dir': self.target_summary_dir,
+            'embedding_condition': json.dumps(self.embedding_condition, ensure_ascii=False)
         }
 
 class SiteSetting:
@@ -474,7 +476,7 @@ def get_task(app_id, task_id):
                 dto[key] = int(value)
             elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
                 dto[key] = float(value)
-            elif key in ['file_list', 'deploy', 'site_id_list']:
+            elif key in ['file_list', 'deploy', 'site_id_list', 'embedding_condition']:
                 dto[key] = json.loads(value)
             else:
                 dto[key] = value
@@ -498,6 +500,8 @@ def get_task(app_id, task_id):
             dto['commit_type'] = dto.get('deploy',{}).get('commit_type', 'branch')
         if 'target_summary_dir' not in dto:
             dto['target_summary_dir'] = ''
+        if 'embedding_condition' not in dto:
+            dto['embedding_condition'] = {}
         return dto
     return None
 
@@ -1347,7 +1351,7 @@ def handle_ai_response_error(result, default_error_message, app_id, task_id, tit
         return {"result":"error", "message": "quota_not_enough", "retry": retry}
     return {'result': 'error', 'message': default_error_message, "retry": retry}
 
-def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max):
+def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max, embedding_condition):
     now_article_text = ''
     message_quota_usage = 0.0
     word_count_expect_min = word_count_min
@@ -1358,6 +1362,7 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
                 'ai': {
                     "history_msg_size_max": 4096,
                     "max_tokens": 4096,
+                    "embedding_condition": embedding_condition,
                     'reset_prompt': True
                 }
             }
@@ -1365,7 +1370,8 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
             prompt_ext = {
                 'ai': {
                     "history_msg_size_max": 4096,
-                    "max_tokens": 4096
+                    "max_tokens": 4096,
+                    "embedding_condition": embedding_condition
                 }
             }
         clean_user_message_count(app_id, from_user_id)
@@ -1460,6 +1466,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     image_count = task['image_count']
     word_count_min = task['word_count_min']
     word_count_max = task['word_count_max']
+    embedding_condition = task.get('embedding_condition',{})
     from_user_id = task_run['user_id']
     site_list = get_task_site_list(task)
     site_language = 'zh-hans'
@@ -1505,7 +1512,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
             'message_quota_usage': 0.0
         }
     else:
-        text_result = generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max)
+        text_result = generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max, embedding_condition)
     if text_result['result'] == 'error':
         return handle_ai_response_error(text_result, 'failed to generate article text', app_id, task_id, keyword)
     article_url_prefix = text_result['article_url_prefix']
