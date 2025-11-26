@@ -1,6 +1,7 @@
 import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
+from email.utils import formataddr
 import os
 import logging
 
@@ -8,9 +9,10 @@ def send_mail(email, subject, content):
     try:
         smtp_user = os.getenv("LANYING_CONNECTOR_SMTP_USER")
         smtp_pass = os.getenv("LANYING_CONNECTOR_SMTP_PASS")
+        display_name = "蓝莺IM"
         msg = MIMEText(content, "plain", "utf-8")
         msg['Subject'] = Header(subject, "utf-8")
-        msg['From'] = smtp_user
+        msg['From'] = formataddr((display_name, smtp_user))
         msg['To'] = email
 
         # 连接 SMTP 服务器并发送邮件
