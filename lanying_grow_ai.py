@@ -752,16 +752,34 @@ def parse_file_keywords(app_id, task_id, file_list):
                     filename = lanying_utils.get_temp_filename(app_id, ".txt")
                     result = lanying_file_storage.download(object_name, filename)
                     if result['result'] == 'ok':
-                        with open(filename, 'r') as fd:
-                            # 使用 len() 函数获取文件行数
-                            lines = fd.readlines()
-                            for line in lines:
-                                if len(line) > 0 and len(line) < 1000 and not line.isspace():
-                                    keywords.append(line)
+                        lines = readlines_auto(filename)
+                        for line in lines:
+                            if len(line) > 0 and len(line) < 1000 and not line.isspace():
+                                keywords.append(line)
             except Exception as e:
                 logging.exception(e)
     logging.info(f"parse_file_keywords finish | app_id:{app_id}, task_id:{task_id}, file_list:{file_list}, keyword count:{len(keywords)}")
     return keywords
+
+def readlines_auto(path):
+    encodings = (
+        "utf-8-sig",   # UTF-8（含 BOM）
+        "utf-8",
+        "utf-16",      # UTF-16 LE / BE
+        "gb18030",     # 覆盖 GBK / GB2312
+        "big5",
+    )
+
+    for enc in encodings:
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+
+    # 最后兜底：强行读（不推荐，但保证不炸）
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.readlines()
 
 def do_run_task_internal(app_id, task_run_id, has_retry_times):
     logging.info(f"do_run_task start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
