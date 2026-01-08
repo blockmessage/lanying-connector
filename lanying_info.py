@@ -3,6 +3,7 @@ import lanying_chatbot
 import lanying_embedding
 import json
 import lanying_pgvector
+import lanying_grow_ai
 lanying_config.init()
 
 cache = {}
@@ -51,7 +52,11 @@ def info1(any):
              info_embedding_name_info,
              info_embedding_doc_info,
              info_embedding_doc_block_ids,
-             info_embedding_doc_block_info
+             info_embedding_doc_block_info,
+             info_grow_ai_task_id_list,
+             info_grow_ai_task_info,
+             info_grow_ai_task_run_id_list,
+             info_grow_ai_task_run_id_info
              ]
     results = []
     for rule in rules:
@@ -261,6 +266,55 @@ def info_lanying_connector(app_id):
                 'lanying_connector': lanying_connector
             }
         }
+
+def info_grow_ai_task_id_list(app_id):
+    if is_app_id(app_id):
+        id_list = lanying_grow_ai.get_task_id_list(app_id)
+        if len(id_list) > 0:
+            return {
+                'result': 'ok',
+                'data': {
+                    'grow_ai_task_id_list': id_list
+                }
+            }
+
+def info_grow_ai_task_info(task_id):
+    app_id = get_cache('app_id')
+    if is_app_id(app_id):
+        task_info = lanying_grow_ai.get_task(app_id, task_id)
+        if task_info:
+            set_cache('grow_ai_task_id', task_id)
+            return {
+                'result': 'ok',
+                'data': {
+                    'grow_ai_task_info': task_info
+                }
+            }
+
+def info_grow_ai_task_run_id_list(task_id):
+    app_id = get_cache('app_id')
+    if is_app_id(app_id):
+        id_list = lanying_grow_ai.get_task_run_id_list(app_id, task_id)
+        if len(id_list) > 0:
+            set_cache('grow_ai_task_id', task_id)
+            return {
+                'result': 'ok',
+                'data': {
+                    'grow_ai_task_run_id_list': id_list
+                }
+            }
+
+def info_grow_ai_task_run_id_info(task_run_id):
+    app_id = get_cache('app_id')
+    if is_app_id(app_id):
+        info = lanying_grow_ai.get_task_run(app_id, task_run_id)
+        if info:
+            return {
+                'result': 'ok',
+                'data': {
+                    'grow_ai_task_run_info': info
+                }
+            }
 
 def is_app_id(any):
     if isinstance(any, str) and len(any) > 0 and len(any) < 20:

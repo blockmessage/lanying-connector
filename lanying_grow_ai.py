@@ -463,6 +463,10 @@ def get_task_list(app_id):
                 'list': task_list
             }
     }
+    
+def get_task_id_list(app_id):
+    redis = lanying_redis.get_redis_connection()
+    return list(reversed(lanying_redis.redis_lrange(redis, get_task_list_key(app_id), 0, -1)))
 
 def get_task(app_id, task_id):
     redis = lanying_redis.get_redis_connection()
@@ -1704,6 +1708,10 @@ def get_task_run_list(app_id, task_id):
             'list': task_run_list
         }
     }
+
+def get_task_run_id_list(app_id, task_id):
+    redis = lanying_redis.get_redis_connection()
+    return list(reversed(lanying_redis.redis_lrange(redis, get_task_run_list_key(app_id, task_id), 0, -1)))
 
 def get_task_run_key(app_id, task_run_id):
     return f"lanying_connector:grow_ai:task_run:{app_id}:{task_run_id}"
