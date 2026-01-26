@@ -596,10 +596,25 @@ def handle_sync_messages(config, msg):
         logging.exception(e)
     return get_sync_mode_messages(config)
 
+def is_system_msg(msg):
+    try:
+        if 'isSystem' in msg and msg['isSystem'] == True:
+            return True
+        from_user_id = int(msg['from']['uid'])
+        if from_user_id == 0:
+            return True
+    except Exception as e:
+        pass
+    return False
+
 def handle_chat_message(config, msg):
     app_id = msg['appId']
     msg_type = msg['type']
     if msg_type not in ["CHAT", "GROUPCHAT"]:
+        return ''
+    if is_system_msg(msg):
+        msg_id = msg.get('msgId', '')
+        logging.info(f"skip process for system message | msgId: {msg_id}")
         return ''
     try:
         init_chatbot_config(config, msg)
