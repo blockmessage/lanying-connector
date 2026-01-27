@@ -55,21 +55,7 @@ def vendor_configs():
         {
             'vendor': 'volcengine',
             'fields': ['api_key'],
-            'model_fields': ['endpoint'],
-            'models': [
-                'Doubao-pro-32k',
-                'Doubao-pro-128k',
-                'Doubao-pro-256k',
-                'DeepSeek-R1',
-                'DeepSeek-V3',
-                'Doubao-pro-4k',
-                'Doubao-lite-4k',
-                'Doubao-lite-128k',
-                'Doubao-lite-32k',
-                'moonshot-v1-8k',
-                'moonshot-v1-32k',
-                'moonshot-v1-128k'
-            ],
+            'model_fields': []
         },
         {
             'vendor': 'siliconflow',

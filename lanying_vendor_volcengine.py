@@ -7,142 +7,105 @@ import copy
 def model_configs():
     return [
         {
-            "model": 'Doubao-pro-32k',
+            "model": 'Doubao-1.5-pro-32k',
             "is_origin_vendor": True,
             "service": 'doubao',
-            'endpoint': 'ep-20241026172834-pt64n',
+            'real_model': 'doubao-1-5-pro-32k-250115',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.39,
-            "token_limit": 32000,
-            'order': 1,
-            'function_call': True
-        },
-        {
-            "model": 'Doubao-pro-128k',
-            "is_origin_vendor": True,
-            "service": 'doubao',
-            'endpoint': 'ep-20241026172902-59tzn',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 1.11,
             "token_limit": 128000,
-            'order': 2,
+            'order': 1.1,
             'function_call': True
         },
         {
-            "model": 'Doubao-pro-256k',
+            "model": 'Doubao-1.5-lite-32k',
             "is_origin_vendor": True,
             "service": 'doubao',
-            'endpoint': 'ep-20250102115354-hrz4z',
+            'real_model': 'doubao-1-5-lite-32k-250115',
             "type": "chat",
             "is_prefix": False,
-            "quota": 1.11,
-            "token_limit": 256000,
+            "quota": 0.28,
+            "token_limit": 32000,
+            "output_token_limit": 12000,
+            'order': 1.2,
+            'function_call': True
+        },
+        {
+            "model": 'DeepSeek-V3.2',
+            "service": 'deepseek',
+            'real_model': 'deepseek-v3-2-251201',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 0.89,
+            "token_limit": 128000,
+            "input_token_limit": 96000,
+            "output_token_limit": 32000,
             'order': 2.1,
             'function_call': True
         },
         {
             "model": 'DeepSeek-R1',
             "service": 'deepseek',
-            'endpoint': 'ep-20250207112323-lfwjs',
+            'real_model': 'deepseek-r1-250528',
             "type": "chat",
             "is_prefix": False,
             "quota": 1.26,
-            "token_limit": 64000,
+            "token_limit": 128000,
+            "input_token_limit": 96000,
+            "output_token_limit": 32000,
             'order': 2.2,
             'function_call': False
         },
         {
+            "model": 'DeepSeek-V3.1',
+            "service": 'deepseek',
+            'real_model': 'deepseek-v3-1-terminus',
+            "type": "chat",
+            "is_prefix": False,
+            "quota": 1.11,
+            "token_limit": 128000,
+            "input_token_limit": 96000,
+            "output_token_limit": 32000,
+            'order': 2.3,
+            'function_call': True
+        },
+        {
             "model": 'DeepSeek-V3',
             "service": 'deepseek',
-            'endpoint': 'ep-20250207112344-8rg6v',
+            'real_model': 'deepseek-v3-250324',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.74,
-            "token_limit": 64000,
-            'order': 2.3,
-            'function_call': False
-        },
-        {
-            "model": 'Doubao-pro-4k',
-            "is_origin_vendor": True,
-            "service": 'doubao',
-            'endpoint': 'ep-20241026172733-mvz6c',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.39,
-            "token_limit": 4000,
-            'order': 3,
-            'function_call': True
-        },
-        {
-            "model": 'Doubao-lite-4k',
-            "is_origin_vendor": True,
-            "service": 'doubao',
-            'endpoint': 'ep-20241026172923-4dh9k',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.28,
-            "token_limit": 4000,
-            'order': 4,
-            'function_call': True
-        },
-        {
-            "model": 'Doubao-lite-128k',
-            "is_origin_vendor": True,
-            "service": 'doubao',
-            'endpoint': 'ep-20241026173030-2jz9w',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.35,
             "token_limit": 128000,
-            'order': 5,
-            'function_call': False
+            "input_token_limit": 128000,
+            "output_token_limit": 16000,
+            'order': 2.4,
+            'function_call': True
         },
         {
             "model": 'Doubao-lite-32k',
             "is_origin_vendor": True,
             "service": 'doubao',
-            'endpoint': 'ep-20241026173004-lnrlx',
+            'real_model': 'doubao-lite-32k-character-250228',
             "type": "chat",
             "is_prefix": False,
             "quota": 0.28,
             "token_limit": 32000,
-            'order': 6,
+            'order': 3.1,
             'function_call': False
         },
         {
-            "model": 'moonshot-v1-8k',
+            "model": 'Kimi-K2',
             "service": 'kimi',
-            'endpoint': 'ep-20241026173110-jcbwp',
+            'real_model': 'kimi-k2-thinking-251104',
             "type": "chat",
             "is_prefix": False,
-            "quota": 2.00,
-            "token_limit": 8000,
-            'order': 7,
-            'function_call': True
-        },
-        {
-            "model": 'moonshot-v1-32k',
-            "service": 'kimi',
-            'endpoint': 'ep-20241026173141-9hs7f',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 3.78,
-            "token_limit": 32000,
-            'order': 8,
-            'function_call': True
-        },
-        {
-            "model": 'moonshot-v1-128k',
-            "service": 'kimi',
-            'endpoint': 'ep-20241026173205-522lk',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 9.11,
-            "token_limit": 128000,
-            'order': 9,
+            "quota": 1.26,
+            "token_limit": 256000,
+            "input_token_limit": 224000,
+            "output_token_limit": 32000,
+            'order': 4,
             'function_call': True
         }
     ]
@@ -153,8 +116,11 @@ def prepare_chat(auth_info, preset):
     }
 
 def chat(prepare_info, preset, model_config):
+    real_model = model_config.get('real_model', None)
     url = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
     final_preset = format_preset(preset, model_config)
+    if real_model:
+        final_preset['model'] = real_model
     api_key = prepare_info["api_key"]
     headers = {"Content-Type": "application/json", "Authorization": f'Bearer {api_key}'}
     try:
@@ -281,8 +247,6 @@ def format_preset(preset, model_config):
                                 function_obj[k] = v
                         tools.append({'type':'function', 'function':function_obj})
                     ret['tools'] = tools
-            elif key == 'model':
-                ret['model'] = model_config['endpoint']
             elif key == "messages":
                 last_tool_call_id = ''
                 messages = []
