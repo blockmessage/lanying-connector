@@ -2712,21 +2712,23 @@ def calc_message_quota(model_config, total_tokens, content_security):
 
 def calc_used_text_size(preset, response, model_config):
     text_size = 0
-    if model_config['type'] == "chat":
-        for message in preset['messages']:
-            text_size += text_byte_size(message.get('content', ''))
-        if 'reply' in response:
-            reply = response['reply']
-        else:
-            try:
-                reply = response['choices'][0]['message']['content'].strip()
-            except Exception as e:
-                reply = ''
-        text_size += text_byte_size(reply)
-    elif model_config['type'] == "embedding":
-        text_size += text_byte_size(preset['input'])
-    else:
-        raise Exception(f'bad model config:{model_config}')
+    try:
+        if model_config['type'] == "chat":
+            for message in preset['messages']:
+                text_size += text_byte_size(message.get('content', ''))
+            if 'reply' in response:
+                reply = response['reply']
+            else:
+                try:
+                    reply = response['choices'][0]['message']['content'].strip()
+                except Exception as e:
+                    reply = ''
+            text_size += text_byte_size(reply)
+        elif model_config['type'] == "embedding":
+            text_size += text_byte_size(preset['input'])
+    except Exception as e:
+        logging.exception("calc_used_text_size error:")
+        logging.info(f"preset: {preset}, reponse: {response}, model_config: {model_config}")
     return text_size
 
 def get_message_statistic_keys(config, app_id):
