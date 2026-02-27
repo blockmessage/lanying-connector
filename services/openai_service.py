@@ -40,6 +40,7 @@ from concurrent.futures import Future
 import base64
 import lanying_grow_ai
 import lanying_slack
+import lanying_openclaw
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -476,6 +477,9 @@ def init_chatbot_config(config, msg):
                         "audio_to_text", "image_vision", "audio_to_text_model", "preset_protect"]:
                 if key in chatbot:
                     config[key] = chatbot[key]
+            openclaw_node_info = lanying_openclaw.get_chatbot_node_info(app_id, chatbot_id)
+            if openclaw_node_info:
+                config['openclaw_node_info'] = openclaw_node_info
             preset = chatbot.get('preset', {})
             preset_ext = preset.get('ext', {})
             is_debug = True if 'debug' in preset_ext and preset_ext['debug'] == True else False
@@ -1125,6 +1129,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     oper_msg_config = {
         'force_callback': True
     }
+    if 'openclaw_node_info' in config:
+        openclaw_node_info = config['openclaw_node_info']
+        logging.info(f"redirect_to_openclaw | node: {openclaw_node_info}, msg: {msg}")
+        return lanying_openclaw.redirect_to_openclaw(openclaw_node_info, msg)
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
     response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
@@ -2715,7 +2723,14 @@ def calc_used_text_size(preset, response, model_config):
     try:
         if model_config['type'] == "chat":
             for message in preset['messages']:
-                text_size += text_byte_size(message.get('content', ''))
+                content = message.get('content', '')
+                if isinstance(content, list):
+                    for message_field in content:
+                        if isinstance(message_field, dict) and 'type' in message_field:
+                            if message_field['type'] == 'text' and 'text' in message_field and isinstance(message_field['text'], str):
+                                text_size += text_byte_size(message_field['text'])
+                elif isinstance(content, str):
+                    text_size += text_byte_size(content)
             if 'reply' in response:
                 reply = response['reply']
             else:

@@ -41,6 +41,8 @@ import bing_search_service
 app.register_blueprint(bing_search_service.bp)
 import tavily_service
 app.register_blueprint(tavily_service.bp)
+import openclaw_service
+app.register_blueprint(openclaw_service.bp)
 
 @app.route("/", methods=["GET"])
 def index():
