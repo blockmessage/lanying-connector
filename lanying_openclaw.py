@@ -25,7 +25,7 @@ def create_node(node_setting: NodeSetting):
     node_id = generate_node_id()
     redis = lanying_redis.get_redis_connection()
     fields = node_setting.to_hmset_fields()
-    fields['status'] = 'normal'
+    fields['status'] = 'wait'
     fields['create_time'] = now
     fields['node_id'] = node_id
     token = secrets.token_hex(32)
@@ -41,7 +41,7 @@ def create_node(node_setting: NodeSetting):
         }
     }
 
-def update_node_fileds(app_id, node_id, field, value):
+def update_node_filed(app_id, node_id, field, value):
     node_info = get_node(app_id, node_id)
     if node_info is None:
         return {
@@ -91,11 +91,21 @@ def check_client_login(token):
             'result': 'error',
             'message': 'bad token status'
         }
+    app_id = token_info['app_id']
+    node_id = token_info['node_id']
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    if node_info['status'] == 'wait':
+        update_node_filed(app_id, node_id, 'status', 'normal')
     return {
         'result': 'ok',
         'data': {
-            'app_id': token_info['app_id'],
-            'node_id': token_info['node_id']
+            'app_id': app_id,
+            'node_id': node_id
         }
     }
 
