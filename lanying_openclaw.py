@@ -9,25 +9,41 @@ import lanying_chatbot
 import lanying_im_api
 
 class NodeSetting:
-    def __init__(self, app_id, name):
+    def __init__(self, app_id, name, product_id, charge_id):
         self.app_id = app_id
         self.name = name
+        self.product_id = product_id
+        self.charge_id = charge_id
 
     def to_hmset_fields(self):
         return {
             'app_id': self.app_id,
-            'name': self.name
+            'name': self.name,
+            'product_id': self.product_id,
+            'charge_id': self.charge_id
         }
 
 def create_node(node_setting: NodeSetting):
     now = int(time.time())
     app_id = node_setting.app_id
+    name = node_setting.name
     node_id = generate_node_id()
+    register_result = register_node_im_user(app_id, node_id)
+    if register_result['result'] == 'error':
+        return register_result
+    username = register_result['data']['username']
+    password = register_result['data']['password']
+    user_id = register_result['data']['user_id']
     redis = lanying_redis.get_redis_connection()
     fields = node_setting.to_hmset_fields()
     fields['status'] = 'normal'
     fields['create_time'] = now
     fields['node_id'] = node_id
+    fields['username'] = username
+    fields['password'] = password
+    fields['user_id'] = user_id
+    if len(name) == 0:
+        fields['name'] = f'OpenClaw-{node_id}'
     token = secrets.token_hex(32)
     fields['token'] = token
     update_token_info(token, app_id, node_id, 'normal')
@@ -39,6 +55,59 @@ def create_node(node_setting: NodeSetting):
         'data': {
             'node_id': node_id
         }
+    }
+
+def get_node_list(app_id):
+    redis = lanying_redis.get_redis_connection()
+    node_ids = lanying_redis.redis_lrange(redis, get_node_list_key(app_id), 0, -1)
+    node_info_list = []
+    for node_id in node_ids:
+        node_info = get_node(app_id, node_id)
+        if node_info:
+            node_info_list.append(node_info)
+    return {
+        'result': 'ok',
+        'data': {
+            'list': node_info_list
+        }
+    }
+
+def delete_node(app_id, node_id):
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    redis = lanying_redis.get_redis_connection()
+    chatbot_id = get_node_chatbot_id(app_id, node_id)
+    redis.delete(get_node_key(app_id, node_id))
+    redis.lrem(get_node_list_key(app_id), 1, node_id)
+    if chatbot_id is not None:
+        unbind_chatbot(app_id, node_id, chatbot_id)
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True
+        }
+    }
+
+def register_node_im_user(app_id, node_id):
+    username = f'openclaw_{node_id}_{secrets.token_hex(4)}'
+    password = secrets.token_hex(32)
+    result = lanying_im_api.register(app_id, username, password)
+    if result.get('code') == 200:
+        return {
+            'result': 'ok',
+            'data': {
+                'username': username,
+                'password': password,
+                'user_id': str(result.get('data').get('user_id'))
+            }
+        }
+    return {
+        'result': 'error',
+        'message': 'register user failed'
     }
 
 def update_node_field(app_id, node_id, field, value):
@@ -78,6 +147,11 @@ def bind_chatbot(app_id, node_id, chatbot_id):
         redis.hdel(get_node_chatbot_bind_key(app_id), old_node_id)
     if old_chatbot_id is not None and old_chatbot_id != chatbot_id:
         redis.hdel(get_chatbot_node_bind_key(app_id), old_chatbot_id)
+
+def unbind_chatbot(app_id, node_id, chatbot_id):
+    redis = lanying_redis.get_redis_connection()
+    redis.hdel(get_node_chatbot_bind_key(app_id), node_id)
+    redis.hdel(get_chatbot_node_bind_key(app_id), chatbot_id)
 
 def check_client_login(token):
     token_info = get_token_info(token)

@@ -25,6 +25,18 @@ def get_user_profile_with_token(app_id, user_id, adminToken):
     logging.info(f"get user profile, app_id={app_id} user_id={user_id}, result:{result}")
     return result
 
+def register(app_id, username, password):
+    apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    body = {
+        'username': username,
+        'password': password
+    }
+    response = requests.post(apiEndpoint + '/user/register/v2',
+                                headers={'app_id': app_id},
+                                json=body)
+    result = response.json()
+    logging.info(f"register, app_id={app_id} username={username}, result:{result}")
+    return result
 
 def set_user_profile(app_id, user_id, description, nick_name, private_info, public_info = ''):
     config = lanying_config.get_lanying_connector(app_id)
