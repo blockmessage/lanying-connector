@@ -25,7 +25,7 @@ def create_node(node_setting: NodeSetting):
     node_id = generate_node_id()
     redis = lanying_redis.get_redis_connection()
     fields = node_setting.to_hmset_fields()
-    fields['status'] = 'wait'
+    fields['status'] = 'normal'
     fields['create_time'] = now
     fields['node_id'] = node_id
     token = secrets.token_hex(32)
