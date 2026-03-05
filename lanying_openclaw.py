@@ -41,7 +41,7 @@ def create_node(node_setting: NodeSetting):
         }
     }
 
-def update_node_filed(app_id, node_id, field, value):
+def update_node_field(app_id, node_id, field, value):
     node_info = get_node(app_id, node_id)
     if node_info is None:
         return {
@@ -100,7 +100,7 @@ def check_client_login(token):
             'message': 'node not exist'
         }
     if node_info['status'] == 'wait':
-        update_node_filed(app_id, node_id, 'status', 'normal')
+        update_node_field(app_id, node_id, 'status', 'normal')
     return {
         'result': 'ok',
         'data': {
