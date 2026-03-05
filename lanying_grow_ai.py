@@ -1025,7 +1025,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
     lock_key = f'lanying-connector-deploy-task-lock:{github_owner}/{github_repo}'
     lock_start_time = time.perf_counter()
     logging.info(f"start wait for lock: {lock_key}")
-    with redis_lock.lock(lock_key, timeout=120):
+    with redis_lock.lock(lock_key, timeout=1200):
         elapsed = time.perf_counter() - lock_start_time
         logging.info(f"get lock {lock_key} after {elapsed:.3f} seconds")
         commit_type = site.get('commit_type', 'branch')
