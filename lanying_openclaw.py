@@ -9,24 +9,24 @@ import lanying_chatbot
 import lanying_im_api
 
 class NodeSetting:
-    def __init__(self, app_id, name, product_id, charge_id):
+    def __init__(self, app_id, name, product_id, charge_id, node_id):
         self.app_id = app_id
         self.name = name
         self.product_id = product_id
         self.charge_id = charge_id
+        self.node_id = node_id
 
     def to_hmset_fields(self):
         return {
             'app_id': self.app_id,
             'name': self.name,
             'product_id': self.product_id,
-            'charge_id': self.charge_id
+            'charge_id': self.charge_id,
+            'node_id': self.node_id
         }
 
-def create_node(node_setting: NodeSetting):
+def check_create_node(app_id):
     now = int(time.time())
-    app_id = node_setting.app_id
-    name = node_setting.name
     node_id = generate_node_id()
     register_result = register_node_im_user(app_id, node_id)
     if register_result['result'] == 'error':
@@ -35,8 +35,46 @@ def create_node(node_setting: NodeSetting):
     password = register_result['data']['password']
     user_id = register_result['data']['user_id']
     redis = lanying_redis.get_redis_connection()
+    key = get_node_prepare_key(app_id, node_id)
+    fields = {
+        'username': username,
+        'password': password,
+        'user_id': user_id,
+        'create_time': now
+    }
+    redis.hmset(key, fields)
+    redis.expire(key, 120)
+    return {
+        'result': 'ok',
+        'data': {
+            'node_id': node_id
+        }
+    }
+
+def create_node(node_setting: NodeSetting):
+    now = int(time.time())
+    app_id = node_setting.app_id
+    node_id = node_setting.node_id
+    name = node_setting.name
+    node_prepare = get_node_prepare(app_id, node_id)
+    if node_prepare is None:
+        return {
+            'result': 'error',
+            'message': 'must prepare first'
+        }
+    delete_node_prepare(app_id, node_id)
+    old_node_info = get_node(app_id, node_id)
+    if old_node_info is not None:
+        return {
+            'result': 'error',
+            'message': 'old node exist'
+        }
+    username = node_prepare['username']
+    password = node_prepare['password']
+    user_id = node_prepare['user_id']
+    redis = lanying_redis.get_redis_connection()
     fields = node_setting.to_hmset_fields()
-    fields['status'] = 'normal'
+    fields['status'] = 'wait'
     fields['create_time'] = now
     fields['node_id'] = node_id
     fields['username'] = username
@@ -50,11 +88,10 @@ def create_node(node_setting: NodeSetting):
     logging.info(f"create openclaw node start | app_id:{app_id}, node_info:{fields}")
     redis.hmset(get_node_key(app_id, node_id), fields)
     redis.rpush(get_node_list_key(app_id), node_id)
+    node_info = get_node(app_id, node_id)
     return {
         'result': 'ok',
-        'data': {
-            'node_id': node_id
-        }
+        'data': node_info
     }
 
 def get_node_list(app_id):
@@ -136,6 +173,25 @@ def get_node(app_id, node_id):
                 dto[key] = value
         return dto
     return None
+
+def get_node_prepare(app_id, node_id):
+    redis = lanying_redis.get_redis_connection()
+    key = get_node_prepare_key(app_id, node_id)
+    info = lanying_redis.redis_hgetall(redis, key)
+    if "create_time" in info:
+        dto = {}
+        for key,value in info.items():
+            if key in ['create_time']:
+                dto[key] = int(value)
+            else:
+                dto[key] = value
+        return dto
+    return None
+
+def delete_node_prepare(app_id, node_id):
+    redis = lanying_redis.get_redis_connection()
+    key = get_node_prepare_key(app_id, node_id)
+    redis.delete(key)
 
 def bind_chatbot(app_id, node_id, chatbot_id):
     redis = lanying_redis.get_redis_connection()
@@ -312,10 +368,13 @@ def redirect_to_openclaw(node_info, message):
 
 def generate_node_id():
     redis = lanying_redis.get_redis_connection()
-    return redis.incrby("lanying_connector:openclaw:node_id_generator", 1)
+    return str(redis.incrby("lanying_connector:openclaw:node_id_generator", 1))
 
 def get_node_key(app_id, node_id):
     return f"lanying_connector:openclaw:node:{app_id}:{node_id}"
+
+def get_node_prepare_key(app_id, node_id):
+    return f"lanying_connector:openclaw:node_prepare:{app_id}:{node_id}"
 
 def get_node_list_key(app_id):
     return f"lanying_connector:openclaw:node_list:{app_id}"
