@@ -11,12 +11,13 @@ import lanying_utils
 import json
 
 class NodeSetting:
-    def __init__(self, app_id, name, product_id, charge_id, node_id):
+    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link):
         self.app_id = app_id
         self.name = name
         self.product_id = product_id
         self.charge_id = charge_id
         self.node_id = node_id
+        self.lanying_link = lanying_link
 
     def to_hmset_fields(self):
         return {
@@ -24,7 +25,8 @@ class NodeSetting:
             'name': self.name,
             'product_id': self.product_id,
             'charge_id': self.charge_id,
-            'node_id': self.node_id
+            'node_id': self.node_id,
+            'lanying_link': self.lanying_link
         }
 
 def check_create_node(app_id):
@@ -49,7 +51,8 @@ def check_create_node(app_id):
     return {
         'result': 'ok',
         'data': {
-            'node_id': node_id
+            'node_id': node_id,
+            'user_id': user_id
         }
     }
 

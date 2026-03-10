@@ -66,12 +66,14 @@ def create_node():
     product_id = str(data['product_id'])
     charge_id = str(data['charge_id'])
     node_id = str(data['node_id'])
+    lanying_link = str(data['lanying_link'])
     setting = lanying_openclaw.NodeSetting(
         app_id=app_id,
         name=name,
         product_id=product_id,
         charge_id=charge_id,
-        node_id = node_id
+        node_id = node_id,
+        lanying_link = lanying_link
     )
     result = lanying_openclaw.create_node(setting)
     if result['result'] == 'error':
