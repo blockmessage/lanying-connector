@@ -150,6 +150,13 @@ def handle_request(request, request_type):
         config['message_quota_trace_id'] = message_quota_trace_id
     vendor = request.headers.get('vendor')
     model = preset['model']
+    if vendor is None:
+        model_fields = model.split("/", 1)
+        if len(model_fields) == 2:
+            logging.info(f"read vendor from model prefix | model: {model}, model_fields:{model_fields}")
+            vendor = model_fields[0]
+            model = model_fields[1]
+            preset['model'] = model
     model_config = lanying_vendor.get_chat_model_config(app_id, vendor, model)
     force_no_stream = False
     forward_file_info = None
@@ -213,7 +220,7 @@ def handle_request(request, request_type):
     logging.info(f"check_message_limit ok: app_id={app_id}, api_key_type={api_key_type}, vendor={vendor}, model:{model}")
     auth_info = get_preset_auth_info(config, vendor, model_config)
     if vendor == 'openai':
-        stream,response,drop_stream_usage_line = forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info)
+        stream,response,drop_stream_usage_line = forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info, model)
         if response.status_code == 200:
             if stream:
                 def generate_response():
@@ -367,7 +374,7 @@ def maybe_init_preset_default_model(preset, path):
         if path in ['/v1/images/generations', '/v1/images/edits', '/v1/images/variations']:
             preset['model'] = 'dall-e-2'
 
-def forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info):
+def forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info, model):
     openai_key = auth_info.get('api_key','')
     proxy_domain = os.getenv('LANYING_CONNECTOR_OPENAI_PROXY_DOMAIN', '')
     if len(proxy_domain) > 0:
@@ -385,20 +392,23 @@ def forward_request(app_id, request, auth_info, force_no_stream, request_type, f
         if force_no_stream:
             stream = False
         drop_stream_usage_line = False
+        if 'model' in request_json and request_json['model'] != model:
+            request_json['model'] = model
         if stream:
-            logging.info(f"forward request stream start: app_id:{app_id}, url:{url}")
             if 'stream' in request_json and request_json['stream'] == True:
                 if request_json.get('stream_options', {}).get('include_usage', False) == False:
                     drop_stream_usage_line = True
                     request_json['stream_options'] = {
                         'include_usage': True
                     }
-                    data = json.dumps(request_json)
+            logging.info(f"forward request stream start: app_id:{app_id}, url:{url}, request_json:{request_json}")
+            data = json.dumps(request_json)
             response = requests.post(url, data=data, headers=headers, stream=True)
             logging.info(f"forward request stream finish: app_id:{app_id}, status_code: {response.status_code}")
             return (stream, response, drop_stream_usage_line)
         else:
-            logging.info(f"forward request start: app_id:{app_id}, url:{url}")
+            logging.info(f"forward request start: app_id:{app_id}, url:{url}, request_json:{request_json}")
+            data = json.dumps(request_json)
             response = requests.post(url, data=data, headers=headers)
             logging.info(f"forward request finish: app_id:{app_id}, status_code: {response.status_code}")
             return (stream, response, drop_stream_usage_line)
