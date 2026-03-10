@@ -7,6 +7,8 @@ import requests
 import lanying_config
 import lanying_chatbot
 import lanying_im_api
+import lanying_utils
+import json
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id):
@@ -126,6 +128,101 @@ def delete_node(app_id, node_id):
         'result': 'ok',
         'data': {
             'success': True
+        }
+    }
+
+def handle_chat_message(msg):
+    from_user_id = msg['from']['uid']
+    to_user_id = msg['to']['uid']
+    app_id = msg['appId']
+    if from_user_id == to_user_id:
+        ext = lanying_utils.safe_json_loads(msg['ext'], {})
+        if isinstance(ext, dict) and 'openclaw' in ext:
+            event = ext['openclaw']
+            handle_client_event(event, app_id, from_user_id)
+
+def handle_client_event(event, app_id, user_id):
+    logging.info(f"handle client event | event: {event}, app_id: {app_id}, user_id: {user_id}")
+    if event['type'] == 'online':
+        node_list = get_node_list(app_id)['data']['list']
+        for node in node_list:
+            if node['user_id'] == user_id:
+                node_id = node['node_id']
+                if node['status'] == 'wait':
+                    logging.info(f"change node status to normal | node_id: {node_id}")
+                    update_node_field(app_id, node_id, 'status', 'normal')
+                    model_patch_config = get_model_patch_config(app_id)
+                    update_node_config(app_id, node_id, model_patch_config)
+
+def get_model_patch_config(app_id, model="gpt-4o-mini"):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        token = config.get('access_token', '')
+        if len(token) > 0:
+            return {
+                "models": {
+                    "providers": {
+                        "lanying": {
+                            "baseUrl": "https://connector.lanyingim.com/v1",
+                            "apiKey": token,
+                            "api": "openai-completions",
+                            "models": [
+                                {
+                                    "id": model,
+                                    "name": model,
+                                    "reasoning": False,
+                                    "input": ["text"],
+                                    "contextWindow": 128000,
+                                    "maxTokens": 8192
+                                }
+                            ]
+                        }
+                    }
+                },
+                "agents": {
+                    "defaults":{
+                        "model": {
+                            "primary": f"lanying/{model}"
+                        }
+                    }
+                }
+            }
+    return None
+
+def update_node_config(app_id, node_id, patch_config):
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    user_id = node_info['user_id']
+    content = '开始同步模型配置'
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    send_msg_type = 1
+    content_type = 0
+    extra = {
+        'ext': {
+            'openclaw': {
+                    'type': 'config_patch',
+                    'raw': json.dumps(patch_config)
+                },
+        },
+        'skip_antispam_prompt': True
+    }
+    msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, send_msg_type, content_type, content, extra)
+    if msg_id <= 0:
+        return {
+            'result': 'error',
+            'message': 'send message failed'
+        }
+    return {
+        'result': 'ok',
+        'data': {
+            'msg_id': msg_id
         }
     }
 

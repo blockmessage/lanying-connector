@@ -611,7 +611,19 @@ def is_system_msg(msg):
         pass
     return False
 
+def maybe_sync_to_openclaw(msg):
+    try:
+        from_user_id = msg['from']['uid']
+        to_user_id = msg['to']['uid']
+        if from_user_id == to_user_id:
+            ext = lanying_utils.safe_json_loads(msg['ext'], {})
+            if isinstance(ext, dict) and 'openclaw' in ext:
+                executor.submit(lanying_openclaw.handle_chat_message, msg)
+    except Exception:
+        pass
+
 def handle_chat_message(config, msg):
+    maybe_sync_to_openclaw(msg)
     app_id = msg['appId']
     msg_type = msg['type']
     if msg_type not in ["CHAT", "GROUPCHAT"]:

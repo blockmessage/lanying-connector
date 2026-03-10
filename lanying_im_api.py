@@ -248,7 +248,8 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
             attachment['fLen'] = upload_res['file_size']
             attachment['url'] = download_url
     if adminToken:
-        msg_config['antispam_prompt'] = message_antispam
+        if not ('skip_antispam_prompt' in extra and extra['skip_antispam_prompt'] == True):
+            msg_config['antispam_prompt'] = message_antispam
         logging.info(f"Send message start post, from={from_user_id} to={to_user_id} type={type}, content_type={content_type} content={content} extra={extra}, attachment={attachment}")
         sendResponse = requests.post(apiEndpoint + '/message/send',
                                     headers={'app_id': app_id, 'access-token': adminToken},
