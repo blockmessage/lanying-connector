@@ -101,7 +101,7 @@ def create_node(node_setting: NodeSetting):
 
 def get_node_list(app_id):
     redis = lanying_redis.get_redis_connection()
-    node_ids = lanying_redis.redis_lrange(redis, get_node_list_key(app_id), 0, -1)
+    node_ids = list(reversed(lanying_redis.redis_lrange(redis, get_node_list_key(app_id), 0, -1)))
     node_info_list = []
     for node_id in node_ids:
         node_info = get_node(app_id, node_id)
