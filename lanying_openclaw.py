@@ -99,6 +99,20 @@ def create_node(node_setting: NodeSetting):
         'data': node_info
     }
 
+def check_node(app_id, node_id):
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    return {
+        'result': 'ok',
+        'data': {
+            'node_info': node_info
+        }
+    }
+
 def get_node_list(app_id):
     redis = lanying_redis.get_redis_connection()
     node_ids = list(reversed(lanying_redis.redis_lrange(redis, get_node_list_key(app_id), 0, -1)))
@@ -157,7 +171,7 @@ def handle_client_event(event, app_id, user_id):
                     model_patch_config = get_model_patch_config(app_id)
                     update_node_config(app_id, node_id, model_patch_config)
 
-def get_model_patch_config(app_id, model="gpt-4o-mini"):
+def get_model_patch_config(app_id, model="openai/gpt-4o-mini"):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         token = config.get('access_token', '')
