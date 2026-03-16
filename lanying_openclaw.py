@@ -170,6 +170,10 @@ def handle_client_event(event, app_id, user_id):
                     update_node_field(app_id, node_id, 'status', 'normal')
                     model_patch_config = get_model_patch_config(app_id)
                     update_node_config(app_id, node_id, model_patch_config)
+                elif 'provider_inited' in event and event['provider_inited'] == False:
+                    logging.info(f"update node config for provider_inited is false | node_id: {node_id}")
+                    model_patch_config = get_model_patch_config(app_id)
+                    update_node_config(app_id, node_id, model_patch_config)
 
 def get_model_patch_config(app_id, model="openai/gpt-4o-mini"):
     config = lanying_config.get_lanying_connector(app_id)
