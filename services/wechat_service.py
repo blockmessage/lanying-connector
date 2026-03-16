@@ -21,6 +21,7 @@ import lanying_user_router
 import xml.etree.ElementTree as ET
 import uuid
 import lanying_audio
+import lanying_openclaw
 
 wechat_max_message_size = 3900
 service = 'wechat'
@@ -180,12 +181,17 @@ def create_wechat_chatbot():
     data = json.loads(text)
     app_id = str(data['app_id'])
     w_id = str(data['w_id'])
-    chatbot_id = str(data['chatbot_id'])
+    bind_type = str(data.get('bind_type', 'chatbot'))
+    bind_id = None
+    if bind_type == 'chatbot':
+        bind_id = str(data['chatbot_id'])
+    elif bind_type == 'openclaw':
+        bind_id = str(data['openclaw_id'])
     msg_types = list(data['msg_types'])
     non_friend_chat_mode = str(data['non_friend_chat_mode'])
     note = str(data.get('note',''))
     router_sub_user_ids = list(data.get('router_sub_user_ids',[]))
-    result = lanying_wechat_chatbot.create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
+    result = lanying_wechat_chatbot.create_wechat_chatbot(app_id, w_id, bind_type, bind_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -263,12 +269,17 @@ def configure_wechat_chatbot():
     app_id = str(data['app_id'])
     wechat_chatbot_id = str(data.get('wechat_chatbot_id',''))
     w_id = str(data.get('w_id',''))
-    chatbot_id = str(data['chatbot_id'])
+    bind_type = str(data.get('bind_type', 'chatbot'))
+    bind_id = None
+    if bind_type == 'chatbot':
+        bind_id = str(data['chatbot_id'])
+    elif bind_type == 'openclaw':
+        bind_id = str(data['openclaw_id'])
     msg_types = list(data['msg_types'])
     non_friend_chat_mode = str(data['non_friend_chat_mode'])
     note = str(data.get('note',''))
     router_sub_user_ids = list(data.get('router_sub_user_ids',[]))
-    result = lanying_wechat_chatbot.configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
+    result = lanying_wechat_chatbot.configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -506,12 +517,24 @@ def check_wid(wid):
         return {'result': 'error', 'message': 'wechat_chatbot status not enabled'}
     if wechat_chatbot_info['status'] != 'online':
         return {'result': 'error', 'message': 'wechat_chatbot status not online'}
-    chatbot_id = wechat_chatbot_info['chatbot_id']
+    if wechat_chatbot_info['bind_type'] == 'chatbot':
+        chatbot_id = wechat_chatbot_info['chatbot_id']
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot_info is None:
+            return {'result': 'error', 'message': 'chatbot_id not found'}
+        user_id = chatbot_info['user_id']
+    elif wechat_chatbot_info['bind_type'] == 'openclaw':
+        openclaw_id = wechat_chatbot_info['openclaw_id']
+        openclaw_info = lanying_openclaw.get_node(app_id, openclaw_id)
+        if openclaw_info is None:
+            return {'result': 'error', 'message': 'openclaw_id not found'}
+        user_id = openclaw_info['user_id']
+    else:
+        return {
+            'result': 'error',
+            'message': 'no bind user'
+        }
     router_sub_user_ids = wechat_chatbot_info['router_sub_user_ids']
-    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    if chatbot_info is None:
-        return {'result': 'error', 'message': 'chatbot_id not found'}
-    user_id = chatbot_info['user_id']
     return {'result': 'ok', 'user_id': user_id, 'app_id': app_id, 'router_sub_user_ids':router_sub_user_ids}
 
 def handle_wechat_group_notify(wc_id, account, data):

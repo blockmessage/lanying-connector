@@ -6,6 +6,7 @@ import json
 import lanying_chatbot
 import logging
 import lanying_slack
+import lanying_openclaw
 
 def get_authorization(app_id):
     return os.getenv('WECHAT_CHATBOT_AUTHORIZATION', '')
@@ -186,7 +187,7 @@ def get_login_info(app_id, w_id):
         logging.info(f"wechat chatbot login timeout or failed | wid_info:{wid_info}, result:{result}")
         return {'result': 'error', 'message': result['message']}
 
-def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids):
+def create_wechat_chatbot(app_id, w_id, bind_type, bind_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids):
     now = int(time.time())
     wid_info = get_wid_info(app_id, w_id)
     if wid_info is None:
@@ -197,18 +198,36 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
         return {'result':'error', 'message': 'login info already bind'}
     if 'result' not in wid_info:
         return {'result':'error', 'message': 'bad login info'}
-    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    if chatbot_info is None:
-        return {'result': 'error', 'message': 'bad bind chatbot id'}
-    if chatbot_info['wechat_chatbot_id'] != '':
-        return {'result': 'error', 'message': 'chatbot id is already bind'}
+    chatbot_id = ''
+    openclaw_id = ''
+    if bind_type == 'chatbot':
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, bind_id)
+        if chatbot_info is None:
+            return {'result': 'error', 'message': 'bad bind chatbot id'}
+        if chatbot_info['wechat_chatbot_id'] != '':
+            return {'result': 'error', 'message': 'chatbot id is already bind'}
+        chatbot_id = bind_id
+    elif bind_type == 'openclaw':
+        openclaw_info = lanying_openclaw.get_node(app_id, bind_id)
+        if openclaw_info is None:
+            return {'result': 'error', 'message': 'bad bind openclaw id'}
+        if openclaw_info['wechat_chatbot_id'] != '':
+            return {'result': 'error', 'message': 'openclaw id is already bind'}
+        openclaw_id = bind_id
+    else:
+        return {
+            'result': 'error',
+            'message': 'bad bind type'
+        }
     wid_info_result = json.loads(wid_info['result'])
     wc_id = wid_info_result["wcId"]
     w_account = wid_info_result["wAccount"]
     wechat_chatbot_id = generate_chatbot_id()
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), {
+        "bind_type": bind_type,
         "chatbot_id": chatbot_id,
+        "openclaw_id": openclaw_id,
         "wechat_chatbot_id": wechat_chatbot_id,
         "create_time": now,
         "app_id": app_id,
@@ -224,10 +243,13 @@ def create_wechat_chatbot(app_id, w_id, chatbot_id, msg_types, non_friend_chat_m
         "router_sub_user_ids": json.dumps(router_sub_user_ids)
     })
     redis.rpush(get_chatbot_ids_key(app_id), wechat_chatbot_id)
-    lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
+    if bind_type == 'chatbot':
+        lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
+    elif bind_type == 'openclaw':
+        lanying_openclaw.update_node_field(app_id, openclaw_id, "wechat_chatbot_id", wechat_chatbot_id)
     set_wid_info_field(app_id, w_id, "wechat_chatbot_id", wechat_chatbot_id)
     set_wid_info_field(app_id, w_id, "status", "binding")
-    logging.info(f"wechat chatbot create chatbot success: app_id:{app_id}, w_id:{w_id}, chatbot_id:{chatbot_id}, wechat_chatbot_id:{wechat_chatbot_id}")
+    logging.info(f"wechat chatbot create chatbot success: app_id:{app_id}, w_id:{w_id}, bind_type: {bind_type}, chatbot_id:{chatbot_id}, openclaw_id: {openclaw_id}, wechat_chatbot_id:{wechat_chatbot_id}")
     return {'result':'ok', 'data':{'wechat_chatbot_id':wechat_chatbot_id, 'w_account': w_account, 'wc_id': wc_id}}
 
 def delete_wechat_chatbot(app_id, wechat_chatbot_id):
@@ -239,15 +261,21 @@ def delete_wechat_chatbot(app_id, wechat_chatbot_id):
     except Exception as e:
         pass
     redis = lanying_redis.get_redis_connection()
-    chatbot_id = wechat_chatbot['chatbot_id']
-    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    if chatbot_info:
-        lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", '')
+    if wechat_chatbot['bind_type'] == 'chatbot':
+        chatbot_id = wechat_chatbot['chatbot_id']
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot_info:
+            lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", '')
+    elif wechat_chatbot['bind_type'] == 'openclaw':
+        openclaw_id = wechat_chatbot['openclaw_id']
+        openclaw_info = lanying_openclaw.get_node(app_id, openclaw_id)
+        if openclaw_info:
+            lanying_openclaw.update_node_field(app_id, openclaw_id, "wechat_chatbot_id", '')
     redis.lrem(get_chatbot_ids_key(app_id), 1, wechat_chatbot_id)
     redis.delete(get_chatbot_key(app_id, wechat_chatbot_id))
     return {'result':'ok', 'data':{'success': True}}
 
-def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids):
+def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids):
     wid_info = get_wid_info(app_id, w_id)
     if wid_info:
         if wid_info["wechat_chatbot_id"] != wechat_chatbot_id:
@@ -259,12 +287,31 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_ty
     wechat_chatbot = get_wechat_chatbot(app_id, wechat_chatbot_id)
     if wechat_chatbot is None:
         return {'result':'error', 'message': 'wechat_chatbot not exist'}
+    chatbot_id = ''
+    openclaw_id = ''
+    if bind_type == 'chatbot':
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, bind_id)
+        if chatbot_info is None:
+            return {'result': 'error', 'message': 'bad bind chatbot id'}
+        chatbot_id = bind_id
+    elif bind_type == 'openclaw':
+        openclaw_info = lanying_openclaw.get_node(app_id, bind_id)
+        if openclaw_info is None:
+            return {'result': 'error', 'message': 'bad bind openclaw id'}
+        openclaw_id = bind_id
+    else:
+        return {
+            'result': 'error',
+            'message': 'bad bind type'
+        }
     redis = lanying_redis.get_redis_connection()
     if wid_info:
         wid_info_result = json.loads(wid_info['result'])
         wc_id = wid_info_result["wcId"]
         w_account = wid_info_result["wAccount"]
         redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), {
+            "bind_type": bind_type,
+            "openclaw_id": openclaw_id,
             "chatbot_id": chatbot_id,
             "msg_types": json.dumps(msg_types, ensure_ascii=False),
             "non_friend_chat_mode": non_friend_chat_mode,
@@ -279,15 +326,27 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, chatbot_id, msg_ty
         set_wid_info_field(app_id, w_id, "status", "binding")
     else:
         redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), {
+            "bind_type": bind_type,
+            "openclaw_id": openclaw_id,
             "chatbot_id": chatbot_id,
             "msg_types": json.dumps(msg_types, ensure_ascii=False),
             "non_friend_chat_mode": non_friend_chat_mode,
             "note": note,
             "router_sub_user_ids": json.dumps(router_sub_user_ids)
         })
-    if wechat_chatbot['chatbot_id'] != chatbot_id:
+    if wechat_chatbot['bind_type'] == 'chatbot' and bind_type == 'chatbot' and wechat_chatbot['chatbot_id'] != chatbot_id:
         lanying_chatbot.set_chatbot_field(app_id, wechat_chatbot['chatbot_id'], "wechat_chatbot_id", '')
         lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
+    elif wechat_chatbot['bind_type'] == 'chatbot' and bind_type == 'openclaw':
+        lanying_chatbot.set_chatbot_field(app_id, wechat_chatbot['chatbot_id'], "wechat_chatbot_id", '')
+        lanying_openclaw.update_node_field(app_id, openclaw_id, "wechat_chatbot_id", wechat_chatbot_id)
+    elif wechat_chatbot['bind_type'] == 'openclaw' and bind_type == 'chatbot':
+        lanying_openclaw.update_node_field(app_id, wechat_chatbot['openclaw_id'], "wechat_chatbot_id", '')
+        lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
+    elif wechat_chatbot['bind_type'] == 'openclaw' and bind_type == 'openclaw' and wechat_chatbot['openclaw_id'] != openclaw_id:
+        lanying_openclaw.update_node_field(app_id, wechat_chatbot['openclaw_id'], "wechat_chatbot_id", '')
+        lanying_openclaw.update_node_field(app_id, openclaw_id, "wechat_chatbot_id", wechat_chatbot_id)
+    logging.info(f"wechat chatbot configure success: app_id:{app_id}, w_id:{w_id}, bind_type: {bind_type}, chatbot_id:{chatbot_id}, openclaw_id: {openclaw_id}, wechat_chatbot_id:{wechat_chatbot_id}")
     return {'result':'ok', 'data':{'success': True}}
 
 def list_wechat_chatbots(app_id):
@@ -300,7 +359,7 @@ def list_wechat_chatbots(app_id):
         if info:
             dto = {}
             for key,value in info.items():
-                if key in ["chatbot_id", "wechat_chatbot_id", "non_friend_chat_mode", "note", "wc_id", "w_account", "status", "create_time", "msg_types", "soft_status", "router_sub_user_ids"]:
+                if key in ["bind_type", "openclaw_id", "chatbot_id", "wechat_chatbot_id", "non_friend_chat_mode", "note", "wc_id", "w_account", "status", "create_time", "msg_types", "soft_status", "router_sub_user_ids"]:
                     dto[key] = value
             dtos.append(dto)
     return dtos
@@ -347,6 +406,12 @@ def get_wechat_chatbot(app_id, wechat_chatbot_id):
             dto['deduct_failed'] = 'no'
         if 'router_sub_user_ids' not in dto:
             dto['router_sub_user_ids'] = []
+        if 'bind_type' not in dto:
+            dto['bind_type'] = 'chatbot'
+        if 'openclaw_id' not in dto:
+            dto['openclaw_id'] = ''
+        if 'chatbot_id' not in dto:
+            dto['chatbot_id'] = ''
         return dto
     else:
         return None
