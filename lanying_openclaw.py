@@ -285,6 +285,8 @@ def get_node(app_id, node_id):
                 dto[key] = int(value)
             else:
                 dto[key] = value
+        if 'wechat_chatbot_id' not in dto:
+            dto['wechat_chatbot_id'] = ''
         return dto
     return None
 

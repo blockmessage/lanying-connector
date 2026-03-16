@@ -335,17 +335,17 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id
             "router_sub_user_ids": json.dumps(router_sub_user_ids)
         })
     if wechat_chatbot['bind_type'] == 'chatbot' and bind_type == 'chatbot' and wechat_chatbot['chatbot_id'] != chatbot_id:
-        lanying_chatbot.set_chatbot_field(app_id, wechat_chatbot['chatbot_id'], "wechat_chatbot_id", '')
         lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
+        lanying_chatbot.set_chatbot_field(app_id, wechat_chatbot['chatbot_id'], "wechat_chatbot_id", '')
     elif wechat_chatbot['bind_type'] == 'chatbot' and bind_type == 'openclaw':
+        lanying_openclaw.update_node_field(app_id, openclaw_id, "wechat_chatbot_id", wechat_chatbot_id)
         lanying_chatbot.set_chatbot_field(app_id, wechat_chatbot['chatbot_id'], "wechat_chatbot_id", '')
-        lanying_openclaw.update_node_field(app_id, openclaw_id, "wechat_chatbot_id", wechat_chatbot_id)
     elif wechat_chatbot['bind_type'] == 'openclaw' and bind_type == 'chatbot':
-        lanying_openclaw.update_node_field(app_id, wechat_chatbot['openclaw_id'], "wechat_chatbot_id", '')
         lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
-    elif wechat_chatbot['bind_type'] == 'openclaw' and bind_type == 'openclaw' and wechat_chatbot['openclaw_id'] != openclaw_id:
         lanying_openclaw.update_node_field(app_id, wechat_chatbot['openclaw_id'], "wechat_chatbot_id", '')
+    elif wechat_chatbot['bind_type'] == 'openclaw' and bind_type == 'openclaw' and wechat_chatbot['openclaw_id'] != openclaw_id:
         lanying_openclaw.update_node_field(app_id, openclaw_id, "wechat_chatbot_id", wechat_chatbot_id)
+        lanying_openclaw.update_node_field(app_id, wechat_chatbot['openclaw_id'], "wechat_chatbot_id", '')
     logging.info(f"wechat chatbot configure success: app_id:{app_id}, w_id:{w_id}, bind_type: {bind_type}, chatbot_id:{chatbot_id}, openclaw_id: {openclaw_id}, wechat_chatbot_id:{wechat_chatbot_id}")
     return {'result':'ok', 'data':{'success': True}}
 

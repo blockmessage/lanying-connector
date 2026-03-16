@@ -523,12 +523,14 @@ def check_wid(wid):
         if chatbot_info is None:
             return {'result': 'error', 'message': 'chatbot_id not found'}
         user_id = chatbot_info['user_id']
+        logging.info(f"check_wid found bind chatbot user_id | wid: {wid}, chatbot_id: {chatbot_id}")
     elif wechat_chatbot_info['bind_type'] == 'openclaw':
         openclaw_id = wechat_chatbot_info['openclaw_id']
         openclaw_info = lanying_openclaw.get_node(app_id, openclaw_id)
         if openclaw_info is None:
             return {'result': 'error', 'message': 'openclaw_id not found'}
         user_id = openclaw_info['user_id']
+        logging.info(f"check_wid found bind openclaw user_id | wid: {wid}, openclaw_id: {openclaw_id}")
     else:
         return {
             'result': 'error',
@@ -637,6 +639,7 @@ def check_message_need_send(config, message):
                 wechat_chatbot = lanying_wechat_chatbot.get_wechat_chatbot(app_id, wechat_chatbot_id)
                 if wechat_chatbot is not None:
                     my_user_id = int(chatbot['user_id'])
+                    logging.info(f"check_message_need_send found bind chatbot | app_id: {app_id}, chatbot_id: {chatbot_id}, user_id: {my_user_id}")
     if wechat_chatbot is None:
         openclaw_list_result = lanying_openclaw.get_node_list(app_id)
         if openclaw_list_result.get('result') == 'ok':
@@ -648,6 +651,8 @@ def check_message_need_send(config, message):
                         wechat_chatbot = lanying_wechat_chatbot.get_wechat_chatbot(app_id, wechat_chatbot_id)
                         if wechat_chatbot is not None:
                             my_user_id = node_user_id
+                            openclaw_id = openclaw_node['node_id']
+                            logging.info(f"check_message_need_send found bind openclaw | app_id: {app_id}, openclaw_id: {openclaw_id}, user_id: {my_user_id}")
                             break
         if my_user_id is None:
             return {'result': 'error', 'message': 'chatbot or openclaw not found'}
