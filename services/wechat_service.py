@@ -626,14 +626,31 @@ def check_message_need_send(config, message):
     to_user_id = int(message['to']['uid'])
     app_id = str(message['appId'])
     type = message['type']
+    my_user_id = None
+    wechat_chatbot = None
     chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, from_user_id)
-    if chatbot_id is None:
-        return {'result': 'error', 'message': 'chatbot not found'}
-    chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    if chatbot is None:
-        return {'result': 'error', 'message': 'chatbot not found'}
-    wechat_chatbot_id = chatbot['wechat_chatbot_id']
-    wechat_chatbot = lanying_wechat_chatbot.get_wechat_chatbot(app_id,wechat_chatbot_id)
+    if chatbot_id is not None:
+        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot is not None:
+            wechat_chatbot_id = chatbot.get('wechat_chatbot_id', '')
+            if wechat_chatbot_id != '':
+                wechat_chatbot = lanying_wechat_chatbot.get_wechat_chatbot(app_id, wechat_chatbot_id)
+                if wechat_chatbot is not None:
+                    my_user_id = int(chatbot['user_id'])
+    if wechat_chatbot is None:
+        openclaw_list_result = lanying_openclaw.get_node_list(app_id)
+        if openclaw_list_result.get('result') == 'ok':
+            for openclaw_node in openclaw_list_result.get('data', {}).get('list', []):
+                node_user_id = int(openclaw_node.get('user_id', 0))
+                if node_user_id == from_user_id:
+                    wechat_chatbot_id = openclaw_node.get('wechat_chatbot_id', '')
+                    if wechat_chatbot_id != '':
+                        wechat_chatbot = lanying_wechat_chatbot.get_wechat_chatbot(app_id, wechat_chatbot_id)
+                        if wechat_chatbot is not None:
+                            my_user_id = node_user_id
+                            break
+        if my_user_id is None:
+            return {'result': 'error', 'message': 'chatbot or openclaw not found'}
     if wechat_chatbot is None:
         return {'result': 'error', 'message': 'wechat_chatbot not found'}
     if wechat_chatbot['deduct_failed'] == 'yes':
@@ -642,7 +659,6 @@ def check_message_need_send(config, message):
         return {'result': 'error', 'message': 'wechat_chatbot status not enabled'}
     if wechat_chatbot['status'] != 'online':
         return {'result': 'error', 'message': 'wechat_chatbot status not online'}
-    my_user_id = chatbot['user_id']
     if my_user_id != None and from_user_id == my_user_id and to_user_id != my_user_id and (type == 'CHAT' or type == 'GROUPCHAT' or type == 'REPLACE' or type == 'APPEND'):
         ext = message.get('ext', '')
         try:
