@@ -9,15 +9,19 @@ import lanying_chatbot
 import lanying_im_api
 import lanying_utils
 import json
+import lanying_vendor
+from lanying_async import executor
 
 class NodeSetting:
-    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link):
+    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list):
         self.app_id = app_id
         self.name = name
         self.product_id = product_id
         self.charge_id = charge_id
         self.node_id = node_id
         self.lanying_link = lanying_link
+        self.access_type = access_type
+        self.access_list = access_list
 
     def to_hmset_fields(self):
         return {
@@ -26,7 +30,26 @@ class NodeSetting:
             'product_id': self.product_id,
             'charge_id': self.charge_id,
             'node_id': self.node_id,
-            'lanying_link': self.lanying_link
+            'lanying_link': self.lanying_link,
+            'access_type': self.access_type,
+            'access_list': self.access_list,
+        }
+
+class ConfigureNodeParam:
+    def __init__(self, name, lanying_link, access_type, access_list, chatbot_id):
+        self.name = name
+        self.lanying_link = lanying_link
+        self.access_type = access_type
+        self.access_list = access_list
+        self.chatbot_id = chatbot_id
+
+    def to_hmset_fields(self):
+        return {
+            'name': self.name,
+            'lanying_link': self.lanying_link,
+            'access_type': self.access_type,
+            'access_list': self.access_list,
+            'chatbot_id': self.chatbot_id
         }
 
 def check_create_node(app_id):
@@ -61,6 +84,12 @@ def create_node(node_setting: NodeSetting):
     app_id = node_setting.app_id
     node_id = node_setting.node_id
     name = node_setting.name
+    access_type = node_setting.access_type
+    if access_type not in ['public', 'friend']:
+        return {
+            'result': 'error',
+            'message': 'bad access_type value'
+        }
     node_prepare = get_node_prepare(app_id, node_id)
     if node_prepare is None:
         return {
@@ -94,9 +123,45 @@ def create_node(node_setting: NodeSetting):
     redis.hmset(get_node_key(app_id, node_id), fields)
     redis.rpush(get_node_list_key(app_id), node_id)
     node_info = get_node(app_id, node_id)
+    async_init_node_im_user_setting(app_id, user_id, access_type)
     return {
         'result': 'ok',
         'data': node_info
+    }
+
+def configure_node(app_id, node_id, param: ConfigureNodeParam):
+    logging.info(f"configure_node | app_id: {app_id}, node_id: {node_id}, param: {param}")
+    old_node_info = get_node(app_id, node_id)
+    if old_node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    chatbot_info = None
+    if param.chatbot_id != old_node_info['chatbot_id'] and param.chatbot_id != '':
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, param.chatbot_id)
+        if chatbot_info is None:
+            return {
+                'result': 'error',
+                'message': 'chatbot not exist'
+            }
+    redis = lanying_redis.get_redis_connection()
+    fields = param.to_hmset_fields()
+    logging.info(f"configure openclaw node start | app_id:{app_id}, node_id: {node_id}, node_info:{fields}")
+    redis.hmset(get_node_key(app_id, node_id), fields)
+    if param.chatbot_id != old_node_info['chatbot_id']:
+        if old_node_info['chatbot_id'] != '':
+            unbind_chatbot(app_id, node_id, old_node_info['chatbot_id'])
+        if param.chatbot_id != '':
+            bind_chatbot(app_id, node_id, param.chatbot_id)
+    node_info = get_node(app_id, node_id)
+    if node_info['access_type'] != old_node_info['access_type']:
+        async_init_node_im_user_setting(app_id, node_info['user_id'], node_info['access_type'])
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True
+        }
     }
 
 def check_node(app_id, node_id):
@@ -175,11 +240,14 @@ def handle_client_event(event, app_id, user_id):
                     model_patch_config = get_model_patch_config(app_id)
                     update_node_config(app_id, node_id, model_patch_config)
 
-def get_model_patch_config(app_id, model="openai/gpt-4o-mini"):
+def get_model_patch_config(app_id, primary="openai/gpt-4o-mini", fallbacks=[]):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         token = config.get('access_token', '')
         if len(token) > 0:
+            new_fallbacks = []
+            for fallback in fallbacks:
+                new_fallbacks.append(f"lanying/{fallback}")
             return {
                 "models": {
                     "providers": {
@@ -187,28 +255,39 @@ def get_model_patch_config(app_id, model="openai/gpt-4o-mini"):
                             "baseUrl": "https://connector.lanyingim.com/v1",
                             "apiKey": token,
                             "api": "openai-completions",
-                            "models": [
-                                {
-                                    "id": model,
-                                    "name": model,
-                                    "reasoning": False,
-                                    "input": ["text"],
-                                    "contextWindow": 128000,
-                                    "maxTokens": 8192
-                                }
-                            ]
+                            "models": get_model_list(app_id)
                         }
                     }
                 },
                 "agents": {
                     "defaults":{
                         "model": {
-                            "primary": f"lanying/{model}"
+                            "primary": f"lanying/{primary}",
+                            "fallbacks": new_fallbacks
                         }
                     }
                 }
             }
     return None
+
+def get_model_list(app_id):
+    all_models = lanying_vendor.list_models(app_id)
+    models = []
+    for model in all_models:
+        if model.get('type') != 'chat':
+            continue
+        if model.get('token_limit', 0) < 16000:
+            continue
+        full_model_id = model['vendor'] + "/" + model['model']
+        models.append({
+            'id': full_model_id,
+            'name': full_model_id,
+            'reasoning': model.get('reasoning', False),
+            "input": ["text"],
+            "contextWindow": model['token_limit'],
+            "maxTokens": model.get('max_output_tokens', 8192)
+        })
+    return models
 
 def update_node_config(app_id, node_id, patch_config):
     node_info = get_node(app_id, node_id)
@@ -265,6 +344,15 @@ def register_node_im_user(app_id, node_id):
         'message': 'register user failed'
     }
 
+def async_init_node_im_user_setting(app_id, user_id, access_type):
+    executor.submit(init_node_im_user_setting, app_id, user_id, access_type)
+
+def init_node_im_user_setting(app_id, user_id, access_type):
+    if access_type == 'friend':
+        lanying_im_api.set_user_stranger_chat(app_id, user_id, 2)
+    elif access_type == 'public':
+        lanying_im_api.set_user_stranger_chat(app_id, user_id, 1)
+
 def update_node_field(app_id, node_id, field, value):
     node_info = get_node(app_id, node_id)
     if node_info is None:
@@ -291,6 +379,16 @@ def get_node(app_id, node_id):
                 dto[key] = value
         if 'wechat_chatbot_id' not in dto:
             dto['wechat_chatbot_id'] = ''
+        if 'access_type' not in dto:
+            dto['access_type'] = 'public'
+        if 'access_list' not in dto:
+            dto['access_list'] = ''
+        dto['chatbot_id'] = ''
+        chatbot_id = get_node_chatbot_id(app_id, node_id)
+        if chatbot_id is not None:
+            chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+            if chatbot_info is not None:
+                dto['chatbot_id'] = chatbot_id
         return dto
     return None
 
@@ -317,6 +415,8 @@ def bind_chatbot(app_id, node_id, chatbot_id):
     redis = lanying_redis.get_redis_connection()
     old_node_id = get_chatbot_node_id(app_id, chatbot_id)
     old_chatbot_id = get_node_chatbot_id(app_id, node_id)
+    if old_node_id == node_id and old_chatbot_id == chatbot_id:
+        return
     redis.hset(get_node_chatbot_bind_key(app_id), node_id, chatbot_id)
     redis.hset(get_chatbot_node_bind_key(app_id), chatbot_id, node_id)
     if old_node_id is not None and old_node_id != node_id:
