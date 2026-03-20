@@ -92,6 +92,25 @@ def set_user_stranger_chat(app_id, user_id, value):
         logging.info(f"set_user_stranger_chat, app_id={app_id} user_id={user_id}, value={value}, result:{result}")
         return result
 
+def set_auth_mode(app_id, user_id, value):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'user_id': str(user_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        response = requests.post(apiEndpoint + '/user/authmode',
+                                    headers=headers,
+                                    params={'value': value})
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"set_auth_mode, app_id={app_id} user_id={user_id}, value={value}, result:{result}")
+        return result
+
 def get_user_avatar_upload_url(app_id, user_id):
     config = lanying_config.get_lanying_connector(app_id)
     if config:

@@ -14,7 +14,7 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 0.39,
-            "token_limit": 32000,
+            "token_limit": 128000,
             "max_output_tokens": 12000,
             'order': 1.1,
             'function_call': True

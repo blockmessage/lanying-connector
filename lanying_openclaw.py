@@ -240,7 +240,23 @@ def handle_client_event(event, app_id, user_id):
                     model_patch_config = get_model_patch_config(app_id)
                     update_node_config(app_id, node_id, model_patch_config)
 
-def get_model_patch_config(app_id, primary="openai/gpt-4o-mini", fallbacks=[]):
+def sync_model_config(app_id, node_id):
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    model_patch_config = get_model_patch_config(app_id)
+    update_node_config(app_id, node_id, model_patch_config)
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True
+        }
+    }    
+
+def get_model_patch_config(app_id, primary="openai/gpt-4o-mini", fallbacks=['volcengine/Doubao-1.5-pro-32k', 'volcengine/DeepSeek-R1']):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         token = config.get('access_token', '')
@@ -350,6 +366,7 @@ def async_init_node_im_user_setting(app_id, user_id, access_type):
 def init_node_im_user_setting(app_id, user_id, access_type):
     if access_type == 'friend':
         lanying_im_api.set_user_stranger_chat(app_id, user_id, 2)
+        lanying_im_api.set_auth_mode(app_id, user_id, 1)
     elif access_type == 'public':
         lanying_im_api.set_user_stranger_chat(app_id, user_id, 1)
 
