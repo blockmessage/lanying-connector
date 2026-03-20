@@ -14,6 +14,7 @@ def model_configs():
             "quota": 2.59,
             'order': 1,
             "token_limit": 11000,
+            "max_output_tokens": 4096,
             'function_call': True
         },
         {
@@ -25,6 +26,7 @@ def model_configs():
             "quota": 0.96,
             'order': 2,
             "token_limit": 8000,
+            "max_output_tokens": 2048,
             'function_call': False
         },
         {
@@ -36,6 +38,7 @@ def model_configs():
             "quota": 32.67,
             'order': 3,
             "token_limit": 32000,
+            "max_output_tokens": 4096,
             'function_call': True
         },
         {

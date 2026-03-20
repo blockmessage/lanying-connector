@@ -18,7 +18,8 @@ def model_configs():
             "token_limit": 128000,
             "support_vision": False,
             'order': 1,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 16384
         },
         {
             "model": 'gpt-3.5-turbo',
@@ -27,9 +28,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1.00,
-            "token_limit": 16000,
+            "token_limit": 16385,
             'order': 2,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-4o',
@@ -41,7 +43,8 @@ def model_configs():
             "token_limit": 128000,
             "support_vision": False,
             'order': 3,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 16384
         },
         # {
         #     "model": 'o3-mini',
@@ -157,7 +160,8 @@ def model_configs():
             "token_limit": 128000,
             "support_vision": True,
             'order': 4,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-4',
@@ -166,9 +170,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 39.11,
-            "token_limit": 8000,
+            "token_limit": 8192,
             'order': 5,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 8192
         },
         {
             "model": 'gpt-3.5-turbo-0125',
@@ -177,9 +182,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1.00,
-            "token_limit": 16000,
+            "token_limit": 16385,
             'order': 6,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-3.5-turbo-1106',
@@ -188,9 +194,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1.52,
-            "token_limit": 16000,
+            "token_limit": 16385,
             'order': 7,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-4o-2024-05-13',
@@ -202,7 +209,8 @@ def model_configs():
             "token_limit": 128000,
             "support_vision": False,
             'order': 8,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 16384
         },
         {
             "model": 'gpt-4-turbo-2024-04-09',
@@ -214,7 +222,8 @@ def model_configs():
             "token_limit": 128000,
             "support_vision": True,
             'order': 9,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-4-1106-preview',
@@ -225,7 +234,8 @@ def model_configs():
             "quota": 15.78,
             "token_limit": 128000,
             'order': 10,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-4-0125-preview',
@@ -236,7 +246,8 @@ def model_configs():
             "quota": 15.78,
             "token_limit": 128000,
             'order': 11,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-4o-mini-2024-07-18',
@@ -248,7 +259,8 @@ def model_configs():
             "token_limit": 128000,
             "support_vision": False,
             'order': 12,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 16384
         },
         {
             "model": 'gpt-3.5-turbo-16k',
@@ -257,10 +269,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 3.59,
-            "token_limit": 16000,
+            "token_limit": 16385,
             'order': 2,
             'hidden': True,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 4096
         },
         {
             "model": 'gpt-4-32k',
@@ -269,10 +282,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 78.00,
-            "token_limit": 32000,
+            "token_limit": 32768,
             'order': 7,
             'hidden': True,
-            'function_call': True
+            'function_call': True,
+            'max_output_tokens': 8192
         },
         {
             "model": 'text-embedding-ada-002',
@@ -281,7 +295,7 @@ def model_configs():
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.13,
-            "token_limit": 8000,
+            "token_limit": 8191,
             'order': 1000,
             'dim': 1536,
             'dim_origin': 1536
@@ -293,7 +307,7 @@ def model_configs():
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.03,
-            "token_limit": 8000,
+            "token_limit": 8191,
             'order': 1001,
             'dim': 1536,
             'dim_origin': 1536
@@ -305,7 +319,7 @@ def model_configs():
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.17,
-            "token_limit": 8000,
+            "token_limit": 8191,
             'order': 1002,
             'dim': 1536,
             'dim_origin': 3072

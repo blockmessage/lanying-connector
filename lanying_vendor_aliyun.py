@@ -13,8 +13,9 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 0.67,
-            "token_limit": 6000,
+            "token_limit": 8000,
             'order': 1,
+            'max_output_tokens': 2000,
             'function_call': True
         },
         {
@@ -24,8 +25,9 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1.11,
-            "token_limit": 30000,
+            "token_limit": 32000,
             'order': 2,
+            'max_output_tokens': 2000,
             'function_call': True
         },
         {
@@ -35,8 +37,9 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 9.11,
-            "token_limit": 6000,
+            "token_limit": 8000,
             'order': 3,
+            'max_output_tokens': 2000,
             'function_call': True
         },
         {
@@ -46,8 +49,9 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 9.11,
-            "token_limit": 28000,
+            "token_limit": 32000,
             'order': 4,
+            'max_output_tokens': 2000,
             'function_call': True
         }
     ]

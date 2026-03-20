@@ -17,6 +17,7 @@ def model_configs():
             'order': 1,
             "url": '',
             'function_call': True,
+            'max_output_tokens': 16384,
             'api_type': 'openai'
         },
         {
@@ -30,6 +31,7 @@ def model_configs():
             'order': 2,
             "url": '',
             'function_call': True,
+            'max_output_tokens': 16384,
             'api_type': 'openai'
         },
         # {
@@ -103,10 +105,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1.00,
-            "token_limit": 16000,
+            "token_limit": 16385,
             'order': 5,
             "url": '',
             'function_call': True,
+            'max_output_tokens': 4096,
             'api_type': 'openai'
         },
         {
@@ -115,10 +118,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 39.11,
-            "token_limit": 8000,
+            "token_limit": 8192,
             'order': 6,
             "url": '',
             'function_call': True,
+            'max_output_tokens': 8192,
             'api_type': 'openai'
         },
         {
@@ -127,10 +131,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 78.00,
-            "token_limit": 32000,
+            "token_limit": 32768,
             'order': 7,
             "url": '',
             'function_call': True,
+            'max_output_tokens': 8192,
             'api_type': 'openai'
         },
         {
@@ -139,7 +144,7 @@ def model_configs():
             "type": "embedding",
             "is_prefix": False,
             "quota": 0.13,
-            "token_limit": 8000,
+            "token_limit": 8191,
             'order': 1000,
             "url": '',
             'dim': 1536,

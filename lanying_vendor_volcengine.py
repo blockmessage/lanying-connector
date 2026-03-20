@@ -14,7 +14,8 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 0.39,
-            "token_limit": 128000,
+            "token_limit": 32000,
+            "max_output_tokens": 12000,
             'order': 1.1,
             'function_call': True
         },
@@ -28,6 +29,7 @@ def model_configs():
             "quota": 0.28,
             "token_limit": 32000,
             "output_token_limit": 12000,
+            "max_output_tokens": 12000,
             'order': 1.2,
             'function_call': True
         },
@@ -41,6 +43,7 @@ def model_configs():
             "token_limit": 128000,
             "input_token_limit": 96000,
             "output_token_limit": 32000,
+            "max_output_tokens": 32000,
             'order': 2.1,
             'function_call': True
         },
@@ -54,6 +57,7 @@ def model_configs():
             "token_limit": 128000,
             "input_token_limit": 96000,
             "output_token_limit": 32000,
+            "max_output_tokens": 32000,
             'order': 2.2,
             'function_call': False
         },
@@ -67,6 +71,7 @@ def model_configs():
             "token_limit": 128000,
             "input_token_limit": 96000,
             "output_token_limit": 32000,
+            "max_output_tokens": 32000,
             'order': 2.3,
             'function_call': True
         },
@@ -80,6 +85,7 @@ def model_configs():
             "token_limit": 128000,
             "input_token_limit": 128000,
             "output_token_limit": 16000,
+            "max_output_tokens": 16000,
             'order': 2.4,
             'function_call': True
         },
@@ -92,6 +98,7 @@ def model_configs():
             "is_prefix": False,
             "quota": 0.28,
             "token_limit": 32000,
+            "max_output_tokens": 12000,
             'order': 3.1,
             'function_call': False
         },
@@ -105,6 +112,7 @@ def model_configs():
             "token_limit": 256000,
             "input_token_limit": 224000,
             "output_token_limit": 32000,
+            "max_output_tokens": 32000,
             'order': 4,
             'function_call': True
         }
@@ -294,4 +302,3 @@ def format_preset(preset, model_config):
 
 def encoding_for_model(model):
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
-

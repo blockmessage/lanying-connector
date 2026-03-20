@@ -28,6 +28,7 @@ def model_configs():
             "quota": 1.88,
             "token_limit": 200000,
             'order': 2,
+            'max_output_tokens': 8192,
             'function_call': True
         },
         {
@@ -38,6 +39,7 @@ def model_configs():
             "quota": 6.44,
             "token_limit": 200000,
             'order': 1,
+            'max_output_tokens': 8192,
             'function_call': True
         },
         {
@@ -49,6 +51,7 @@ def model_configs():
             "token_limit": 200000,
             'order': 3,
             'hidden': True,
+            'max_output_tokens': 4096,
             'function_call': True
         },
         {
@@ -59,6 +62,7 @@ def model_configs():
             "quota": 6.44,
             "token_limit": 200000,
             'order': 4.01,
+            'max_output_tokens': 8192,
             'function_call': True
         },
         {
@@ -69,6 +73,7 @@ def model_configs():
             "quota": 6.44,
             "token_limit": 200000,
             'order': 4.02,
+            'max_output_tokens': 4096,
             'function_call': True
         },
         {
@@ -79,6 +84,7 @@ def model_configs():
             "quota": 0.74,
             "token_limit": 200000,
             'order': 4.1,
+            'max_output_tokens': 4096,
             'function_call': True
         },
         {
@@ -89,6 +95,7 @@ def model_configs():
             "quota": 12.67,
             "token_limit": 200000,
             'order': 5,
+            'max_output_tokens': 4096,
             'function_call': False
         },
         {
@@ -97,8 +104,9 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 12.67,
-            "token_limit": 200000,
+            "token_limit": 100000,
             'order': 6,
+            'max_output_tokens': 4096,
             'function_call': False
         },
         {
@@ -107,8 +115,9 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1.47,
-            "token_limit": 200000,
+            "token_limit": 100000,
             'order': 7,
+            'max_output_tokens': 4096,
             'function_call': False
         }
     ]

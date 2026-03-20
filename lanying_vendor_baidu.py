@@ -18,9 +18,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 1.11,
-            "token_limit": 5000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 1,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions',
             'function_call': True
         },
@@ -34,6 +35,7 @@ def model_configs():
             "token_limit": 128000,
             "token_limit_type": "prompt",
             'order': 2,
+            "max_output_tokens": 4096,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-128k',
             'function_call': True
         },
@@ -44,9 +46,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 5.78,
-            "token_limit": 7000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 3,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-4.0-turbo-8k',
             'function_call': True
         },
@@ -57,9 +60,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 9.11,
-            "token_limit": 7000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 4,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro',
             'function_call': True
         },
@@ -70,9 +74,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 0.22,
-            "token_limit": 5000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 5,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-lite-8k',
             'function_call': True
         },
@@ -83,9 +88,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 0.22,
-            "token_limit": 5000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 6,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie_speed',
             'function_call': True
         },
@@ -99,6 +105,7 @@ def model_configs():
             "token_limit": 128000,
             "token_limit_type": "prompt",
             'order': 7,
+            "max_output_tokens": 4096,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-speed-128k',
             'function_call': True
         },
@@ -112,6 +119,7 @@ def model_configs():
             "token_limit": 4000,
             'order': 99,
             'hidden': True,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-4k-0205',
             'function_call': True
         },
@@ -122,9 +130,10 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 4,
-            "token_limit": 5000,
+            "token_limit": 8000,
             'order': 3,
             'hidden': True,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-3.5-8k-0205',
             'function_call': True
         },
@@ -135,10 +144,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 2.00,
-            "token_limit": 5000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 5,
             'hidden': True,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions',
             'function_call': True
         },
@@ -149,10 +159,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 4.67,
-            "token_limit": 5000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 6,
             'hidden': True,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions',
             'function_call': True
         },
@@ -163,10 +174,11 @@ def model_configs():
             "type": "chat",
             "is_prefix": False,
             "quota": 18.00,
-            "token_limit": 7000,
+            "token_limit": 8000,
             "token_limit_type": "prompt",
             'order': 7,
             'hidden': True,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro',
             'function_call': True
         },
@@ -180,6 +192,7 @@ def model_configs():
             "token_limit": 10000,
             'order': 4,
             'hidden': True,
+            "max_output_tokens": 2048,
             "url": 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/eb-instant',
             'function_call': True
         },
@@ -452,4 +465,3 @@ def format_preset(prepare_info, preset):
 def access_token_key(api_key, secret_key):
     sha_value = hashlib.sha256((api_key+secret_key).encode('utf-8')).hexdigest()
     return f"lanying-connector:baidu:access-token:{api_key}:{sha_value}"
-

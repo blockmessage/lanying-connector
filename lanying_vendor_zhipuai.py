@@ -19,6 +19,7 @@ def model_configs():
             "quota": 0.96,
             "token_limit": 128000,
             'order': 1,
+            'max_output_tokens': 4096,
             'function_call': True
         },
         {
@@ -30,6 +31,7 @@ def model_configs():
             "quota": 15.04,
             "token_limit": 128000,
             'order': 2,
+            'max_output_tokens': 4096,
             'function_call': True
         },
         {
@@ -42,6 +44,7 @@ def model_configs():
             "token_limit": 128000,
             'order': 3,
             'hidden': True,
+            'max_output_tokens': 4096,
             'function_call': True
         },
         {
@@ -54,6 +57,7 @@ def model_configs():
             "token_limit": 128000,
             'order': 4,
             'hidden': True,
+            'max_output_tokens': 4096,
             'function_call': True
         },
         {
@@ -66,6 +70,7 @@ def model_configs():
             "token_limit": 128000,
             'order': 5,
             'hidden': True,
+            'max_output_tokens': 4096,
             'function_call': True
         }
     ]
