@@ -139,23 +139,37 @@ def configure_node(app_id, node_id, param: ConfigureNodeParam):
             'result': 'error',
             'message': 'node not exist'
         }
-    chatbot_info = None
-    if param.chatbot_id != old_node_info['chatbot_id'] and param.chatbot_id != '':
-        chatbot_info = lanying_chatbot.get_chatbot(app_id, param.chatbot_id)
+    old_bind_chatbot_id = get_node_chatbot_id(app_id, node_id)
+    if old_bind_chatbot_id == '':
+        old_bind_chatbot_id = None
+    new_chatbot_id = param.chatbot_id
+    if new_chatbot_id is None:
+        new_chatbot_id = ''
+    if new_chatbot_id != old_node_info['chatbot_id'] and new_chatbot_id != '':
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, new_chatbot_id)
         if chatbot_info is None:
             return {
                 'result': 'error',
                 'message': 'chatbot not exist'
             }
+        conflict_node_id = get_chatbot_node_id(app_id, new_chatbot_id)
+        if conflict_node_id is not None and conflict_node_id != node_id:
+            return {
+                'result': 'error',
+                'message': 'chatbot already bind to another node'
+            }
+    old_bind_chatbot_id_str = old_bind_chatbot_id if old_bind_chatbot_id is not None else ''
+    if new_chatbot_id != old_bind_chatbot_id_str:
+        if old_bind_chatbot_id is not None:
+            unbind_chatbot(app_id, node_id, old_bind_chatbot_id)
+        if new_chatbot_id != '':
+            bind_result = bind_chatbot(app_id, node_id, new_chatbot_id)
+            if bind_result['result'] == 'error':
+                return bind_result
     redis = lanying_redis.get_redis_connection()
     fields = param.to_hmset_fields()
     logging.info(f"configure openclaw node start | app_id:{app_id}, node_id: {node_id}, node_info:{fields}")
     redis.hmset(get_node_key(app_id, node_id), fields)
-    if param.chatbot_id != old_node_info['chatbot_id']:
-        if old_node_info['chatbot_id'] != '':
-            unbind_chatbot(app_id, node_id, old_node_info['chatbot_id'])
-        if param.chatbot_id != '':
-            bind_chatbot(app_id, node_id, param.chatbot_id)
     node_info = get_node(app_id, node_id)
     if node_info['access_type'] != old_node_info['access_type']:
         async_init_node_im_user_setting(app_id, node_info['user_id'], node_info['access_type'])
@@ -435,13 +449,24 @@ def bind_chatbot(app_id, node_id, chatbot_id):
     old_node_id = get_chatbot_node_id(app_id, chatbot_id)
     old_chatbot_id = get_node_chatbot_id(app_id, node_id)
     if old_node_id == node_id and old_chatbot_id == chatbot_id:
-        return
+        return {
+            'result': 'ok'
+        }
+    if old_node_id is not None and old_node_id != node_id:
+        return {
+            'result': 'error',
+            'message': 'chatbot already bind to another node'
+        }
+    if old_chatbot_id is not None and old_chatbot_id != chatbot_id:
+        return {
+            'result': 'error',
+            'message': 'node already bind to another chatbot'
+        }
     redis.hset(get_node_chatbot_bind_key(app_id), node_id, chatbot_id)
     redis.hset(get_chatbot_node_bind_key(app_id), chatbot_id, node_id)
-    if old_node_id is not None and old_node_id != node_id:
-        redis.hdel(get_node_chatbot_bind_key(app_id), old_node_id)
-    if old_chatbot_id is not None and old_chatbot_id != chatbot_id:
-        redis.hdel(get_chatbot_node_bind_key(app_id), old_chatbot_id)
+    return {
+        'result': 'ok'
+    }
 
 def unbind_chatbot(app_id, node_id, chatbot_id):
     redis = lanying_redis.get_redis_connection()
