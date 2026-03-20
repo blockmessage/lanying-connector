@@ -13,7 +13,7 @@ import lanying_vendor
 from lanying_async import executor
 
 class NodeSetting:
-    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list):
+    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id):
         self.app_id = app_id
         self.name = name
         self.product_id = product_id
@@ -22,6 +22,7 @@ class NodeSetting:
         self.lanying_link = lanying_link
         self.access_type = access_type
         self.access_list = access_list
+        self.chatbot_id = chatbot_id
 
     def to_hmset_fields(self):
         return {
@@ -33,6 +34,7 @@ class NodeSetting:
             'lanying_link': self.lanying_link,
             'access_type': self.access_type,
             'access_list': self.access_list,
+            'chatbot_id': self.chatbot_id
         }
 
 class ConfigureNodeParam:
