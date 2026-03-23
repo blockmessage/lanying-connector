@@ -125,14 +125,14 @@ def create_node(node_setting: NodeSetting):
     redis.hmset(get_node_key(app_id, node_id), fields)
     redis.rpush(get_node_list_key(app_id), node_id)
     node_info = get_node(app_id, node_id)
-    async_init_node_im_user_setting(app_id, user_id, access_type)
+    async_init_node_im_user_setting(app_id, None, node_info)
     return {
         'result': 'ok',
         'data': node_info
     }
 
 def configure_node(app_id, node_id, param: ConfigureNodeParam):
-    logging.info(f"configure_node | app_id: {app_id}, node_id: {node_id}, param: {param}")
+    logging.info(f"configure_node | app_id: {app_id}, node_id: {node_id}, param: {param.to_hmset_fields()}")
     old_node_info = get_node(app_id, node_id)
     if old_node_info is None:
         return {
@@ -171,8 +171,7 @@ def configure_node(app_id, node_id, param: ConfigureNodeParam):
     logging.info(f"configure openclaw node start | app_id:{app_id}, node_id: {node_id}, node_info:{fields}")
     redis.hmset(get_node_key(app_id, node_id), fields)
     node_info = get_node(app_id, node_id)
-    if node_info['access_type'] != old_node_info['access_type']:
-        async_init_node_im_user_setting(app_id, node_info['user_id'], node_info['access_type'])
+    async_init_node_im_user_setting(app_id, old_node_info, node_info)
     return {
         'result': 'ok',
         'data': {
@@ -376,15 +375,60 @@ def register_node_im_user(app_id, node_id):
         'message': 'register user failed'
     }
 
-def async_init_node_im_user_setting(app_id, user_id, access_type):
-    executor.submit(init_node_im_user_setting, app_id, user_id, access_type)
+def async_init_node_im_user_setting(app_id, old_node_info, node_info):
+    executor.submit(init_node_im_user_setting, app_id, old_node_info, node_info)
 
-def init_node_im_user_setting(app_id, user_id, access_type):
-    if access_type == 'friend':
-        lanying_im_api.set_user_stranger_chat(app_id, user_id, 2)
-        lanying_im_api.set_auth_mode(app_id, user_id, 1)
-    elif access_type == 'public':
-        lanying_im_api.set_user_stranger_chat(app_id, user_id, 1)
+def init_node_im_user_setting(app_id, old_node_info, node_info):
+    logging.info(f"init_node_im_user_setting start | app_id: {app_id}")
+    user_id = node_info['user_id']
+    access_type = node_info['access_type']
+    access_list = node_info['access_list']
+    if old_node_info is None or access_type != old_node_info['access_type']:
+        if access_type == 'friend':
+            lanying_im_api.set_user_stranger_chat(app_id, user_id, 2)
+            lanying_im_api.set_auth_mode(app_id, user_id, 1)
+        elif access_type == 'public':
+            lanying_im_api.set_user_stranger_chat(app_id, user_id, 1)
+    old_access_list = ''
+    if old_node_info is not None:
+        old_access_list = old_node_info['access_list']
+    if access_type == 'friend' and access_list != old_access_list:
+        access_items = parse_access_list(access_list)
+        old_access_items = parse_access_list(old_access_list)
+        access_set = set(access_items)
+        old_access_set = set(old_access_items)
+        add_access_list = [item for item in access_items if item not in old_access_set]
+        remove_access_list = [item for item in old_access_items if item not in access_set]
+        logging.info(f"init_node_im_user_setting remove_access_list: {add_access_list}, remove_access_list: {remove_access_list}")
+        for add_user_id in add_access_list:
+            try:
+                lanying_im_api.roster_apply(app_id, add_user_id, user_id, 'OpenClaw')
+            except Exception:
+                logging.exception("roster_apply failed")
+            try:
+                lanying_im_api.roster_accept(app_id, user_id, add_user_id)
+            except Exception:
+                logging.exception("roster_accept failed")
+        for remove_user_id in remove_access_list:
+            try:
+                lanying_im_api.roster_delete(app_id, user_id, remove_user_id)
+            except Exception:
+                logging.exception("roster_accept failed")
+
+def parse_access_list(access_list_str):
+    if access_list_str is None:
+        return []
+    integer_access_list = []
+    access_items = str(access_list_str).replace(',', ' ').split()
+    for item in access_items:
+        item_str = str(item).strip()
+        if item_str == '':
+            continue
+        try:
+            integer_access_list.append(int(item_str))
+        except Exception:
+            logging.info(f"parse_access_list skip invalid user_id: {item}")
+    return integer_access_list
 
 def update_node_field(app_id, node_id, field, value):
     node_info = get_node(app_id, node_id)

@@ -111,6 +111,69 @@ def set_auth_mode(app_id, user_id, value):
         logging.info(f"set_auth_mode, app_id={app_id} user_id={user_id}, value={value}, result:{result}")
         return result
 
+def roster_apply(app_id, user_id, roster_user_id, reason=''):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'user_id': str(user_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        body = {
+            'user_id': roster_user_id,
+            'reason': reason if reason is not None else ''
+        }
+        response = requests.post(apiEndpoint + '/roster/apply',
+                                    headers=headers,
+                                    json=body)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"roster_apply, app_id={app_id} user_id={user_id}, body={body}, result:{result}")
+        return result
+
+def roster_accept(app_id, user_id, roster_user_id):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'user_id': str(user_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        params = {'user_id': roster_user_id}
+        response = requests.post(apiEndpoint + '/roster/accept',
+                                    headers=headers,
+                                    params=params)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"roster_accept, app_id={app_id} user_id={user_id}, params={params}, result:{result}")
+        return result
+
+def roster_delete(app_id, user_id, roster_user_id):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'user_id': str(user_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        params = {'user_id': roster_user_id}
+        response = requests.post(apiEndpoint + '/roster/delete',
+                                    headers=headers,
+                                    params=params)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"roster_delete, app_id={app_id} user_id={user_id}, params={params}, result:{result}")
+        return result
+
 def get_user_avatar_upload_url(app_id, user_id):
     config = lanying_config.get_lanying_connector(app_id)
     if config:

@@ -68,7 +68,8 @@ def create_node():
     node_id = str(data['node_id'])
     lanying_link = str(data['lanying_link'])
     access_type = str(data.get('access_type', 'friend'))
-    access_list = str(data.get('access_list', ''))
+    access_list = '' # not allow when create
+    chatbot_id = '' # not allow when create
     setting = lanying_openclaw.NodeSetting(
         app_id=app_id,
         name=name,
@@ -78,7 +79,7 @@ def create_node():
         lanying_link = lanying_link,
         access_type=access_type,
         access_list=access_list,
-        chatbot_id = ''
+        chatbot_id = chatbot_id
     )
     result = lanying_openclaw.create_node(setting)
     if result['result'] == 'error':
