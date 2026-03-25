@@ -3,7 +3,6 @@ import lanying_redis
 import logging
 import secrets
 import os
-import requests
 import lanying_config
 import lanying_chatbot
 import lanying_im_api
@@ -232,14 +231,15 @@ def handle_chat_message(msg):
     from_user_id = msg['from']['uid']
     to_user_id = msg['to']['uid']
     app_id = msg['appId']
+    ctype = msg['ctype']
     if from_user_id == to_user_id:
         ext = lanying_utils.safe_json_loads(msg['ext'], {})
         if isinstance(ext, dict) and 'openclaw' in ext:
             event = ext['openclaw']
-            handle_client_event(event, app_id, from_user_id)
+            handle_client_event(event, app_id, from_user_id, ctype)
 
-def handle_client_event(event, app_id, user_id):
-    logging.info(f"handle client event | event: {event}, app_id: {app_id}, user_id: {user_id}")
+def handle_client_event(event, app_id, user_id, ctype):
+    logging.info(f"handle client event | event: {event}, app_id: {app_id}, user_id: {user_id}, ctype: {ctype}")
     if event['type'] == 'online':
         node_list = get_node_list(app_id)['data']['list']
         for node in node_list:
@@ -254,6 +254,54 @@ def handle_client_event(event, app_id, user_id):
                     logging.info(f"update node config for provider_inited is false | node_id: {node_id}")
                     model_patch_config = get_model_patch_config(app_id)
                     update_node_config(app_id, node_id, model_patch_config)
+    elif event['type'] == 'router_reply':
+        if ctype != 'COMMAND':
+            logging.info(f"handle_client_event skip not command router_reply | ctype: {ctype}, event: {event}")
+            return
+        node_list = get_node_list(app_id)['data']['list']
+        for node in node_list:
+            if node['user_id'] == user_id:
+                node_id = node['node_id']
+                logging.info(f"handle_client router_reply | node_id: {node_id}, event: {event}")
+                if 'message' in event:
+                    meta_message = event['message']
+                    message = convert_from_meta_message(meta_message)
+                    logging.info(f"convert_from_meta_message: meta_message{meta_message}, message: {message}")
+                    router_reply_message(app_id, node, message)
+                return
+
+def router_reply_message(app_id, node_info, message):
+    logging.info(f"router_reply_message start | node: {node_info}, message: {message}")
+    node_id = node_info['node_id']
+    chatbot_id = get_node_chatbot_id(app_id, node_id)
+    if chatbot_id is None:
+        return
+    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot_info is None:
+        return
+    chatbot_user_id = chatbot_info['user_id']
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    send_msg_type = 2 if message['type'] == 'GROUPCHAT' else 1
+    content_type = 0
+    content = message['content']
+    to_id = message['to']['uid']
+    if str(chatbot_user_id) == str(to_id):
+        logging.info(f"router_reply_message stop for to is chatbot | chatbot_user_id: {chatbot_user_id}, to_id: {to_id}, message: {message}")
+        return
+    ext = {
+        'ai': {
+          'role': 'ai'
+        }
+    }
+    extra = {
+        'ext': ext
+    }
+    msg_id = lanying_im_api.send_message_sync(config, app_id, chatbot_user_id, to_id, send_msg_type, content_type, content, extra)
+    if msg_id <= 0:
+        logging.info(f"router_reply_message send message failed")
 
 def sync_model_config(app_id, node_id):
     node_info = get_node(app_id, node_id)
@@ -547,70 +595,71 @@ def check_client_login(token):
         }
     }
 
-def send_lanying_message(token, message):
-    token_info = get_token_info(token)
-    if token_info is None:
-        return {
-            'result': 'error',
-            'message': 'token not exist'
-        }
-    if token_info['status'] != 'normal':
-        return {
-            'result': 'error',
-            'message': 'bad token status'
-        }
-    app_id = token_info['app_id']
-    node_id = token_info['node_id']
-    chatbot_id = get_node_chatbot_id(app_id, node_id)
-    if chatbot_id is None:
-        return {
-            'result': 'error',
-            'message': 'chatbot not bind'
-        }
-    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    if chatbot_info is None:
-        return {
-            'result': 'error',
-            'message': 'chatbot not found'
-        }
-    if message['chatType'] != "direct":
-        return {
-            'result': 'error',
-            'message': 'chatType not support'
-        }
-    if message['contentType'] != "text":
-        return {
-            'result': 'error',
-            'message': 'contentType not support'
-        }
-    to_user_id = message['to']
-    content = message['content']
-    chatbot_user_id = chatbot_info['user_id']
-    admin_token = lanying_config.get_lanying_admin_token(app_id)
-    config = {
-        'lanying_admin_token': admin_token
-    }
-    send_msg_type = 1
-    content_type = 0
-    extra = {
-        'msg_config': {
-            'ai': {
-                    'role': 'ai'
-                }
-        }
-    }
-    msg_id = lanying_im_api.send_message_sync(config, app_id, chatbot_user_id, to_user_id, send_msg_type, content_type, content, extra)
-    if msg_id <= 0:
-        return {
-            'result': 'error',
-            'message': 'send message failed'
-        }
-    return {
-        'result': 'ok',
-        'data': {
-            'msg_id': msg_id
-        }
-    }
+# def send_lanying_message(token, message):
+#     token_info = get_token_info(token)
+#     if token_info is None:
+#         return {
+#             'result': 'error',
+#             'message': 'token not exist'
+#         }
+#     if token_info['status'] != 'normal':
+#         return {
+#             'result': 'error',
+#             'message': 'bad token status'
+#         }
+#     app_id = token_info['app_id']
+#     node_id = token_info['node_id']
+#     chatbot_id = get_node_chatbot_id(app_id, node_id)
+#     if chatbot_id is None:
+#         return {
+#             'result': 'error',
+#             'message': 'chatbot not bind'
+#         }
+#     chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+#     if chatbot_info is None:
+#         return {
+#             'result': 'error',
+#             'message': 'chatbot not found'
+#         }
+#     if message['chatType'] != "direct":
+#         return {
+#             'result': 'error',
+#             'message': 'chatType not support'
+#         }
+#     if message['contentType'] != "text":
+#         return {
+#             'result': 'error',
+#             'message': 'contentType not support'
+#         }
+#     to_user_id = message['to']
+#     content = message['content']
+#     chatbot_user_id = chatbot_info['user_id']
+#     admin_token = lanying_config.get_lanying_admin_token(app_id)
+#     config = {
+#         'lanying_admin_token': admin_token
+#     }
+#     send_msg_type = 1
+#     content_type = 0
+#     extra = {
+#         'msg_config': {
+#             'ai': {
+#                     'role': 'ai',
+#                     'stream': False
+#                 }
+#         }
+#     }
+#     msg_id = lanying_im_api.send_message_sync(config, app_id, chatbot_user_id, to_user_id, send_msg_type, content_type, content, extra)
+#     if msg_id <= 0:
+#         return {
+#             'result': 'error',
+#             'message': 'send message failed'
+#         }
+#     return {
+#         'result': 'ok',
+#         'data': {
+#             'msg_id': msg_id
+#         }
+#     }
 
 def get_token_info(token):
     redis = lanying_redis.get_redis_connection()
@@ -650,29 +699,138 @@ def get_access_token():
 def get_openclaw_server():
     return os.getenv('OPENCLAW_LANYING_SERVER')
 
+def convert_to_meta_message(message, chatbot_user_id=None, node_user_id=None):
+    msg_ctype = str(message.get('ctype', 'TEXT')).upper()
+    msg_type_map = {
+        'TEXT': 'text',
+        'IMAGE': 'image',
+        'AUDIO': 'audio',
+        'VIDEO': 'video',
+        'FILE': 'file',
+        'LOCATION': 'location',
+        'COMMAND': 'command',
+        'FORWARD': 'forward'
+    }
+    msg_type = msg_type_map.get(msg_ctype, 'text')
+
+    chat_type = str(message.get('type', '')).upper()
+    to_type = 'group' if chat_type == 'GROUPCHAT' else 'roster'
+
+    config = message.get('config', '')
+    if chatbot_user_id is not None and node_user_id is not None:
+        try:
+            config_obj = config if isinstance(config, dict) else json.loads(str(config))
+            mention_list = config_obj.get('mentionList', [])
+            if isinstance(mention_list, list):
+                chatbot_uid = str(chatbot_user_id)
+                replaced = False
+                for idx, uid in enumerate(mention_list):
+                    if str(uid) == chatbot_uid:
+                        mention_list[idx] = int(node_user_id) if isinstance(uid, int) else str(node_user_id)
+                        replaced = True
+                if replaced:
+                    config_obj['mentionList'] = mention_list
+                    config = json.dumps(config_obj, separators=(',', ':'), ensure_ascii=False) if isinstance(message.get('config', ''), str) else config_obj
+        except Exception as err:
+            logging.warning(f"convert_to_meta_message parse config failed | config: {config}, err: {err}")
+
+    return {
+        'id': str(message.get('msgId', '')),
+        'from': str(message.get('from', {}).get('uid', '')),
+        'to': str(message.get('to', {}).get('uid', '')),
+        'content': str(message.get('content', '')),
+        'type': msg_type,
+        'ext': message.get('ext', ''),
+        'config': config,
+        'attach': message.get('attachment', ''),
+        'status': 1,
+        'timestamp': str(message.get('timestamp', '0')),
+        'toType': to_type
+    }
+
+def convert_from_meta_message(meta_message):
+    meta_type = str(meta_message.get('type', 'text')).lower()
+    ctype_map = {
+        'text': 'TEXT',
+        'image': 'IMAGE',
+        'audio': 'AUDIO',
+        'video': 'VIDEO',
+        'file': 'FILE',
+        'location': 'LOCATION',
+        'command': 'COMMAND',
+        'forward': 'FORWARD'
+    }
+    ctype = ctype_map.get(meta_type, 'TEXT')
+
+    to_type = str(meta_message.get('toType', 'roster')).lower()
+    chat_type = 'GROUPCHAT' if to_type == 'group' else 'CHAT'
+
+    return {
+        'msgId': str(meta_message.get('id', '')),
+        'from': {
+            'uid': str(meta_message.get('from', '')),
+            'deviceSN': 0
+        },
+        'to': {
+            'uid': str(meta_message.get('to', '')),
+            'deviceSN': 0
+        },
+        'type': chat_type,
+        'content': str(meta_message.get('content', '')),
+        'ctype': ctype,
+        'ext': meta_message.get('ext', ''),
+        'config': meta_message.get('config', ''),
+        'attachment': meta_message.get('attach', ''),
+        'timestamp': str(meta_message.get('timestamp', '0'))
+    }
+
 def redirect_to_openclaw(node_info, message):
     if node_info['status'] != 'normal':
         return 'OpenClaw状态异常'
-    else:
-        url = get_openclaw_server() + "/api/message"
-        headers = {
-            'authorization': get_access_token()
+    app_id = node_info['app_id']
+    node_user_id = node_info['user_id']
+    node_id = node_info['node_id']
+    chatbot_id = get_node_chatbot_id(app_id, node_id)
+    if chatbot_id is None:
+        return 'OpenClaw未绑定Chatbot'
+    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot_info is None:
+        return 'OpenClaw绑定的Chatbot不存在'
+    chatbot_user_id = chatbot_info['user_id']
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    send_msg_type = 1
+    content_type = 6 # COMMAND = 6;
+    content = ''
+    if str(message['from']['uid']) == str(chatbot_user_id):
+        logging.info(f"redirect_to_openclaw force stop for from chatbot_id | chatbot_user_id: {chatbot_user_id}, message: {message}")
+        return ''
+    # if message['to']['uid'] == node_user_id:
+    #     logging.info(f"redirect_to_openclaw force stop for to node_user_id | node_user_id: {node_user_id}, message: {message}")
+    #     return ''
+    if str(message['to']['uid']) == str(chatbot_user_id):
+        message['to']['uid'] = node_user_id
+    meta_message = convert_to_meta_message(message, str(chatbot_user_id), node_user_id)
+    logging.info(f"redirect_to_openclaw transform meta | message: {message}, meta: {meta_message}")
+    ext = {
+        'openclaw': {
+            'type': 'router_request',
+            'message': meta_message
+        },
+        'ai': {
+            'role': 'ai'
         }
-        body = {
-            'token': node_info['token'],
-            'message': message
-        }
-        try:
-            response = requests.post(url, headers= headers, json = body)
-            response_json = response.json()
-            logging.info(f"redirect_to_openclaw response:{response_json}")
-            if response_json.get('code') == 200:
-                return ''
-            else:
-                return f'转发到OpenClaw失败: {response_json.get("message")}'
-        except Exception:
-            logging.exception("redirect_to_openclaw error")
+    }
+    extra = {
+        'ext': ext,
+        'skip_antispam_prompt': True
+    }
+    msg_id = lanying_im_api.send_message_sync(config, app_id, node_user_id, node_user_id, send_msg_type, content_type, content, extra)
+    if msg_id <= 0:
         return '转发到OpenClaw失败'
+    return ''
 
 def generate_node_id():
     redis = lanying_redis.get_redis_connection()
