@@ -2,9 +2,11 @@ import logging
 import tiktoken
 import requests
 import json
+import lanying_openai_compat
 
 ASSISTANT_MESSAGE_DEFAULT = '好的'
 USER_MESSAGE_DEFAULT = '继续'
+SUPPORT_NATIVE_TOOLS = True
 
 def model_configs():
     return [
@@ -56,7 +58,7 @@ def prepare_chat(auth_info, preset):
 
 def chat(prepare_info, preset, model_config):
     url = 'https://api.deepseek.com/chat/completions'
-    final_preset = format_preset(preset)
+    final_preset = format_preset(preset, model_config)
     api_key = prepare_info["api_key"]
     headers = {"Content-Type": "application/json", "Authorization": f'Bearer {api_key}'}
     try:
@@ -134,7 +136,7 @@ def chat(prepare_info, preset, model_config):
                 reply = reply.strip()
             else:
                 reply = ''
-            function_call = response_message.get('function_call')
+            tool_calls = response_message.get('tool_calls', [])
             finish_reason = ''
             try:
                 finish_reason = res['choices'][0]['finish_reason']
@@ -144,7 +146,7 @@ def chat(prepare_info, preset, model_config):
                 'result': 'ok',
                 'reply' : reply,
                 'finish_reason': finish_reason,
-                'function_call': function_call,
+                'tool_calls': tool_calls,
                 'usage' : {
                     'completion_tokens' : usage.get('completion_tokens',0),
                     'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -158,8 +160,15 @@ def chat(prepare_info, preset, model_config):
             'reason': 'exception'
         }
 
-def format_preset(preset):
-    support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'logprobs', 'top_logprobs']
+def format_preset(preset, model_config):
+    support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'logprobs', 'top_logprobs', 'tools', 'tool_choice']
+    function_call_support = model_config.get('function_call', False)
+    if 'tools' not in preset and 'functions' in preset:
+        preset = dict(preset)
+        preset['tools'] = lanying_openai_compat.functions_to_tools(preset.get('functions', []))
+    if 'tool_choice' not in preset and 'function_call' in preset:
+        preset = dict(preset)
+        preset['tool_choice'] = lanying_openai_compat.function_call_to_tool_choice(preset.get('function_call'))
     ret = dict()
     for key in support_fields:
         if key in preset:
@@ -190,6 +199,8 @@ def format_preset(preset):
                                 messages.append(new_message)
                 ret['messages'] = messages
             else:
+                if key in ['tools', 'tool_choice'] and not function_call_support:
+                    continue
                 ret[key] = preset[key]
     return ret
 

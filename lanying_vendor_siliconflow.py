@@ -3,6 +3,9 @@ import tiktoken
 import requests
 import json
 import copy
+import lanying_openai_compat
+
+SUPPORT_NATIVE_TOOLS = True
 
 def model_configs():
     return [
@@ -65,16 +68,6 @@ def chat(prepare_info, preset, model_config):
                                     delta = choice['delta']
                                     if 'finish_reason' in choice and choice['finish_reason'] is not None:
                                         delta['finish_reason'] = choice['finish_reason']
-                                    if 'tool_calls'in delta and isinstance(delta['tool_calls'], list) and len(delta['tool_calls']) > 0:
-                                        tool_calls = delta['tool_calls']
-                                        function_call = {}
-                                        if 'name' in tool_calls[0]['function']:
-                                            function_call['name'] = tool_calls[0]['function']['name']
-                                        if 'arguments' in tool_calls[0]['function']:
-                                            function_call['arguments'] = tool_calls[0]['function']['arguments']
-                                        if 'id' in tool_calls[0]:
-                                            function_call['id'] = tool_calls[0]['id']
-                                        delta['function_call'] = function_call
                                 else:
                                     delta = {'content': ''}
                                 if 'usage' in data:
@@ -129,17 +122,7 @@ def chat(prepare_info, preset, model_config):
                 reply = reply.strip()
             else:
                 reply = ''
-            function_call = None
-            if 'tool_calls' in response_message and isinstance(response_message['tool_calls'], list) and len(response_message['tool_calls']) > 0:
-                try:
-                    function_call = {
-                        'name': response_message['tool_calls'][0]['function']['name'],
-                        'arguments': response_message['tool_calls'][0]['function']['arguments'],
-                        'id': response_message['tool_calls'][0]['id']
-                    }
-                except Exception as e:
-                    logging.error(f"fail to parse siliconflow function call {response_message}")
-                    logging.exception(e)
+            tool_calls = response_message.get('tool_calls', [])
             finish_reason = ''
             try:
                 finish_reason = res['choices'][0]['finish_reason']
@@ -149,7 +132,7 @@ def chat(prepare_info, preset, model_config):
                 'result': 'ok',
                 'reply' : reply,
                 'finish_reason': finish_reason,
-                'function_call': function_call,
+                'tool_calls': tool_calls,
                 'usage' : {
                     'completion_tokens' : usage.get('completion_tokens',0),
                     'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -164,54 +147,28 @@ def chat(prepare_info, preset, model_config):
         }
 
 def format_preset(preset, model_config):
-    support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'logprobs', 'top_logprobs', 'logit_bias', 'functions']
+    support_fields = ['model', 'messages', 'frequency_penalty', 'max_tokens', 'presence_penalty', 'stop', 'stream', 'temperature', 'top_p', 'logprobs', 'top_logprobs', 'logit_bias', 'tools', 'tool_choice']
     function_call_support = model_config.get('function_call', False)
     logging.info(f"function_call_support: {function_call_support}")
+    if 'tools' not in preset and 'functions' in preset:
+        preset = dict(preset)
+        preset['tools'] = lanying_openai_compat.functions_to_tools(preset.get('functions', []))
+    if 'tool_choice' not in preset and 'function_call' in preset:
+        preset = dict(preset)
+        preset['tool_choice'] = lanying_openai_compat.function_call_to_tool_choice(preset.get('function_call'))
     ret = dict()
     for key in support_fields:
         if key in preset:
-            if key == "functions":
-                if function_call_support:
-                    tools = []
-                    for function in preset['functions']:
-                        function_obj = {}
-                        for k,v in function.items():
-                            if k in ["name", "description", "parameters"]:
-                                function_obj[k] = v
-                        tools.append({'type':'function', 'function':function_obj})
-                    ret['tools'] = tools
-            elif key == "messages":
-                last_tool_call_id = ''
+            if key == "messages":
                 messages = []
                 for message in preset['messages']:
-                    logging.info(f"message:{message}")
-                    isFunction = False
-                    if 'function_call' in message:
-                        message = copy.deepcopy(message)
-                        function_call = message['function_call']
-                        last_tool_call_id = function_call.get('id', '')
-                        tool_calls = [{
-                            'id': function_call.get('id', ''),
-                            'type':'function',
-                            'function':{
-                                'name': function_call['name'],
-                                'arguments': function_call['arguments']
-                            }}]
-                        message['tool_calls'] = tool_calls
-                        del message['function_call']
-                        isFunction = True
-                    elif message['role'] == 'function':
-                        message = copy.deepcopy(message)
-                        message['role'] = 'tool'
-                        message['tool_call_id'] = last_tool_call_id
-                        isFunction = True
-                    if isFunction:
-                        if function_call_support:
-                            messages.append(message)
-                    else:
-                        messages.append(message)
+                    item, _ = lanying_openai_compat.normalize_chat_message(message)
+                    if item is not None:
+                        messages.append(item)
                 ret['messages'] = messages
             else:
+                if key in ['tools', 'tool_choice'] and not function_call_support:
+                    continue
                 ret[key] = preset[key]
     return ret
 

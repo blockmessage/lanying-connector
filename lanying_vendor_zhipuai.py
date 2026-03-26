@@ -4,9 +4,11 @@ from zhipuai import ZhipuAI
 import zhipuai.core._errors
 import json
 import copy
+import lanying_openai_compat
 
 ASSISTANT_MESSAGE_DEFAULT = '好的'
 USER_MESSAGE_DEFAULT = '继续'
+SUPPORT_NATIVE_TOOLS = True
 
 def model_configs():
     return [
@@ -101,12 +103,17 @@ def chat(prepare_info, preset, model_config):
                     else:
                         chunk_info['content'] = ''
                     if chunk.choices[0].delta.tool_calls:
-                        tool_calls = chunk.choices[0].delta.tool_calls
-                        chunk_info['function_call'] = {
-                            'name': tool_calls[0].function.name,
-                            'arguments': tool_calls[0].function.arguments,
-                            'id': tool_calls[0].id
-                        }
+                        tool_calls = []
+                        for tool_call in chunk.choices[0].delta.tool_calls:
+                            tool_calls.append({
+                                'id': tool_call.id,
+                                'type': 'function',
+                                'function': {
+                                    'name': tool_call.function.name,
+                                    'arguments': tool_call.function.arguments
+                                }
+                            })
+                        chunk_info['tool_calls'] = tool_calls
                     if chunk.usage:
                         chunk_info['usage'] = {
                             'completion_tokens' : chunk.usage.completion_tokens,
@@ -140,14 +147,18 @@ def chat(prepare_info, preset, model_config):
                 reply = message.content
             else:
                 reply = ''
-            function_call = None
+            tool_calls = []
             if hasattr(message, 'tool_calls'):
                 if message.tool_calls is not None and len(message.tool_calls) > 0:
-                    function_call = {
-                        'name': message.tool_calls[0].function.name,
-                        'arguments': message.tool_calls[0].function.arguments,
-                        'id': message.tool_calls[0].id
-                    }
+                    for tool_call in message.tool_calls:
+                        tool_calls.append({
+                            'id': tool_call.id,
+                            'type': 'function',
+                            'function': {
+                                'name': tool_call.function.name,
+                                'arguments': tool_call.function.arguments
+                            }
+                        })
             finish_reason = ''
             try:
                 finish_reason = response.choices[0].finish_reason
@@ -157,7 +168,7 @@ def chat(prepare_info, preset, model_config):
                 'result': 'ok',
                 'reply' : reply,
                 'finish_reason': finish_reason,
-                'function_call': function_call,
+                'tool_calls': tool_calls,
                 'usage' : {
                     'completion_tokens' : usage.completion_tokens,
                     'prompt_tokens' : usage.prompt_tokens,
@@ -184,42 +195,22 @@ def encoding_for_model(model): # for temp
     return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(preset):
-    support_fields = ['model', "messages", "temperature", "top_p", "max_tokens", "stop", "stream", "functions"]
+    support_fields = ['model', "messages", "temperature", "top_p", "max_tokens", "stop", "stream", "tools", "tool_choice"]
+    if 'tools' not in preset and 'functions' in preset:
+        preset = dict(preset)
+        preset['tools'] = lanying_openai_compat.functions_to_tools(preset.get('functions', []))
+    if 'tool_choice' not in preset and 'function_call' in preset:
+        preset = dict(preset)
+        preset['tool_choice'] = lanying_openai_compat.function_call_to_tool_choice(preset.get('function_call'))
     ret = dict()
     for key in support_fields:
         if key in preset:
-            if key == "functions":
-                tools = []
-                for function in preset['functions']:
-                    function_obj = {}
-                    for k,v in function.items():
-                        if k in ["name", "description", "parameters"]:
-                            function_obj[k] = v
-                    tools.append({'type':'function', 'function':function_obj})
-                ret['tools'] = tools
-            elif key == "messages":
-                last_tool_call_id = ''
+            if key == "messages":
                 messages = []
                 for message in preset['messages']:
-                    logging.info(f"message:{message}")
-                    if 'function_call' in message:
-                        message = copy.deepcopy(message)
-                        function_call = message['function_call']
-                        last_tool_call_id = function_call.get('id', ''),
-                        tool_calls = [{
-                            'tool_call_id': function_call.get('id', ''),
-                            'type':'function',
-                            'function':{
-                                'name': function_call['name'],
-                                'arguments': function_call['arguments']
-                            }}]
-                        message['tool_calls'] = tool_calls
-                        del message['function_call']
-                    elif message['role'] == 'function':
-                        message = copy.deepcopy(message)
-                        message['role'] = 'tool'
-                        message['tool_call_id'] = last_tool_call_id
-                    messages.append(message)
+                    item, _ = lanying_openai_compat.normalize_chat_message(message)
+                    if item is not None:
+                        messages.append(item)
                 ret['messages'] = messages
             elif key == 'stop':
                 if len(key) == 1:

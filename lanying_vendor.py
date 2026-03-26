@@ -458,8 +458,12 @@ def get_embedding_model_config(app_id, vendor, model):
 
 def prepare_chat(app_id, vendor, auth_info, preset):
     module = get_module(app_id, vendor)
-    legacy_preset = lanying_openai_compat.to_legacy_vendor_preset(preset)
-    result = module.prepare_chat(auth_info, legacy_preset)
+    use_native_tools = getattr(module, 'SUPPORT_NATIVE_TOOLS', False)
+    if use_native_tools:
+        vendor_preset = preset
+    else:
+        vendor_preset = lanying_openai_compat.to_legacy_vendor_preset(preset)
+    result = module.prepare_chat(auth_info, vendor_preset)
     if isinstance(result, dict):
         result['auth_info'] = auth_info
     return result
@@ -467,13 +471,17 @@ def prepare_chat(app_id, vendor, auth_info, preset):
 def chat(app_id, vendor, prepare_info, preset):
     module = get_module(app_id, vendor)
     model_config = get_chat_model_config(app_id, vendor, preset['model'])
-    legacy_preset = lanying_openai_compat.to_legacy_vendor_preset(preset)
+    use_native_tools = getattr(module, 'SUPPORT_NATIVE_TOOLS', False)
+    if use_native_tools:
+        vendor_preset = preset
+    else:
+        vendor_preset = lanying_openai_compat.to_legacy_vendor_preset(preset)
     try:
-        resp = chat_with_same_model_retry(module, vendor, prepare_info, legacy_preset, model_config)
+        resp = chat_with_same_model_retry(module, vendor, prepare_info, vendor_preset, model_config)
         resp = normalize_chat_response(resp)
         if 'result' in resp and resp['result'] == 'ok':
             return resp
-        return chat_retry(vendor, prepare_info, legacy_preset, resp)
+        return chat_retry(vendor, prepare_info, vendor_preset, resp)
     except Exception as e:
         logging.error(e)
         error_message = 'exception'
@@ -485,7 +493,7 @@ def chat(app_id, vendor, prepare_info, preset):
             'result': 'error',
             'reason': error_message
         }
-        return chat_retry(vendor, prepare_info, legacy_preset, resp)
+        return chat_retry(vendor, prepare_info, vendor_preset, resp)
 
 def normalize_chat_response(resp):
     resp = lanying_openai_compat.normalize_vendor_response(resp)

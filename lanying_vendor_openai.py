@@ -5,6 +5,9 @@ import types
 import time
 import json
 import requests
+import lanying_openai_compat
+
+SUPPORT_NATIVE_TOOLS = True
 
 def model_configs():
     return [
@@ -407,7 +410,7 @@ def prepare_chat(auth_info, preset):
             if 'role' in message and 'content' in message:
                 msg = {}
                 for k,v in message.items():
-                    if k in ['role', 'content', 'name', 'function_call']:
+                    if k in ['role', 'content', 'name', 'function_call', 'tool_calls', 'tool_call_id']:
                         msg[k] = v
                 messages.append(msg)
         preset['messages'] = messages
@@ -490,7 +493,7 @@ def chat(prepare_info, preset, model_config):
                         reply = audio['transcript']
                 else:
                     audio = None
-                function_call = response_message.get('function_call')
+                tool_calls = response_message.get('tool_calls', [])
                 finish_reason = ''
                 try:
                     finish_reason = res['choices'][0]['finish_reason']
@@ -501,7 +504,7 @@ def chat(prepare_info, preset, model_config):
                     'reply' : reply,
                     'audio': audio,
                     'finish_reason': finish_reason,
-                    'function_call': function_call,
+                    'tool_calls': tool_calls,
                     'usage' : {
                         'completion_tokens' : usage.get('completion_tokens',0),
                         'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -576,21 +579,17 @@ def format_preset(preset, model_config):
     model = preset.get('model', '')
     if model.startswith("o1") or model.startswith("o3-"):
         return format_preset_for_o1(preset)
-    support_fields = ['model', "messages", "functions", "function_call", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
+    support_fields = ['model', "messages", "tools", "tool_choice", "temperature", "top_p", "n", "stop", "max_tokens", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
+    if 'tools' not in preset and 'functions' in preset:
+        preset = dict(preset)
+        preset['tools'] = lanying_openai_compat.functions_to_tools(preset.get('functions', []))
+    if 'tool_choice' not in preset and 'function_call' in preset:
+        preset = dict(preset)
+        preset['tool_choice'] = lanying_openai_compat.function_call_to_tool_choice(preset.get('function_call'))
     ret = dict()
     for key in support_fields:
         if key in preset:
-            if key == "functions":
-                functions = []
-                for function in preset['functions']:
-                    function_obj = {}
-                    for k,v in function.items():
-                        if k in ["name", "description", "parameters"]:
-                            function_obj[k] = v
-                    functions.append(function_obj)
-                ret[key] = functions
-            else:
-                ret[key] = preset[key]
+            ret[key] = preset[key]
     if 'stream' in ret and ret['stream'] == True:
         ret['stream_options'] = {
             'include_usage': True
