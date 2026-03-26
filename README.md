@@ -104,6 +104,16 @@ LANYING_CONNECTOR_GRAY_CASES='scripts/gray_replay_cases.json' \
 - 验收记录模板：`scripts/gray_acceptance_template.md`
 - 建议每个厂商灰度批次单独留一份日志与模板记录（便于回溯）
 
+可选：把多次灰度日志汇总成一份 Markdown 报告
+
+```bash
+# 汇总全部灰度日志
+python3 scripts/summarize_gray_reports.py
+
+# 只汇总最近 5 次，并指定输出文件
+python3 scripts/summarize_gray_reports.py --latest 5 --output scripts/reports/gray_summary_latest5.md
+```
+
 ### 可上线检查清单（Model API 升级）
 
 - 协议兼容：
