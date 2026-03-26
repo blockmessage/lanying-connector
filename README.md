@@ -98,9 +98,17 @@ LANYING_CONNECTOR_API_KEY='YOUR_BEARER_TOKEN' \
 LANYING_CONNECTOR_MODEL='gpt-4o-mini' \
 LANYING_CONNECTOR_GRAY_CASES='scripts/gray_replay_cases.json' \
 ./scripts/run_gray_validation.sh
+
+# 3) 批量模型灰度（逗号分隔，一次跑完）
+LANYING_CONNECTOR_BASE_URL='http://127.0.0.1:5000' \
+LANYING_CONNECTOR_API_KEY='YOUR_BEARER_TOKEN' \
+LANYING_CONNECTOR_MODELS='gpt-4o-mini,deepseek-chat,claude-3-5-haiku-20241022' \
+LANYING_CONNECTOR_GRAY_CASES='scripts/gray_replay_cases.json' \
+./scripts/run_gray_validation.sh
 ```
 
 - 日志文件：`scripts/reports/gray_validation_YYYYMMDD_HHMMSS.log`
+- 批量模式会额外输出按模型拆分日志：`scripts/reports/gray_validation_YYYYMMDD_HHMMSS_<model>.log`
 - 验收记录模板：`scripts/gray_acceptance_template.md`
 - 建议每个厂商灰度批次单独留一份日志与模板记录（便于回溯）
 
