@@ -78,6 +78,12 @@ python3 scripts/replay_chat_completions.py
 
 # 只跑单个用例
 python3 scripts/replay_chat_completions.py --api-key 'YOUR_BEARER_TOKEN' --only new_tools_stream_forced_tool
+
+# 跑“多 tool_calls 历史链路”专项用例
+LANYING_CONNECTOR_BASE_URL=http://127.0.0.1:5000 \
+LANYING_CONNECTOR_API_KEY='YOUR_BEARER_TOKEN' \
+LANYING_CONNECTOR_MODEL='gpt-4o-mini' \
+python3 scripts/replay_chat_completions.py --cases scripts/chat_replay_cases_multi_tools.json
 ```
 
 ### 灰度联调脚本与验收模板

@@ -64,6 +64,17 @@ def has_tool_call_non_stream(resp_json):
         return False
 
 
+def count_tool_calls_non_stream(resp_json):
+    try:
+        msg = resp_json["choices"][0]["message"]
+        tool_calls = msg.get("tool_calls", [])
+        if isinstance(tool_calls, list):
+            return len(tool_calls)
+        return 0
+    except Exception:
+        return 0
+
+
 def has_tool_call_stream(events):
     for item in events:
         if not isinstance(item, dict):
@@ -82,6 +93,49 @@ def has_tool_call_stream(events):
     return False
 
 
+def count_tool_calls_stream(events):
+    seen = set()
+    fallback_index = 0
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        choices = item.get("choices", [])
+        if not choices:
+            continue
+        delta = choices[0].get("delta", {})
+        if not isinstance(delta, dict):
+            continue
+        tool_calls = delta.get("tool_calls", [])
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            tc_id = tc.get("id")
+            tc_index = tc.get("index")
+            if tc_id:
+                seen.add(f"id:{tc_id}")
+            elif tc_index is not None:
+                seen.add(f"index:{tc_index}")
+            else:
+                seen.add(f"fallback:{fallback_index}")
+                fallback_index += 1
+    return len(seen)
+
+
+def stream_finish_reason(events):
+    for item in reversed(events):
+        if not isinstance(item, dict):
+            continue
+        choices = item.get("choices", [])
+        if not choices:
+            continue
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason is not None:
+            return finish_reason
+    return None
+
+
 def run_case(base_url, token, case, model):
     case = fill_placeholders(copy.deepcopy(case), model)
     name = case["name"]
@@ -89,6 +143,8 @@ def run_case(base_url, token, case, model):
     expect = case.get("expect", {})
     stream = bool(expect.get("stream", False))
     expect_tool_call = bool(expect.get("tool_call", False))
+    min_tool_calls = int(expect.get("min_tool_calls", 0))
+    expect_finish_reason = expect.get("finish_reason")
 
     url = base_url.rstrip("/") + "/v1/chat/completions"
     print(f"\\n=== CASE: {name} ===")
@@ -102,6 +158,14 @@ def run_case(base_url, token, case, model):
             return False, "stream missing [DONE]"
         if expect_tool_call and not has_tool_call_stream(events):
             return False, "expected tool_calls in stream but not found"
+        if min_tool_calls > 0:
+            stream_tc_count = count_tool_calls_stream(events)
+            if stream_tc_count < min_tool_calls:
+                return False, f"expected >= {min_tool_calls} tool_calls in stream, got {stream_tc_count}"
+        if expect_finish_reason is not None:
+            fr = stream_finish_reason(events)
+            if fr != expect_finish_reason:
+                return False, f"expected finish_reason={expect_finish_reason}, got {fr}"
         return True, "ok"
 
     status, text = post_json(url, token, payload)
@@ -115,6 +179,18 @@ def run_case(base_url, token, case, model):
 
     if expect_tool_call and not has_tool_call_non_stream(resp):
         return False, f"expected tool_calls in response: {text[:500]}"
+    if min_tool_calls > 0:
+        non_stream_tc_count = count_tool_calls_non_stream(resp)
+        if non_stream_tc_count < min_tool_calls:
+            return False, f"expected >= {min_tool_calls} tool_calls in response, got {non_stream_tc_count}"
+    if expect_finish_reason is not None:
+        fr = None
+        try:
+            fr = resp["choices"][0].get("finish_reason")
+        except Exception:
+            pass
+        if fr != expect_finish_reason:
+            return False, f"expected finish_reason={expect_finish_reason}, got {fr}"
     return True, "ok"
 
 
