@@ -4,10 +4,12 @@ import tiktoken
 import json
 import lanying_redis
 import hashlib
+import lanying_openai_compat
 
 ACCESS_TOKEN_REFRESH_TIME = 86400
 ASSISTANT_MESSAGE_DEFAULT = '好的'
 USER_MESSAGE_DEFAULT = '继续'
+SUPPORT_NATIVE_TOOLS = True
 
 def model_configs():
     return [
@@ -277,10 +279,10 @@ def chat(prepare_info, preset, model_config):
                                 if 'usage' in data:
                                     chunk_info['usage'] = data['usage']
                                 if 'function_call' in data:
-                                    chunk_info['function_call'] = {
+                                    chunk_info['tool_calls'] = lanying_openai_compat.function_call_to_tool_calls({
                                         'name': data['function_call'].get('name'),
                                         'arguments': data['function_call'].get('arguments'),
-                                    }
+                                    })
                                 if 'finish_reason' in data:
                                     chunk_info['finish_reason'] = data['finish_reason']
                                 yield chunk_info
@@ -328,16 +330,16 @@ def chat(prepare_info, preset, model_config):
                     'code': error_code
                 }
             usage = res.get('usage',{})
-            function_call = None
+            tool_calls = []
             if 'function_call' in res:
-                function_call = {
+                tool_calls = lanying_openai_compat.function_call_to_tool_calls({
                     'name': res['function_call'].get('name'),
                     'arguments': res['function_call'].get('arguments'),
-                }
+                })
             return {
                 'result': 'ok',
                 'reply': res['result'],
-                'function_call': function_call,
+                'tool_calls': tool_calls,
                 'finish_reason': res.get('finish_reason', ''),
                 'usage': {
                     'completion_tokens' : usage.get('completion_tokens',0),
@@ -420,17 +422,23 @@ def encoding_for_model(model): # for temp
         return tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 def format_preset(prepare_info, preset):
-    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id", "stream", "stop", "disable_search", "enable_citation", "functions"]
+    support_fields = ["messages", "temperature", "top_p", "penalty_score", "user_id", "stream", "stop", "disable_search", "enable_citation", "functions", "tool_choice", "tools"]
+    if 'functions' not in preset and 'tools' in preset:
+        preset = dict(preset)
+        preset['functions'] = lanying_openai_compat.tools_to_functions(preset.get('tools', []))
     ret = dict()
     for key in support_fields:
         if key in preset:
             if key == "messages":
                 messages = []
+                last_tool_call_id = ''
                 for message in preset['messages']:
-                    if 'role' in message and 'content' in message:
-                        role = message['role']
-                        content = message['content']
-                        if len(content) > 0 or 'function_call' in message:
+                    normalized_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(message, last_tool_call_id)
+                    if normalized_message is not None and 'role' in normalized_message and 'content' in normalized_message:
+                        role = normalized_message['role']
+                        content = lanying_openai_compat.extract_text_from_content(normalized_message['content'])
+                        legacy_function_call = lanying_openai_compat.tool_calls_to_function_call(normalized_message.get('tool_calls', []))
+                        if len(content) > 0 or legacy_function_call is not None:
                             if role == "system":
                                 messages.append({'role':'user', 'content':content})
                                 messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
@@ -440,14 +448,19 @@ def format_preset(prepare_info, preset):
                                 messages.append({'role':'user', 'content':content})
                             elif role == 'assistant':
                                 if len(messages) > 0 and messages[-1]['role'] in ['user','function']:
-                                    if 'function_call' in message:
-                                        messages.append({'role':'assistant', 'content':content, 'function_call': message['function_call']})
+                                    if legacy_function_call is not None:
+                                        messages.append({'role':'assistant', 'content':content, 'function_call': legacy_function_call})
                                     else:
                                         messages.append({'role':'assistant', 'content':content})
                                 else:
                                     logging.info(f"dropping a assistant message: {message}")
-                            elif role == 'function':
-                                messages.append(message)
+                            elif role == 'tool':
+                                function_message = {
+                                    'role': 'function',
+                                    'name': normalized_message.get('name', ''),
+                                    'content': normalized_message.get('content', '')
+                                }
+                                messages.append(function_message)
                 ret[key] = messages
             elif key == "functions":
                 functions = []
@@ -458,6 +471,10 @@ def format_preset(prepare_info, preset):
                             function_obj[k] = v
                     functions.append(function_obj)
                 ret[key] = functions
+            elif key == "tool_choice":
+                function_call = lanying_openai_compat.tool_choice_to_function_call(preset.get('tool_choice'))
+                if function_call is not None:
+                    ret['function_call'] = function_call
             else:
                 ret[key] = preset[key]
     return ret

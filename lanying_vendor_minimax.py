@@ -2,6 +2,9 @@ import requests
 import logging
 import tiktoken
 import json
+import lanying_openai_compat
+
+SUPPORT_NATIVE_TOOLS = True
 
 def model_configs():
     return [
@@ -114,7 +117,11 @@ def chat(prepare_info, preset, model_config):
                                         pass
                                     yield {'usage': data['usage'], 'finish_reason': finish_reason}
                                 elif 'function_call' in data['choices'][0]['messages'][0]:
-                                    yield {'function_call': data['choices'][0]['messages'][0]['function_call'], 'arguments_merge_type': 'replace'}
+                                    function_call = data['choices'][0]['messages'][0]['function_call']
+                                    yield {
+                                        'tool_calls': lanying_openai_compat.function_call_to_tool_calls(function_call),
+                                        'arguments_merge_type': 'replace'
+                                    }
                                 else:
                                     text = data['choices'][0]['messages'][0]['text']
                                     yield {'content': text}
@@ -159,7 +166,7 @@ def chat(prepare_info, preset, model_config):
                     'result': 'ok',
                     'reply': res['reply'],
                     'finish_reason': finish_reason,
-                    'function_call': res.get('function_call'),
+                    'tool_calls': lanying_openai_compat.function_call_to_tool_calls(res.get('function_call')),
                     'usage': {
                         'completion_tokens' : usage.get('completion_tokens',0),
                         'prompt_tokens' : usage.get('prompt_tokens', 0),
@@ -237,7 +244,10 @@ def format_preset(prepare_info, preset):
     model = preset.get('model','')
     bot_name = prepare_info['bot_name']
     user_name = prepare_info['user_name']
-    support_fields = ['model', "tokens_to_generate", "temperature", "top_p", "mask_sensitive_info", "messages", "bot_setting", "reply_constraints", "functions", "stream"]
+    support_fields = ['model', "tokens_to_generate", "temperature", "top_p", "mask_sensitive_info", "messages", "bot_setting", "reply_constraints", "functions", "stream", "tools", "tool_choice"]
+    if 'functions' not in preset and 'tools' in preset:
+        preset = dict(preset)
+        preset['functions'] = lanying_openai_compat.tools_to_functions(preset.get('tools', []))
     payload = dict()
     for key in support_fields:
         if key == 'tokens_to_generate':
@@ -248,20 +258,24 @@ def format_preset(prepare_info, preset):
         elif key == 'messages':
             messages = []
             bot_setting = []
+            last_tool_call_id = ''
             for message in preset.get('messages',[]):
-                if 'role' in message and 'content' in message:
-                    if message['content'] != '' or 'function_call' in message:
-                        if message['role'] == 'system':
-                            bot_setting.append({'bot_name':bot_name, 'content': message['content']})
-                        elif message['role'] == 'user':
-                            messages.append({'sender_type': 'USER', 'sender_name': user_name, 'text': message['content']})
-                        elif message['role'] == 'assistant':
-                            if 'function_call' in message:
-                                messages.append({'sender_type': 'BOT', 'sender_name' : bot_name, 'text': message['content'], 'function_call': message['function_call']})
+                normalized_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(message, last_tool_call_id)
+                if normalized_message is not None and 'role' in normalized_message and 'content' in normalized_message:
+                    content_text = lanying_openai_compat.extract_text_from_content(normalized_message['content'])
+                    if content_text != '' or len(normalized_message.get('tool_calls', [])) > 0:
+                        if normalized_message['role'] == 'system':
+                            bot_setting.append({'bot_name':bot_name, 'content': content_text})
+                        elif normalized_message['role'] == 'user':
+                            messages.append({'sender_type': 'USER', 'sender_name': user_name, 'text': content_text})
+                        elif normalized_message['role'] == 'assistant':
+                            legacy_function_call = lanying_openai_compat.tool_calls_to_function_call(normalized_message.get('tool_calls', []))
+                            if legacy_function_call is not None:
+                                messages.append({'sender_type': 'BOT', 'sender_name' : bot_name, 'text': content_text, 'function_call': legacy_function_call})
                             else:
-                                messages.append({'sender_type': 'BOT', 'sender_name' : bot_name,'text': message['content']})
-                        elif message['role'] == 'function':
-                            messages.append({'sender_type': 'FUNCTION', 'sender_name': message.get('name', 'FUNCTION'), 'text': message['content']})
+                                messages.append({'sender_type': 'BOT', 'sender_name' : bot_name,'text': content_text})
+                        elif normalized_message['role'] == 'tool':
+                            messages.append({'sender_type': 'FUNCTION', 'sender_name': normalized_message.get('name', 'FUNCTION'), 'text': content_text})
                 elif 'text' in message:
                     if message['text'] != '':
                         messages.append(message)
@@ -307,6 +321,10 @@ def format_preset(prepare_info, preset):
                                 function_obj[k] = v
                         functions.append(function_obj)
                     payload[key] = functions
+            elif key == "tool_choice":
+                function_call = lanying_openai_compat.tool_choice_to_function_call(preset.get('tool_choice'))
+                if function_call is not None:
+                    payload['function_call'] = function_call
             else:
                 payload[key] = preset[key]
     return payload

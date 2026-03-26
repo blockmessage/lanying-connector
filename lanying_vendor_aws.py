@@ -15,8 +15,10 @@ from anthropic.types import (
     ToolUseBlock
 )
 import json
+import lanying_openai_compat
 ASSISTANT_MESSAGE_DEFAULT = '好的'
 USER_MESSAGE_DEFAULT = '继续'
+SUPPORT_NATIVE_TOOLS = True
 
 def model_configs():
     return [
@@ -206,7 +208,7 @@ def chat(prepare_info, preset, model_config):
                 elif isinstance(chunk, RawContentBlockStopEvent):
                     if function_call is not None:
                         function_call['arguments'] = function_content
-                        chunk_reply['function_call'] = function_call
+                        chunk_reply['tool_calls'] = lanying_openai_compat.function_call_to_tool_calls(function_call)
                         function_call = None
                 if len(chunk_reply) > 0:
                     # logging.info(f"vendor aws yield:{chunk_reply}")
@@ -225,7 +227,7 @@ def chat(prepare_info, preset, model_config):
         if isinstance(response, Message):
             usage = response.usage
             reply = ''
-            function_call = None
+            tool_calls = []
             try:
                 for content in response.content:
                     if isinstance(content, TextBlock):
@@ -236,6 +238,7 @@ def chat(prepare_info, preset, model_config):
                             'arguments': json.dumps(content.input, ensure_ascii=False),
                             'id': content.id,
                         }
+                        tool_calls.append(lanying_openai_compat.function_call_to_tool_calls(function_call)[0])
             except Exception as ee:
                 logging.exception(ee)
                 pass
@@ -251,7 +254,7 @@ def chat(prepare_info, preset, model_config):
             return {
                 'result': 'ok',
                 'reply' : reply,
-                'function_call' : function_call,
+                'tool_calls' : tool_calls,
                 'finish_reason': finish_reason,
                 'usage' : {
                     'completion_tokens' : usage.output_tokens,
@@ -285,9 +288,10 @@ def format_preset(preset, model_config):
                 messages = []
                 system_message = ret.get('system', '')
                 for message in preset['messages']:
-                    if 'role' in message and 'content' in message:
-                        role = message['role']
-                        content = message['content']
+                    normalized_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(message, last_tool_call_id)
+                    if normalized_message is not None and 'role' in normalized_message and 'content' in normalized_message:
+                        role = normalized_message['role']
+                        content = lanying_openai_compat.extract_text_from_content(normalized_message['content'])
                         if role == 'system':
                             if len(content) > 0:
                                 if system_message == '':
@@ -299,16 +303,19 @@ def format_preset(preset, model_config):
                                 messages.append({'role':'assistant', 'content':ASSISTANT_MESSAGE_DEFAULT})
                             messages.append({'role': role, 'content':content})
                         elif role == 'assistant':
-                            if support_function_call and 'function_call' in message:
-                                last_tool_call_id = message['function_call'].get('id', '')
+                            tool_calls = normalized_message.get('tool_calls', [])
+                            if support_function_call and isinstance(tool_calls, list) and len(tool_calls) > 0:
+                                tool_call = tool_calls[0]
+                                function_call = lanying_openai_compat.tool_calls_to_function_call([tool_call]) or {}
+                                last_tool_call_id = function_call.get('id', '')
                                 new_message = {
                                     'role': role,
                                     'content': [
                                         {
                                             "type": "tool_use",
-                                            "id": message['function_call'].get('id', ''),
-                                            "name": message['function_call'].get('name', ''),
-                                            "input": json.loads(message['function_call'].get('arguments', '{}'))
+                                            "id": function_call.get('id', ''),
+                                            "name": function_call.get('name', ''),
+                                            "input": json.loads(function_call.get('arguments', '{}'))
                                         }
                                     ]
                                 }
@@ -321,15 +328,15 @@ def format_preset(preset, model_config):
                                 if len(messages) > 0 and messages[-1]['role'] == 'assistant':
                                     messages.append({'role':'user', 'content':USER_MESSAGE_DEFAULT})
                                 messages.append(new_message)
-                        elif role == 'function':
+                        elif role == 'tool':
                             if support_function_call:
                                 function_message = {
                                     'role': 'user',
                                     'content': [
                                         {
                                             "type": "tool_result",
-                                            "tool_use_id": last_tool_call_id,
-                                            "content": message['content']
+                                            "tool_use_id": normalized_message.get('tool_call_id', last_tool_call_id),
+                                            "content": normalized_message['content']
                                         }
                                     ]
                                 }
