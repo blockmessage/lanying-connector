@@ -995,7 +995,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             preset_embedding_infos.append(now_embedding_info)
         for now_embedding_info in lanying_ai_plugin.get_preset_function_embeddings_by_publish_capsule_id(linked_publish_capsule_id):
             preset_embedding_infos.append(now_embedding_info)
-        capsule_info = lanying_ai_capsule.get_publish_capsule(linked_capsule_id)
+        capsule_info = lanying_ai_capsule.get_publish_capsule(linked_publish_capsule_id)
         if capsule_info:
             capsule_app_id = capsule_info['app_id']
             capsule_chatbot_id = capsule_info['chatbot_id']
