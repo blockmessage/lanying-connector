@@ -80,4 +80,60 @@ python3 scripts/replay_chat_completions.py
 python3 scripts/replay_chat_completions.py --api-key 'YOUR_BEARER_TOKEN' --only new_tools_stream_forced_tool
 ```
 
+### 可上线检查清单（Model API 升级）
+
+- 协议兼容：
+  - 新请求格式 `tools/tool_choice` 可正常调用；
+  - 旧请求格式 `functions/function_call` 仍可调用；
+  - `messages[].content` 支持 `str | list`（至少验证 text + image_url 组合）。
+- 响应契约：
+  - 非流式优先返回 `message.tool_calls`，并使用 `finish_reason=tool_calls`；
+  - 流式 `delta.tool_calls[*].function.arguments` 能正确增量拼接；
+  - 多 `tool_calls` 在同一轮可顺序执行并继续对话。
+- 历史兼容：
+  - 旧历史中的 `assistant.function_call` / `role=function` 可被运行时兼容加载；
+  - 新历史写入为 `assistant.tool_calls` / `role=tool` 语义。
+- 厂商适配：
+  - 目标厂商至少覆盖一次工具调用场景（baidu/minimax/azure/claude/aws + openai-like）；
+  - 工具调用关闭模型不会错误透传 `tools/tool_choice`。
+- 观测与统计：
+  - token 统计与配额扣减在 `content=list` 下无异常；
+  - 错误日志中能区分厂商响应异常与协议转换异常。
+
+### 回归命令清单
+
+```bash
+# 1) 协议转换与桥接单测
+python3 -m unittest tests/test_openai_compat.py
+python3 -m unittest tests/test_vendor_protocol_contract.py
+
+# 2) 全量 tests 目录回归
+python3 -m unittest discover -s tests -p 'test_*.py'
+
+# 3) 关键文件语法检查
+python3 -m py_compile \
+  services/openai_service.py \
+  lanying_openai_compat.py \
+  lanying_vendor.py \
+  lanying_vendor_openai.py \
+  lanying_vendor_aliyun.py \
+  lanying_vendor_moonshot.py \
+  lanying_vendor_volcengine.py \
+  lanying_vendor_siliconflow.py \
+  lanying_vendor_zhipuai.py \
+  lanying_vendor_deepseek.py \
+  lanying_vendor_azure.py \
+  lanying_vendor_azure2.py \
+  lanying_vendor_baidu.py \
+  lanying_vendor_minimax.py \
+  lanying_vendor_claude.py \
+  lanying_vendor_aws.py
+
+# 4) 端到端回放（需服务与 token）
+LANYING_CONNECTOR_BASE_URL=http://127.0.0.1:5000 \
+LANYING_CONNECTOR_API_KEY='YOUR_BEARER_TOKEN' \
+LANYING_CONNECTOR_MODEL='gpt-4o-mini' \
+python3 scripts/replay_chat_completions.py
+```
+
 服务启动成功，就可以在页面上看到收发消息的基本情况了：[http://127.0.0.1:5000](http://127.0.0.1:5000)，祝玩得开心~🚀
