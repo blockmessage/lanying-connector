@@ -41,6 +41,7 @@ import base64
 import lanying_grow_ai
 import lanying_slack
 import lanying_openclaw
+import lanying_openai_compat
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -145,6 +146,8 @@ def handle_request(request, request_type):
         logging.info(f"check_message_deduct_failed deny: app_id={app_id}, msg={deduct_res['msg']}")
         return deduct_res
     maybe_init_preset_default_model(preset, path)
+    if path == '/v1/chat/completions':
+        preset = lanying_openai_compat.normalize_chat_preset(preset)
     message_quota_trace_id = request.headers.get('message-quota-trace-id')
     if message_quota_trace_id:
         config['message_quota_trace_id'] = message_quota_trace_id
@@ -226,6 +229,7 @@ def handle_request(request, request_type):
                 def generate_response():
                     contents = []
                     usage = {}
+                    stream_tool_calls = {}
                     try:
                         for line in response.iter_lines():
                             line_str = line.decode('utf-8')
@@ -239,9 +243,14 @@ def handle_request(request, request_type):
                                         usage = data['usage']
                                         logging.info(f"stream got usage:{usage}")
                                         is_usage_line = True
-                                    content = data['choices'][0]['delta']['content']
-                                    if content is not None:
-                                        contents.append(content)
+                                    delta = data.get('choices', [{}])[0].get('delta', {})
+                                    if isinstance(delta, dict):
+                                        content = delta.get('content')
+                                        if content is not None:
+                                            contents.append(content)
+                                        tool_calls = delta.get('tool_calls', [])
+                                        if isinstance(tool_calls, list) and len(tool_calls) > 0:
+                                            lanying_openai_compat.merge_stream_tool_calls(stream_tool_calls, tool_calls)
                                 except Exception as e:
                                     pass
                             if drop_stream_usage_line and is_usage_line and content is None:
@@ -250,7 +259,7 @@ def handle_request(request, request_type):
                                 yield line_str + '\n'
                     finally:
                         reply = ''.join(contents)
-                        response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, "", "","")
+                        response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, lanying_openai_compat.sorted_stream_tool_calls(stream_tool_calls))
                         logging.info(f"forward request: stream response | status_code: {response.status_code}, response_json:{response_json}")
                         add_message_statistic(app_id, config, preset, response_json, model_config)
                 return {'result':'ok', 'response':response, 'iter': generate_response}
@@ -283,9 +292,11 @@ def handle_request(request, request_type):
                 created = int(time.time())
                 usage = {}
                 role_count = 0
+                stream_tool_calls = {}
                 try:
                     reply_generator = response.get('reply_generator')
                     for delta in reply_generator:
+                        delta = lanying_openai_compat.normalize_stream_delta(delta)
                         #logging.info(f"forward request other vendor: vendor:{vendor}, delta:{delta}")
                         if 'content' in delta:
                             content = delta['content']
@@ -294,6 +305,8 @@ def handle_request(request, request_type):
                         contents.append(content)
                         if 'usage' in delta:
                             usage = delta['usage']
+                        if 'tool_calls' in delta:
+                            lanying_openai_compat.merge_stream_tool_calls(stream_tool_calls, delta.get('tool_calls', []), delta.get('arguments_merge_type', 'append'))
                         delta_response = {
                             'id': id,
                             'object': 'chat.completion.chunk',
@@ -311,12 +324,15 @@ def handle_request(request, request_type):
                         if role_count == 0:
                             role_count += 1
                             delta_response['choices'][0]['delta']['role'] = 'assistant'
-                        if 'function_call' in delta:
-                            delta_response['choices'][0]['delta']['function_call'] = delta.get('function_call')
+                        if 'tool_calls' in delta:
+                            delta_response['choices'][0]['delta']['tool_calls'] = delta.get('tool_calls')
                         delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"
                         #logging.info(f"delta_line:{delta_line}")
                         yield delta_line
                 finally:
+                    finish_reason = 'stop'
+                    if len(stream_tool_calls) > 0:
+                        finish_reason = 'tool_calls'
                     delta_response = {
                             'id': id,
                             'object': 'chat.completion.chunk',
@@ -327,7 +343,7 @@ def handle_request(request, request_type):
                                     'index': 0,
                                     'delta':{
                                     },
-                                    'finish_reason': 'stop'
+                                    'finish_reason': finish_reason
                                 }
                             ],
                             'usage': usage
@@ -337,7 +353,7 @@ def handle_request(request, request_type):
                     yield delta_line
                     yield 'data: [DONE]\n'
                     reply = ''.join(contents)
-                    response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, "", "","")
+                    response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, lanying_openai_compat.sorted_stream_tool_calls(stream_tool_calls))
                     logging.info(f"forward request: stream response | response: {response}, response_json:{response_json}")
                     add_message_statistic(app_id, config, preset, response_json, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
@@ -361,9 +377,10 @@ def handle_request(request, request_type):
             }
             if 'usage' in response:
                 response_body['usage'] = response.get('usage')
-            if 'function_call' in response and response.get('function_call') is not None:
-                response_body['choices'][0]['message']['function_call'] = response.get('function_call')
-                response_body['choices'][0]['finish_reason'] = 'function_call'
+            tool_calls = response.get('tool_calls', [])
+            if isinstance(tool_calls, list) and len(tool_calls) > 0:
+                response_body['choices'][0]['message']['tool_calls'] = tool_calls
+                response_body['choices'][0]['finish_reason'] = 'tool_calls'
             add_message_statistic(app_id, config, preset, response, model_config)
             return {'result':'ok', 'response':response_body}
 
@@ -388,6 +405,12 @@ def forward_request(app_id, request, auth_info, force_no_stream, request_type, f
         headers['Content-Type'] = "application/json"
         data = request.get_data()
         request_json = json.loads(data)
+        if request.path == '/v1/chat/completions':
+            request_json = lanying_openai_compat.normalize_chat_preset(request_json)
+            if 'functions' in request_json:
+                del request_json['functions']
+            if 'function_call' in request_json:
+                del request_json['function_call']
         stream = request_json.get('stream', False)
         if force_no_stream:
             stream = False
@@ -1140,9 +1163,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     functions.extend(user_functions)
     if len(functions) > 0:
         preset['functions'] = functions
+        preset['tools'] = lanying_openai_compat.functions_to_tools(functions)
     else:
-        if 'function' in preset:
-            del preset['function']
+        if 'functions' in preset:
+            del preset['functions']
+        if 'tools' in preset:
+            del preset['tools']
     preset_message_lines = "\n".join([f"{message.get('role','')}:{message.get('content','')}" for message in messages])
     logging.info(f"==========final preset messages/functions============\n{preset_message_lines}\n{functions}")
     is_force_stream = ('force_stream' in lcExt and lcExt['force_stream'] == True)
@@ -1163,6 +1189,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         return lanying_openclaw.redirect_to_openclaw(openclaw_node_info, msg)
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
     response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
+    response = lanying_openai_compat.normalize_vendor_response(response)
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
     if 'result' in response and response['result'] == 'error':
         error_code = response.get('code', response.get('reason', ''))
@@ -1202,9 +1229,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             reply_ext['ai']['seq'] = 0
             reply_ext['ai']['finish'] = False
             stream_usage = {}
-            stream_function_name = ""
-            stream_function_args = ""
-            stream_function_id = ""
+            stream_tool_calls = {}
             stream_finish_reason = ""
             reasoning_content = ""
             reasoning_content_count = 0
@@ -1212,6 +1237,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             reason_finish = False
             try:
                 for delta in reply_generator:
+                    delta = lanying_openai_compat.normalize_stream_delta(delta)
                     # logging.info(f"KKK:delta:{delta}")
                     delta_content = delta.get('content', '')
                     if not delta_content:
@@ -1221,16 +1247,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                         delta_reasoning_content = ''
                     if 'usage' in delta:
                         stream_usage = delta['usage']
-                    if "function_call" in delta:
-                        if "name" in delta["function_call"]:
-                            stream_function_name = delta["function_call"]["name"]
-                        if "arguments" in delta["function_call"]:
-                            if delta.get('arguments_merge_type', 'append') == 'replace':
-                                stream_function_args = delta["function_call"]["arguments"]
-                            else:
-                                stream_function_args += delta["function_call"]["arguments"]
-                        if "id" in delta["function_call"] and delta["function_call"]["id"] is not None:
-                            stream_function_id = delta["function_call"]["id"]
+                    if "tool_calls" in delta:
+                        lanying_openai_compat.merge_stream_tool_calls(stream_tool_calls, delta.get("tool_calls", []), delta.get('arguments_merge_type', 'append'))
                     if 'finish_reason' in delta and delta['finish_reason'] is not None and len(delta['finish_reason']) > 0:
                         stream_finish_reason = delta['finish_reason']
                     content_count += len(delta_content)
@@ -1268,23 +1286,29 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 logging.info("stream got error")
                 logging.exception(e)
             reply += ''.join(content_collect)
-            stream_reponse = stream_lines_to_response(app_id, preset_maybe_vision, reply, vendor, stream_usage, stream_function_name, stream_function_args, stream_function_id)
+            stream_reponse = stream_lines_to_response(app_id, preset_maybe_vision, reply, vendor, stream_usage, lanying_openai_compat.sorted_stream_tool_calls(stream_tool_calls))
             response['reply'] = reply
             response['finish_reason'] = stream_finish_reason
             response['usage'] = stream_reponse['usage']
-            if 'function_call' in stream_reponse:
-                response['function_call'] = stream_reponse['function_call']
+            if 'tool_calls' in stream_reponse:
+                response['tool_calls'] = stream_reponse['tool_calls']
         add_message_statistic(app_id, config, preset, response, model_config)
-        function_call = response.get('function_call')
-        if function_call and function_call_times > 0:
-            function_call_debug = copy.deepcopy(function_call)
-            if 'name' in function_call_debug:
-                function_name_debug = function_call_debug['name']
-                if function_name_debug in function_names:
-                    function_call_debug['name'] = function_names[function_name_debug]
-            add_debug_message(config, f"触发函数：{function_call_debug}", {'need_antispam_check': True})
-            response = handle_function_call(app_id, config, function_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext)
-            function_call_times -= 1
+        tool_calls = response.get('tool_calls', [])
+        if isinstance(tool_calls, list) and len(tool_calls) > 0 and function_call_times > 0:
+            current_response = response
+            for idx, tool_call in enumerate(tool_calls):
+                if function_call_times <= 0:
+                    break
+                function_call_debug = copy.deepcopy(tool_call)
+                if isinstance(function_call_debug, dict) and 'function' in function_call_debug:
+                    function_name_debug = function_call_debug.get('function', {}).get('name', '')
+                    if function_name_debug in function_names:
+                        function_call_debug['function']['name'] = function_names[function_name_debug]
+                add_debug_message(config, f"触发函数：{function_call_debug}", {'need_antispam_check': True})
+                continue_chat = (idx == len(tool_calls) - 1)
+                current_response = handle_function_call(app_id, config, tool_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext, continue_chat=continue_chat)
+                function_call_times -= 1
+            response = current_response
         else:
             break
     reply = response['reply']
@@ -1479,10 +1503,15 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, function_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext):
+def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext, continue_chat=True):
+    function_call = lanying_openai_compat.tool_calls_to_function_call([tool_call]) or {}
     function_name = function_call.get('name')
-    function_args = json.loads(function_call.get('arguments', '{}'))
-    functions = preset.get('functions', [])
+    function_args = lanying_utils.safe_json_loads(function_call.get('arguments', '{}'), {})
+    tool_call_id = tool_call.get('id', function_call.get('id', ''))
+    if tool_call_id == '':
+        tool_call_id = f"call_{int(time.time()*1000000)}"
+        tool_call['id'] = tool_call_id
+    functions = lanying_openai_compat.get_tools_as_functions(preset)
     function_config = {}
     for function in functions:
         if function['name'] == function_name:
@@ -1607,14 +1636,14 @@ def handle_function_call(app_id, config, function_call, preset, api_key_type, mo
                 logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
                 add_debug_message(config, f"函数调用结果：{function_content}", {'need_antispam_check': True})
                 function_message = {
-                    "role": "function",
-                    "name": function_name,
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
                     "content": function_content
                 }
                 response_message = {
                     "role": "assistant",
                     "content": "",
-                    "function_call": function_call
+                    "tool_calls": [tool_call]
                 }
                 if 'send_audio_to_client' in response_rules:
                     function_messages.append(response_message)
@@ -1629,51 +1658,57 @@ def handle_function_call(app_id, config, function_call, preset, api_key_type, mo
                     append_message(app_id, preset, model_config, function_message)
                     function_messages.append(response_message)
                     function_messages.append(function_message)
-                    preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-                    response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
-                    logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
-                    return response
+                    if continue_chat:
+                        preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
+                        response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
+                        logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+                        return response
+                    return {'result': 'ok', 'reply': '', 'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}}
         elif function_call_type == 'system':
             logging.info(f"handle system function call:{function_call}")
             function_response = handle_system_function(config, function_name, function_args)
             function_message = {
-                "role": "function",
-                "name": function_name,
+                "role": "tool",
+                "tool_call_id": tool_call_id,
                 "content": json.dumps(function_response, ensure_ascii=False)
             }
             response_message = {
                 "role": "assistant",
                 "content": "",
-                "function_call": function_call
+                "tool_calls": [tool_call]
             }
             append_message(app_id, preset, model_config, response_message)
             append_message(app_id, preset, model_config, function_message)
             function_messages.append(response_message)
             function_messages.append(function_message)
-            preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-            response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
-            logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
-            return response
+            if continue_chat:
+                preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
+                response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
+                logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+                return response
+            return {'result': 'ok', 'reply': '', 'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}}
     else:
         function_response = {'result': 'fail', 'message': 'function not exist'}
         function_message = {
-            "role": "function",
-            "name": function_name,
+            "role": "tool",
+            "tool_call_id": tool_call_id,
             "content": json.dumps(function_response, ensure_ascii=False)
         }
         response_message = {
             "role": "assistant",
             "content": "",
-            "function_call": function_call
+            "tool_calls": [tool_call]
         }
         append_message(app_id, preset, model_config, response_message)
         append_message(app_id, preset, model_config, function_message)
         function_messages.append(response_message)
         function_messages.append(function_message)
-        preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-        response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
-        logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
-        return response
+        if continue_chat:
+            preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
+            response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
+            logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
+            return response
+        return {'result': 'ok', 'reply': '', 'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}}
     raise Exception('bad_preset_function')
 
 def maybe_update_plugin_error_msg(reply_ext, function_response):
@@ -1810,7 +1845,7 @@ def append_message(app_id, preset, model_config, message):
         message['content'] = message['content'][:trunc_size]
     messages.append(message)
     token_cnt = 0
-    token_cnt += lanying_embedding.calc_functions_tokens(preset.get('functions',[]), model, vendor)
+    token_cnt += lanying_embedding.calc_functions_tokens(lanying_openai_compat.get_tools_as_functions(preset), model, vendor)
     for msg in messages:
         token_cnt += calcMessageTokens(app_id, msg, model, vendor)
     while token_cnt + completionTokens > token_limit:
@@ -1963,14 +1998,19 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
             userMessage = {'role':'user', 'content': history['user']}
             assistantMessage = {'role':'assistant', 'content': history['assistant']}
             nowHistoryList.append(userMessage)
+            last_tool_call_id = ''
             if 'function_messages' in history:
                 for function_message in history['function_messages']:
-                    nowHistoryList.append(function_message)
+                    new_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(function_message, last_tool_call_id)
+                    if new_message is not None:
+                        nowHistoryList.append(new_message)
             if len(assistantMessage['content']) > 0:
                 nowHistoryList.append(assistantMessage)
             if 'subsequent_messages' in history:
                 for subsequent_message in history['subsequent_messages']:
-                    nowHistoryList.append(subsequent_message)
+                    new_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(subsequent_message, last_tool_call_id)
+                    if new_message is not None:
+                        nowHistoryList.append(new_message)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
@@ -2041,16 +2081,21 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         else:
             now_message = {'role': 'user', 'content': message_content, 'name': message_from}
         nowHistoryList = []
+        last_tool_call_id = ''
         if 'function_messages' in history and 'function_messages_owner' in history:
             if history['function_messages_owner'] == config['send_from']:
                 for function_message in history['function_messages']:
-                    nowHistoryList.append(function_message)
+                    new_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(function_message, last_tool_call_id)
+                    if new_message is not None:
+                        nowHistoryList.append(new_message)
         if len(now_message['content']) > 0:
             nowHistoryList.append(now_message)
         if 'subsequent_messages' in history  and 'subsequent_messages_owner' in history:
             if history['subsequent_messages_owner'] == config['send_from']:
                 for subsequent_message in history['subsequent_messages']:
-                    nowHistoryList.append(subsequent_message)
+                    new_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(subsequent_message, last_tool_call_id)
+                    if new_message is not None:
+                        nowHistoryList.append(new_message)
         history_count += len(nowHistoryList)
         historySize = 0
         for nowHistory in nowHistoryList:
@@ -2326,7 +2371,7 @@ def calcMessagesTokens(app_id, messages, model, vendor):
             for key, value in message.items():
                 if isinstance(value, dict):
                     for k,v in value.items():
-                        num_tokens += len(encoding.encode(v, disallowed_special=()))
+                        num_tokens += len(encoding.encode(str(v), disallowed_special=()))
                 elif isinstance(value, list):
                     for sub_msg in value:
                         sub_msg_type = sub_msg.get('type', 'text')
@@ -2340,7 +2385,7 @@ def calcMessagesTokens(app_id, messages, model, vendor):
                         else:
                             logging.info(f"calcMessagesTokens unknown sub msg: {sub_msg}")
                 else:
-                    num_tokens += len(encoding.encode(value, disallowed_special=()))
+                    num_tokens += len(encoding.encode(str(value), disallowed_special=()))
                 if key == "name":
                     num_tokens += -1
         num_tokens += 2
@@ -2357,9 +2402,24 @@ def calcMessageTokens(app_id, message, model, vendor):
         for key, value in message.items():
             if isinstance(value, dict):
                 for k,v in value.items():
-                    num_tokens += len(encoding.encode(v, disallowed_special=()))
+                    num_tokens += len(encoding.encode(str(v), disallowed_special=()))
+            elif isinstance(value, list):
+                for sub_msg in value:
+                    if isinstance(sub_msg, dict):
+                        sub_msg_type = sub_msg.get('type', 'text')
+                        if sub_msg_type == 'text':
+                            sub_msg_text = sub_msg.get('text', '')
+                            num_tokens += len(encoding.encode(str(sub_msg_text), disallowed_special=())) + 4
+                        elif sub_msg_type == 'image_url':
+                            image_url = sub_msg.get('image_url', {}).get('url', '')
+                            detail = sub_msg.get('image_url', {}).get('detail', 'auto')
+                            num_tokens += lanying_image.calculate_tokens(image_url, detail)
+                        else:
+                            num_tokens += len(encoding.encode(str(sub_msg), disallowed_special=()))
+                    else:
+                        num_tokens += len(encoding.encode(str(sub_msg), disallowed_special=()))
             else:
-                num_tokens += len(encoding.encode(value, disallowed_special=()))
+                num_tokens += len(encoding.encode(str(value), disallowed_special=()))
             if key == "name":
                 num_tokens += -1
         return num_tokens
@@ -3422,13 +3482,14 @@ def user_default_embedding_name_key(app_id, user_id):
 def list_models(app_id):
     return lanying_vendor.list_models(app_id)
 
-def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_function_name, stream_function_args, stream_function_id):
+def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_tool_calls=None):
     if 'total_tokens' in usage:
         total_tokens = usage['total_tokens']
         prompt_tokens = usage.get('prompt_tokens', 0)
         completion_tokens = usage.get('completion_tokens', total_tokens - prompt_tokens)
     else:
-        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(preset.get('functions',[]), preset['model'], vendor)
+        functions = lanying_openai_compat.get_tools_as_functions(preset)
+        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(functions, preset['model'], vendor)
         completion_tokens = calcMessageTokens(app_id, {'role':'assistant', 'content':reply}, preset['model'], vendor)
         total_tokens = prompt_tokens + completion_tokens
         logging.info(f"stream_lines_to_response calc tokens self | vendor:{vendor}, model:{preset['model']}")
@@ -3440,12 +3501,8 @@ def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_functi
             'total_tokens' : total_tokens
         }
     }
-    if stream_function_name != "":
-        response["function_call"] = {
-            "name": stream_function_name,
-            "arguments": stream_function_args,
-            "id": stream_function_id
-        }
+    if isinstance(stream_tool_calls, list) and len(stream_tool_calls) > 0:
+        response["tool_calls"] = stream_tool_calls
     logging.info(f"stream_lines_to_response | response:{response}")
     return response
 
@@ -5177,7 +5234,7 @@ def maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset
         new_messages = []
         for message in messages:
             content = message.get('content', '')
-            if content.startswith('[图片][image_id:'):
+            if isinstance(content, str) and content.startswith('[图片][image_id:'):
                 fields = re.split('[\[\]:]',content)
                 if len(fields) >= 5:
                     msg_id = fields[4]
@@ -5226,7 +5283,7 @@ def transform_to_vision_messages(config, app_id, preset, image_ids):
     result = []
     for message in messages:
         content = message.get('content', '')
-        if content.startswith('[图片][image_id:'):
+        if isinstance(content, str) and content.startswith('[图片][image_id:'):
             fields = re.split('[\[\]:]',content)
             if len(fields) >= 5:
                 msg_id = fields[4]
@@ -5298,7 +5355,7 @@ def image_edit_check_image_and_mask(config, app_id, function_args):
 
 def chat_or_force_function_call(app_id, config, vendor, prepare_info, preset):
     force_call_finish_list = config.get('force_call_finish_list', [])
-    functions = preset.get('functions', [])
+    functions = lanying_openai_compat.get_tools_as_functions(preset)
     for function in functions:
         force_call = function.get('force_call', False)
         if force_call:
@@ -5310,10 +5367,14 @@ def chat_or_force_function_call(app_id, config, vendor, prepare_info, preset):
                     "name": name,
                     "arguments": "{}"
                 }
+                tool_calls = lanying_openai_compat.function_call_to_tool_calls(function_call)
+                if len(tool_calls) > 0 and tool_calls[0].get('id', '') == '':
+                    tool_calls[0]['id'] = f'force_call_{name}'
                 return {
                     'result': 'ok',
                     'reply' : '',
-                    'function_call': function_call,
+                    'tool_calls': tool_calls,
+                    'finish_reason': 'tool_calls',
                     'no_cost': True,
                     'usage' : {
                         'completion_tokens' : 0,
@@ -5321,7 +5382,7 @@ def chat_or_force_function_call(app_id, config, vendor, prepare_info, preset):
                         'total_tokens' : 0
                     }
                 }
-    return lanying_vendor.chat(app_id, vendor, prepare_info, preset)
+    return lanying_openai_compat.normalize_vendor_response(lanying_vendor.chat(app_id, vendor, prepare_info, preset))
 
 def add_quota_used_statistic(app_id, quota):
     try:

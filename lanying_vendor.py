@@ -22,6 +22,7 @@ import lanying_utils
 import json
 import lanying_redis
 import re
+import lanying_openai_compat
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
@@ -457,7 +458,8 @@ def get_embedding_model_config(app_id, vendor, model):
 
 def prepare_chat(app_id, vendor, auth_info, preset):
     module = get_module(app_id, vendor)
-    result = module.prepare_chat(auth_info, preset)
+    legacy_preset = lanying_openai_compat.to_legacy_vendor_preset(preset)
+    result = module.prepare_chat(auth_info, legacy_preset)
     if isinstance(result, dict):
         result['auth_info'] = auth_info
     return result
@@ -465,11 +467,13 @@ def prepare_chat(app_id, vendor, auth_info, preset):
 def chat(app_id, vendor, prepare_info, preset):
     module = get_module(app_id, vendor)
     model_config = get_chat_model_config(app_id, vendor, preset['model'])
+    legacy_preset = lanying_openai_compat.to_legacy_vendor_preset(preset)
     try:
-        resp = chat_with_same_model_retry(module, vendor, prepare_info, preset, model_config)
+        resp = chat_with_same_model_retry(module, vendor, prepare_info, legacy_preset, model_config)
+        resp = normalize_chat_response(resp)
         if 'result' in resp and resp['result'] == 'ok':
             return resp
-        return chat_retry(vendor, prepare_info, preset, resp)
+        return chat_retry(vendor, prepare_info, legacy_preset, resp)
     except Exception as e:
         logging.error(e)
         error_message = 'exception'
@@ -481,7 +485,18 @@ def chat(app_id, vendor, prepare_info, preset):
             'result': 'error',
             'reason': error_message
         }
-        return chat_retry(vendor, prepare_info, preset, resp)
+        return chat_retry(vendor, prepare_info, legacy_preset, resp)
+
+def normalize_chat_response(resp):
+    resp = lanying_openai_compat.normalize_vendor_response(resp)
+    if isinstance(resp, dict) and 'reply_generator' in resp:
+        old_generator = resp.get('reply_generator')
+        if old_generator is not None:
+            def wrapped_generator():
+                for delta in old_generator:
+                    yield lanying_openai_compat.normalize_stream_delta(delta)
+            resp['reply_generator'] = wrapped_generator()
+    return resp
 
 def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_config):
     try_times = 3
@@ -543,6 +558,7 @@ def chat_retry(vendor, prepare_info, preset, resp):
     async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_chat_resp_failed_{vendor}')
     try:
         new_resp = do_chat_retry(vendor, prepare_info, preset, resp, unique_id)
+        new_resp = normalize_chat_response(new_resp)
         if 'result' in new_resp and new_resp['result'] == 'ok':
             return new_resp
         return resp
