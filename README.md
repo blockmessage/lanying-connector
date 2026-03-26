@@ -80,6 +80,24 @@ python3 scripts/replay_chat_completions.py
 python3 scripts/replay_chat_completions.py --api-key 'YOUR_BEARER_TOKEN' --only new_tools_stream_forced_tool
 ```
 
+### 灰度联调脚本与验收模板
+
+```bash
+# 1) 拷贝一份灰度用例模板（按你的业务场景改造）
+cp scripts/gray_replay_cases.template.json scripts/gray_replay_cases.json
+
+# 2) 执行灰度联调（自动产出日志到 scripts/reports/）
+LANYING_CONNECTOR_BASE_URL='http://127.0.0.1:5000' \
+LANYING_CONNECTOR_API_KEY='YOUR_BEARER_TOKEN' \
+LANYING_CONNECTOR_MODEL='gpt-4o-mini' \
+LANYING_CONNECTOR_GRAY_CASES='scripts/gray_replay_cases.json' \
+./scripts/run_gray_validation.sh
+```
+
+- 日志文件：`scripts/reports/gray_validation_YYYYMMDD_HHMMSS.log`
+- 验收记录模板：`scripts/gray_acceptance_template.md`
+- 建议每个厂商灰度批次单独留一份日志与模板记录（便于回溯）
+
 ### 可上线检查清单（Model API 升级）
 
 - 协议兼容：
