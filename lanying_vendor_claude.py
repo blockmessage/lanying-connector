@@ -169,6 +169,7 @@ def chat(prepare_info, preset, model_config):
                         content = chunk.content_block.text
                         chunk_reply['content'] = content
                     elif chunk.content_block.type == 'tool_use':
+                        function_content = ''
                         function_call = {
                             'id': chunk.content_block.id,
                             'name': chunk.content_block.name,
@@ -202,6 +203,7 @@ def chat(prepare_info, preset, model_config):
                         function_call['arguments'] = function_content
                         chunk_reply['tool_calls'] = lanying_openai_compat.function_call_to_tool_calls(function_call)
                         function_call = None
+                        function_content = ''
                 if len(chunk_reply) > 0:
                     # logging.info(f"vendor claude yield:{chunk_reply}")
                     yield chunk_reply
@@ -270,16 +272,20 @@ def chat(prepare_info, preset, model_config):
         }
 
 def format_preset(preset, model_config):
-    support_fields = ['system', 'model', "messages", "temperature", "top_p", "top_k", "stop_sequences", "max_tokens","stream", "functions"]
+    support_fields = ['system', 'model', "messages", "temperature", "top_p", "top_k", "stop_sequences", "max_tokens", "stream", "functions", "tools", "tool_choice"]
     ret = dict()
     support_function_call = (model_config.get('function_call', True) == True)
+    preset_for_tools = preset
+    if 'functions' not in preset_for_tools and 'tools' in preset_for_tools:
+        preset_for_tools = dict(preset_for_tools)
+        preset_for_tools['functions'] = lanying_openai_compat.tools_to_functions(preset_for_tools.get('tools', []))
     for key in support_fields:
-        if key in preset:
+        if key in preset_for_tools:
             if key == "messages":
                 last_tool_call_id = ''
                 messages = []
                 system_message = ret.get('system', '')
-                for message in preset['messages']:
+                for message in preset_for_tools['messages']:
                     normalized_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(message, last_tool_call_id)
                     if normalized_message is not None and 'role' in normalized_message and 'content' in normalized_message:
                         role = normalized_message['role']
@@ -297,19 +303,23 @@ def format_preset(preset, model_config):
                         elif role == 'assistant':
                             tool_calls = normalized_message.get('tool_calls', [])
                             if support_function_call and isinstance(tool_calls, list) and len(tool_calls) > 0:
-                                tool_call = tool_calls[0]
-                                function_call = lanying_openai_compat.tool_calls_to_function_call([tool_call]) or {}
-                                last_tool_call_id = function_call.get('id', '')
-                                new_message = {
-                                    'role': role,
-                                    'content': [
+                                tool_use_content = []
+                                for tool_call in tool_calls:
+                                    function_call = lanying_openai_compat.tool_calls_to_function_call([tool_call]) or {}
+                                    if function_call.get('id', '') != '':
+                                        last_tool_call_id = function_call.get('id', '')
+                                    function_input = lanying_openai_compat.extract_text_from_content(function_call.get('arguments', '{}'))
+                                    tool_use_content.append(
                                         {
                                             "type": "tool_use",
                                             "id": function_call.get('id', ''),
                                             "name": function_call.get('name', ''),
-                                            "input": json.loads(function_call.get('arguments', '{}'))
+                                            "input": json.loads(function_input)
                                         }
-                                    ]
+                                    )
+                                new_message = {
+                                    'role': role,
+                                    'content': tool_use_content
                                 }
                             else:
                                 new_message = {
@@ -338,10 +348,10 @@ def format_preset(preset, model_config):
                 if len(system_message) > 0:
                     ret['system'] = system_message
                 ret[key] = messages
-            elif key == 'functions':
+            elif key in ['functions', 'tools']:
                 if support_function_call:
                     tools = []
-                    for function in preset['functions']:
+                    for function in preset_for_tools.get('functions', []):
                         function_obj = {}
                         for k,v in function.items():
                             if k in ["name", "description", "parameters"]:
@@ -351,8 +361,20 @@ def format_preset(preset, model_config):
                                     function_obj[k] = v
                         tools.append(function_obj)
                     ret['tools'] = tools
+            elif key == 'tool_choice':
+                if support_function_call:
+                    tool_choice = preset_for_tools.get('tool_choice')
+                    if isinstance(tool_choice, dict):
+                        function_name = tool_choice.get('function', {}).get('name', '')
+                        if function_name != '':
+                            ret['tool_choice'] = {'type': 'tool', 'name': function_name}
+                    elif isinstance(tool_choice, str):
+                        if tool_choice == 'required':
+                            ret['tool_choice'] = {'type': 'any'}
+                        elif tool_choice == 'auto':
+                            ret['tool_choice'] = {'type': 'auto'}
             else:
-                ret[key] = preset[key]
+                ret[key] = preset_for_tools[key]
         else:
             if key == 'max_tokens':
                 ret[key] = 1024

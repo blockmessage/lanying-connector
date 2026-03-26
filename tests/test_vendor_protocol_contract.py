@@ -234,6 +234,29 @@ class VendorProtocolContractTests(unittest.TestCase):
         self.assertIn('tool_calls', out)
         self.assertEqual(out['tool_calls'][0]['function']['name'], 'lookup')
 
+    def test_claude_format_preset_accepts_tools_and_tool_choice(self):
+        m = importlib.import_module('lanying_vendor_claude')
+        preset = {
+            'model': 'claude-3-5-haiku-20241022',
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'tools': [
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'lookup',
+                        'description': 'lookup info',
+                        'parameters': {'type': 'object'}
+                    }
+                }
+            ],
+            'tool_choice': {'type': 'function', 'function': {'name': 'lookup'}}
+        }
+        out = m.format_preset(preset, {'function_call': True})
+        self.assertIn('tools', out)
+        self.assertEqual(out['tools'][0]['name'], 'lookup')
+        self.assertEqual(out.get('tool_choice', {}).get('type'), 'tool')
+        self.assertEqual(out.get('tool_choice', {}).get('name'), 'lookup')
+
     def test_aws_chat_returns_tool_calls_contract(self):
         m = importlib.import_module('lanying_vendor_aws')
 
@@ -269,6 +292,29 @@ class VendorProtocolContractTests(unittest.TestCase):
         self.assertEqual(out['result'], 'ok')
         self.assertIn('tool_calls', out)
         self.assertEqual(out['tool_calls'][0]['function']['name'], 'lookup')
+
+    def test_aws_format_preset_accepts_tools_and_tool_choice(self):
+        m = importlib.import_module('lanying_vendor_aws')
+        preset = {
+            'model': 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'tools': [
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'lookup',
+                        'description': 'lookup info',
+                        'parameters': {'type': 'object'}
+                    }
+                }
+            ],
+            'tool_choice': {'type': 'function', 'function': {'name': 'lookup'}}
+        }
+        out = m.format_preset(preset, {'function_call': True})
+        self.assertIn('tools', out)
+        self.assertEqual(out['tools'][0]['name'], 'lookup')
+        self.assertEqual(out.get('tool_choice', {}).get('type'), 'tool')
+        self.assertEqual(out.get('tool_choice', {}).get('name'), 'lookup')
 
 
 if __name__ == '__main__':

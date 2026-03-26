@@ -56,11 +56,11 @@ def functions_to_tools(functions):
     return tools
 
 
-def function_call_to_tool_calls(function_call):
+def function_call_to_tool_calls(function_call, allow_empty_name=False):
     if not isinstance(function_call, dict):
         return []
     name = function_call.get("name", "")
-    if name == "":
+    if name == "" and not allow_empty_name:
         return []
     arguments = function_call.get("arguments", "{}")
     if not isinstance(arguments, str):
@@ -213,17 +213,25 @@ def to_legacy_vendor_preset(preset):
         role = message.get("role", "")
         content = _ensure_content(message.get("content", ""))
         if role == "assistant" and isinstance(message.get("tool_calls"), list) and len(message.get("tool_calls")) > 0:
-            tool_call = message.get("tool_calls")[0]
-            function_call = tool_calls_to_function_call([tool_call])
-            legacy_msg = {
-                "role": "assistant",
-                "content": content
-            }
-            if function_call is not None:
-                legacy_msg["function_call"] = function_call
-                if tool_call.get("id"):
-                    id_to_name[tool_call.get("id")] = function_call.get("name", "")
-            messages.append(legacy_msg)
+            appended = False
+            tool_calls = message.get("tool_calls")
+            for idx, tool_call in enumerate(tool_calls):
+                function_call = tool_calls_to_function_call([tool_call])
+                legacy_msg = {
+                    "role": "assistant",
+                    "content": content if idx == 0 else ""
+                }
+                if function_call is not None:
+                    legacy_msg["function_call"] = function_call
+                    if tool_call.get("id"):
+                        id_to_name[tool_call.get("id")] = function_call.get("name", "")
+                messages.append(legacy_msg)
+                appended = True
+            if not appended:
+                messages.append({
+                    "role": "assistant",
+                    "content": content
+                })
         elif role == "tool":
             tool_call_id = message.get("tool_call_id", "")
             legacy_msg = {
@@ -262,7 +270,7 @@ def normalize_stream_delta(delta):
         return delta
     new_delta = delta
     if "tool_calls" not in new_delta and "function_call" in new_delta:
-        tool_calls = function_call_to_tool_calls(new_delta.get("function_call"))
+        tool_calls = function_call_to_tool_calls(new_delta.get("function_call"), allow_empty_name=True)
         if len(tool_calls) > 0:
             new_delta["tool_calls"] = tool_calls
     if new_delta.get("finish_reason") == "function_call":

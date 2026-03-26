@@ -120,6 +120,35 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertEqual(result[0]["function"]["arguments"], "{\"k\":2}")
         self.assertEqual(result[1]["function"]["arguments"], "{\"x\":1}")
 
+    def test_normalize_stream_delta_function_call_arguments_only_chunk(self):
+        delta = {
+            "function_call": {
+                "arguments": "{\"city\":\"Shanghai\"}"
+            }
+        }
+        out = compat.normalize_stream_delta(delta)
+        self.assertIn("tool_calls", out)
+        self.assertEqual(out["tool_calls"][0]["function"]["name"], "")
+        self.assertEqual(out["tool_calls"][0]["function"]["arguments"], "{\"city\":\"Shanghai\"}")
+
+    def test_to_legacy_vendor_preset_keeps_multiple_tool_calls(self):
+        preset = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "first",
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "f1", "arguments": "{}"}},
+                        {"id": "call_2", "type": "function", "function": {"name": "f2", "arguments": "{}"}}
+                    ]
+                }
+            ]
+        }
+        out = compat.to_legacy_vendor_preset(preset)
+        self.assertEqual(len(out["messages"]), 2)
+        self.assertEqual(out["messages"][0]["function_call"]["name"], "f1")
+        self.assertEqual(out["messages"][1]["function_call"]["name"], "f2")
+
 
 if __name__ == "__main__":
     unittest.main()
