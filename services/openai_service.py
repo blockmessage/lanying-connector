@@ -1115,6 +1115,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 add_debug_message(config, f"使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}", {'need_antispam_check': True})
             else:
                 add_debug_message(config, f"prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n", {'need_antispam_check': True})
+    userHistoryList = []
     if msg_type == 'CHAT':
         history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
@@ -1128,7 +1129,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         history_result = loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
         if history_result['result'] == 'error':
             return history_result
-        userHistoryList = history_result['data']
+        userHistoryList = list(history_result['data'])
         for userHistory in userHistoryList:
             logging.info(f'GroupHistory:{userHistory}')
             messages.append(userHistory)
@@ -1153,6 +1154,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     }
     if 'openclaw_node_info' in config:
         openclaw_node_info = config['openclaw_node_info']
+        if msg_type == 'GROUPCHAT':
+            try:
+                msg = fill_msg_context(msg, userHistoryList)
+            except Exception:
+                logging.exception("fill_msg_context failed")
         logging.info(f"redirect_to_openclaw | node: {openclaw_node_info}, msg: {msg}")
         return lanying_openclaw.redirect_to_openclaw(openclaw_node_info, msg)
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
@@ -2110,6 +2116,42 @@ def reversed_history_generator(historyListKey):
         last_type = last_history.get('type', 'both')
         if last_type == 'ask' or last_type == 'both':
             yield last_history
+
+def fill_msg_context(msg, userHistoryList):
+    if not isinstance(msg, dict):
+        return msg
+    body = str(msg.get('content', '')).strip()
+    if len(body) == 0:
+        return msg
+    if not isinstance(userHistoryList, list) or len(userHistoryList) == 0:
+        return msg
+
+    lines = []
+    for item in userHistoryList:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get('content', '')).strip()
+        if len(content) == 0:
+            continue
+        if content == body:
+            continue
+
+        speaker_name = str(item.get('name', '')).strip()
+        role = str(item.get('role', '')).strip().lower()
+        if len(speaker_name) > 0:
+            speaker = speaker_name
+        elif role == 'assistant':
+            speaker = 'AI'
+        else:
+            speaker = 'USER'
+        lines.append(f"[{speaker}] {content}")
+
+    if len(lines) == 0:
+        return msg
+
+    pending_context = "[Group context messages since last trigger]\n" + "\n".join(lines)
+    msg['content'] = f"{pending_context}\n\n[Current message]\n{body}"
+    return msg
 
 def reversed_group_history_generator(historyListKey):
     redis = lanying_redis.get_redis_connection()
