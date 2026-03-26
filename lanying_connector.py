@@ -44,6 +44,45 @@ app.register_blueprint(tavily_service.bp)
 import openclaw_service
 app.register_blueprint(openclaw_service.bp)
 
+def to_openai_error_response(res):
+    internal_code = str(res.get('code', 'invalid_request'))
+    message = res.get('msg', res.get('message', 'Request failed'))
+    message = str(message)
+    status_code = 400
+    error_type = "invalid_request_error"
+    error_code = internal_code
+
+    if internal_code in ['deduct_failed', 'message_per_month_per_user_limit_reached', 'service_is_expired']:
+        # Map quota/billing errors to OpenAI-compatible code for better client compatibility.
+        status_code = 429
+        error_type = "insufficient_quota"
+        error_code = "insufficient_quota"
+    elif internal_code in ['rate_limit_reached', 'rate_limit_reached_error', 'engine_overloaded_error']:
+        status_code = 429
+        error_type = "rate_limit_error"
+        error_code = "rate_limit_exceeded"
+    elif internal_code in ['bad_authorization', 'invalid_api_key']:
+        status_code = 401
+        error_type = "authentication_error"
+        error_code = "invalid_api_key"
+    elif internal_code in ['invalid_model', 'model_not_support']:
+        status_code = 404
+        error_type = "invalid_request_error"
+        error_code = "model_not_found"
+
+    payload = {
+        "error": {
+            "type": error_type,
+            "code": error_code,
+            "message": message,
+            "internal_code": internal_code
+        },
+        "data": []
+    }
+    resp = app.make_response(payload)
+    resp.status_code = status_code
+    return resp
+
 @app.route("/", methods=["GET"])
 def index():
     if lanying_config.is_show_info_page():
@@ -178,9 +217,7 @@ def openai_request():
         service_module = get_service_module(service)
         res = service_module.handle_request(request, "json")
         if res['result'] == 'error':
-            code = res.get('code', 401)
-            resp = app.make_response({"error":{"type": "invalid_request_error","code":code, "message":res['msg']},"data":[]})
-            return resp
+            return to_openai_error_response(res)
         else:
             response = res['response']
             iter = res.get('iter')
@@ -215,9 +252,7 @@ def openai_form_request():
         service_module = get_service_module(service)
         res = service_module.handle_request(request, "form")
         if res['result'] == 'error':
-            code = res.get('code', 401)
-            resp = app.make_response({"error":{"type": "invalid_request_error","code":code, "message":res['msg']},"data":[]})
-            return resp
+            return to_openai_error_response(res)
         else:
             response = res['response']
             iter = res.get('iter')
