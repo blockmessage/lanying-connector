@@ -1,0 +1,117 @@
+[
+  {
+    "name": "old_functions_forced_tool",
+    "request": {
+      "model": "${MODEL}",
+      "stream": false,
+      "messages": [
+        {"role": "user", "content": "请调用 get_weather，城市是 Shanghai"}
+      ],
+      "functions": [
+        {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string"}
+            },
+            "required": ["city"]
+          }
+        }
+      ],
+      "function_call": {"name": "get_weather"}
+    },
+    "expect": {
+      "stream": false,
+      "tool_call": true
+    }
+  },
+  {
+    "name": "new_tools_forced_tool",
+    "request": {
+      "model": "${MODEL}",
+      "stream": false,
+      "messages": [
+        {"role": "user", "content": "Please call get_weather for Shanghai"}
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {"type": "string"}
+              },
+              "required": ["city"]
+            }
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "function",
+        "function": {"name": "get_weather"}
+      }
+    },
+    "expect": {
+      "stream": false,
+      "tool_call": true
+    }
+  },
+  {
+    "name": "new_tools_stream_forced_tool",
+    "request": {
+      "model": "${MODEL}",
+      "stream": true,
+      "messages": [
+        {"role": "user", "content": "Please call get_weather for Shanghai"}
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {"type": "string"}
+              },
+              "required": ["city"]
+            }
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "function",
+        "function": {"name": "get_weather"}
+      }
+    },
+    "expect": {
+      "stream": true,
+      "tool_call": true
+    }
+  },
+  {
+    "name": "content_list_text_only",
+    "request": {
+      "model": "${MODEL}",
+      "stream": false,
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {"type": "text", "text": "你收到这条消息时，请回复ok"}
+          ]
+        }
+      ]
+    },
+    "expect": {
+      "stream": false,
+      "tool_call": false
+    }
+  }
+]

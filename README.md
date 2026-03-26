@@ -62,5 +62,22 @@
    ```
    注：每次重新运行需要激活虚拟环境，别忘了操作第2步。
 
-服务启动成功，就可以在页面上看到收发消息的基本情况了：[http://127.0.0.1:5000](http://127.0.0.1:5000)，祝玩得开心~🚀
+### Chat Completions 回放验证（新旧协议）
 
+用于回放 `/v1/chat/completions` 的典型场景（旧 `functions/function_call`、新 `tools/tool_calls`、`stream`、`content` list）：
+
+```bash
+# 查看内置用例
+python3 scripts/replay_chat_completions.py --list
+
+# 执行全部用例
+LANYING_CONNECTOR_BASE_URL=http://127.0.0.1:5000 \
+LANYING_CONNECTOR_API_KEY='YOUR_BEARER_TOKEN' \
+LANYING_CONNECTOR_MODEL='gpt-4o-mini' \
+python3 scripts/replay_chat_completions.py
+
+# 只跑单个用例
+python3 scripts/replay_chat_completions.py --api-key 'YOUR_BEARER_TOKEN' --only new_tools_stream_forced_tool
+```
+
+服务启动成功，就可以在页面上看到收发消息的基本情况了：[http://127.0.0.1:5000](http://127.0.0.1:5000)，祝玩得开心~🚀
