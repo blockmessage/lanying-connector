@@ -2515,116 +2515,158 @@ def maybe_trace_message_quota_usage(config, message_count_quota):
     except Exception as e:
         logging.exception(e)
 
-def add_message_statistic(app_id, config, preset, response, model_config):
-    api_key_type = model_config['api_key_type']
+def build_fallback_usage_for_stat(app_id, preset, response, model_config):
     model_type = model_config.get('type', '')
-    vendor = model_config.get('vendor', '')
-    if model_type == 'image':
-        logging.info(f"add_message_statistic {model_type} response: {response}, vendor:{vendor}, model_config: {model_config}")
-        redis = lanying_redis.get_redis_connection()
-        if redis:
+    if model_type == 'chat':
+        vendor = model_config.get('vendor', '')
+        model = preset.get('model', '')
+        functions = lanying_openai_compat.get_tools_as_functions(preset)
+        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages', []), model, vendor) + lanying_embedding.calc_functions_tokens(functions, model, vendor)
+        reply = ''
+        if isinstance(response, dict):
+            if 'reply' in response and isinstance(response.get('reply'), str):
+                reply = response.get('reply')
+            else:
+                try:
+                    reply = str(response.get('choices', [{}])[0].get('message', {}).get('content', ''))
+                except Exception:
+                    reply = ''
+        completion_tokens = calcMessageTokens(app_id, {'role': 'assistant', 'content': reply}, model, vendor)
+        total_tokens = prompt_tokens + completion_tokens
+        return {
+            'completion_tokens': completion_tokens,
+            'prompt_tokens': prompt_tokens,
+            'total_tokens': total_tokens
+        }
+    if model_type == 'embedding':
+        model = preset.get('model', '')
+        vendor = model_config.get('vendor', '')
+        try:
+            prompt_tokens = len(lanying_vendor.encoding_for_model(app_id, vendor, model).encode(str(preset.get('input', '')), disallowed_special=()))
+        except Exception:
+            prompt_tokens = 0
+        return {
+            'completion_tokens': 0,
+            'prompt_tokens': prompt_tokens,
+            'total_tokens': prompt_tokens
+        }
+    return None
+
+def add_message_statistic(app_id, config, preset, response, model_config):
+    try:
+        api_key_type = model_config['api_key_type']
+        model_type = model_config.get('type', '')
+        vendor = model_config.get('vendor', '')
+        if model_type == 'image':
+            logging.info(f"add_message_statistic {model_type} response: {response}, vendor:{vendor}, model_config: {model_config}")
+            redis = lanying_redis.get_redis_connection()
+            if redis:
+                model = preset['model']
+                message_count_quota = model_config['quota']
+                if message_count_quota < 0:
+                    message_count_quota = 0
+                logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+                key_count = 0
+                add_quota_used_statistic(app_id, message_count_quota)
+                for key in get_message_statistic_keys(config, app_id):
+                    key_count += 1
+                    redis.hincrby(key, 'image_message_count', 1)
+                    if api_key_type == 'share':
+                        add_quota(redis, key, 'message_count_quota_share', message_count_quota)
+                    else:
+                        add_quota(redis, key, 'message_count_quota_self', message_count_quota)
+                    new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
+                    if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
+                        notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+                maybe_trace_message_quota_usage(config, message_count_quota)
+            else:
+                logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, model_config:{model_config}")
+        elif model_type in ['text_to_speech', 'speech_to_text'] :
+            logging.info(f"add_message_statistic {model_type} response: {response}, vendor:{vendor}, model_config: {model_config}")
+            redis = lanying_redis.get_redis_connection()
+            if redis:
+                model = preset['model']
+                message_count_quota = model_config['quota']
+                if message_count_quota < 0:
+                    message_count_quota = 0
+                if model_type == 'speech_to_text':
+                    speech_to_text_duration = config.get('speech_to_text_duration', 0)
+                    logging.info(f"speech_to_text response | duration={speech_to_text_duration}, response:{response}")
+                logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+                key_count = 0
+                add_quota_used_statistic(app_id, message_count_quota)
+                for key in get_message_statistic_keys(config, app_id):
+                    key_count += 1
+                    redis.hincrby(key, f'{model_type}_message_count', 1)
+                    if api_key_type == 'share':
+                        add_quota(redis, key, 'message_count_quota_share', message_count_quota)
+                    else:
+                        add_quota(redis, key, 'message_count_quota_self', message_count_quota)
+                    new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
+                    if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
+                        notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+                maybe_trace_message_quota_usage(config, message_count_quota)
+            else:
+                logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, vendor:{vendor}, model_config:{model_config}")
+        else:
+            if isinstance(response, dict) and 'no_cost' in response:
+                logging.info(f"skip message statistic for no cost | app_id={app_id}")
+                return
+            usage = None
+            if isinstance(response, dict) and isinstance(response.get('usage'), dict):
+                usage = response.get('usage')
+            if usage is None:
+                usage = build_fallback_usage_for_stat(app_id, preset, response, model_config)
+                if usage is not None:
+                    logging.info(f"add_message_statistic fallback usage is used | app_id={app_id}, usage={usage}")
+            if usage is None:
+                logging.warning(f"skip message statistic for missing usage | app_id={app_id}, model_type={model_type}, model={preset.get('model', '')}, vendor={vendor}")
+                return
+
+            completion_tokens = usage.get('completion_tokens',0)
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            total_tokens = usage.get('total_tokens', 0)
+            text_size = calc_used_text_size(preset, response, model_config)
             model = preset['model']
-            message_count_quota = model_config['quota']
+            content_security = 'off'
+            if model_type == 'chat' or model_type == 'embedding':
+                if 'chatbot' in config:
+                    chatbot = config['chatbot']
+                    if 'content_security' in chatbot:
+                        content_security = chatbot['content_security']
+            message_count_quota = calc_message_quota(model_config, total_tokens, content_security)
             if message_count_quota < 0:
                 message_count_quota = 0
-            logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
-            key_count = 0
-            add_quota_used_statistic(app_id, message_count_quota)
-            for key in get_message_statistic_keys(config, app_id):
-                key_count += 1
-                redis.hincrby(key, 'image_message_count', 1)
-                if api_key_type == 'share':
-                    add_quota(redis, key, 'message_count_quota_share', message_count_quota)
-                else:
-                    add_quota(redis, key, 'message_count_quota_self', message_count_quota)
-                new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
-                if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
-                    notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
-            maybe_trace_message_quota_usage(config, message_count_quota)
-            # try:
-            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
-            # except Exception as e:
-            #     logging.exception(e)
-        else:
-            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, model_config:{model_config}")
-    elif model_type in ['text_to_speech', 'speech_to_text'] :
-        logging.info(f"add_message_statistic {model_type} response: {response}, vendor:{vendor}, model_config: {model_config}")
-        redis = lanying_redis.get_redis_connection()
-        if redis:
-            model = preset['model']
-            message_count_quota = model_config['quota']
-            if message_count_quota < 0:
-                message_count_quota = 0
-            if model_type == 'speech_to_text':
-                speech_to_text_duration = config.get('speech_to_text_duration', 0)
-                logging.info(f"speech_to_text response | duration={speech_to_text_duration}, response:{response}")
-            logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
-            key_count = 0
-            add_quota_used_statistic(app_id, message_count_quota)
-            for key in get_message_statistic_keys(config, app_id):
-                key_count += 1
-                redis.hincrby(key, f'{model_type}_message_count', 1)
-                if api_key_type == 'share':
-                    add_quota(redis, key, 'message_count_quota_share', message_count_quota)
-                else:
-                    add_quota(redis, key, 'message_count_quota_self', message_count_quota)
-                new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
-                if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
-                    notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
-            maybe_trace_message_quota_usage(config, message_count_quota)
-            # try:
-            #     maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
-            # except Exception as e:
-            #     logging.exception(e)
-        else:
-            logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, vendor:{vendor}, model_config:{model_config}")
-    elif 'usage' in response:
-        if 'no_cost' in response:
-            logging.info(f"skip message statistic for no cost | app_id={app_id}")
-            return
-        usage = response['usage']
-        completion_tokens = usage.get('completion_tokens',0)
-        prompt_tokens = usage.get('prompt_tokens', 0)
-        total_tokens = usage.get('total_tokens', 0)
-        text_size = calc_used_text_size(preset, response, model_config)
-        model = preset['model']
-        content_security = 'off'
-        if model_type == 'chat' or model_type == 'embedding':
-            if 'chatbot' in config:
-                chatbot = config['chatbot']
-                if 'content_security' in chatbot:
-                    content_security = chatbot['content_security']
-        message_count_quota = calc_message_quota(model_config, total_tokens, content_security)
-        if message_count_quota < 0:
-            message_count_quota = 0
-        redis = lanying_redis.get_redis_connection()
-        product_id = config.get('product_id', 0)
-        if product_id == 0:
-            logging.info(f"skip message statistic for no product_id: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
-            return
-        if redis:
-            logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
-            key_count = 0
-            add_quota_used_statistic(app_id, message_count_quota)
-            for key in get_message_statistic_keys(config, app_id):
-                key_count += 1
-                redis.hincrby(key, 'total_tokens', total_tokens)
-                redis.hincrby(key, 'text_size', text_size)
-                redis.hincrby(key, 'message_count', 1)
-                if api_key_type == 'share':
-                    add_quota(redis, key, 'message_count_quota_share', message_count_quota)
-                else:
-                    add_quota(redis, key, 'message_count_quota_self', message_count_quota)
-                new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
-                if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
-                    notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
-            maybe_trace_message_quota_usage(config, message_count_quota)
-            try:
-                maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
-            except Exception as e:
-                logging.exception(e)
-        else:
-            logging.error(f"fail to statistic message: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+            redis = lanying_redis.get_redis_connection()
+            product_id = config.get('product_id', 0)
+            if product_id == 0:
+                logging.info(f"skip message statistic for no product_id: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+                return
+            if redis:
+                logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+                key_count = 0
+                add_quota_used_statistic(app_id, message_count_quota)
+                for key in get_message_statistic_keys(config, app_id):
+                    key_count += 1
+                    redis.hincrby(key, 'total_tokens', total_tokens)
+                    redis.hincrby(key, 'text_size', text_size)
+                    redis.hincrby(key, 'message_count', 1)
+                    if api_key_type == 'share':
+                        add_quota(redis, key, 'message_count_quota_share', message_count_quota)
+                    else:
+                        add_quota(redis, key, 'message_count_quota_self', message_count_quota)
+                    new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
+                    if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
+                        notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+                maybe_trace_message_quota_usage(config, message_count_quota)
+                try:
+                    maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
+                except Exception as e:
+                    logging.exception(e)
+            else:
+                logging.error(f"fail to statistic message: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size},message_count_quota={message_count_quota}, api_key_type={api_key_type}")
+    except Exception as e:
+        logging.exception("add_message_statistic failed with unexpected error")
 
 def maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type):
     if 'linked_publish_capsule_id' in config:
