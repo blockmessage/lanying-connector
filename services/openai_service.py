@@ -5297,7 +5297,10 @@ def add_quota_used_statistic_internal(app_id, quota):
         notify_size = 1000
         if (new_total // notify_size) > ((new_total - quota) // notify_size):
             lanying_slack.async_send_message(f'[智能消息]累计用量：{new_total} quota')
-        redis.hincrbyfloat(everyday_key, app_id, quota)
+        everyday_notify_size = 100
+        everyday_count = redis.hincrbyfloat(everyday_key, app_id, quota)
+        if (everyday_count // everyday_notify_size) > ((everyday_count - quota) // everyday_notify_size):
+            lanying_slack.async_send_message(f'[智能消息]今日用量：{new_total} quota')
 
 def parse_doc_tags_attr(doc):
     results = []
