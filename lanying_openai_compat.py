@@ -67,9 +67,21 @@ def normalize_usage(usage):
 
 def normalize_tool_calls(tool_calls):
     if isinstance(tool_calls, list):
-        return tool_calls
+        normalized = []
+        for item in tool_calls:
+            if isinstance(item, dict):
+                tool_call = copy.deepcopy(item)
+                if "index" in tool_call:
+                    del tool_call["index"]
+                normalized.append(tool_call)
+            else:
+                normalized.append(item)
+        return normalized
     if isinstance(tool_calls, dict):
-        return [tool_calls]
+        tool_call = copy.deepcopy(tool_calls)
+        if "index" in tool_call:
+            del tool_call["index"]
+        return [tool_call]
     return []
 
 

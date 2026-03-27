@@ -233,8 +233,8 @@ def openai_request():
                     return Response(iter(), status=response.status_code, headers=response.headers.items())
             else:
                 if isinstance(response, dict):
-                    response_json = json.dumps(response, ensure_ascii=False, indent=4)
-                    new_response = Response(response_json, content_type="application/json")
+                    response_json = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+                    new_response = Response(response_json, content_type="application/json; charset=utf-8")
                     resp = app.make_response(new_response)
                 else:
                     response.headers['Content-Encoding'] = 'identity'

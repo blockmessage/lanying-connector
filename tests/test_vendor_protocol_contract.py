@@ -198,6 +198,29 @@ class VendorProtocolContractTests(unittest.TestCase):
         self.assertIn('tool_calls', out)
         self.assertEqual(out['tool_calls'][0]['function']['name'], 'lookup')
 
+    def test_aliyun_format_preset_keeps_stream_with_tools(self):
+        m = importlib.import_module('lanying_vendor_aliyun')
+        preset = {
+            'model': 'qwen-plus',
+            'stream': True,
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'tools': [
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'exec',
+                        'description': 'run command',
+                        'parameters': {'type': 'object'}
+                    }
+                }
+            ],
+            'tool_choice': {'type': 'function', 'function': {'name': 'exec'}}
+        }
+        out = m.format_preset(preset)
+        self.assertTrue(out.get('stream', False))
+        self.assertEqual(out.get('stream_options', {}).get('include_usage'), True)
+        self.assertIn('tools', out)
+
     def test_claude_chat_returns_tool_calls_contract(self):
         m = importlib.import_module('lanying_vendor_claude')
 

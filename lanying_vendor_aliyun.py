@@ -182,11 +182,8 @@ def format_preset(preset):
                 else:
                     ret[key] = preset[key]
             elif key == 'stream' and preset[key] == True:
-                if 'tools' in preset and len(preset['tools']) > 0:
-                    ret[key] = False
-                else:
-                    ret['stream_options'] = {'include_usage':True}
-                    ret[key] = preset[key]
+                ret['stream_options'] = {'include_usage':True}
+                ret[key] = preset[key]
             else:
                 ret[key] = preset[key]
     return ret

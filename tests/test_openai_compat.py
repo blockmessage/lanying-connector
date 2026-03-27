@@ -124,12 +124,13 @@ class OpenAICompatTests(unittest.TestCase):
         response = {
             "result": "ok",
             "reply": None,
-            "tool_calls": {"id": "call_1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+            "tool_calls": {"index": 0, "id": "call_1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
             "usage": {"input_tokens": 10, "output_tokens": 3}
         }
         out = compat.normalize_vendor_response(response)
         self.assertEqual(out["reply"], "")
         self.assertEqual(len(out["tool_calls"]), 1)
+        self.assertNotIn("index", out["tool_calls"][0])
         self.assertEqual(out["usage"]["prompt_tokens"], 10)
         self.assertEqual(out["usage"]["completion_tokens"], 3)
         self.assertEqual(out["usage"]["total_tokens"], 13)
