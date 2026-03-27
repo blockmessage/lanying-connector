@@ -277,6 +277,7 @@ def handle_request(request, request_type):
     else:
         prepare_info = lanying_vendor.prepare_chat(app_id, vendor, auth_info, preset)
         response = lanying_vendor.chat(app_id, vendor, prepare_info, preset)
+        response = lanying_openai_compat.normalize_vendor_response(response)
         stream = 'reply_generator' in response
         logging.info(f"forward request other vendor: vendor:{vendor}, stream:{stream}, response:{response}")
         if response.get('result', '') == 'error':

@@ -97,6 +97,29 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertEqual(out["tool_calls"][0]["function"]["name"], "do_x")
         self.assertEqual(out["finish_reason"], "tool_calls")
 
+    def test_normalize_vendor_response_anthropic_finish_reason(self):
+        response = {
+            "result": "ok",
+            "reply": "ok",
+            "finish_reason": "end_turn"
+        }
+        out = compat.normalize_vendor_response(response)
+        self.assertEqual(out["finish_reason"], "stop")
+
+    def test_normalize_stream_delta_anthropic_finish_reason(self):
+        delta = {"finish_reason": "end_turn"}
+        out = compat.normalize_stream_delta(delta)
+        self.assertEqual(out["finish_reason"], "stop")
+
+    def test_normalize_vendor_response_unknown_finish_reason_fallback_stop(self):
+        response = {
+            "result": "ok",
+            "reply": "ok",
+            "finish_reason": "normal"
+        }
+        out = compat.normalize_vendor_response(response)
+        self.assertEqual(out["finish_reason"], "stop")
+
     def test_extract_text_from_content(self):
         content = [
             {"type": "text", "text": "hello "},

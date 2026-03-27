@@ -2,6 +2,28 @@ import copy
 import json
 
 
+def normalize_finish_reason(finish_reason):
+    if finish_reason is None:
+        return None
+    if not isinstance(finish_reason, str):
+        return finish_reason
+    if finish_reason == "function_call":
+        return "tool_calls"
+    if finish_reason == "tool_use":
+        return "tool_calls"
+    if finish_reason == "end_turn":
+        return "stop"
+    if finish_reason == "max_tokens":
+        return "length"
+    if finish_reason == "stop_sequence":
+        return "stop"
+    if finish_reason in ["stop", "length", "tool_calls", "content_filter"]:
+        return finish_reason
+    if finish_reason == "":
+        return ""
+    return "stop"
+
+
 def _safe_json_dumps(value):
     if isinstance(value, str):
         return value
@@ -260,8 +282,7 @@ def normalize_vendor_response(response):
     new_resp = response
     if "tool_calls" not in new_resp and "function_call" in new_resp and new_resp.get("function_call") is not None:
         new_resp["tool_calls"] = function_call_to_tool_calls(new_resp.get("function_call"))
-    if new_resp.get("finish_reason") == "function_call":
-        new_resp["finish_reason"] = "tool_calls"
+    new_resp["finish_reason"] = normalize_finish_reason(new_resp.get("finish_reason"))
     return new_resp
 
 
@@ -273,8 +294,7 @@ def normalize_stream_delta(delta):
         tool_calls = function_call_to_tool_calls(new_delta.get("function_call"), allow_empty_name=True)
         if len(tool_calls) > 0:
             new_delta["tool_calls"] = tool_calls
-    if new_delta.get("finish_reason") == "function_call":
-        new_delta["finish_reason"] = "tool_calls"
+    new_delta["finish_reason"] = normalize_finish_reason(new_delta.get("finish_reason"))
     return new_delta
 
 
