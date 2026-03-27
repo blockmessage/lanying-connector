@@ -41,6 +41,38 @@ def _ensure_content(value):
     return str(value)
 
 
+def normalize_usage(usage):
+    if not isinstance(usage, dict):
+        return usage
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+    if prompt_tokens is None and "input_tokens" in usage:
+        prompt_tokens = usage.get("input_tokens", 0)
+    if completion_tokens is None and "output_tokens" in usage:
+        completion_tokens = usage.get("output_tokens", 0)
+    if total_tokens is None:
+        try:
+            total_tokens = int(prompt_tokens or 0) + int(completion_tokens or 0)
+        except Exception:
+            total_tokens = usage.get("total_tokens", 0)
+    if prompt_tokens is None and completion_tokens is None and total_tokens is None:
+        return usage
+    return {
+        "prompt_tokens": int(prompt_tokens or 0),
+        "completion_tokens": int(completion_tokens or 0),
+        "total_tokens": int(total_tokens or 0)
+    }
+
+
+def normalize_tool_calls(tool_calls):
+    if isinstance(tool_calls, list):
+        return tool_calls
+    if isinstance(tool_calls, dict):
+        return [tool_calls]
+    return []
+
+
 def tools_to_functions(tools):
     functions = []
     if not isinstance(tools, list):
@@ -280,8 +312,14 @@ def normalize_vendor_response(response):
     if not isinstance(response, dict):
         return response
     new_resp = response
-    if "tool_calls" not in new_resp and "function_call" in new_resp and new_resp.get("function_call") is not None:
+    if "tool_calls" in new_resp:
+        new_resp["tool_calls"] = normalize_tool_calls(new_resp.get("tool_calls"))
+    elif "function_call" in new_resp and new_resp.get("function_call") is not None:
         new_resp["tool_calls"] = function_call_to_tool_calls(new_resp.get("function_call"))
+    if "usage" in new_resp:
+        new_resp["usage"] = normalize_usage(new_resp.get("usage"))
+    if "reply" in new_resp:
+        new_resp["reply"] = _ensure_content(new_resp.get("reply"))
     new_resp["finish_reason"] = normalize_finish_reason(new_resp.get("finish_reason"))
     return new_resp
 
@@ -290,10 +328,16 @@ def normalize_stream_delta(delta):
     if not isinstance(delta, dict):
         return delta
     new_delta = delta
-    if "tool_calls" not in new_delta and "function_call" in new_delta:
+    if "tool_calls" in new_delta:
+        new_delta["tool_calls"] = normalize_tool_calls(new_delta.get("tool_calls"))
+    elif "function_call" in new_delta:
         tool_calls = function_call_to_tool_calls(new_delta.get("function_call"), allow_empty_name=True)
         if len(tool_calls) > 0:
             new_delta["tool_calls"] = tool_calls
+    if "usage" in new_delta:
+        new_delta["usage"] = normalize_usage(new_delta.get("usage"))
+    if "content" in new_delta and new_delta.get("content") is None:
+        new_delta["content"] = ""
     new_delta["finish_reason"] = normalize_finish_reason(new_delta.get("finish_reason"))
     return new_delta
 

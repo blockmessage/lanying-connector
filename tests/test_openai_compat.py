@@ -120,6 +120,20 @@ class OpenAICompatTests(unittest.TestCase):
         out = compat.normalize_vendor_response(response)
         self.assertEqual(out["finish_reason"], "stop")
 
+    def test_normalize_vendor_response_usage_and_tool_calls_shape(self):
+        response = {
+            "result": "ok",
+            "reply": None,
+            "tool_calls": {"id": "call_1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+            "usage": {"input_tokens": 10, "output_tokens": 3}
+        }
+        out = compat.normalize_vendor_response(response)
+        self.assertEqual(out["reply"], "")
+        self.assertEqual(len(out["tool_calls"]), 1)
+        self.assertEqual(out["usage"]["prompt_tokens"], 10)
+        self.assertEqual(out["usage"]["completion_tokens"], 3)
+        self.assertEqual(out["usage"]["total_tokens"], 13)
+
     def test_extract_text_from_content(self):
         content = [
             {"type": "text", "text": "hello "},
