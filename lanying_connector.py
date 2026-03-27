@@ -224,7 +224,9 @@ def openai_request():
             if iter:
                 if isinstance(response, dict):
                     headers = {
-                        'Content-Type': 'text/event-stream'
+                        'Content-Type': 'text/event-stream; charset=utf-8',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive'
                     }
                     return Response(iter(), status=200, headers=headers)
                 else:

@@ -293,6 +293,7 @@ def handle_request(request, request_type):
                 usage = {}
                 role_count = 0
                 stream_tool_calls = {}
+                stream_finish_reason = ''
                 try:
                     reply_generator = response.get('reply_generator')
                     for delta in reply_generator:
@@ -307,6 +308,8 @@ def handle_request(request, request_type):
                             usage = delta['usage']
                         if 'tool_calls' in delta:
                             lanying_openai_compat.merge_stream_tool_calls(stream_tool_calls, delta.get('tool_calls', []), delta.get('arguments_merge_type', 'append'))
+                        if isinstance(delta.get('finish_reason'), str) and len(delta.get('finish_reason')) > 0:
+                            stream_finish_reason = delta.get('finish_reason')
                         delta_response = {
                             'id': id,
                             'object': 'chat.completion.chunk',
@@ -326,13 +329,15 @@ def handle_request(request, request_type):
                             delta_response['choices'][0]['delta']['role'] = 'assistant'
                         if 'tool_calls' in delta:
                             delta_response['choices'][0]['delta']['tool_calls'] = delta.get('tool_calls')
-                        delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"
+                        delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n\n"
                         #logging.info(f"delta_line:{delta_line}")
                         yield delta_line
                 finally:
-                    finish_reason = 'stop'
-                    if len(stream_tool_calls) > 0:
-                        finish_reason = 'tool_calls'
+                    finish_reason = stream_finish_reason
+                    if not isinstance(finish_reason, str) or len(finish_reason) == 0:
+                        finish_reason = 'stop'
+                        if len(stream_tool_calls) > 0:
+                            finish_reason = 'tool_calls'
                     delta_response = {
                             'id': id,
                             'object': 'chat.completion.chunk',
@@ -345,33 +350,46 @@ def handle_request(request, request_type):
                                     },
                                     'finish_reason': finish_reason
                                 }
-                            ],
-                            'usage': usage
+                            ]
                         }
-                    delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n"
+                    delta_line = f"data: {json.dumps(delta_response, ensure_ascii=False)}\n\n"
                     #logging.info(f"delta_line:{delta_line}")
                     yield delta_line
-                    yield 'data: [DONE]\n'
+                    if isinstance(usage, dict) and len(usage) > 0:
+                        usage_delta_response = {
+                            'id': id,
+                            'object': 'chat.completion.chunk',
+                            'created': created,
+                            'model': model,
+                            'choices': [],
+                            'usage': usage
+                        }
+                        usage_delta_line = f"data: {json.dumps(usage_delta_response, ensure_ascii=False)}\n\n"
+                        yield usage_delta_line
+                    yield 'data: [DONE]\n\n'
                     reply = ''.join(contents)
                     response_json = stream_lines_to_response(app_id, preset, reply, vendor, usage, lanying_openai_compat.sorted_stream_tool_calls(stream_tool_calls))
                     logging.info(f"forward request: stream response | response: {response}, response_json:{response_json}")
                     add_message_statistic(app_id, config, preset, response_json, model_config)
             return {'result':'ok', 'response':response, 'iter': generate_response}
         else:
+            message_content = response.get('reply', '')
+            finish_reason = response.get('finish_reason', 'stop')
+            if not isinstance(finish_reason, str) or len(finish_reason) == 0:
+                finish_reason = 'stop'
             response_body = {
                 'id': f'chatcmpl-{int(time.time()*1000000)}{random.randint(1,100000000)}',
                 'object': 'chat.completion',
                 'created': int(time.time()),
-                'vendor': vendor,
                 'model': model,
                 'choices': [
                     {
                         'index': 0,
                         'message':{
                             'role': 'assistant',
-                            'content': response.get('reply', '')
+                            'content': message_content
                         },
-                        'finish_reason': 'stop'
+                        'finish_reason': finish_reason
                     }
                 ]
             }
@@ -379,6 +397,8 @@ def handle_request(request, request_type):
                 response_body['usage'] = response.get('usage')
             tool_calls = response.get('tool_calls', [])
             if isinstance(tool_calls, list) and len(tool_calls) > 0:
+                if message_content == '':
+                    response_body['choices'][0]['message']['content'] = None
                 response_body['choices'][0]['message']['tool_calls'] = tool_calls
                 response_body['choices'][0]['finish_reason'] = 'tool_calls'
             add_message_statistic(app_id, config, preset, response, model_config)
