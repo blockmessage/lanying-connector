@@ -4119,6 +4119,8 @@ def configure_chatbot():
     data = json.loads(text)
     app_id = str(data['app_id'])
     account_status = str(data.get('account_status',''))
+    account_type = str(data.get('account_type', 'enterprise'))
+    verification_level = str(data.get('verification_level', ''))
     chatbot_id = str(data['chatbot_id'])
     name = str(data['name'])
     nickname = str(data.get('nickname', ''))
@@ -4145,7 +4147,7 @@ def configure_chatbot():
         content_security = 'on'
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
-    result = lanying_chatbot.configure_chatbot(app_id, account_status, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
+    result = lanying_chatbot.configure_chatbot(app_id, account_status, account_type, verification_level, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
                                                quota_exceed_reply_msg, group_history_use_mode,
