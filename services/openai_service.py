@@ -4686,6 +4686,8 @@ def create_vendor():
     api_group_id = str(data['api_group_id']).strip()
     api_endpoint = str(data['api_endpoint']).strip()
     model_config = list(data['model_config'])
+    config_version = int(data.get('config_version', 1))
+    handler_vendor = str(data.get('handler_vendor', '')).strip()
     vendor_setting = lanying_vendor.VendorSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -4695,7 +4697,9 @@ def create_vendor():
         secret_key = secret_key,
         api_group_id = api_group_id,
         api_endpoint = api_endpoint,
-        model_config = model_config
+        model_config = model_config,
+        config_version = config_version,
+        handler_vendor = handler_vendor
     )
     result = lanying_vendor.create_vendor(vendor_setting)
     if result['result'] == 'error':
@@ -4721,6 +4725,8 @@ def configure_vendor():
     api_group_id = str(data['api_group_id']).strip()
     api_endpoint = str(data['api_endpoint']).strip()
     model_config = list(data['model_config'])
+    config_version = int(data.get('config_version', 1))
+    handler_vendor = str(data.get('handler_vendor', '')).strip()
     vendor_setting = lanying_vendor.VendorSetting(
         app_id = app_id,
         tenement_id = tenement_id,
@@ -4730,7 +4736,9 @@ def configure_vendor():
         secret_key = secret_key,
         api_group_id = api_group_id,
         api_endpoint = api_endpoint,
-        model_config = model_config
+        model_config = model_config,
+        config_version = config_version,
+        handler_vendor = handler_vendor
     )
     result = lanying_vendor.configure_vendor(vendor_id, vendor_setting)
     if result['result'] == 'error':
@@ -4760,7 +4768,7 @@ def get_vendor_configs():
         resp = make_response({'code':401, 'message':'bad authorization'})
         return resp
     vendor_configs = lanying_vendor.vendor_configs()
-    resp = make_response({'code':200, 'data': {'list': vendor_configs}})
+    resp = make_response({'code':200, 'data': vendor_configs})
     return resp
 
 def wait_sync_messages(future: Future, msg, message_quota_trace_id):

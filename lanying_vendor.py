@@ -41,81 +41,223 @@ vendor_to_module = {
     'moonshot': lanying_vendor_moonshot
 }
 
-def vendor_configs():
+OPENROUTER_SERVICES = ['chatgpt', 'claude', 'deepseek', 'doubao', 'kimi', 'ernie', 'qwen', 'zhipuai', 'minimax']
+
+
+def _service_name_to_label_key(service):
+    return f"service_name_{service}"
+
+
+def _chat_models_by_service():
+    grouped = {}
+    for vendor, module in vendor_to_module.items():
+        for config in module.model_configs():
+            if config.get('type') != 'chat':
+                continue
+            service = config.get('service', '')
+            if service == '':
+                continue
+            grouped.setdefault(service, [])
+            config_copy = copy.deepcopy(config)
+            config_copy['handler_vendor'] = vendor
+            grouped[service].append(config_copy)
+    for _, models in grouped.items():
+        models.sort(key=lambda item: (0 if item.get('is_origin_vendor', False) else 1, item.get('order', 999999), item.get('model', '')))
+    return grouped
+
+
+def _default_model_template_by_service():
+    templates = {}
+    for service, models in _chat_models_by_service().items():
+        if len(models) > 0:
+            templates[service] = copy.deepcopy(models[0])
+    return templates
+
+
+def service_catalog():
+    catalog = []
+    grouped = _chat_models_by_service()
+    for service in OPENROUTER_SERVICES:
+        service_models = grouped.get(service, [])
+        if len(service_models) == 0:
+            continue
+        models = []
+        for config in service_models:
+            models.append({
+                'model': config['model'],
+                'label': config['model'],
+                'service': service,
+                'handler_vendor': config.get('handler_vendor', ''),
+                'default_fields': {},
+                'default_extra_params': {}
+            })
+        catalog.append({
+            'service': service,
+            'label_key': _service_name_to_label_key(service),
+            'models': models
+        })
+    return catalog
+
+
+def api_type_configs():
     return [
         {
             'vendor': 'openai',
-            'fields': ['api_key'],
-            'model_fields': []
+            'label_key': 'vendor_openai',
+            'handler_vendor': 'openai',
+            'fields': ['api_key', 'api_endpoint'],
+            'model_fields': [],
+            'services': OPENROUTER_SERVICES,
+            'allow_custom_models': True,
+            'endpoint_required': True
+        },
+        {
+            'vendor': 'openrouter',
+            'label_key': 'vendor_openrouter',
+            'handler_vendor': 'openai',
+            'fields': ['api_key', 'api_endpoint'],
+            'model_fields': [],
+            'services': OPENROUTER_SERVICES,
+            'allow_custom_models': True,
+            'endpoint_required': True
         },
         {
             'vendor': 'aws',
+            'label_key': 'vendor_aws',
+            'handler_vendor': 'aws',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['claude'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'volcengine',
+            'label_key': 'vendor_volcengine',
+            'handler_vendor': 'volcengine',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['doubao', 'deepseek', 'kimi'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'siliconflow',
+            'label_key': 'vendor_siliconflow',
+            'handler_vendor': 'siliconflow',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['deepseek'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'deepseek',
+            'label_key': 'vendor_deepseek',
+            'handler_vendor': 'deepseek',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['deepseek'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'minimax',
+            'label_key': 'vendor_minimax',
+            'handler_vendor': 'minimax',
             'fields': ['api_key', 'api_group_id'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['minimax'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'baidu',
+            'label_key': 'vendor_baidu',
+            'handler_vendor': 'baidu',
             'fields': ['api_key', 'secret_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['ernie'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'zhipuai',
+            'label_key': 'vendor_zhipuai',
+            'handler_vendor': 'zhipuai',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['zhipuai'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'azure',
+            'label_key': 'vendor_azure',
+            'handler_vendor': 'azure',
             'fields': ['api_key', 'api_endpoint'],
             'model_fields': ['api_type', 'deployment'],
-            'models': [
-                'gpt-4-32k',
-                'gpt-4',
-                'gpt-35-turbo-16k',
-                'gpt-35-turbo',
-                'text-embedding-ada-002'
-            ],
+            'services': ['chatgpt'],
+            'allow_custom_models': True,
+            'endpoint_required': True
         },
         {
             'vendor': 'azure2',
+            'label_key': 'vendor_azure2',
+            'handler_vendor': 'azure2',
             'fields': ['api_key', 'api_endpoint'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['chatgpt'],
+            'allow_custom_models': True,
+            'endpoint_required': True
         },
         {
             'vendor': 'claude',
+            'label_key': 'vendor_claude',
+            'handler_vendor': 'claude',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['claude'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'aliyun',
+            'label_key': 'vendor_aliyun',
+            'handler_vendor': 'aliyun',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['qwen'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         },
         {
             'vendor': 'moonshot',
+            'label_key': 'vendor_moonshot',
+            'handler_vendor': 'moonshot',
             'fields': ['api_key'],
-            'model_fields': []
+            'model_fields': [],
+            'services': ['kimi'],
+            'allow_custom_models': True,
+            'endpoint_required': False
         }
     ]
+
+
+def get_api_type_config(vendor_type):
+    for config in api_type_configs():
+        if config['vendor'] == vendor_type:
+            return copy.deepcopy(config)
+    return None
+
+
+def vendor_configs():
+    configs = api_type_configs()
+    return {
+        'api_types': configs,
+        'service_catalog': service_catalog(),
+        'list': configs
+    }
 
 def backup_rules():
     return [
@@ -276,20 +418,188 @@ def get_module(app_id, vendor):
         return vendor_to_module.get(vendor)
     custom_vendor_info = get_vendor(app_id, vendor)
     if custom_vendor_info:
-        vendor_type = custom_vendor_info['vendor_type']
-        if vendor_type in vendor_to_module:
-            return vendor_to_module.get(vendor_type)
+        handler_vendor = get_vendor_handler_vendor(custom_vendor_info)
+        if handler_vendor in vendor_to_module:
+            return vendor_to_module.get(handler_vendor)
     raise Exception('vendor_not_exist')
+
+
+def is_v2_custom_vendor(vendor_info):
+    try:
+        return int(vendor_info.get('config_version', 1)) >= 2
+    except Exception:
+        return False
+
+
+def get_vendor_handler_vendor(vendor_info):
+    handler_vendor = vendor_info.get('handler_vendor', '')
+    if handler_vendor in vendor_to_module:
+        return handler_vendor
+    api_type_config = get_api_type_config(vendor_info.get('vendor_type', ''))
+    if api_type_config:
+        return api_type_config.get('handler_vendor', vendor_info.get('vendor_type', ''))
+    return vendor_info.get('vendor_type', '')
+
+
+def _sanitize_model_config(new_config):
+    if 'url' in new_config:
+        del new_config['url']
+    if 'endpoint' in new_config:
+        del new_config['endpoint']
+    return new_config
+
+
+def _apply_custom_vendor_common_fields(new_config, vendor, vendor_show_name, is_custom_vendor):
+    new_config['vendor'] = vendor
+    if vendor_show_name:
+        new_config['vendor_show_name'] = vendor_show_name
+    new_config['is_origin_vendor'] = False
+    new_config['is_custom_vendor'] = is_custom_vendor
+    new_config['api_key_type'] = 'self'
+    new_config['quota'] = get_custom_vendor_quota()
+    new_config['quota_without_content_security'] = 0
+    if 'image_quota' in new_config:
+        new_config['image_quota_without_content_security'] = {}
+        for k, _ in new_config['image_quota'].items():
+            new_config['image_quota'][k] = get_custom_vendor_quota()
+            new_config['image_quota_without_content_security'][k] = 0
+    return new_config
+
+
+def _catalog_models_by_name():
+    catalog = {}
+    for service_info in service_catalog():
+        service = service_info['service']
+        for model_info in service_info.get('models', []):
+            catalog[(service, model_info['model'])] = copy.deepcopy(model_info)
+    return catalog
+
+
+def _normalize_vendor_model_entry(entry, model_fields):
+    dto = {
+        'service': str(entry.get('service', '')).strip(),
+        'model': str(entry.get('model', '')).strip(),
+        'enabled': bool(entry.get('enabled', False)),
+        'source': str(entry.get('source', 'catalog')).strip() or 'catalog',
+        'extra_params': []
+    }
+    extra_params = entry.get('extra_params', [])
+    if isinstance(extra_params, list):
+        for item in extra_params:
+            key = str(item.get('key', '')).strip()
+            if key == '':
+                continue
+            dto['extra_params'].append({
+                'key': key,
+                'value': item.get('value', '')
+            })
+    for field in model_fields:
+        value = entry.get(field, '')
+        if isinstance(value, str):
+            value = value.strip()
+        if field == 'api_type' and value == '':
+            value = 'azure'
+        dto[field] = value
+    return dto
+
+
+def _build_v2_vendor_model_entries(vendor_info):
+    api_type_config = get_api_type_config(vendor_info.get('vendor_type', ''))
+    if api_type_config is None:
+        return []
+    model_fields = api_type_config.get('model_fields', [])
+    catalog_by_name = _catalog_models_by_name()
+    entries = []
+    for raw_entry in vendor_info.get('model_config', []):
+        entry = _normalize_vendor_model_entry(raw_entry, model_fields)
+        if entry['service'] == '' or entry['model'] == '':
+            continue
+        if entry['source'] == 'catalog' and (entry['service'], entry['model']) not in catalog_by_name:
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _service_default_template(service):
+    return copy.deepcopy(_default_model_template_by_service().get(service))
+
+
+def _find_catalog_model_template(service, model):
+    grouped = _chat_models_by_service()
+    for config in grouped.get(service, []):
+        if config.get('model') == model:
+            return copy.deepcopy(config)
+    return None
+
+
+def _apply_model_entry_fields(config, model_entry, vendor_info):
+    for field in ['deployment', 'api_type', 'endpoint']:
+        if field in model_entry and model_entry[field] not in [None, '']:
+            if field == 'deployment':
+                url = config.get('url')
+                api_endpoint = vendor_info.get('api_endpoint', '')
+                if isinstance(url, str) and api_endpoint != '':
+                    api_endpoint = api_endpoint.strip('/') + '/'
+                    url = url.replace('https://xiaolanai-eastus.openai.azure.com/', api_endpoint)
+                    url = re.sub(r"(/deployments/).*/", r"\1" + str(model_entry['deployment']) + "/", url)
+                    config['url'] = url
+            else:
+                config[field] = model_entry[field]
+    for item in model_entry.get('extra_params', []):
+        config[item['key']] = item.get('value', '')
+    return config
+
+
+def _get_v2_chat_model_config(vendor_info, vendor_id, model):
+    vendor_show_name = vendor_info.get('name', '')
+    entries = _build_v2_vendor_model_entries(vendor_info)
+    for entry in entries:
+        if entry.get('model') != model or entry.get('enabled') is not True:
+            continue
+        template = _find_catalog_model_template(entry['service'], entry['model'])
+        if template is None and entry.get('source') == 'custom':
+            template = _service_default_template(entry['service'])
+            if template:
+                template['model'] = entry['model']
+        if template is None:
+            continue
+        new_config = _sanitize_model_config(copy.deepcopy(template))
+        _apply_custom_vendor_common_fields(new_config, vendor_id, vendor_show_name, True)
+        _apply_model_entry_fields(new_config, entry, vendor_info)
+        return new_config
+    return None
+
+
+def _append_v2_chat_models(models, vendor_info, vendor_id):
+    vendor_show_name = vendor_info.get('name', '')
+    for entry in _build_v2_vendor_model_entries(vendor_info):
+        template = _find_catalog_model_template(entry['service'], entry['model'])
+        if template is None and entry.get('source') == 'custom':
+            template = _service_default_template(entry['service'])
+            if template:
+                template['model'] = entry['model']
+        if template is None:
+            continue
+        new_config = _sanitize_model_config(copy.deepcopy(template))
+        _apply_custom_vendor_common_fields(new_config, vendor_id, vendor_show_name, True)
+        _apply_model_entry_fields(new_config, entry, vendor_info)
+        new_config['enabled'] = entry.get('enabled') is True
+        if new_config['enabled']:
+            models.append(new_config)
+
+
+def _get_legacy_handler_models(handler_vendor):
+    module = vendor_to_module.get(handler_vendor)
+    if module is None:
+        return []
+    return module.model_configs()
 
 def list_models(app_id):
     models = []
     for vendor,module in vendor_to_module.items():
         for config in module.model_configs():
             new_config = copy.deepcopy(config)
-            if 'url' in new_config:
-                del new_config['url']
-            if 'endpoint' in new_config:
-                del new_config['endpoint']
+            _sanitize_model_config(new_config)
             new_config['vendor'] = vendor
             new_config['is_custom_vendor'] = False
             new_config['api_key_type'] = 'share'
@@ -300,31 +610,28 @@ def list_models(app_id):
             models.append(new_config)
     custom_vendor_list = get_vendor_list(app_id)['data']['list']
     for vendor_info in custom_vendor_list:
+        vendor_id = vendor_info['vendor_id']
+        if is_v2_custom_vendor(vendor_info):
+            _append_v2_chat_models(models, vendor_info, vendor_id)
+            handler_vendor = get_vendor_handler_vendor(vendor_info)
+            for config in _get_legacy_handler_models(handler_vendor):
+                if config.get('type') == 'chat':
+                    continue
+                new_config = copy.deepcopy(config)
+                _sanitize_model_config(new_config)
+                _apply_custom_vendor_common_fields(new_config, vendor_id, vendor_info.get('name', ''), True)
+                models.append(new_config)
+            continue
         vendor_type = vendor_info['vendor_type']
         vender_show_name = vendor_info['name']
-        vendor_id = vendor_info['vendor_id']
         if vendor_type in vendor_to_module:
             module = vendor_to_module[vendor_type]
             for config in module.model_configs():
                 new_config = copy.deepcopy(config)
                 if not model_config_valid(new_config, vendor_info):
                     continue
-                if 'url' in new_config:
-                    del new_config['url']
-                if 'endpoint' in new_config:
-                    del new_config['endpoint']
-                new_config['vendor'] = vendor_id
-                new_config['vendor_show_name'] = vender_show_name
-                new_config['is_origin_vendor'] = False
-                new_config['is_custom_vendor'] = True
-                new_config['api_key_type'] = 'self'
-                new_config['quota'] = get_custom_vendor_quota()
-                new_config['quota_without_content_security'] = 0
-                if 'image_quota' in config:
-                    new_config['image_quota_without_content_security'] = {}
-                    for k,_ in config['image_quota'].items():
-                        new_config['image_quota'][k] = get_custom_vendor_quota()
-                        new_config['image_quota_without_content_security'][k] = 0
+                _sanitize_model_config(new_config)
+                _apply_custom_vendor_common_fields(new_config, vendor_id, vender_show_name, True)
                 models.append(new_config)
     return models
 
@@ -370,6 +677,19 @@ def get_model_config(app_id, vendor, model, type):
                         return new_config
     custom_vendor_info = get_vendor(app_id, vendor)
     if custom_vendor_info:
+        if is_v2_custom_vendor(custom_vendor_info):
+            if type == 'chat':
+                return _get_v2_chat_model_config(custom_vendor_info, vendor, model)
+            handler_vendor = get_vendor_handler_vendor(custom_vendor_info)
+            module = vendor_to_module.get(handler_vendor)
+            if module:
+                model_configs = module.model_configs()
+                for config in model_configs:
+                    if config['type'] == type and model == config.get('model'):
+                        new_config = copy.deepcopy(config)
+                        _sanitize_model_config(new_config)
+                        _apply_custom_vendor_common_fields(new_config, vendor, custom_vendor_info.get('name', ''), True)
+                        return new_config
         vendor_type = custom_vendor_info['vendor_type']
         vender_show_name = custom_vendor_info['name']
         if vendor_type in vendor_to_module:
@@ -383,18 +703,8 @@ def get_model_config(app_id, vendor, model, type):
                             new_config = copy.deepcopy(config)
                             if not model_config_valid(new_config, custom_vendor_info):
                                 continue
-                            new_config['vendor'] = vendor
-                            new_config['vendor_show_name'] = vender_show_name
-                            new_config['is_origin_vendor'] = False
-                            new_config['is_custom_vendor'] = True
-                            new_config['api_key_type'] = 'self'
-                            new_config['quota'] = get_custom_vendor_quota()
-                            new_config['quota_without_content_security'] = 0
-                            if 'image_quota' in config:
-                                new_config['image_quota_without_content_security'] = {}
-                                for k,_ in config['image_quota'].items():
-                                    new_config['image_quota'][k] = get_custom_vendor_quota()
-                                    new_config['image_quota_without_content_security'][k] = 0
+                            _sanitize_model_config(new_config)
+                            _apply_custom_vendor_common_fields(new_config, vendor, vender_show_name, True)
                             maybe_update_custom_vendor_model_config(new_config, custom_vendor_info, model)
                             return new_config
     return None
@@ -418,6 +728,8 @@ def maybe_update_custom_vendor_model_config(config, custom_vendor_info, model):
                         config[field] = vmc[field]
 
 def model_config_valid(new_config, vendor_info):
+    if is_v2_custom_vendor(vendor_info):
+        return True
     model_config = vendor_info.get('model_config', [])
     if model_config == []:
         return True
@@ -729,7 +1041,7 @@ def async_send_message_with_filter(text, filter_name):
         lanying_slack.async_send_message_with_filter(text, filter_name)
 
 class VendorSetting:
-    def __init__(self, app_id, tenement_id, vendor_type, name, api_key, secret_key, api_group_id, api_endpoint, model_config):
+    def __init__(self, app_id, tenement_id, vendor_type, name, api_key, secret_key, api_group_id, api_endpoint, model_config, config_version=1, handler_vendor=''):
         self.app_id = app_id
         self.tenement_id = tenement_id
         self.vendor_type = vendor_type
@@ -739,6 +1051,8 @@ class VendorSetting:
         self.api_group_id = api_group_id
         self.api_endpoint = api_endpoint
         self.model_config = model_config
+        self.config_version = config_version
+        self.handler_vendor = handler_vendor
     def to_hmset_fields(self):
         return {
             'app_id': self.app_id,
@@ -749,6 +1063,8 @@ class VendorSetting:
             'secret_key': self.secret_key,
             'api_group_id': self.api_group_id,
             'api_endpoint':  self.api_endpoint,
+            'config_version': self.config_version,
+            'handler_vendor': self.handler_vendor,
             'model_config': json.dumps(self.model_config, ensure_ascii=False)
         }
 
@@ -797,10 +1113,17 @@ def configure_vendor(vendor_id, vendor_setting: VendorSetting):
 
 def check_vendor_valid(vendor_setting: VendorSetting):
     vendor_type = vendor_setting.vendor_type
-    if vendor_type not in vendor_to_module:
+    api_type_config = get_api_type_config(vendor_type)
+    if api_type_config is None:
         return {
             'result': 'error',
             'message': 'vendor_type_not_valid'
+        }
+    handler_vendor = vendor_setting.handler_vendor or api_type_config.get('handler_vendor', '')
+    if handler_vendor not in vendor_to_module:
+        return {
+            'result': 'error',
+            'message': 'handler_vendor_not_valid'
         }
     return {
         'result': 'ok'
@@ -828,6 +1151,8 @@ def get_vendor(app_id, vendor_id):
         dto = {}
         for key,value in info.items():
             if key in ['create_time', 'update_time']:
+                dto[key] = int(value)
+            elif key in ['config_version']:
                 dto[key] = int(value)
             elif key in ['model_config']:
                 dto[key] = lanying_utils.safe_json_loads(value, [])

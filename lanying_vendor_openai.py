@@ -5,6 +5,7 @@ import types
 import time
 import json
 import requests
+from urllib.parse import urlparse
 import lanying_openai_compat
 
 SUPPORT_NATIVE_TOOLS = True
@@ -415,7 +416,8 @@ def prepare_chat(auth_info, preset):
                 messages.append(msg)
         preset['messages'] = messages
     return {
-        'api_key' : auth_info['api_key']
+        'api_key' : auth_info['api_key'],
+        'api_endpoint': auth_info.get('api_endpoint', '')
     }
 
 def chat(prepare_info, preset, model_config):
@@ -532,7 +534,8 @@ def chat(prepare_info, preset, model_config):
 
 def prepare_embedding(auth_info, _):
     return {
-        'api_key' : auth_info['api_key']
+        'api_key' : auth_info['api_key'],
+        'api_endpoint': auth_info.get('api_endpoint', '')
     }
 
 def embedding(prepare_info, model, text, model_config):
@@ -628,11 +631,30 @@ def format_preset_for_o1(preset):
         ret['max_completion_tokens'] = 25000
     return ret
 
+def is_official_openai_endpoint(api_endpoint):
+    endpoint = str(api_endpoint or '').strip()
+    if endpoint == '':
+        return False
+    try:
+        parsed = urlparse(endpoint)
+        host = (parsed.hostname or '').lower()
+        return host == 'api.openai.com'
+    except Exception:
+        return False
+
+
 def get_api_base_and_headers(prepare_info):
     proxy_api_base = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_BASE", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
     api_key = prepare_info['api_key']
-    if len(proxy_api_base) > 0:
+    api_endpoint = str(prepare_info.get('api_endpoint', '') or '').strip()
+    if api_endpoint != '' and not is_official_openai_endpoint(api_endpoint):
+        api_base = api_endpoint.rstrip('/')
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+    elif len(proxy_api_base) > 0:
         api_base = proxy_api_base
         headers = {
             "Content-Type": "application/json",
