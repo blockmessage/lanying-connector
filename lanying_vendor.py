@@ -42,10 +42,30 @@ vendor_to_module = {
 }
 
 OPENROUTER_SERVICES = ['chatgpt', 'claude', 'deepseek', 'doubao', 'kimi', 'ernie', 'qwen', 'zhipuai', 'minimax']
+AGGREGATE_API_TYPE_VENDORS = ['openai', 'openrouter', 'volcengine', 'siliconflow']
 
 
 def _default_extra_param_defs():
     return []
+
+
+def _is_aggregate_api_type_vendor(vendor, handler_vendor):
+    if vendor in AGGREGATE_API_TYPE_VENDORS:
+        return True
+    if handler_vendor == 'openai':
+        return True
+    return False
+
+
+def _finalize_api_type_config(config):
+    config_copy = copy.deepcopy(config)
+    is_aggregate_platform = _is_aggregate_api_type_vendor(
+        config_copy.get('vendor', ''),
+        config_copy.get('handler_vendor', '')
+    )
+    if is_aggregate_platform:
+        config_copy['services'] = copy.deepcopy(OPENROUTER_SERVICES)
+    return config_copy
 
 
 def _custom_model_extra_param_defs():
@@ -150,7 +170,7 @@ def service_catalog():
 
 
 def api_type_configs():
-    return [
+    configs = [
         {
             'vendor': 'openai',
             'label_key': 'vendor_openai',
@@ -320,6 +340,7 @@ def api_type_configs():
             'endpoint_required': False
         }
     ]
+    return [_finalize_api_type_config(config) for config in configs]
 
 
 def get_api_type_config(vendor_type):
