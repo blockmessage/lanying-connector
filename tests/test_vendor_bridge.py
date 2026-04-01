@@ -179,7 +179,13 @@ class VendorBridgeTests(unittest.TestCase):
                     "model": "my-chatgpt-compatible-model",
                     "enabled": True,
                     "source": "custom",
-                    "extra_params": [{"key": "temperature", "value": "0.2"}],
+                    "extra_params": [
+                        {"key": "temperature", "value": "0.2"},
+                        {"key": "reasoning", "value": "true"},
+                        {"key": "input", "value": "[\"text\"]"},
+                        {"key": "token_limit", "value": "128000"},
+                        {"key": "max_output_tokens", "value": "8192"},
+                    ],
                 }
             ],
         }
@@ -190,6 +196,10 @@ class VendorBridgeTests(unittest.TestCase):
         self.assertEqual(out["vendor"], "custom_vendor_3")
         self.assertEqual(out["api_key_type"], "self")
         self.assertEqual(out["temperature"], "0.2")
+        self.assertEqual(out["reasoning"], True)
+        self.assertEqual(out["input"], ["text"])
+        self.assertEqual(out["token_limit"], 128000)
+        self.assertEqual(out["max_output_tokens"], 8192)
 
 
 if __name__ == "__main__":

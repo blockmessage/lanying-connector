@@ -44,6 +44,55 @@ vendor_to_module = {
 OPENROUTER_SERVICES = ['chatgpt', 'claude', 'deepseek', 'doubao', 'kimi', 'ernie', 'qwen', 'zhipuai', 'minimax']
 
 
+def _default_extra_param_defs():
+    return []
+
+
+def _custom_model_extra_param_defs():
+    return [
+        {
+            'key': 'id',
+            'label': '模型 ID',
+            'required': True,
+            'input_type': 'text',
+            'placeholder': '请输入模型 ID'
+        },
+        {
+            'key': 'reasoning',
+            'label': '是否推理模型',
+            'required': True,
+            'input_type': 'boolean',
+            'placeholder': ''
+        },
+        {
+            'key': 'input',
+            'label': '模型输入类型',
+            'required': True,
+            'input_type': 'checkbox',
+            'options': [
+                {'label': '文本', 'value': 'text'},
+                {'label': '图片', 'value': 'image'},
+                {'label': '音频', 'value': 'audio'}
+            ],
+            'placeholder': ''
+        },
+        {
+            'key': 'token_limit',
+            'label': '上下文窗口',
+            'required': True,
+            'input_type': 'number',
+            'placeholder': '请输入上下文长度'
+        },
+        {
+            'key': 'max_output_tokens',
+            'label': '最大输出 Token',
+            'required': True,
+            'input_type': 'number',
+            'placeholder': '请输入最大输出长度'
+        }
+    ]
+
+
 def _service_name_to_label_key(service):
     return f"service_name_{service}"
 
@@ -89,7 +138,8 @@ def service_catalog():
                 'service': service,
                 'handler_vendor': config.get('handler_vendor', ''),
                 'default_fields': {},
-                'default_extra_params': {}
+                'default_extra_params': {},
+                'extra_param_defs': _default_extra_param_defs()
             })
         catalog.append({
             'service': service,
@@ -109,6 +159,8 @@ def api_type_configs():
             'model_fields': [],
             'services': OPENROUTER_SERVICES,
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': True
         },
         {
@@ -119,6 +171,8 @@ def api_type_configs():
             'model_fields': [],
             'services': OPENROUTER_SERVICES,
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': True
         },
         {
@@ -129,6 +183,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['claude'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -139,6 +195,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['doubao', 'deepseek', 'kimi'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -149,6 +207,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['deepseek'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -159,6 +219,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['deepseek'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -169,6 +231,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['minimax'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -179,6 +243,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['ernie'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -189,6 +255,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['zhipuai'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -199,6 +267,8 @@ def api_type_configs():
             'model_fields': ['api_type', 'deployment'],
             'services': ['chatgpt'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': True
         },
         {
@@ -209,6 +279,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['chatgpt'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': True
         },
         {
@@ -219,6 +291,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['claude'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -229,6 +303,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['qwen'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         },
         {
@@ -239,6 +315,8 @@ def api_type_configs():
             'model_fields': [],
             'services': ['kimi'],
             'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': False
         }
     ]
@@ -532,6 +610,63 @@ def _find_catalog_model_template(service, model):
     return None
 
 
+def _extra_param_definitions_for_entry(vendor_info, model_entry):
+    defs = []
+    api_type_config = get_api_type_config(vendor_info.get('vendor_type', ''))
+    if api_type_config:
+        defs.extend(api_type_config.get('extra_param_defs', []))
+        if model_entry.get('source') == 'custom':
+            defs.extend(api_type_config.get('custom_model_extra_param_defs', []))
+    catalog_model = _catalog_models_by_name().get((model_entry.get('service', ''), model_entry.get('model', '')))
+    if catalog_model:
+        defs.extend(catalog_model.get('extra_param_defs', []))
+    mapping = {}
+    for item in defs:
+        key = str(item.get('key', '')).strip()
+        if key == '':
+            continue
+        mapping[key] = item
+    return mapping
+
+
+def _cast_extra_param_value(value, input_type):
+    if input_type == 'boolean':
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ['true', '1', 'yes', 'on']
+    if input_type == 'checkbox':
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if text == '':
+                return []
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+            return [x.strip() for x in text.split(',') if x.strip() != '']
+        return []
+    if input_type == 'number':
+        try:
+            text = str(value).strip()
+            if text == '':
+                return value
+            if '.' in text:
+                return float(text)
+            return int(text)
+        except Exception:
+            return value
+    if input_type == 'json':
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return value
+    return value
+
 def _apply_model_entry_fields(config, model_entry, vendor_info):
     for field in ['deployment', 'api_type', 'endpoint']:
         if field in model_entry and model_entry[field] not in [None, '']:
@@ -545,8 +680,11 @@ def _apply_model_entry_fields(config, model_entry, vendor_info):
                     config['url'] = url
             else:
                 config[field] = model_entry[field]
+    extra_param_defs = _extra_param_definitions_for_entry(vendor_info, model_entry)
     for item in model_entry.get('extra_params', []):
-        config[item['key']] = item.get('value', '')
+        key = item['key']
+        input_type = extra_param_defs.get(key, {}).get('input_type', 'text')
+        config[key] = _cast_extra_param_value(item.get('value', ''), input_type)
     return config
 
 
