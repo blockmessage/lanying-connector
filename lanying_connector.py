@@ -83,6 +83,152 @@ def to_openai_error_response(res):
     resp.status_code = status_code
     return resp
 
+
+def _mock_openai_response_id(prefix):
+    return f"{prefix}-{uuid.uuid4().hex[:24]}"
+
+
+def _mock_openai_model_list():
+    now = int(time.time())
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "gpt-4o-mini",
+                "object": "model",
+                "created": now,
+                "owned_by": "lanying-mock"
+            },
+            {
+                "id": "mock-gpt",
+                "object": "model",
+                "created": now,
+                "owned_by": "lanying-mock"
+            }
+        ]
+    }
+
+
+def _mock_openai_reply_text(body):
+    model = str(body.get("model", "mock-gpt") or "mock-gpt")
+    messages = body.get("messages", [])
+    last_user_content = ""
+    if isinstance(messages, list):
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text_parts.append(str(item.get("text", "")))
+                content = " ".join([x for x in text_parts if x != ""])
+            last_user_content = str(content or "").strip()
+            break
+    if last_user_content == "":
+        last_user_content = "hello"
+    return f"[mock-openai] model={model}; echo={last_user_content}"
+
+
+def _mock_openai_unauthorized_response():
+    payload = {
+        "error": {
+            "message": "Incorrect API key provided.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_api_key"
+        }
+    }
+    return Response(json.dumps(payload, ensure_ascii=False), status=401, content_type="application/json; charset=utf-8")
+
+
+@app.route("/mock/openai/v1/models", methods=["GET"])
+def mock_openai_models():
+    return Response(json.dumps(_mock_openai_model_list(), ensure_ascii=False), content_type="application/json; charset=utf-8")
+
+
+@app.route("/mock/openai/v1/chat/completions", methods=["POST"])
+def mock_openai_chat_completions():
+    auth_header = str(request.headers.get("Authorization", "") or "")
+    body = request.get_json(silent=True) or {}
+    if auth_header.startswith("Bearer "):
+        api_key = auth_header[7:].strip()
+        if api_key in ["bad", "invalid", "invalid_api_key", "test-invalid-key"]:
+            return _mock_openai_unauthorized_response()
+    reply_text = _mock_openai_reply_text(body)
+    model = str(body.get("model", "mock-gpt") or "mock-gpt")
+    created = int(time.time())
+    if body.get("stream") is True:
+        def generate():
+            first_payload = {
+                "id": _mock_openai_response_id("chatcmpl"),
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "content": reply_text
+                        },
+                        "finish_reason": None
+                    }
+                ]
+            }
+            yield f"data: {json.dumps(first_payload, ensure_ascii=False)}\n\n"
+            final_payload = {
+                "id": _mock_openai_response_id("chatcmpl"),
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 6,
+                    "total_tokens": 11
+                }
+            }
+            yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        headers = {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+        return Response(generate(), status=200, headers=headers)
+
+    payload = {
+        "id": _mock_openai_response_id("chatcmpl"),
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": reply_text
+                },
+                "finish_reason": "stop"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 6,
+            "total_tokens": 11
+        }
+    }
+    return Response(json.dumps(payload, ensure_ascii=False), content_type="application/json; charset=utf-8")
+
 @app.route("/", methods=["GET"])
 def index():
     if lanying_config.is_show_info_page():
