@@ -590,7 +590,11 @@ def embedding(prepare_info, model, text, model_config):
         }
 
 def encoding_for_model(model):
-    return tiktoken.encoding_for_model(model)
+    try:
+        return tiktoken.encoding_for_model(model)
+    except KeyError:
+        logging.info(f"fallback to cl100k_base encoding for unknown openai-compatible model: {model}")
+        return tiktoken.get_encoding("cl100k_base")
 
 def format_preset(preset, model_config):
     model = preset.get('model', '')
