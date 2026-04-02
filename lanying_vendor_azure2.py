@@ -4,6 +4,7 @@ import requests
 import json
 import os
 import lanying_openai_compat
+import lanying_utils
 
 SUPPORT_NATIVE_TOOLS = True
 
@@ -392,6 +393,8 @@ def format_preset_for_o1(preset):
 
 def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
     if 'api_endpoint' in prepare_info:
+        if not lanying_utils.is_valid_public_url(prepare_info['api_endpoint']):
+            raise ValueError('api_endpoint_not_valid')
         return prepare_info['api_endpoint']
     domain = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_DOMAIN", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_AZURE2_PROXY_API_KEY", '')

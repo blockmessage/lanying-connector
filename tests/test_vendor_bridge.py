@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 try:
     import lanying_vendor
@@ -200,6 +201,48 @@ class VendorBridgeTests(unittest.TestCase):
         self.assertEqual(out["input"], ["text"])
         self.assertEqual(out["token_limit"], 128000)
         self.assertEqual(out["max_output_tokens"], 8192)
+
+    def test_check_vendor_valid_normalizes_handler_vendor(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openrouter",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="",
+            model_config=[],
+            config_version=2,
+            handler_vendor="azure",
+        )
+
+        with mock.patch.object(lanying_vendor.lanying_utils, "is_valid_public_url", return_value=True):
+            out = lanying_vendor.check_vendor_valid(vendor_setting)
+
+        self.assertEqual(out["result"], "ok")
+        self.assertEqual(vendor_setting.handler_vendor, "openai")
+
+    def test_check_vendor_valid_rejects_non_public_api_endpoint(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="http://127.0.0.1:5000/v1",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+
+        with mock.patch.object(lanying_vendor.lanying_utils, "is_valid_public_url", return_value=False):
+            out = lanying_vendor.check_vendor_valid(vendor_setting)
+
+        self.assertEqual(out["result"], "error")
+        self.assertEqual(out["message"], "api_endpoint_not_valid")
 
 
 if __name__ == "__main__":

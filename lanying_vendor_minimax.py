@@ -94,7 +94,7 @@ def chat(prepare_info, preset, model_config):
     url = f"https://api.minimax.chat/v1/text/chatcompletion_pro?GroupId={api_group_id}"
     final_preset = format_preset(prepare_info, preset)
     headers = {"Content-Type": "application/json", "Authorization": api_key}
-    logging.info(f"minimax chat_completion start | preset={preset}, url:{url}, api_key:{api_key[:10]}...{api_key[-6:]}")
+    logging.info(f"minimax chat_completion start | preset={preset}, url:{url}")
     logging.info(f"minimax chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
     try:
         stream = final_preset.get("stream", False)
@@ -207,7 +207,7 @@ def embedding(prepare_info, model, text, model_config):
         "model": model,
         "type": type
     }
-    logging.info(f"minimax embedding start | type={type}, url:{url}, api_key:{api_key[:10]}...{api_key[-6:]}")
+    logging.info(f"minimax embedding start | type={type}, url:{url}")
     response = requests.post(url, headers=headers, json = body)
     logging.info(f"minimax embedding finish | code={response.status_code}, response={response.text}")
     try:

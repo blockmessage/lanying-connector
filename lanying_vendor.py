@@ -540,13 +540,29 @@ def is_v2_custom_vendor(vendor_info):
 
 
 def get_vendor_handler_vendor(vendor_info):
+    api_type_config = get_api_type_config(vendor_info.get('vendor_type', ''))
+    if api_type_config:
+        handler_vendor = api_type_config.get('handler_vendor', vendor_info.get('vendor_type', ''))
+        if handler_vendor in vendor_to_module:
+            return handler_vendor
     handler_vendor = vendor_info.get('handler_vendor', '')
     if handler_vendor in vendor_to_module:
         return handler_vendor
-    api_type_config = get_api_type_config(vendor_info.get('vendor_type', ''))
-    if api_type_config:
-        return api_type_config.get('handler_vendor', vendor_info.get('vendor_type', ''))
     return vendor_info.get('vendor_type', '')
+
+
+def normalize_vendor_setting_handler_vendor(vendor_setting):
+    api_type_config = get_api_type_config(vendor_setting.vendor_type)
+    if api_type_config:
+        vendor_setting.handler_vendor = api_type_config.get('handler_vendor', '')
+    return vendor_setting
+
+
+def is_valid_vendor_api_endpoint(api_endpoint):
+    endpoint = str(api_endpoint or '').strip()
+    if endpoint == '':
+        return True
+    return lanying_utils.is_valid_public_url(endpoint)
 
 
 def _sanitize_model_config(new_config):
@@ -1238,6 +1254,7 @@ class VendorSetting:
 
 def create_vendor(vendor_setting: VendorSetting):
     now = int(time.time())
+    vendor_setting = normalize_vendor_setting_handler_vendor(vendor_setting)
     result = check_vendor_valid(vendor_setting)
     if result['result'] == 'error':
         return result
@@ -1260,6 +1277,7 @@ def create_vendor(vendor_setting: VendorSetting):
 
 def configure_vendor(vendor_id, vendor_setting: VendorSetting):
     now = int(time.time())
+    vendor_setting = normalize_vendor_setting_handler_vendor(vendor_setting)
     result = check_vendor_valid(vendor_setting)
     if result['result'] == 'error':
         return result
@@ -1287,11 +1305,18 @@ def check_vendor_valid(vendor_setting: VendorSetting):
             'result': 'error',
             'message': 'vendor_type_not_valid'
         }
-    handler_vendor = vendor_setting.handler_vendor or api_type_config.get('handler_vendor', '')
+    expected_handler_vendor = api_type_config.get('handler_vendor', '')
+    vendor_setting.handler_vendor = expected_handler_vendor
+    handler_vendor = expected_handler_vendor
     if handler_vendor not in vendor_to_module:
         return {
             'result': 'error',
             'message': 'handler_vendor_not_valid'
+        }
+    if not is_valid_vendor_api_endpoint(vendor_setting.api_endpoint):
+        return {
+            'result': 'error',
+            'message': 'api_endpoint_not_valid'
         }
     return {
         'result': 'ok'

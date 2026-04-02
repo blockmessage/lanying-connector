@@ -7,6 +7,7 @@ import json
 import requests
 from urllib.parse import urlparse
 import lanying_openai_compat
+import lanying_utils
 
 SUPPORT_NATIVE_TOOLS = True
 
@@ -651,6 +652,14 @@ def get_default_api_base(prepare_info):
     return 'https://api.openai.com/v1'
 
 
+def validate_custom_api_endpoint(api_endpoint):
+    endpoint = str(api_endpoint or '').strip()
+    if endpoint == '':
+        return
+    if not lanying_utils.is_valid_public_url(endpoint):
+        raise ValueError('api_endpoint_not_valid')
+
+
 def get_api_base_and_headers(prepare_info):
     proxy_api_base = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_BASE", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
@@ -658,6 +667,7 @@ def get_api_base_and_headers(prepare_info):
     api_endpoint = str(prepare_info.get('api_endpoint', '') or '').strip()
     default_api_base = get_default_api_base(prepare_info)
     if api_endpoint != '' and not is_official_openai_endpoint(api_endpoint):
+        validate_custom_api_endpoint(api_endpoint)
         api_base = api_endpoint.rstrip('/')
         headers = {
             "Content-Type": "application/json",
