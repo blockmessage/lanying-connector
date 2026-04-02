@@ -430,7 +430,8 @@ def prepare_chat(auth_info, preset):
         preset['messages'] = messages
     return {
         'api_key' : auth_info['api_key'],
-        'api_endpoint': auth_info.get('api_endpoint', '')
+        'api_endpoint': auth_info.get('api_endpoint', ''),
+        'api_endpoint_server_location': auth_info.get('api_endpoint_server_location', 'overseas')
     }
 
 def chat(prepare_info, preset, model_config):
@@ -669,6 +670,16 @@ def get_default_api_base(prepare_info):
     return 'https://api.openai.com/v1'
 
 
+def get_api_endpoint_server_location(prepare_info):
+    auth_info = prepare_info.get('auth_info', {}) or {}
+    location = prepare_info.get('api_endpoint_server_location', auth_info.get('api_endpoint_server_location', 'overseas'))
+    return str(location or 'overseas').strip().lower()
+
+
+def should_use_proxy_for_custom_endpoint(prepare_info):
+    return get_api_endpoint_server_location(prepare_info) != 'domestic'
+
+
 def validate_custom_api_endpoint(api_endpoint):
     endpoint = str(api_endpoint or '').strip()
     if endpoint == '':
@@ -684,11 +695,13 @@ def get_api_base_and_headers(prepare_info):
     api_endpoint = str(prepare_info.get('api_endpoint', '') or '').strip()
     default_api_base = get_default_api_base(prepare_info)
     target_api_base = default_api_base
+    use_proxy = len(proxy_api_base) > 0
     if api_endpoint != '':
         if not is_official_openai_endpoint(api_endpoint):
             validate_custom_api_endpoint(api_endpoint)
+            use_proxy = len(proxy_api_base) > 0 and should_use_proxy_for_custom_endpoint(prepare_info)
         target_api_base = api_endpoint.rstrip('/')
-    if len(proxy_api_base) > 0:
+    if use_proxy:
         api_base = proxy_api_base
         headers = {
             "Content-Type": "application/json",

@@ -208,13 +208,13 @@ def api_type_configs():
             'vendor': 'aws',
             'label_key': 'vendor_aws',
             'handler_vendor': 'aws',
-            'fields': ['api_key'],
+            'fields': ['api_key', 'secret_key', 'api_endpoint'],
             'model_fields': [],
             'services': ['claude'],
             'allow_custom_models': True,
             'extra_param_defs': _default_extra_param_defs(),
             'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
-            'endpoint_required': False
+            'endpoint_required': True
         },
         {
             'vendor': 'volcengine',
@@ -316,13 +316,13 @@ def api_type_configs():
             'vendor': 'claude',
             'label_key': 'vendor_claude',
             'handler_vendor': 'claude',
-            'fields': ['api_key'],
+            'fields': ['api_key', 'api_endpoint'],
             'model_fields': [],
             'services': ['claude'],
             'allow_custom_models': True,
             'extra_param_defs': _default_extra_param_defs(),
             'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
-            'endpoint_required': False
+            'endpoint_required': True
         },
         {
             'vendor': 'aliyun',
@@ -575,6 +575,7 @@ def _vendor_setting_to_vendor_info(vendor_setting):
         'secret_key': vendor_setting.secret_key,
         'api_group_id': vendor_setting.api_group_id,
         'api_endpoint': vendor_setting.api_endpoint,
+        'api_endpoint_server_location': vendor_setting.api_endpoint_server_location,
         'config_version': vendor_setting.config_version,
         'handler_vendor': vendor_setting.handler_vendor,
         'model_config': copy.deepcopy(vendor_setting.model_config),
@@ -646,6 +647,7 @@ def test_vendor_connection(vendor_setting):
         'secret_key': vendor_setting.secret_key,
         'api_group_id': vendor_setting.api_group_id,
         'api_endpoint': vendor_setting.api_endpoint,
+        'api_endpoint_server_location': vendor_setting.api_endpoint_server_location,
         'key_type': 'self',
         'validation_mode': True,
         'validation_timeout_seconds': 8
@@ -1353,7 +1355,7 @@ def async_send_message_with_filter(text, filter_name):
         lanying_slack.async_send_message_with_filter(text, filter_name)
 
 class VendorSetting:
-    def __init__(self, app_id, tenement_id, vendor_type, name, api_key, secret_key, api_group_id, api_endpoint, model_config, config_version=1, handler_vendor=''):
+    def __init__(self, app_id, tenement_id, vendor_type, name, api_key, secret_key, api_group_id, api_endpoint, model_config, config_version=1, handler_vendor='', api_endpoint_server_location='overseas'):
         self.app_id = app_id
         self.tenement_id = tenement_id
         self.vendor_type = vendor_type
@@ -1362,6 +1364,7 @@ class VendorSetting:
         self.secret_key = secret_key
         self.api_group_id = api_group_id
         self.api_endpoint = api_endpoint
+        self.api_endpoint_server_location = api_endpoint_server_location
         self.model_config = model_config
         self.config_version = config_version
         self.handler_vendor = handler_vendor
@@ -1375,6 +1378,7 @@ class VendorSetting:
             'secret_key': self.secret_key,
             'api_group_id': self.api_group_id,
             'api_endpoint':  self.api_endpoint,
+            'api_endpoint_server_location': self.api_endpoint_server_location,
             'config_version': self.config_version,
             'handler_vendor': self.handler_vendor,
             'model_config': json.dumps(self.model_config, ensure_ascii=False)
@@ -1430,9 +1434,11 @@ def _should_test_vendor_connection(vendor_setting: VendorSetting, old_vendor_inf
         return True
     old_api_key = str(old_vendor_info.get('api_key', '') or '').strip()
     old_api_endpoint = str(old_vendor_info.get('api_endpoint', '') or '').strip()
+    old_api_endpoint_server_location = str(old_vendor_info.get('api_endpoint_server_location', 'overseas') or 'overseas').strip()
     new_api_key = str(vendor_setting.api_key or '').strip()
     new_api_endpoint = str(vendor_setting.api_endpoint or '').strip()
-    return old_api_key != new_api_key or old_api_endpoint != new_api_endpoint
+    new_api_endpoint_server_location = str(vendor_setting.api_endpoint_server_location or 'overseas').strip()
+    return old_api_key != new_api_key or old_api_endpoint != new_api_endpoint or old_api_endpoint_server_location != new_api_endpoint_server_location
 
 
 def check_vendor_valid(vendor_setting: VendorSetting, old_vendor_info=None):

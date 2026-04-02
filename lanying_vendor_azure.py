@@ -107,7 +107,12 @@ def prepare_chat(auth_info, preset):
     }
     if 'api_endpoint' in auth_info and auth_info['api_endpoint'] != '':
         prepare_info['api_endpoint'] = auth_info['api_endpoint']
+    prepare_info['api_endpoint_server_location'] = auth_info.get('api_endpoint_server_location', 'overseas')
     return prepare_info
+
+
+def should_use_proxy_for_custom_endpoint(prepare_info):
+    return str(prepare_info.get('api_endpoint_server_location', 'overseas') or 'overseas').strip().lower() != 'domestic'
 
 def chat(prepare_info, preset, model_config):
     real_model = model_config.get('real_model', None)
@@ -300,7 +305,7 @@ def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
     if custom_api_endpoint:
         if not lanying_utils.is_valid_public_url(custom_api_endpoint):
             raise ValueError('api_endpoint_not_valid')
-    if len(domain) > 0:
+    if len(domain) > 0 and (not custom_api_endpoint or should_use_proxy_for_custom_endpoint(prepare_info)):
         api_key = prepare_info['api_key']
         headers['Authorization'] = f"Basic {proxy_api_key}"
         headers['Authorization-Next'] = f"Bearer {api_key}"

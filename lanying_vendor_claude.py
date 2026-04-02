@@ -15,9 +15,11 @@ from anthropic.types import (
 )
 import json
 import lanying_openai_compat
+import lanying_utils
 ASSISTANT_MESSAGE_DEFAULT = '好的'
 USER_MESSAGE_DEFAULT = '继续'
 SUPPORT_NATIVE_TOOLS = True
+PROXY_API_ENDPOINT_HEADER = 'X-Lanying-Proxy-Api-Endpoint'
 
 def model_configs():
     return [
@@ -120,9 +122,16 @@ def model_configs():
     ]
 
 def prepare_chat(auth_info, preset):
-    return {
+    prepare_info = {
         'api_key' : auth_info['api_key']
     }
+    if 'api_endpoint' in auth_info and auth_info['api_endpoint'] != '':
+        prepare_info['api_endpoint'] = auth_info['api_endpoint']
+    prepare_info['api_endpoint_server_location'] = auth_info.get('api_endpoint_server_location', 'overseas')
+    return prepare_info
+
+def should_use_proxy_for_custom_endpoint(prepare_info):
+    return str(prepare_info.get('api_endpoint_server_location', 'overseas') or 'overseas').strip().lower() != 'domestic'
 
 def chat(prepare_info, preset, model_config):
     client = anthropic.Anthropic(
@@ -383,11 +392,19 @@ def format_preset(preset, model_config):
 def maybe_add_proxy_headers(prepare_info, client):
     proxy_api_base = os.getenv("LANYING_CONNECTOR_CLAUDE_PROXY_API_BASE", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_CLAUDE_PROXY_API_KEY", '')
-    if len(proxy_api_base) > 0:
+    custom_api_endpoint = prepare_info.get('api_endpoint')
+    if custom_api_endpoint:
+        if not lanying_utils.is_valid_public_url(custom_api_endpoint):
+            raise ValueError('api_endpoint_not_valid')
+        client.base_url = custom_api_endpoint
+    if len(proxy_api_base) > 0 and (not custom_api_endpoint or should_use_proxy_for_custom_endpoint(prepare_info)):
         client.base_url = proxy_api_base
-        return {
+        headers = {
             "Authorization": f"Basic {proxy_api_key}"
         }
+        if custom_api_endpoint:
+            headers[PROXY_API_ENDPOINT_HEADER] = custom_api_endpoint
+        return headers
     else:
         return {}
 

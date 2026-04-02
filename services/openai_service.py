@@ -4701,6 +4701,7 @@ def create_vendor():
     secret_key = str(data['secret_key']).strip()
     api_group_id = str(data['api_group_id']).strip()
     api_endpoint = str(data['api_endpoint']).strip()
+    api_endpoint_server_location = str(data.get('api_endpoint_server_location', 'overseas')).strip()
     model_config = list(data['model_config'])
     config_version = int(data.get('config_version', 1))
     handler_vendor = str(data.get('handler_vendor', '')).strip()
@@ -4715,7 +4716,8 @@ def create_vendor():
         api_endpoint = api_endpoint,
         model_config = model_config,
         config_version = config_version,
-        handler_vendor = handler_vendor
+        handler_vendor = handler_vendor,
+        api_endpoint_server_location = api_endpoint_server_location
     )
     result = lanying_vendor.create_vendor(vendor_setting)
     if result['result'] == 'error':
@@ -4740,6 +4742,7 @@ def configure_vendor():
     secret_key = str(data['secret_key']).strip()
     api_group_id = str(data['api_group_id']).strip()
     api_endpoint = str(data['api_endpoint']).strip()
+    api_endpoint_server_location = str(data.get('api_endpoint_server_location', 'overseas')).strip()
     model_config = list(data['model_config'])
     config_version = int(data.get('config_version', 1))
     handler_vendor = str(data.get('handler_vendor', '')).strip()
@@ -4754,7 +4757,8 @@ def configure_vendor():
         api_endpoint = api_endpoint,
         model_config = model_config,
         config_version = config_version,
-        handler_vendor = handler_vendor
+        handler_vendor = handler_vendor,
+        api_endpoint_server_location = api_endpoint_server_location
     )
     result = lanying_vendor.configure_vendor(vendor_id, vendor_setting)
     if result['result'] == 'error':
