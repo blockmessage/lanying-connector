@@ -1217,12 +1217,22 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     logging.info(f"vendor response | vendor:{vendor}, response:{response}")
     if 'result' in response and response['result'] == 'error':
         error_code = response.get('code', response.get('reason', ''))
+        error_message = response.get('msg', '')
+        if error_message == '':
+            error_message = response.get('message', '')
+        if error_message == '':
+            error_message = response.get('reason', '')
         if error_code in ['engine_overloaded_error', 'rate_limit_reached_error']:
             return {
                 'result': 'error',
                 'code': error_code,
                 'msg': '请求过快，请稍后再试。'
             }
+        return {
+            'result': 'error',
+            'code': error_code,
+            'msg': error_message
+        }
     stream_msg_id = 0
     reply_ext = {
             'ai': {
@@ -2581,6 +2591,9 @@ def add_message_statistic(app_id, config, preset, response, model_config):
         api_key_type = model_config['api_key_type']
         model_type = model_config.get('type', '')
         vendor = model_config.get('vendor', '')
+        if isinstance(response, dict) and response.get('result') == 'error':
+            logging.info(f"skip message statistic for error response | app_id={app_id}, model_type={model_type}, vendor={vendor}, response={response}")
+            return
         if model_type == 'image':
             logging.info(f"add_message_statistic {model_type} response: {response}, vendor:{vendor}, model_config: {model_config}")
             redis = lanying_redis.get_redis_connection()
