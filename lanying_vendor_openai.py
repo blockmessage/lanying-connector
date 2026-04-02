@@ -643,13 +643,28 @@ def is_official_openai_endpoint(api_endpoint):
         return False
 
 
+def get_default_api_base(prepare_info):
+    auth_info = prepare_info.get('auth_info', {}) or {}
+    vendor_type = str(auth_info.get('vendor_type', '') or '').strip().lower()
+    if vendor_type == 'openrouter':
+        return 'https://openrouter.ai/api/v1'
+    return 'https://api.openai.com/v1'
+
+
 def get_api_base_and_headers(prepare_info):
     proxy_api_base = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_BASE", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
     api_key = prepare_info['api_key']
     api_endpoint = str(prepare_info.get('api_endpoint', '') or '').strip()
+    default_api_base = get_default_api_base(prepare_info)
     if api_endpoint != '' and not is_official_openai_endpoint(api_endpoint):
         api_base = api_endpoint.rstrip('/')
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+    elif default_api_base != 'https://api.openai.com/v1':
+        api_base = default_api_base
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -662,7 +677,7 @@ def get_api_base_and_headers(prepare_info):
             "Authorization-Next": f"Bearer {api_key}"
         }
     else:
-        api_base = 'https://api.openai.com/v1'
+        api_base = default_api_base
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
