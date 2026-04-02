@@ -12,6 +12,17 @@ import lanying_utils
 SUPPORT_NATIVE_TOOLS = True
 PROXY_API_ENDPOINT_HEADER = 'X-Lanying-Proxy-Api-Endpoint'
 
+
+def get_request_timeout(prepare_info):
+    auth_info = prepare_info.get('auth_info', {}) or {}
+    try:
+        timeout_seconds = int(auth_info.get('validation_timeout_seconds', 0))
+        if timeout_seconds > 0:
+            return timeout_seconds
+    except Exception:
+        pass
+    return None
+
 def model_configs():
     return [
         {
@@ -429,8 +440,9 @@ def chat(prepare_info, preset, model_config):
     logging.info(f"vendor openai chat request: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
     try:
         stream = final_preset.get("stream", False)
+        request_timeout = get_request_timeout(prepare_info)
         if stream:
-            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True, timeout=request_timeout)
             logging.info(f"openai chat_completion finish | code={response.status_code}, stream:{stream}")
             if response.status_code == 200:
                 def generator():
@@ -480,7 +492,7 @@ def chat(prepare_info, preset, model_config):
                     'response': response_json
                 }
         else:
-            response = requests.request("POST", url, headers=headers, json=final_preset)
+            response = requests.request("POST", url, headers=headers, json=final_preset, timeout=request_timeout)
             logging.info(f"openai chat_completion finish | code={response.status_code}, response={response.text}")
             if response.status_code == 200:
                 res = response.json()

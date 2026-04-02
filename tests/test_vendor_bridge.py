@@ -217,7 +217,8 @@ class VendorBridgeTests(unittest.TestCase):
             handler_vendor="azure",
         )
 
-        with mock.patch.object(lanying_vendor.lanying_utils, "is_valid_public_url", return_value=True):
+        with mock.patch.object(lanying_vendor.lanying_utils, "is_valid_public_url", return_value=True), \
+             mock.patch.object(lanying_vendor, "test_vendor_connection", return_value={"result": "ok"}):
             out = lanying_vendor.check_vendor_valid(vendor_setting)
 
         self.assertEqual(out["result"], "ok")
@@ -243,6 +244,97 @@ class VendorBridgeTests(unittest.TestCase):
 
         self.assertEqual(out["result"], "error")
         self.assertEqual(out["message"], "api_endpoint_not_valid")
+
+    def test_check_vendor_valid_rejects_failed_vendor_connection(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.openai.com/v1",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+
+        with mock.patch.object(lanying_vendor.lanying_utils, "is_valid_public_url", return_value=True), \
+             mock.patch.object(lanying_vendor, "test_vendor_connection", return_value={"result": "error", "message": "vendor_connection_test_failed"}):
+            out = lanying_vendor.check_vendor_valid(vendor_setting)
+
+        self.assertEqual(out["result"], "error")
+        self.assertEqual(out["message"], "vendor_connection_test_failed")
+
+    def test_check_vendor_valid_accepts_successful_vendor_connection(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.openai.com/v1",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+
+        with mock.patch.object(lanying_vendor.lanying_utils, "is_valid_public_url", return_value=True), \
+             mock.patch.object(lanying_vendor, "test_vendor_connection", return_value={"result": "ok"}):
+            out = lanying_vendor.check_vendor_valid(vendor_setting)
+
+        self.assertEqual(out["result"], "ok")
+
+    def test_check_vendor_valid_skips_connection_test_when_api_key_and_endpoint_unchanged(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.openai.com/v1",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+        old_vendor_info = {
+            "api_key": "k",
+            "api_endpoint": "https://api.openai.com/v1",
+        }
+
+        with mock.patch.object(lanying_vendor.lanying_utils, "is_valid_public_url", return_value=True), \
+             mock.patch.object(lanying_vendor, "test_vendor_connection") as mocked_test:
+            out = lanying_vendor.check_vendor_valid(vendor_setting, old_vendor_info)
+
+        self.assertEqual(out["result"], "ok")
+        mocked_test.assert_not_called()
+
+    def test_first_handler_chat_model_prefers_cheapest_model(self):
+        class _CheapestModule:
+            @staticmethod
+            def model_configs():
+                return [
+                    {"model": "expensive", "type": "chat", "quota": 10, "order": 2},
+                    {"model": "cheap", "type": "chat", "quota": 1, "order": 99},
+                    {"model": "middle", "type": "chat", "quota": 2, "order": 1},
+                ]
+
+        old_module = lanying_vendor.vendor_to_module.get("cheapest_test")
+        lanying_vendor.vendor_to_module["cheapest_test"] = _CheapestModule
+        try:
+            out = lanying_vendor._first_handler_chat_model("cheapest_test")
+        finally:
+            if old_module is None:
+                del lanying_vendor.vendor_to_module["cheapest_test"]
+            else:
+                lanying_vendor.vendor_to_module["cheapest_test"] = old_module
+
+        self.assertEqual(out["model"], "cheap")
 
 
 if __name__ == "__main__":

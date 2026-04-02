@@ -565,6 +565,133 @@ def is_valid_vendor_api_endpoint(api_endpoint):
     return lanying_utils.is_valid_public_url(endpoint)
 
 
+def _vendor_setting_to_vendor_info(vendor_setting):
+    return {
+        'app_id': vendor_setting.app_id,
+        'tenement_id': vendor_setting.tenement_id,
+        'vendor_type': vendor_setting.vendor_type,
+        'name': vendor_setting.name,
+        'api_key': vendor_setting.api_key,
+        'secret_key': vendor_setting.secret_key,
+        'api_group_id': vendor_setting.api_group_id,
+        'api_endpoint': vendor_setting.api_endpoint,
+        'config_version': vendor_setting.config_version,
+        'handler_vendor': vendor_setting.handler_vendor,
+        'model_config': copy.deepcopy(vendor_setting.model_config),
+    }
+
+
+def _first_handler_chat_model(handler_vendor):
+    module = vendor_to_module.get(handler_vendor)
+    if module is None:
+        return None
+    candidates = []
+    for config in module.model_configs():
+        if config.get('type') == 'chat':
+            candidates.append(copy.deepcopy(config))
+    if len(candidates) == 0:
+        return None
+    candidates.sort(key=lambda item: (
+        float(item.get('quota', 999999)),
+        int(item.get('order', 999999)),
+        str(item.get('model', ''))
+    ))
+    return candidates[0]
+
+
+def _get_vendor_validation_chat_model_config(vendor_setting):
+    vendor_info = _vendor_setting_to_vendor_info(vendor_setting)
+    handler_vendor = get_vendor_handler_vendor(vendor_info)
+    if handler_vendor not in vendor_to_module:
+        return None
+    if is_v2_custom_vendor(vendor_info):
+        entries = _build_v2_vendor_model_entries(vendor_info)
+        enabled_entries = [entry for entry in entries if entry.get('enabled') is True]
+        preferred_entries = [entry for entry in enabled_entries if entry.get('source') == 'catalog']
+        for entry in preferred_entries + enabled_entries:
+            model_config = _get_v2_chat_model_config(vendor_info, '__vendor_validation__', entry.get('model', ''))
+            if model_config is not None:
+                return model_config
+        return _first_handler_chat_model(handler_vendor)
+    module = vendor_to_module.get(handler_vendor)
+    for config in module.model_configs():
+        if config.get('type') != 'chat':
+            continue
+        new_config = copy.deepcopy(config)
+        if not model_config_valid(new_config, vendor_info):
+            continue
+        maybe_update_custom_vendor_model_config(new_config, vendor_info, new_config.get('model', ''))
+        return new_config
+    return _first_handler_chat_model(handler_vendor)
+
+
+def test_vendor_connection(vendor_setting):
+    vendor_info = _vendor_setting_to_vendor_info(vendor_setting)
+    handler_vendor = get_vendor_handler_vendor(vendor_info)
+    if handler_vendor not in vendor_to_module:
+        return {
+            'result': 'error',
+            'message': 'handler_vendor_not_valid'
+        }
+    model_config = _get_vendor_validation_chat_model_config(vendor_setting)
+    if model_config is None:
+        logging.info(f"skip vendor connection test | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, reason:no_chat_model")
+        return {
+            'result': 'ok'
+        }
+    auth_info = {
+        'app_id': vendor_setting.app_id,
+        'vendor_type': vendor_setting.vendor_type,
+        'api_key': vendor_setting.api_key,
+        'secret_key': vendor_setting.secret_key,
+        'api_group_id': vendor_setting.api_group_id,
+        'api_endpoint': vendor_setting.api_endpoint,
+        'key_type': 'self',
+        'validation_mode': True,
+        'validation_timeout_seconds': 8
+    }
+    preset = {
+        'model': model_config.get('model', ''),
+        'messages': [
+            {
+                'role': 'user',
+                'content': 'hello'
+            }
+        ],
+        'stream': False,
+        'temperature': 0,
+        'max_tokens': 1,
+    }
+    logging.info(
+        f"vendor connection test start | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, "
+        f"handler_vendor:{handler_vendor}, model:{preset['model']}, validation_mode:{auth_info.get('validation_mode', False)}, "
+        f"timeout:{auth_info.get('validation_timeout_seconds', 0)}, api_endpoint:{vendor_setting.api_endpoint}"
+    )
+    try:
+        module = vendor_to_module.get(handler_vendor)
+        prepare_info = prepare_chat(vendor_setting.app_id, handler_vendor, auth_info, copy.deepcopy(preset))
+        use_native_tools = getattr(module, 'SUPPORT_NATIVE_TOOLS', False)
+        if use_native_tools:
+            vendor_preset = copy.deepcopy(preset)
+        else:
+            vendor_preset = lanying_openai_compat.to_legacy_vendor_preset(copy.deepcopy(preset))
+        response = chat_with_same_model_retry(module, handler_vendor, prepare_info, vendor_preset, model_config)
+        response = normalize_chat_response(response)
+        if isinstance(response, dict) and response.get('result') == 'ok':
+            logging.info(f"vendor connection test success | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, model:{preset['model']}")
+            return {
+                'result': 'ok'
+            }
+        logging.info(f"vendor connection test failed | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, model:{preset['model']}, response:{response}")
+    except Exception as e:
+        logging.info(f"vendor connection test exception | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, model:{preset['model']}")
+        logging.exception(e)
+    return {
+        'result': 'error',
+        'message': 'vendor_connection_test_failed'
+    }
+
+
 def _sanitize_model_config(new_config):
     if 'url' in new_config:
         del new_config['url']
@@ -1003,7 +1130,8 @@ def normalize_chat_response(resp):
     return resp
 
 def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_config):
-    try_times = 3
+    auth_info = prepare_info.get('auth_info', {}) if isinstance(prepare_info, dict) else {}
+    try_times = 1 if auth_info.get('validation_mode') is True else 3
     for i in range(try_times):
         try:
             resp = module.chat(prepare_info, preset, model_config)
@@ -1278,13 +1406,13 @@ def create_vendor(vendor_setting: VendorSetting):
 def configure_vendor(vendor_id, vendor_setting: VendorSetting):
     now = int(time.time())
     vendor_setting = normalize_vendor_setting_handler_vendor(vendor_setting)
-    result = check_vendor_valid(vendor_setting)
-    if result['result'] == 'error':
-        return result
     app_id = vendor_setting.app_id
     vendor_info = get_vendor(app_id, vendor_id)
     if vendor_info is None:
         return {'result': 'error', 'message': 'vendor not exist'}
+    result = check_vendor_valid(vendor_setting, vendor_info)
+    if result['result'] == 'error':
+        return result
     redis = lanying_redis.get_redis_connection()
     fields = vendor_setting.to_hmset_fields()
     fields['update_time'] = now
@@ -1297,7 +1425,17 @@ def configure_vendor(vendor_id, vendor_setting: VendorSetting):
         }
     }
 
-def check_vendor_valid(vendor_setting: VendorSetting):
+def _should_test_vendor_connection(vendor_setting: VendorSetting, old_vendor_info=None):
+    if old_vendor_info is None:
+        return True
+    old_api_key = str(old_vendor_info.get('api_key', '') or '').strip()
+    old_api_endpoint = str(old_vendor_info.get('api_endpoint', '') or '').strip()
+    new_api_key = str(vendor_setting.api_key or '').strip()
+    new_api_endpoint = str(vendor_setting.api_endpoint or '').strip()
+    return old_api_key != new_api_key or old_api_endpoint != new_api_endpoint
+
+
+def check_vendor_valid(vendor_setting: VendorSetting, old_vendor_info=None):
     vendor_type = vendor_setting.vendor_type
     api_type_config = get_api_type_config(vendor_type)
     if api_type_config is None:
@@ -1318,6 +1456,10 @@ def check_vendor_valid(vendor_setting: VendorSetting):
             'result': 'error',
             'message': 'api_endpoint_not_valid'
         }
+    if _should_test_vendor_connection(vendor_setting, old_vendor_info):
+        connection_result = test_vendor_connection(vendor_setting)
+        if connection_result['result'] == 'error':
+            return connection_result
     return {
         'result': 'ok'
     }
