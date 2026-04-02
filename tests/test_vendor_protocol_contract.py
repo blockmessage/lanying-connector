@@ -351,15 +351,17 @@ class OpenAIEndpointPriorityTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {
             'LANYING_CONNECTOR_OPENAI_PROXY_API_BASE': 'https://proxy.example.com/v1',
             'LANYING_CONNECTOR_OPENAI_PROXY_API_KEY': 'proxy-secret'
-        }, clear=False):
+        }, clear=False), \
+             mock.patch.object(m.lanying_utils, 'is_valid_public_url', return_value=True):
             api_base, headers = m.get_api_base_and_headers({
                 'api_key': 'user-secret',
                 'api_endpoint': 'https://user-endpoint.example.com/v1/'
             })
 
-        self.assertEqual(api_base, 'https://user-endpoint.example.com/v1')
-        self.assertEqual(headers.get('Authorization'), 'Bearer user-secret')
-        self.assertNotIn('Authorization-Next', headers)
+        self.assertEqual(api_base, 'https://proxy.example.com/v1')
+        self.assertEqual(headers.get('Authorization'), 'Basic proxy-secret')
+        self.assertEqual(headers.get('Authorization-Next'), 'Bearer user-secret')
+        self.assertEqual(headers.get('X-Lanying-Proxy-Api-Endpoint'), 'https://user-endpoint.example.com/v1')
 
     def test_official_openai_endpoint_uses_proxy_headers(self):
         m = importlib.import_module('lanying_vendor_openai')
@@ -375,6 +377,7 @@ class OpenAIEndpointPriorityTests(unittest.TestCase):
         self.assertEqual(api_base, 'https://proxy.example.com/v1')
         self.assertEqual(headers.get('Authorization'), 'Basic proxy-secret')
         self.assertEqual(headers.get('Authorization-Next'), 'Bearer user-secret')
+        self.assertEqual(headers.get('X-Lanying-Proxy-Api-Endpoint'), 'https://api.openai.com/v1')
 
 
 if __name__ == '__main__':

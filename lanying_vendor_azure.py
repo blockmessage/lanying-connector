@@ -7,6 +7,7 @@ import lanying_openai_compat
 import lanying_utils
 
 SUPPORT_NATIVE_TOOLS = True
+PROXY_API_ENDPOINT_HEADER = 'X-Lanying-Proxy-Api-Endpoint'
 
 def model_configs():
     return [
@@ -281,16 +282,20 @@ def format_preset_for_o1(preset):
     return ret
 
 def maybe_add_proxy_headers(prepare_info, api_endpoint, headers):
-    if 'api_endpoint' in prepare_info:
-        if not lanying_utils.is_valid_public_url(prepare_info['api_endpoint']):
-            raise ValueError('api_endpoint_not_valid')
-        return prepare_info['api_endpoint']
     domain = os.getenv("LANYING_CONNECTOR_AZURE_PROXY_DOMAIN", '')
     proxy_api_key = os.getenv("LANYING_CONNECTOR_AZURE_PROXY_API_KEY", '')
+    custom_api_endpoint = prepare_info.get('api_endpoint')
+    if custom_api_endpoint:
+        if not lanying_utils.is_valid_public_url(custom_api_endpoint):
+            raise ValueError('api_endpoint_not_valid')
     if len(domain) > 0:
         api_key = prepare_info['api_key']
         headers['Authorization'] = f"Basic {proxy_api_key}"
         headers['Authorization-Next'] = f"Bearer {api_key}"
+        if custom_api_endpoint:
+            headers[PROXY_API_ENDPOINT_HEADER] = custom_api_endpoint
         return domain
+    if custom_api_endpoint:
+        return custom_api_endpoint
     else:
         return api_endpoint

@@ -10,6 +10,7 @@ import lanying_openai_compat
 import lanying_utils
 
 SUPPORT_NATIVE_TOOLS = True
+PROXY_API_ENDPOINT_HEADER = 'X-Lanying-Proxy-Api-Endpoint'
 
 def model_configs():
     return [
@@ -666,28 +667,21 @@ def get_api_base_and_headers(prepare_info):
     api_key = prepare_info['api_key']
     api_endpoint = str(prepare_info.get('api_endpoint', '') or '').strip()
     default_api_base = get_default_api_base(prepare_info)
-    if api_endpoint != '' and not is_official_openai_endpoint(api_endpoint):
-        validate_custom_api_endpoint(api_endpoint)
-        api_base = api_endpoint.rstrip('/')
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-    elif default_api_base != 'https://api.openai.com/v1':
-        api_base = default_api_base
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-    elif len(proxy_api_base) > 0:
+    target_api_base = default_api_base
+    if api_endpoint != '':
+        if not is_official_openai_endpoint(api_endpoint):
+            validate_custom_api_endpoint(api_endpoint)
+        target_api_base = api_endpoint.rstrip('/')
+    if len(proxy_api_base) > 0:
         api_base = proxy_api_base
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Basic {proxy_api_key}",
             "Authorization-Next": f"Bearer {api_key}"
         }
+        headers[PROXY_API_ENDPOINT_HEADER] = target_api_base
     else:
-        api_base = default_api_base
+        api_base = target_api_base
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",

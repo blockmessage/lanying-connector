@@ -414,11 +414,14 @@ def maybe_init_preset_default_model(preset, path):
 
 def forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info, model):
     openai_key = auth_info.get('api_key','')
+    api_endpoint = str(auth_info.get('api_endpoint', '') or '').strip().rstrip('/')
     proxy_domain = os.getenv('LANYING_CONNECTOR_OPENAI_PROXY_DOMAIN', '')
     if len(proxy_domain) > 0:
         proxy_api_key = os.getenv("LANYING_CONNECTOR_OPENAI_PROXY_API_KEY", '')
         url = proxy_domain + request.path
         headers = {"Authorization-Next":"Bearer " + openai_key,  "Authorization":"Basic " + proxy_api_key}
+        if api_endpoint:
+            headers["X-Lanying-Proxy-Api-Endpoint"] = api_endpoint
     else:
         url = "https://api.openai.com" + request.path
         headers = {"Authorization":"Bearer " + openai_key}
