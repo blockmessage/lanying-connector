@@ -61,6 +61,7 @@ def handle_embedding_request(request):
         return auth_result
     app_id = auth_result['app_id']
     config = auth_result['config']
+    config['app_id'] = app_id
     rate_res = check_message_rate(app_id, request.path)
     if rate_res['result'] == 'error':
         logging.info(f"check_message_rate deny: app_id={app_id}, msg={rate_res['msg']}")
@@ -84,6 +85,9 @@ def handle_embedding_request(request):
     api_key_type = limit_res['api_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, api_key_type={api_key_type}, vendor={vendor}, model={model}")
     auth_info = get_preset_auth_info(config, vendor, model_config)
+    if auth_info is None:
+        logging.info(f"missing auth info for embedding preset | app_id:{app_id}, vendor:{vendor}, model:{model}, model_config:{model_config}")
+        return {'result':'error', 'message':'vendor auth info not exist.'}
     prepare_info = lanying_vendor.prepare_embedding(app_id, vendor,auth_info, 'db')
     response = lanying_vendor.embedding(app_id, vendor, prepare_info, model, text)
     preset = {'model':model, 'input':text}
@@ -137,6 +141,7 @@ def handle_request(request, request_type):
         return auth_result
     app_id = auth_result['app_id']
     config = copy.deepcopy(auth_result['config'])
+    config['app_id'] = app_id
     rate_res = check_message_rate(app_id, request.path)
     if rate_res['result'] == 'error':
         logging.info(f"check_message_rate deny: app_id={app_id}, msg={rate_res['msg']}")
@@ -222,6 +227,9 @@ def handle_request(request, request_type):
     api_key_type = limit_res['api_key_type']
     logging.info(f"check_message_limit ok: app_id={app_id}, api_key_type={api_key_type}, vendor={vendor}, model:{model}")
     auth_info = get_preset_auth_info(config, vendor, model_config)
+    if auth_info is None:
+        logging.info(f"missing auth info for preset | app_id:{app_id}, vendor:{vendor}, model:{model}, model_config:{model_config}")
+        return {'result':'error', 'msg':'vendor auth info not exist.', 'code':'invalid_vendor_auth'}
     if vendor == 'openai':
         stream,response,drop_stream_usage_line = forward_request(app_id, request, auth_info, force_no_stream, request_type, forward_file_info, model)
         if response.status_code == 200:
@@ -928,6 +936,7 @@ def handle_chat_message_try(config, msg, retry_times):
 
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
+    config['app_id'] = app_id
     ctype = msg.get('ctype', '')
     model = preset['model']
     check_res = check_message_limit(app_id, config, model_config, True)
@@ -947,6 +956,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         is_fulldoc = command_ext.get('is_fulldoc', False)
         logging.info(f"using doc_id in command:{doc_id}, is_fulldoc:{is_fulldoc}")
     auth_info = get_preset_auth_info(config, vendor, model_config)
+    if auth_info is None:
+        logging.info(f"missing auth info for chat preset | app_id:{app_id}, vendor:{vendor}, model:{model}, model_config:{model_config}")
+        return {'result':'error', 'msg':'vendor auth info not exist.', 'code':'invalid_vendor_auth'}
     prepare_info = lanying_vendor.prepare_chat(app_id, vendor, auth_info, preset)
     add_reference = presetExt.get('add_reference', 'none')
     reference = presetExt.get('reference')
@@ -2462,6 +2474,13 @@ def calcMessageTokens(app_id, message, model, vendor):
         return MaxTotalTokens
 
 def get_preset_auth_info(config, vendor, model_config):
+    if isinstance(vendor, str) and vendor.startswith('custom_vendor_'):
+        auth_info = get_preset_self_auth_info(config, vendor)
+        if auth_info:
+            auth_info['key_type'] = 'self'
+            auth_info['vendor'] = vendor
+            auth_info['app_id'] = config.get('app_id', '')
+            return auth_info
     api_key_type = model_config['api_key_type']
     if api_key_type == 'share':
         auth_info = lanying_config.get_lanying_connector_share_auth_info(vendor)
@@ -2471,7 +2490,14 @@ def get_preset_auth_info(config, vendor, model_config):
             auth_info['app_id'] = config.get('app_id', '')
             return auth_info
     else:
-        return get_preset_self_auth_info(config, vendor)
+        auth_info = get_preset_self_auth_info(config, vendor)
+        if auth_info:
+            auth_info['key_type'] = api_key_type
+            auth_info['vendor'] = vendor
+            auth_info['app_id'] = config.get('app_id', '')
+            return auth_info
+    logging.info(f"get_preset_auth_info failed | app_id:{config.get('app_id', '')}, vendor:{vendor}, api_key_type:{model_config.get('api_key_type')}, model:{model_config.get('model', '')}")
+    return None
 
 def get_preset_self_auth_info(config, vendor):
     app_id = config.get('app_id', '')
@@ -3048,7 +3074,11 @@ def list_embedding_tasks(app_id, embedding_name):
 def fetch_embeddings(app_id, config, text, vendor, model_config):
     model = model_config['model']
     logging.info(f"fetch_embeddings: app_id={app_id}, vendor:{vendor}, model={model},text={text}")
+    config['app_id'] = app_id
     auth_info = get_preset_auth_info(config, vendor, model_config)
+    if auth_info is None:
+        logging.info(f"missing auth info for fetch_embeddings | app_id:{app_id}, vendor:{vendor}, model:{model}, model_config:{model_config}")
+        raise ValueError('vendor_auth_info_not_exist')
     prepare_info = lanying_vendor.prepare_embedding(app_id, vendor, auth_info, 'query')
     response = lanying_vendor.embedding(app_id, vendor, prepare_info, model, text)
     embedding = response['embedding']
