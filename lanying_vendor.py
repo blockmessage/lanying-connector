@@ -42,7 +42,7 @@ vendor_to_module = {
 }
 
 OPENROUTER_SERVICES = ['chatgpt', 'claude', 'deepseek', 'doubao', 'kimi', 'ernie', 'qwen', 'zhipuai', 'minimax']
-AGGREGATE_API_TYPE_VENDORS = ['openai', 'openrouter', 'volcengine', 'siliconflow']
+AGGREGATE_API_TYPE_VENDORS = ['openai', 'openrouter', 'volcengine', 'aws', 'siliconflow', 'azure', 'aliyun']
 
 
 def _default_extra_param_defs():
@@ -132,6 +132,15 @@ def _chat_models_by_service():
             grouped[service].append(config_copy)
     for _, models in grouped.items():
         models.sort(key=lambda item: (0 if item.get('is_origin_vendor', False) else 1, item.get('order', 999999), item.get('model', '')))
+        deduped_models = []
+        used_models = set()
+        for model in models:
+            model_name = str(model.get('model', '')).strip()
+            if model_name == '' or model_name in used_models:
+                continue
+            used_models.add(model_name)
+            deduped_models.append(model)
+        models[:] = deduped_models
     return grouped
 
 
