@@ -8,6 +8,38 @@ import logging
 import lanying_slack
 import lanying_openclaw
 
+
+def _normalize_login_info_text(value):
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            item_text = _normalize_login_info_text(item)
+            if item_text != '':
+                return item_text
+        return ''
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _normalize_redis_value(field, value):
+    if isinstance(value, (str, int, float, bytes)):
+        return value
+    if value is None:
+        return ''
+    if isinstance(value, (list, tuple, dict, bool)):
+        normalized = json.dumps(value, ensure_ascii=False)
+        logging.info(f"normalize redis field {field} to json string")
+        return normalized
+    return str(value)
+
+
+def _normalize_redis_hash_fields(fields):
+    return {field: _normalize_redis_value(field, value) for field, value in fields.items()}
+
 def get_authorization(app_id):
     return os.getenv('WECHAT_CHATBOT_AUTHORIZATION', '')
 
@@ -162,10 +194,8 @@ def get_login_info(app_id, w_id):
     except requests.exceptions.Timeout:
         result = {'code':'1001', 'message': 'timeout'}
     if result["code"] == "1000":
-        wc_id = result["data"]["wcId"]
-        w_account = result["data"]["wAccount"]
-        if w_account is None:
-            w_account = ''
+        wc_id = _normalize_login_info_text(result["data"].get("wcId"))
+        w_account = _normalize_login_info_text(result["data"].get("wAccount"))
         wid_info_result = json.dumps(result["data"], ensure_ascii=False)
         set_wid_info_field(app_id, w_id, "wc_id", wc_id)
         set_wid_info_field(app_id, w_id, "w_account", w_account)
@@ -220,11 +250,11 @@ def create_wechat_chatbot(app_id, w_id, bind_type, bind_id, msg_types, non_frien
             'message': 'bad bind type'
         }
     wid_info_result = json.loads(wid_info['result'])
-    wc_id = wid_info_result["wcId"]
-    w_account = wid_info_result["wAccount"]
+    wc_id = wid_info_result.get("wcId", '')
+    w_account = wid_info_result.get("wAccount", '')
     wechat_chatbot_id = generate_chatbot_id()
     redis = lanying_redis.get_redis_connection()
-    redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), {
+    redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), _normalize_redis_hash_fields({
         "bind_type": bind_type,
         "chatbot_id": chatbot_id,
         "openclaw_id": openclaw_id,
@@ -241,7 +271,7 @@ def create_wechat_chatbot(app_id, w_id, bind_type, bind_id, msg_types, non_frien
         "status": "online",
         "soft_status": "enabled",
         "router_sub_user_ids": json.dumps(router_sub_user_ids)
-    })
+    }))
     redis.rpush(get_chatbot_ids_key(app_id), wechat_chatbot_id)
     if bind_type == 'chatbot':
         lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
@@ -307,9 +337,9 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id
     redis = lanying_redis.get_redis_connection()
     if wid_info:
         wid_info_result = json.loads(wid_info['result'])
-        wc_id = wid_info_result["wcId"]
-        w_account = wid_info_result["wAccount"]
-        redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), {
+        wc_id = wid_info_result.get("wcId", '')
+        w_account = wid_info_result.get("wAccount", '')
+        redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), _normalize_redis_hash_fields({
             "bind_type": bind_type,
             "openclaw_id": openclaw_id,
             "chatbot_id": chatbot_id,
@@ -322,10 +352,10 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id
             "wid_info_result": json.dumps(wid_info_result, ensure_ascii=False),
             "status": "online",
             "router_sub_user_ids": json.dumps(router_sub_user_ids)
-        })
+        }))
         set_wid_info_field(app_id, w_id, "status", "binding")
     else:
-        redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), {
+        redis.hmset(get_chatbot_key(app_id, wechat_chatbot_id), _normalize_redis_hash_fields({
             "bind_type": bind_type,
             "openclaw_id": openclaw_id,
             "chatbot_id": chatbot_id,
@@ -333,7 +363,7 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id
             "non_friend_chat_mode": non_friend_chat_mode,
             "note": note,
             "router_sub_user_ids": json.dumps(router_sub_user_ids)
-        })
+        }))
     if wechat_chatbot['bind_type'] == 'chatbot' and bind_type == 'chatbot' and wechat_chatbot['chatbot_id'] != chatbot_id:
         lanying_chatbot.set_chatbot_field(app_id, chatbot_id, "wechat_chatbot_id", wechat_chatbot_id)
         lanying_chatbot.set_chatbot_field(app_id, wechat_chatbot['chatbot_id'], "wechat_chatbot_id", '')

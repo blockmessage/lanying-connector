@@ -28,6 +28,25 @@ service = 'wechat'
 bp = Blueprint(service, __name__)
 wechat_chatbot_message_token = os.getenv('WECHAT_CHATBOT_MESSAGE_TOKEN')
 
+
+def _normalize_str_list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_list = value
+    elif isinstance(value, tuple):
+        raw_list = list(value)
+    else:
+        raw_list = [value]
+    result = []
+    for item in raw_list:
+        if item is None:
+            continue
+        item_str = str(item).strip()
+        if item_str != '':
+            result.append(item_str)
+    return result
+
 @bp.route("/wechat/<string:token>/messages", methods=["POST"])
 def service_post_messages(token):
     text = request.get_data(as_text=True)
@@ -187,10 +206,10 @@ def create_wechat_chatbot():
         bind_id = str(data['chatbot_id'])
     elif bind_type == 'openclaw':
         bind_id = str(data['openclaw_id'])
-    msg_types = list(data['msg_types'])
+    msg_types = _normalize_str_list(data.get('msg_types'))
     non_friend_chat_mode = str(data['non_friend_chat_mode'])
     note = str(data.get('note',''))
-    router_sub_user_ids = list(data.get('router_sub_user_ids',[]))
+    router_sub_user_ids = _normalize_str_list(data.get('router_sub_user_ids',[]))
     result = lanying_wechat_chatbot.create_wechat_chatbot(app_id, w_id, bind_type, bind_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
@@ -275,10 +294,10 @@ def configure_wechat_chatbot():
         bind_id = str(data['chatbot_id'])
     elif bind_type == 'openclaw':
         bind_id = str(data['openclaw_id'])
-    msg_types = list(data['msg_types'])
+    msg_types = _normalize_str_list(data.get('msg_types'))
     non_friend_chat_mode = str(data['non_friend_chat_mode'])
     note = str(data.get('note',''))
-    router_sub_user_ids = list(data.get('router_sub_user_ids',[]))
+    router_sub_user_ids = _normalize_str_list(data.get('router_sub_user_ids',[]))
     result = lanying_wechat_chatbot.configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id, msg_types, non_friend_chat_mode, note, router_sub_user_ids)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
