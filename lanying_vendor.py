@@ -23,6 +23,7 @@ import json
 import lanying_redis
 import re
 import lanying_openai_compat
+from urllib.parse import urlparse, urlunparse
 
 vendor_to_module = {
     'openai': lanying_vendor_openai,
@@ -565,6 +566,54 @@ def is_valid_vendor_api_endpoint(api_endpoint):
     return lanying_utils.is_valid_public_url(endpoint)
 
 
+def _is_openai_compatible_vendor_setting(vendor_setting):
+    vendor_info = _vendor_setting_to_vendor_info(vendor_setting)
+    return get_vendor_handler_vendor(vendor_info) == 'openai'
+
+
+def _replace_api_endpoint_path(api_endpoint, new_path):
+    parsed = urlparse(api_endpoint)
+    return urlunparse(parsed._replace(path=new_path, params='', query='', fragment=''))
+
+
+def _normalize_openai_api_endpoint_candidates(api_endpoint):
+    endpoint = str(api_endpoint or '').strip().rstrip('/')
+    if endpoint == '':
+        return []
+    candidates = []
+    seen = set()
+
+    def add_candidate(candidate):
+        candidate = str(candidate or '').strip().rstrip('/')
+        if candidate == '' or candidate in seen:
+            return
+        if not is_valid_vendor_api_endpoint(candidate):
+            return
+        seen.add(candidate)
+        candidates.append(candidate)
+
+    add_candidate(endpoint)
+    parsed = urlparse(endpoint)
+    path = parsed.path.rstrip('/')
+    stripped_candidates = []
+    if path.endswith('/v1/chat/completions'):
+        stripped_candidates.append(_replace_api_endpoint_path(endpoint, path[:-len('/chat/completions')]))
+    elif path.endswith('/chat/completions'):
+        stripped_candidates.append(_replace_api_endpoint_path(endpoint, path[:-len('/chat/completions')]))
+    for candidate in stripped_candidates:
+        add_candidate(candidate)
+    current_candidates = list(candidates)
+    for candidate in current_candidates:
+        parsed_candidate = urlparse(candidate)
+        candidate_path = parsed_candidate.path.rstrip('/')
+        if candidate_path == '':
+            candidate_path = '/'
+        if not candidate_path.endswith('/v1'):
+            candidate_with_v1 = _replace_api_endpoint_path(candidate, candidate_path.rstrip('/') + '/v1')
+            add_candidate(candidate_with_v1)
+    return candidates
+
+
 def _vendor_setting_to_vendor_info(vendor_setting):
     return {
         'app_id': vendor_setting.app_id,
@@ -626,34 +675,23 @@ def _get_vendor_validation_chat_model_config(vendor_setting):
     return _first_handler_chat_model(handler_vendor)
 
 
-def test_vendor_connection(vendor_setting):
-    vendor_info = _vendor_setting_to_vendor_info(vendor_setting)
-    handler_vendor = get_vendor_handler_vendor(vendor_info)
-    if handler_vendor not in vendor_to_module:
-        return {
-            'result': 'error',
-            'message': 'handler_vendor_not_valid'
-        }
-    model_config = _get_vendor_validation_chat_model_config(vendor_setting)
-    if model_config is None:
-        logging.info(f"skip vendor connection test | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, reason:no_chat_model")
-        return {
-            'result': 'ok'
-        }
+def _test_vendor_connection_once(vendor_setting, handler_vendor, model_config):
+    model_name = model_config.get('model', '')
+    api_endpoint = str(vendor_setting.api_endpoint or '').strip()
     auth_info = {
         'app_id': vendor_setting.app_id,
         'vendor_type': vendor_setting.vendor_type,
         'api_key': vendor_setting.api_key,
         'secret_key': vendor_setting.secret_key,
         'api_group_id': vendor_setting.api_group_id,
-        'api_endpoint': vendor_setting.api_endpoint,
+        'api_endpoint': api_endpoint,
         'api_endpoint_server_location': vendor_setting.api_endpoint_server_location,
         'key_type': 'self',
         'validation_mode': True,
         'validation_timeout_seconds': 8
     }
     preset = {
-        'model': model_config.get('model', ''),
+        'model': model_name,
         'messages': [
             {
                 'role': 'user',
@@ -667,7 +705,7 @@ def test_vendor_connection(vendor_setting):
     logging.info(
         f"vendor connection test start | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, "
         f"handler_vendor:{handler_vendor}, model:{preset['model']}, validation_mode:{auth_info.get('validation_mode', False)}, "
-        f"timeout:{auth_info.get('validation_timeout_seconds', 0)}, api_endpoint:{vendor_setting.api_endpoint}"
+        f"timeout:{auth_info.get('validation_timeout_seconds', 0)}, api_endpoint:{api_endpoint}"
     )
     try:
         module = vendor_to_module.get(handler_vendor)
@@ -692,6 +730,47 @@ def test_vendor_connection(vendor_setting):
         'result': 'error',
         'message': 'vendor_connection_test_failed'
     }
+
+
+def test_vendor_connection(vendor_setting):
+    vendor_info = _vendor_setting_to_vendor_info(vendor_setting)
+    handler_vendor = get_vendor_handler_vendor(vendor_info)
+    if handler_vendor not in vendor_to_module:
+        return {
+            'result': 'error',
+            'message': 'handler_vendor_not_valid'
+        }
+    model_config = _get_vendor_validation_chat_model_config(vendor_setting)
+    if model_config is None:
+        logging.info(f"skip vendor connection test | app_id:{vendor_setting.app_id}, vendor_type:{vendor_setting.vendor_type}, reason:no_chat_model")
+        return {
+            'result': 'ok'
+        }
+    original_api_endpoint = str(vendor_setting.api_endpoint or '').strip()
+    if _is_openai_compatible_vendor_setting(vendor_setting) and original_api_endpoint != '':
+        candidates = _normalize_openai_api_endpoint_candidates(original_api_endpoint)
+        if len(candidates) > 0:
+            logging.info(
+                f"vendor connection endpoint normalize candidates | app_id:{vendor_setting.app_id}, "
+                f"vendor_type:{vendor_setting.vendor_type}, api_endpoint:{original_api_endpoint}, candidates:{candidates}"
+            )
+            last_result = None
+            for candidate in candidates:
+                vendor_setting.api_endpoint = candidate
+                last_result = _test_vendor_connection_once(vendor_setting, handler_vendor, model_config)
+                if last_result.get('result') == 'ok':
+                    if candidate != original_api_endpoint:
+                        logging.info(
+                            f"vendor connection endpoint normalized | app_id:{vendor_setting.app_id}, "
+                            f"vendor_type:{vendor_setting.vendor_type}, from:{original_api_endpoint}, to:{candidate}"
+                        )
+                    return last_result
+            vendor_setting.api_endpoint = original_api_endpoint
+            return last_result or {
+                'result': 'error',
+                'message': 'vendor_connection_test_failed'
+            }
+    return _test_vendor_connection_once(vendor_setting, handler_vendor, model_config)
 
 
 def _sanitize_model_config(new_config):

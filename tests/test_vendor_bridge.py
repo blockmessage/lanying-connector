@@ -336,6 +336,154 @@ class VendorBridgeTests(unittest.TestCase):
 
         self.assertEqual(out["model"], "cheap")
 
+    def test_test_vendor_connection_keeps_original_endpoint_when_first_probe_succeeds(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.example.com/mock/openai/v1",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+
+        with mock.patch.object(lanying_vendor, "_get_vendor_validation_chat_model_config", return_value={"model": "gpt-4o-mini"}), \
+             mock.patch.object(lanying_vendor, "_test_vendor_connection_once", return_value={"result": "ok"}) as mocked_test:
+            out = lanying_vendor.test_vendor_connection(vendor_setting)
+
+        self.assertEqual(out["result"], "ok")
+        self.assertEqual(vendor_setting.api_endpoint, "https://api.example.com/mock/openai/v1")
+        mocked_test.assert_called_once()
+
+    def test_test_vendor_connection_normalizes_full_chat_completions_path(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.example.com/mock/openai/v1/chat/completions",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+        tried_endpoints = []
+
+        def _probe(vendor_setting, handler_vendor, model_config):
+            tried_endpoints.append(vendor_setting.api_endpoint)
+            if vendor_setting.api_endpoint == "https://api.example.com/mock/openai/v1":
+                return {"result": "ok"}
+            return {"result": "error", "message": "vendor_connection_test_failed"}
+
+        with mock.patch.object(lanying_vendor, "_get_vendor_validation_chat_model_config", return_value={"model": "gpt-4o-mini"}), \
+             mock.patch.object(lanying_vendor, "_test_vendor_connection_once", side_effect=_probe):
+            out = lanying_vendor.test_vendor_connection(vendor_setting)
+
+        self.assertEqual(out["result"], "ok")
+        self.assertEqual(tried_endpoints, [
+            "https://api.example.com/mock/openai/v1/chat/completions",
+            "https://api.example.com/mock/openai/v1",
+        ])
+        self.assertEqual(vendor_setting.api_endpoint, "https://api.example.com/mock/openai/v1")
+
+    def test_test_vendor_connection_normalizes_service_prefix_by_appending_v1(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openrouter",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.example.com/mock/openai",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+        tried_endpoints = []
+
+        def _probe(vendor_setting, handler_vendor, model_config):
+            tried_endpoints.append(vendor_setting.api_endpoint)
+            if vendor_setting.api_endpoint == "https://api.example.com/mock/openai/v1":
+                return {"result": "ok"}
+            return {"result": "error", "message": "vendor_connection_test_failed"}
+
+        with mock.patch.object(lanying_vendor, "_get_vendor_validation_chat_model_config", return_value={"model": "gpt-4o-mini"}), \
+             mock.patch.object(lanying_vendor, "_test_vendor_connection_once", side_effect=_probe):
+            out = lanying_vendor.test_vendor_connection(vendor_setting)
+
+        self.assertEqual(out["result"], "ok")
+        self.assertEqual(tried_endpoints, [
+            "https://api.example.com/mock/openai",
+            "https://api.example.com/mock/openai/v1",
+        ])
+        self.assertEqual(vendor_setting.api_endpoint, "https://api.example.com/mock/openai/v1")
+
+    def test_test_vendor_connection_returns_error_when_all_openai_endpoint_candidates_fail(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.example.com/mock/openai/v1/chat/completions",
+            model_config=[],
+            config_version=2,
+            handler_vendor="openai",
+        )
+        tried_endpoints = []
+
+        def _probe(vendor_setting, handler_vendor, model_config):
+            tried_endpoints.append(vendor_setting.api_endpoint)
+            return {"result": "error", "message": "vendor_connection_test_failed"}
+
+        with mock.patch.object(lanying_vendor, "_get_vendor_validation_chat_model_config", return_value={"model": "gpt-4o-mini"}), \
+             mock.patch.object(lanying_vendor, "_test_vendor_connection_once", side_effect=_probe):
+            out = lanying_vendor.test_vendor_connection(vendor_setting)
+
+        self.assertEqual(out["result"], "error")
+        self.assertEqual(out["message"], "vendor_connection_test_failed")
+        self.assertEqual(vendor_setting.api_endpoint, "https://api.example.com/mock/openai/v1/chat/completions")
+        self.assertEqual(tried_endpoints, [
+            "https://api.example.com/mock/openai/v1/chat/completions",
+            "https://api.example.com/mock/openai/v1",
+        ])
+
+    def test_test_vendor_connection_does_not_normalize_non_openai_handler_vendor(self):
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="aws",
+            name="test",
+            api_key="k",
+            secret_key="s",
+            api_group_id="",
+            api_endpoint="https://api.example.com/bedrock/chat/completions",
+            model_config=[],
+            config_version=2,
+            handler_vendor="aws",
+        )
+        tried_endpoints = []
+
+        def _probe(vendor_setting, handler_vendor, model_config):
+            tried_endpoints.append(vendor_setting.api_endpoint)
+            return {"result": "error", "message": "vendor_connection_test_failed"}
+
+        with mock.patch.object(lanying_vendor, "_get_vendor_validation_chat_model_config", return_value={"model": "m1"}), \
+             mock.patch.object(lanying_vendor, "_test_vendor_connection_once", side_effect=_probe):
+            out = lanying_vendor.test_vendor_connection(vendor_setting)
+
+        self.assertEqual(out["result"], "error")
+        self.assertEqual(tried_endpoints, ["https://api.example.com/bedrock/chat/completions"])
+
 
 if __name__ == "__main__":
     unittest.main()
