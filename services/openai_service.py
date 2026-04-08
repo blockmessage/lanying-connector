@@ -54,6 +54,38 @@ using_embedding_expire_seconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
+def extract_system_prompt_text_from_preset(preset):
+    if not isinstance(preset, dict):
+        return ''
+    messages = preset.get('messages', [])
+    if not isinstance(messages, list):
+        return ''
+    system_contents = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get('role', '')) != 'system':
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            system_contents.append(content)
+    return '\n\n'.join(system_contents)
+
+def maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, chatbot_name, preset):
+    try:
+        node_info = lanying_openclaw.get_chatbot_node_info(app_id, chatbot_id)
+        if node_info is None:
+            logging.info(f"maybe_sync_chatbot_preset_prompt skip for no openclaw bind | app_id:{app_id}, chatbot_id:{chatbot_id}")
+            return
+        prompt = extract_system_prompt_text_from_preset(preset)
+        sync_result = lanying_openclaw.sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt)
+        if sync_result.get('result') != 'ok':
+            logging.info(f"maybe_sync_chatbot_preset_prompt failed | app_id:{app_id}, chatbot_id:{chatbot_id}, result:{sync_result}")
+        else:
+            logging.info(f"maybe_sync_chatbot_preset_prompt success | app_id:{app_id}, chatbot_id:{chatbot_id}, prompt_len:{len(prompt)}")
+    except Exception as e:
+        logging.exception(e)
+
 def handle_embedding_request(request):
     auth_result = check_embedding_authorization(request)
     if auth_result['result'] == 'error':
@@ -4153,6 +4185,7 @@ def create_chatbot():
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
+        maybe_sync_chatbot_preset_prompt(app_id, result["data"]["id"], name, preset)
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
@@ -4193,6 +4226,9 @@ def configure_chatbot():
         content_security = 'on'
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
+    old_chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    old_prompt = extract_system_prompt_text_from_preset(old_chatbot_info.get('preset', {}) if isinstance(old_chatbot_info, dict) else {})
+    new_prompt = extract_system_prompt_text_from_preset(preset)
     result = lanying_chatbot.configure_chatbot(app_id, account_status, account_type, verification_level, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
@@ -4201,6 +4237,8 @@ def configure_chatbot():
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
+        if old_prompt != new_prompt:
+            maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, name, preset)
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 

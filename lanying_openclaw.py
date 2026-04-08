@@ -405,6 +405,48 @@ def update_node_config(app_id, node_id, patch_config):
         }
     }
 
+def sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt):
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    app_id = node_info['app_id']
+    user_id = node_info['user_id']
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    send_msg_type = 1
+    content_type = 6 # COMMAND = 6;
+    content = ''
+    ext = {
+        'openclaw': {
+            'type': 'preset_prompt_sync',
+            'formatVersion': 1,
+            'chatbotId': str(chatbot_id),
+            'chatbotName': str(chatbot_name),
+            'prompt': str(prompt)
+        }
+    }
+    extra = {
+        'ext': ext,
+        'skip_antispam_prompt': True
+    }
+    logging.info(f"sync_chatbot_preset_prompt start | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, chatbot_id:{chatbot_id}, prompt_len:{len(str(prompt))}")
+    msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, send_msg_type, content_type, content, extra)
+    if msg_id <= 0:
+        return {
+            'result': 'error',
+            'message': 'send message failed'
+        }
+    return {
+        'result': 'ok',
+        'data': {
+            'msg_id': msg_id
+        }
+    }
+
 def register_node_im_user(app_id, node_id):
     username = f'openclaw_{node_id}_{secrets.token_hex(4)}'
     password = secrets.token_hex(32)
