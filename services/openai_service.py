@@ -86,6 +86,11 @@ def maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, chatbot_name, preset):
     except Exception as e:
         logging.exception(e)
 
+def build_openclaw_embedding_knowledge(knowledge_content):
+    if not isinstance(knowledge_content, str):
+        return ''
+    return knowledge_content.strip()
+
 def handle_embedding_request(request):
     auth_result = check_embedding_authorization(request)
     if auth_result['result'] == 'error':
@@ -1086,6 +1091,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     ask_message_content = content
     ask_message_metadata = make_metadata_from_msg(msg)
     ask_message_content,_ = format_content_and_metadata(content, ask_message_metadata)
+    openclaw_embedding_knowledge = ''
     if len(preset_embedding_infos) > 0:
         context = ""
         context_with_distance = ""
@@ -1198,6 +1204,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 context_with_prompt = f"{embedding_content}\n\n{context}"
                 context_with_distance = f"{embedding_content}\n\n{context_with_distance}"
                 messages.append({'role':embedding_role, 'content':context_with_prompt})
+                openclaw_embedding_knowledge = build_openclaw_embedding_knowledge(context_with_prompt)
             if len(user_functions) > 0:
                 user_functions = sort_functions(user_functions)
                 for function_info in user_functions:
@@ -1254,7 +1261,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             except Exception:
                 logging.exception("fill_msg_context failed")
         logging.info(f"redirect_to_openclaw | node: {openclaw_node_info}, msg: {msg}")
-        return lanying_openclaw.redirect_to_openclaw(openclaw_node_info, msg)
+        return lanying_openclaw.redirect_to_openclaw(openclaw_node_info, msg, openclaw_embedding_knowledge)
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
     response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
     response = lanying_openai_compat.normalize_vendor_response(response)

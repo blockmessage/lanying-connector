@@ -826,7 +826,7 @@ def convert_from_meta_message(meta_message):
         'timestamp': str(meta_message.get('timestamp', '0'))
     }
 
-def redirect_to_openclaw(node_info, message):
+def redirect_to_openclaw(node_info, message, knowledge=''):
     if node_info['status'] != 'normal':
         return 'OpenClaw状态异常'
     app_id = node_info['app_id']
@@ -865,6 +865,8 @@ def redirect_to_openclaw(node_info, message):
             'role': 'ai'
         }
     }
+    if isinstance(knowledge, str) and knowledge.strip() != '':
+        ext['openclaw']['knowledge'] = knowledge.strip()
     extra = {
         'ext': ext,
         'skip_antispam_prompt': True
