@@ -86,6 +86,21 @@ def maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, chatbot_name, preset):
     except Exception as e:
         logging.exception(e)
 
+def maybe_sync_chatbot_model_config(app_id, chatbot_id):
+    try:
+        node_info = lanying_openclaw.get_chatbot_node_info(app_id, chatbot_id)
+        if node_info is None:
+            logging.info(f"maybe_sync_chatbot_model_config skip for no openclaw bind | app_id:{app_id}, chatbot_id:{chatbot_id}")
+            return
+        node_id = str(node_info.get('node_id', ''))
+        if node_id == '':
+            logging.info(f"maybe_sync_chatbot_model_config skip for bad node_id | app_id:{app_id}, chatbot_id:{chatbot_id}, node_info:{node_info}")
+            return
+        sync_result = lanying_openclaw.sync_model_config(app_id, node_id)
+        logging.info(f"maybe_sync_chatbot_model_config result | app_id:{app_id}, chatbot_id:{chatbot_id}, node_id:{node_id}, result:{sync_result}")
+    except Exception as e:
+        logging.exception(e)
+
 def build_openclaw_embedding_knowledge(knowledge_content):
     if not isinstance(knowledge_content, str):
         return ''
@@ -4236,6 +4251,10 @@ def configure_chatbot():
     old_chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
     old_prompt = extract_system_prompt_text_from_preset(old_chatbot_info.get('preset', {}) if isinstance(old_chatbot_info, dict) else {})
     new_prompt = extract_system_prompt_text_from_preset(preset)
+    old_model = ''
+    if isinstance(old_chatbot_info, dict) and isinstance(old_chatbot_info.get('preset', {}), dict):
+        old_model = str(old_chatbot_info['preset'].get('model', '')).strip()
+    new_model = str(preset.get('model', '')).strip()
     result = lanying_chatbot.configure_chatbot(app_id, account_status, account_type, verification_level, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
@@ -4244,6 +4263,8 @@ def configure_chatbot():
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
+        if old_model != new_model:
+            maybe_sync_chatbot_model_config(app_id, chatbot_id)
         if old_prompt != new_prompt:
             maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, name, preset)
         resp = make_response({'code':200, 'data':result["data"]})

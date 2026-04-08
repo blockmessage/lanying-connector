@@ -304,12 +304,12 @@ def handle_client_event(event, app_id, user_id, ctype):
                 if node['status'] == 'wait':
                     logging.info(f"change node status to normal | node_id: {node_id}")
                     update_node_field(app_id, node_id, 'status', 'normal')
-                    model_patch_config = get_model_patch_config(app_id)
+                    model_patch_config = get_model_patch_config(app_id, node_id)
                     update_node_config(app_id, node_id, model_patch_config)
                     maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
                 elif 'provider_inited' in event and event['provider_inited'] == False:
                     logging.info(f"update node config for provider_inited is false | node_id: {node_id}")
-                    model_patch_config = get_model_patch_config(app_id)
+                    model_patch_config = get_model_patch_config(app_id, node_id)
                     update_node_config(app_id, node_id, model_patch_config)
                     maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
     elif event['type'] == 'router_reply':
@@ -368,7 +368,7 @@ def sync_model_config(app_id, node_id):
             'result': 'error',
             'message': 'node not exist'
         }
-    model_patch_config = get_model_patch_config(app_id)
+    model_patch_config = get_model_patch_config(app_id, node_id)
     update_node_config(app_id, node_id, model_patch_config)
     maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
     return {
@@ -378,13 +378,24 @@ def sync_model_config(app_id, node_id):
         }
     }    
 
-def get_model_patch_config(app_id, primary="openai/gpt-4o-mini", fallbacks=['volcengine/Doubao-1.5-pro-32k', 'volcengine/DeepSeek-R1']):
+def get_model_patch_config(app_id, node_id=None, primary="openai/gpt-4o-mini", fallbacks=['volcengine/Doubao-1.5-pro-32k', 'volcengine/DeepSeek-R1']):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         token = config.get('access_token', '')
         if len(token) > 0:
+            use_primary = primary
+            use_fallbacks = list(fallbacks)
+            if node_id is not None:
+                chatbot_id = get_node_chatbot_id(app_id, node_id)
+                if chatbot_id is not None and chatbot_id != '':
+                    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+                    if chatbot_info and isinstance(chatbot_info.get('preset', {}), dict):
+                        chatbot_model = str(chatbot_info['preset'].get('model', '')).strip()
+                        if chatbot_model != '':
+                            use_primary = chatbot_model
+                            use_fallbacks = [model for model in use_fallbacks if str(model).strip() != chatbot_model]
             new_fallbacks = []
-            for fallback in fallbacks:
+            for fallback in use_fallbacks:
                 new_fallbacks.append(f"lanying/{fallback}")
             return {
                 "models": {
@@ -400,7 +411,7 @@ def get_model_patch_config(app_id, primary="openai/gpt-4o-mini", fallbacks=['vol
                 "agents": {
                     "defaults":{
                         "model": {
-                            "primary": f"lanying/{primary}",
+                            "primary": f"lanying/{use_primary}",
                             "fallbacks": new_fallbacks
                         }
                     }
