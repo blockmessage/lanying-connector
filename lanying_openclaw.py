@@ -53,6 +53,55 @@ class ConfigureNodeParam:
             'chatbot_id': self.chatbot_id
         }
 
+def extract_system_prompt_text_from_preset(preset):
+    if not isinstance(preset, dict):
+        return ''
+    messages = preset.get('messages', [])
+    if not isinstance(messages, list):
+        return ''
+    system_contents = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get('role', '')) != 'system':
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            system_contents.append(content)
+    return '\n\n'.join(system_contents)
+
+def sync_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
+    try:
+        node_info = get_node(app_id, node_id)
+        if node_info is None:
+            logging.info(f"sync_bound_chatbot_preset_prompt skip for missing node | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}")
+            return
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot_info is None:
+            logging.info(f"sync_bound_chatbot_preset_prompt skip for missing chatbot | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}")
+            return
+        prompt = extract_system_prompt_text_from_preset(chatbot_info.get('preset', {}))
+        chatbot_name = str(chatbot_info.get('name', ''))
+        sync_result = sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt)
+        logging.info(f"sync_bound_chatbot_preset_prompt result | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}, result:{sync_result}")
+    except Exception as e:
+        logging.exception(e)
+
+def clear_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
+    try:
+        node_info = get_node(app_id, node_id)
+        if node_info is None:
+            logging.info(f"clear_bound_chatbot_preset_prompt skip for missing node | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}")
+            return
+        chatbot_name = ''
+        chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot_info is not None:
+            chatbot_name = str(chatbot_info.get('name', ''))
+        sync_result = sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, '')
+        logging.info(f"clear_bound_chatbot_preset_prompt result | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}, result:{sync_result}")
+    except Exception as e:
+        logging.exception(e)
+
 def check_create_node(app_id):
     now = int(time.time())
     node_id = generate_node_id()
@@ -160,7 +209,7 @@ def configure_node(app_id, node_id, param: ConfigureNodeParam):
     old_bind_chatbot_id_str = old_bind_chatbot_id if old_bind_chatbot_id is not None else ''
     if new_chatbot_id != old_bind_chatbot_id_str:
         if old_bind_chatbot_id is not None:
-            unbind_chatbot(app_id, node_id, old_bind_chatbot_id)
+            unbind_chatbot(app_id, node_id, old_bind_chatbot_id, clear_prompt=(new_chatbot_id == ''))
         if new_chatbot_id != '':
             bind_result = bind_chatbot(app_id, node_id, new_chatbot_id)
             if bind_result['result'] == 'error':
@@ -598,14 +647,17 @@ def bind_chatbot(app_id, node_id, chatbot_id):
         }
     redis.hset(get_node_chatbot_bind_key(app_id), node_id, chatbot_id)
     redis.hset(get_chatbot_node_bind_key(app_id), chatbot_id, node_id)
+    executor.submit(sync_bound_chatbot_preset_prompt, app_id, node_id, chatbot_id)
     return {
         'result': 'ok'
     }
 
-def unbind_chatbot(app_id, node_id, chatbot_id):
+def unbind_chatbot(app_id, node_id, chatbot_id, clear_prompt=True):
     redis = lanying_redis.get_redis_connection()
     redis.hdel(get_node_chatbot_bind_key(app_id), node_id)
     redis.hdel(get_chatbot_node_bind_key(app_id), chatbot_id)
+    if clear_prompt:
+        executor.submit(clear_bound_chatbot_preset_prompt, app_id, node_id, chatbot_id)
 
 def check_client_login(token):
     token_info = get_token_info(token)
