@@ -361,7 +361,7 @@ def router_reply_message(app_id, node_info, message):
     if msg_id <= 0:
         logging.info(f"router_reply_message send message failed")
 
-def sync_model_config(app_id, node_id):
+def sync_model_config(app_id, node_id, sync_preset_prompt=True):
     node_info = get_node(app_id, node_id)
     if node_info is None:
         return {
@@ -370,7 +370,8 @@ def sync_model_config(app_id, node_id):
         }
     model_patch_config = get_model_patch_config(app_id, node_id)
     update_node_config(app_id, node_id, model_patch_config)
-    maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+    if sync_preset_prompt:
+        maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
     return {
         'result': 'ok',
         'data': {
@@ -383,17 +384,23 @@ def get_model_patch_config(app_id, node_id=None, primary="openai/gpt-4o-mini", f
     if config:
         token = config.get('access_token', '')
         if len(token) > 0:
+            default_primary = primary
             use_primary = primary
             use_fallbacks = list(fallbacks)
+            if default_primary not in use_fallbacks:
+                use_fallbacks.insert(0, default_primary)
             if node_id is not None:
                 chatbot_id = get_node_chatbot_id(app_id, node_id)
                 if chatbot_id is not None and chatbot_id != '':
                     chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
                     if chatbot_info and isinstance(chatbot_info.get('preset', {}), dict):
+                        chatbot_vendor = str(chatbot_info['preset'].get('vendor', '')).strip()
                         chatbot_model = str(chatbot_info['preset'].get('model', '')).strip()
+                        if chatbot_vendor != '' and chatbot_model != '' and '/' not in chatbot_model:
+                            chatbot_model = f"{chatbot_vendor}/{chatbot_model}"
                         if chatbot_model != '':
                             use_primary = chatbot_model
-                            use_fallbacks = [model for model in use_fallbacks if str(model).strip() != chatbot_model]
+            use_fallbacks = [model for model in use_fallbacks if str(model).strip() != use_primary]
             new_fallbacks = []
             for fallback in use_fallbacks:
                 new_fallbacks.append(f"lanying/{fallback}")
@@ -446,13 +453,13 @@ def update_node_config(app_id, node_id, patch_config):
             'message': 'node not exist'
         }
     user_id = node_info['user_id']
-    content = '开始同步模型配置'
+    content = ''
     admin_token = lanying_config.get_lanying_admin_token(app_id)
     config = {
         'lanying_admin_token': admin_token
     }
     send_msg_type = 1
-    content_type = 0
+    content_type = 6
     extra = {
         'ext': {
             'openclaw': {
@@ -668,6 +675,7 @@ def bind_chatbot(app_id, node_id, chatbot_id):
         }
     redis.hset(get_node_chatbot_bind_key(app_id), node_id, chatbot_id)
     redis.hset(get_chatbot_node_bind_key(app_id), chatbot_id, node_id)
+    executor.submit(sync_model_config, app_id, node_id, False)
     executor.submit(sync_bound_chatbot_preset_prompt, app_id, node_id, chatbot_id)
     return {
         'result': 'ok'

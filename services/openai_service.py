@@ -54,13 +54,13 @@ using_embedding_expire_seconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
 
-def extract_system_prompt_text_from_preset(preset):
+def extract_transformed_system_message_from_preset(preset):
     if not isinstance(preset, dict):
         return ''
     messages = preset.get('messages', [])
     if not isinstance(messages, list):
         return ''
-    system_contents = []
+    system_message_list = []
     for message in messages:
         if not isinstance(message, dict):
             continue
@@ -68,8 +68,10 @@ def extract_system_prompt_text_from_preset(preset):
             continue
         content = message.get('content')
         if isinstance(content, str):
-            system_contents.append(content)
-    return '\n\n'.join(system_contents)
+            transformed_content = content.strip()
+            if transformed_content != '':
+                system_message_list.append(transformed_content)
+    return '\n\n'.join(system_message_list)
 
 def maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, chatbot_name, preset):
     try:
@@ -77,7 +79,7 @@ def maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, chatbot_name, preset):
         if node_info is None:
             logging.info(f"maybe_sync_chatbot_preset_prompt skip for no openclaw bind | app_id:{app_id}, chatbot_id:{chatbot_id}")
             return
-        prompt = extract_system_prompt_text_from_preset(preset)
+        prompt = extract_transformed_system_message_from_preset(preset)
         sync_result = lanying_openclaw.sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt)
         if sync_result.get('result') != 'ok':
             logging.info(f"maybe_sync_chatbot_preset_prompt failed | app_id:{app_id}, chatbot_id:{chatbot_id}, result:{sync_result}")
@@ -96,7 +98,7 @@ def maybe_sync_chatbot_model_config(app_id, chatbot_id):
         if node_id == '':
             logging.info(f"maybe_sync_chatbot_model_config skip for bad node_id | app_id:{app_id}, chatbot_id:{chatbot_id}, node_info:{node_info}")
             return
-        sync_result = lanying_openclaw.sync_model_config(app_id, node_id)
+        sync_result = lanying_openclaw.sync_model_config(app_id, node_id, sync_preset_prompt=False)
         logging.info(f"maybe_sync_chatbot_model_config result | app_id:{app_id}, chatbot_id:{chatbot_id}, node_id:{node_id}, result:{sync_result}")
     except Exception as e:
         logging.exception(e)
@@ -4249,8 +4251,8 @@ def configure_chatbot():
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
     old_chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    old_prompt = extract_system_prompt_text_from_preset(old_chatbot_info.get('preset', {}) if isinstance(old_chatbot_info, dict) else {})
-    new_prompt = extract_system_prompt_text_from_preset(preset)
+    old_system_message = extract_transformed_system_message_from_preset(old_chatbot_info.get('preset', {}) if isinstance(old_chatbot_info, dict) else {})
+    new_system_message = extract_transformed_system_message_from_preset(preset)
     old_model = ''
     if isinstance(old_chatbot_info, dict) and isinstance(old_chatbot_info.get('preset', {}), dict):
         old_model = str(old_chatbot_info['preset'].get('model', '')).strip()
@@ -4265,7 +4267,7 @@ def configure_chatbot():
     else:
         if old_model != new_model:
             maybe_sync_chatbot_model_config(app_id, chatbot_id)
-        if old_prompt != new_prompt:
+        if old_system_message != new_system_message:
             maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, name, preset)
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
