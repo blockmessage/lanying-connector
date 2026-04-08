@@ -102,6 +102,13 @@ def clear_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
     except Exception as e:
         logging.exception(e)
 
+def maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id):
+    chatbot_id = get_node_chatbot_id(app_id, node_id)
+    if chatbot_id is None or chatbot_id == '':
+        logging.info(f"maybe_sync_node_bound_chatbot_preset_prompt skip for no bind | app_id:{app_id}, node_id:{node_id}")
+        return
+    executor.submit(sync_bound_chatbot_preset_prompt, app_id, node_id, chatbot_id)
+
 def check_create_node(app_id):
     now = int(time.time())
     node_id = generate_node_id()
@@ -299,10 +306,12 @@ def handle_client_event(event, app_id, user_id, ctype):
                     update_node_field(app_id, node_id, 'status', 'normal')
                     model_patch_config = get_model_patch_config(app_id)
                     update_node_config(app_id, node_id, model_patch_config)
+                    maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
                 elif 'provider_inited' in event and event['provider_inited'] == False:
                     logging.info(f"update node config for provider_inited is false | node_id: {node_id}")
                     model_patch_config = get_model_patch_config(app_id)
                     update_node_config(app_id, node_id, model_patch_config)
+                    maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
     elif event['type'] == 'router_reply':
         if ctype != 'COMMAND':
             logging.info(f"handle_client_event skip not command router_reply | ctype: {ctype}, event: {event}")
@@ -361,6 +370,7 @@ def sync_model_config(app_id, node_id):
         }
     model_patch_config = get_model_patch_config(app_id)
     update_node_config(app_id, node_id, model_patch_config)
+    maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
     return {
         'result': 'ok',
         'data': {
