@@ -988,6 +988,17 @@ def handle_chat_message_try(config, msg, retry_times):
             'msg': f'不支持模型：{preset["model"]}'
         }
 
+def get_completion_budget_tokens(preset):
+    if not isinstance(preset, dict):
+        return 1024
+    value = preset.get('max_completion_tokens')
+    if value is None:
+        value = preset.get('max_tokens', 1024)
+    try:
+        return int(value)
+    except Exception:
+        return 1024
+
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
     config['app_id'] = app_id
@@ -1052,9 +1063,13 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     if 'max_tokens' in lcExt:
         expect_max_tokens = int(lcExt['max_tokens'])
         token_limit = model_token_limit(model_config)
-        expect_max_tokens = max(preset.get('max_tokens', 1024), min(token_limit, max(0,expect_max_tokens)))
-        logging.info(f"Using max_tokens in AI Ext | old:{preset.get('max_tokens', 'None')} new:{expect_max_tokens}")
-        preset['max_tokens'] = expect_max_tokens
+        old_max_tokens = get_completion_budget_tokens(preset)
+        expect_max_tokens = max(old_max_tokens, min(token_limit, max(0, expect_max_tokens)))
+        logging.info(f"Using max_tokens in AI Ext | old:{old_max_tokens} new:{expect_max_tokens}")
+        if 'max_completion_tokens' in preset:
+            preset['max_completion_tokens'] = expect_max_tokens
+        else:
+            preset['max_tokens'] = expect_max_tokens
     if msg_type == 'CHAT' and 'prompt_ext' in lcExt and lcExt['prompt_ext']:
         customHistoryList = []
         for customHistory in lcExt['prompt_ext']:
@@ -1141,7 +1156,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             embedding_message =  {"role": embedding_role, "content": embedding_content}
             history_msg_size_max = config.get('history_msg_size_max', 1024)
             history_reserved = min(512, history_msg_size_max)
-            embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(app_id, messages, model, vendor) - preset.get('max_tokens', 1024) - calcMessageTokens(app_id, ask_message, model, vendor) - calcMessageTokens(app_id, embedding_message, model, vendor) - history_reserved
+            embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(app_id, messages, model, vendor) - get_completion_budget_tokens(preset) - calcMessageTokens(app_id, ask_message, model, vendor) - calcMessageTokens(app_id, embedding_message, model, vendor) - history_reserved
             logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
             search_result = multi_embedding_search(app_id, config, api_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
             for doc in search_result:
@@ -1938,7 +1953,7 @@ def append_message(app_id, preset, model_config, message):
     model = model_config['model']
     vendor = model_config['vendor']
     messages = preset.get('messages', [])
-    completionTokens = preset.get('max_tokens', 1024)
+    completionTokens = get_completion_budget_tokens(preset)
     token_limit = model_token_limit(model_config)
     message_size = calcMessageTokens(app_id, message, model, vendor)
     if message_size > (token_limit - completionTokens) / 2:
@@ -1954,7 +1969,7 @@ def append_message(app_id, preset, model_config, message):
         delete_list = []
         for i in range(len(messages)):
             if i > 0 and i < len(messages) - 4:
-                if messages[i]['role'] == 'system':
+                if messages[i]['role'] in ['system', 'developer']:
                     delete_list.append(i)
                     token_cnt -= calcMessageTokens(app_id, messages[i], model, vendor)
                     break
@@ -1971,7 +1986,7 @@ def append_message(app_id, preset, model_config, message):
             del messages[delete_list[0]]
         elif len(delete_list) == 0:
             logging.info(f"can not found message to delete in first stage | messages: {messages}, model_config:{model_config}")
-            if messages[0]['role'] == 'system':
+            if messages[0]['role'] in ['system', 'developer']:
                 token_cnt -= calcMessageTokens(app_id, messages[0], model, vendor)
                 del messages[0]
             else:
@@ -2080,7 +2095,7 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
     history_msg_count_min = ensure_even(presetExt.get('history_msg_count_min', history_msg_count_min))
     history_msg_count_max = ensure_even(presetExt.get('history_msg_count_max', history_msg_count_max))
     history_msg_size_max = presetExt.get('history_msg_size_max', history_msg_size_max)
-    completionTokens = preset.get('max_tokens', 1024)
+    completionTokens = get_completion_budget_tokens(preset)
     model = preset['model']
     token_limit = model_token_limit(model_config)
     messagesSize = calcMessagesTokens(app_id, messages, model, vendor)
@@ -2144,7 +2159,7 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
     history_msg_count_min = ensure_even(config.get('history_msg_count_min', 1))
     history_msg_count_max = ensure_even(config.get('history_msg_count_max', 10))
     history_msg_size_max = config.get('history_msg_size_max', 4096)
-    completionTokens = preset.get('max_tokens', 1024)
+    completionTokens = get_completion_budget_tokens(preset)
     model = preset['model']
     token_limit = model_token_limit(model_config)
     messagesSize = calcMessagesTokens(app_id, messages, model, vendor)
@@ -3648,11 +3663,13 @@ def list_models(app_id):
     return lanying_vendor.list_models(app_id)
 
 def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_tool_calls=None):
+    usage_source = 'openai'
     if 'total_tokens' in usage:
         total_tokens = usage['total_tokens']
         prompt_tokens = usage.get('prompt_tokens', 0)
         completion_tokens = usage.get('completion_tokens', total_tokens - prompt_tokens)
     else:
+        usage_source = 'local_estimate'
         functions = lanying_openai_compat.get_tools_as_functions(preset)
         prompt_tokens = calcMessagesTokens(app_id, preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(functions, preset['model'], vendor)
         completion_tokens = calcMessageTokens(app_id, {'role':'assistant', 'content':reply}, preset['model'], vendor)
@@ -3668,7 +3685,7 @@ def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_tool_c
     }
     if isinstance(stream_tool_calls, list) and len(stream_tool_calls) > 0:
         response["tool_calls"] = stream_tool_calls
-    logging.info(f"stream_lines_to_response | response:{response}")
+    logging.info(f"stream_lines_to_response | usage_source:{usage_source}, response:{response}")
     return response
 
 def maybe_save_image_msg(config, msg):

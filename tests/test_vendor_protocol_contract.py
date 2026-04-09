@@ -221,6 +221,267 @@ class VendorProtocolContractTests(unittest.TestCase):
         self.assertEqual(out.get('stream_options', {}).get('include_usage'), True)
         self.assertIn('tools', out)
 
+    def test_openai_format_preset_keeps_tools_for_modern_reasoning_models(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        preset = {
+            'model': 'o4-mini',
+            'stream': True,
+            'max_tokens': 4096,
+            'messages': [{'role': 'system', 'content': 'You are helpful'}, {'role': 'user', 'content': 'hello'}],
+            'tools': [
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'lookup',
+                        'description': 'lookup info',
+                        'parameters': {'type': 'object'}
+                    }
+                }
+            ],
+            'tool_choice': {'type': 'function', 'function': {'name': 'lookup'}}
+        }
+        out = m.format_preset(preset, {'reasoning': True})
+        self.assertEqual(out.get('max_completion_tokens'), 4096)
+        self.assertNotIn('max_tokens', out)
+        self.assertTrue(out.get('stream', False))
+        self.assertEqual(out.get('stream_options', {}).get('include_usage'), True)
+        self.assertEqual(out.get('messages', [])[0].get('role'), 'developer')
+        self.assertEqual(out.get('tool_choice', {}).get('function', {}).get('name'), 'lookup')
+
+    def test_openai_format_preset_updates_o1_to_latest_contract(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        preset = {
+            'model': 'o1',
+            'stream': True,
+            'max_tokens': 8192,
+            'messages': [{'role': 'system', 'content': 'Follow policy'}, {'role': 'user', 'content': 'hello'}],
+            'tools': [
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'lookup',
+                        'description': 'lookup info',
+                        'parameters': {'type': 'object'}
+                    }
+                }
+            ],
+            'tool_choice': {'type': 'function', 'function': {'name': 'lookup'}}
+        }
+        out = m.format_preset(preset, {'reasoning': True, 'function_call': True})
+        self.assertEqual(out.get('max_completion_tokens'), 8192)
+        self.assertNotIn('max_tokens', out)
+        self.assertTrue(out.get('stream', False))
+        self.assertEqual(out.get('stream_options', {}).get('include_usage'), True)
+        self.assertEqual(out.get('messages', [])[0].get('role'), 'developer')
+        self.assertEqual(out.get('tool_choice', {}).get('function', {}).get('name'), 'lookup')
+
+    def test_openai_format_preset_strips_stop_for_gpt5_reasoning_models(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        preset = {
+            'model': 'gpt-5-mini',
+            'stream': True,
+            'max_tokens': 1024,
+            'temperature': 0.9,
+            'top_p': 1,
+            'presence_penalty': 0.6,
+            'frequency_penalty': 0,
+            'stop': [' Human:', ' AI:'],
+            'messages': [{'role': 'system', 'content': 'Follow policy'}, {'role': 'user', 'content': 'hello'}],
+        }
+        out = m.format_preset(preset, {'reasoning': True, 'function_call': True})
+        self.assertEqual(out.get('max_completion_tokens'), 1024)
+        self.assertNotIn('max_tokens', out)
+        self.assertEqual(out.get('messages', [])[0].get('role'), 'developer')
+        self.assertNotIn('stop', out)
+        self.assertNotIn('temperature', out)
+        self.assertNotIn('top_p', out)
+        self.assertNotIn('presence_penalty', out)
+        self.assertNotIn('frequency_penalty', out)
+
+    def test_openai_format_preset_strips_sampling_params_for_o4_mini(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        preset = {
+            'model': 'o4-mini',
+            'stream': True,
+            'max_tokens': 1024,
+            'temperature': 0.9,
+            'top_p': 1,
+            'presence_penalty': 0.6,
+            'frequency_penalty': 0,
+            'stop': [' Human:', ' AI:'],
+            'messages': [{'role': 'system', 'content': 'Follow policy'}, {'role': 'user', 'content': 'hello'}],
+        }
+        out = m.format_preset(preset, {'reasoning': True, 'function_call': True})
+        self.assertEqual(out.get('max_completion_tokens'), 1024)
+        self.assertNotIn('max_tokens', out)
+        self.assertEqual(out.get('messages', [])[0].get('role'), 'developer')
+        self.assertNotIn('stop', out)
+        self.assertNotIn('temperature', out)
+        self.assertNotIn('top_p', out)
+        self.assertNotIn('presence_penalty', out)
+        self.assertNotIn('frequency_penalty', out)
+
+    def test_openai_format_preset_strips_tools_for_o1_mini(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        preset = {
+            'model': 'o1-mini',
+            'max_tokens': 2048,
+            'messages': [{'role': 'system', 'content': 'Follow policy'}, {'role': 'user', 'content': 'hello'}],
+            'tools': [
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'lookup',
+                        'description': 'lookup info',
+                        'parameters': {'type': 'object'}
+                    }
+                }
+            ],
+            'tool_choice': {'type': 'function', 'function': {'name': 'lookup'}}
+        }
+        out = m.format_preset(preset, {'reasoning': True, 'function_call': False})
+        self.assertEqual(out.get('messages', [])[0].get('role'), 'developer')
+        self.assertEqual(out.get('max_completion_tokens'), 2048)
+        self.assertNotIn('tools', out)
+        self.assertNotIn('tool_choice', out)
+
+    def test_openai_model_configs_include_current_official_chat_models(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        models = {item.get('model'): item for item in m.model_configs()}
+        self.assertIn('gpt-5.4', models)
+        self.assertIn('gpt-5.4-mini', models)
+        self.assertIn('gpt-5.4-nano', models)
+        self.assertIn('gpt-5.2', models)
+        self.assertIn('gpt-5.1', models)
+        self.assertIn('gpt-4.1', models)
+        self.assertIn('o3', models)
+        self.assertIn('o4-mini', models)
+        self.assertIn('o1', models)
+        self.assertNotIn('gpt-5-pro', models)
+        self.assertNotIn('gpt-5.2-pro', models)
+        self.assertNotIn('o3-pro', models)
+        self.assertNotIn('o1-pro', models)
+        self.assertNotIn('o1-preview', models)
+        self.assertNotIn('o1-preview-2024-09-12', models)
+        self.assertNotIn('o1-mini', models)
+        self.assertNotIn('o1-mini-2024-09-12', models)
+        self.assertNotIn('gpt-4-1106-preview', models)
+        self.assertNotIn('gpt-4-0125-preview', models)
+        self.assertNotIn('gpt-4o-mini-audio-preview', models)
+        self.assertEqual(models['gpt-5.4-mini'].get('reasoning'), True)
+        self.assertEqual(models['gpt-5.4'].get('support_vision'), True)
+        self.assertEqual(models['gpt-5.1'].get('reasoning'), True)
+        self.assertEqual(models['gpt-4.1'].get('support_vision'), True)
+        self.assertEqual(models['o4-mini'].get('function_call'), True)
+        self.assertEqual(models['o1'].get('function_call'), True)
+
+    def test_openai_chat_models_put_default_first_then_put_gpt_before_o_models(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        chat_models = [item for item in m.model_configs() if item.get('type') == 'chat']
+        self.assertTrue(len(chat_models) > 1)
+        self.assertEqual(chat_models[0].get('model'), 'gpt-5-mini')
+        self.assertEqual(chat_models[0].get('is_default'), True)
+        remaining_models = [item.get('model') for item in chat_models[1:]]
+        gpt_models = [item for item in remaining_models if item.startswith('gpt')]
+        o_models = [item for item in remaining_models if item.startswith('o')]
+        other_models = [item for item in remaining_models if not item.startswith('gpt') and not item.startswith('o')]
+        self.assertEqual(remaining_models, gpt_models + o_models + other_models)
+        self.assertEqual(gpt_models, sorted(gpt_models, reverse=True))
+        self.assertEqual(o_models, sorted(o_models, reverse=True))
+
+    def test_openai_new_gpt_model_quotas_follow_pricing_formula(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        pricing = importlib.import_module('lanying_vendor_pricing')
+        models = {item.get('model'): item for item in m.model_configs()}
+
+        self.assertEqual(models['gpt-5.4-mini'].get('quota'), pricing.calc_adjusted_points(0.75, 4.5))
+        self.assertEqual(models['gpt-5.4-mini'].get('input_price'), 0.75)
+        self.assertEqual(models['gpt-5.4-mini'].get('output_price'), 4.5)
+        self.assertEqual(models['gpt-5.4-mini'].get('currency'), 'USD')
+        self.assertEqual(models['gpt-5.4'].get('quota'), pricing.calc_adjusted_points(2.5, 15.0))
+        self.assertEqual(models['gpt-5'].get('quota'), pricing.calc_adjusted_points(1.25, 10.0))
+        self.assertEqual(models['gpt-5.2'].get('quota'), pricing.calc_adjusted_points(1.75, 14.0))
+        self.assertEqual(models['gpt-5.1'].get('quota'), pricing.calc_adjusted_points(1.25, 10.0))
+        self.assertEqual(models['gpt-5.4-nano'].get('quota'), pricing.calc_adjusted_points(0.2, 1.25))
+        self.assertEqual(models['gpt-5-nano'].get('quota'), pricing.calc_adjusted_points(0.05, 0.4))
+        self.assertEqual(models['gpt-4.1'].get('quota'), pricing.calc_adjusted_points(2.0, 8.0))
+        self.assertEqual(models['gpt-4.1-mini'].get('quota'), pricing.calc_adjusted_points(0.4, 1.6))
+        self.assertEqual(models['gpt-4.1-nano'].get('quota'), pricing.calc_adjusted_points(0.1, 0.4))
+        self.assertEqual(models['o4-mini'].get('quota'), pricing.calc_adjusted_points(1.1, 4.4))
+        self.assertEqual(models['o3'].get('quota'), pricing.calc_adjusted_points(2.0, 8.0))
+
+    def test_openai_legacy_chat_models_also_use_priced_config_shape(self):
+        m = importlib.import_module('lanying_vendor_openai')
+        models = {item.get('model'): item for item in m.model_configs()}
+
+        for model in ['gpt-3.5-turbo', 'gpt-4o', 'gpt-4-turbo', 'gpt-4', 'gpt-4o-mini-2024-07-18', 'o4-mini', 'o3', 'o1']:
+            self.assertIn('input_price', models[model])
+            self.assertIn('output_price', models[model])
+            self.assertEqual(models[model].get('currency'), 'USD')
+
+    def test_pricing_compare_model_quota_reports_difference(self):
+        pricing = importlib.import_module('lanying_vendor_pricing')
+        out = pricing.compare_model_quota({
+            'model': 'gpt-5-mini',
+            'service': 'chatgpt',
+            'quota': 1.00,
+            'input_price': 0.25,
+            'output_price': 2.0,
+            'currency': 'USD'
+        })
+
+        self.assertEqual(out.get('model'), 'gpt-5-mini')
+        self.assertEqual(out.get('calculated_quota'), 0.94)
+        self.assertEqual(out.get('quota_diff'), 0.06)
+        self.assertEqual(out.get('is_matched'), False)
+
+    def test_pricing_compare_model_quotas_skips_models_without_pricing(self):
+        pricing = importlib.import_module('lanying_vendor_pricing')
+        out = pricing.compare_model_quotas([
+            {
+                'model': 'priced-model',
+                'quota': 0.94,
+                'input_price': 0.25,
+                'output_price': 2.0,
+                'currency': 'USD'
+            },
+            {
+                'model': 'no-price-model',
+                'quota': 1.0
+            }
+        ])
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].get('model'), 'priced-model')
+        self.assertEqual(out[0].get('is_matched'), True)
+
+    def test_pricing_format_quota_diff_report_summarizes_mismatch(self):
+        pricing = importlib.import_module('lanying_vendor_pricing')
+        out = pricing.format_quota_diff_report([
+            {
+                'model': 'matched-model',
+                'quota': 0.94,
+                'input_price': 0.25,
+                'output_price': 2.0,
+                'currency': 'USD'
+            },
+            {
+                'model': 'mismatched-model',
+                'quota': 1.00,
+                'input_price': 0.25,
+                'output_price': 2.0,
+                'currency': 'USD'
+            }
+        ])
+
+        self.assertEqual(out.get('total'), 2)
+        self.assertEqual(out.get('matched'), 1)
+        self.assertEqual(out.get('mismatched'), 1)
+        self.assertEqual(len(out.get('lines', [])), 2)
+        self.assertIn('matched-model | quota=0.94 | calculated_quota=0.94 | quota_diff=0.0 | matched=True', out.get('lines', []))
+        self.assertEqual(len(out.get('mismatched_items', [])), 1)
+        self.assertEqual(out.get('mismatched_items', [])[0].get('model'), 'mismatched-model')
+
     def test_claude_chat_returns_tool_calls_contract(self):
         m = importlib.import_module('lanying_vendor_claude')
 

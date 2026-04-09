@@ -336,6 +336,94 @@ class VendorBridgeTests(unittest.TestCase):
 
         self.assertEqual(out["model"], "cheap")
 
+    def test_chat_models_by_service_puts_default_first_then_model_desc_for_all_vendors(self):
+        class _SortRuleModule:
+            @staticmethod
+            def model_configs():
+                return [
+                    {"model": "alpha-1", "type": "chat", "service": "sort-rule", "is_default": False},
+                    {"model": "zeta-9", "type": "chat", "service": "sort-rule", "is_default": True},
+                    {"model": "middle-5", "type": "chat", "service": "sort-rule", "is_default": False},
+                ]
+
+        old_module = lanying_vendor.vendor_to_module.get("sort_rule_test")
+        lanying_vendor.vendor_to_module["sort_rule_test"] = _SortRuleModule
+        try:
+            grouped = lanying_vendor._chat_models_by_service()
+        finally:
+            if old_module is None:
+                del lanying_vendor.vendor_to_module["sort_rule_test"]
+            else:
+                lanying_vendor.vendor_to_module["sort_rule_test"] = old_module
+
+        models = [item["model"] for item in grouped["sort-rule"]]
+        self.assertEqual(models, ["zeta-9", "middle-5", "alpha-1"])
+
+    def test_chat_models_by_service_preserves_openai_grouped_order(self):
+        class _OpenAIOrderModule:
+            @staticmethod
+            def model_configs():
+                return [
+                    {"model": "gpt-5-mini", "type": "chat", "service": "chatgpt", "is_default": True},
+                    {"model": "gpt-4.1", "type": "chat", "service": "chatgpt"},
+                    {"model": "gpt-4o", "type": "chat", "service": "chatgpt"},
+                    {"model": "o4-mini", "type": "chat", "service": "chatgpt"},
+                    {"model": "o1", "type": "chat", "service": "chatgpt"},
+                ]
+
+        class _OtherVendorModule:
+            @staticmethod
+            def model_configs():
+                return [
+                    {"model": "alpha-1", "type": "chat", "service": "other-service"},
+                    {"model": "zeta-9", "type": "chat", "service": "other-service", "is_default": True},
+                    {"model": "middle-5", "type": "chat", "service": "other-service"},
+                ]
+
+        old_openai = lanying_vendor.vendor_to_module.get("openai")
+        old_other = lanying_vendor.vendor_to_module.get("other_vendor_test")
+        lanying_vendor.vendor_to_module["openai"] = _OpenAIOrderModule
+        lanying_vendor.vendor_to_module["other_vendor_test"] = _OtherVendorModule
+        try:
+            grouped = lanying_vendor._chat_models_by_service()
+        finally:
+            if old_openai is None:
+                del lanying_vendor.vendor_to_module["openai"]
+            else:
+                lanying_vendor.vendor_to_module["openai"] = old_openai
+            if old_other is None:
+                del lanying_vendor.vendor_to_module["other_vendor_test"]
+            else:
+                lanying_vendor.vendor_to_module["other_vendor_test"] = old_other
+
+        self.assertEqual(
+            [item["model"] for item in grouped["chatgpt"][:5]],
+            ["gpt-5-mini", "gpt-4.1", "gpt-4o", "o4-mini", "o1"]
+        )
+        self.assertEqual(
+            [item["model"] for item in grouped["other-service"]],
+            ["zeta-9", "middle-5", "alpha-1"]
+        )
+
+    def test_sanitize_model_config_hides_internal_pricing_fields(self):
+        config = {
+            "model": "gpt-test",
+            "type": "chat",
+            "url": "https://example.com",
+            "endpoint": "https://example.com/v1",
+            "input_price": 0.25,
+            "output_price": 2.0,
+            "currency": "USD",
+        }
+
+        out = lanying_vendor._sanitize_model_config(config)
+
+        self.assertNotIn("url", out)
+        self.assertNotIn("endpoint", out)
+        self.assertNotIn("input_price", out)
+        self.assertNotIn("output_price", out)
+        self.assertNotIn("currency", out)
+
     def test_test_vendor_connection_keeps_original_endpoint_when_first_probe_succeeds(self):
         vendor_setting = lanying_vendor.VendorSetting(
             app_id="app",

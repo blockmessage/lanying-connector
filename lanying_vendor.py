@@ -121,7 +121,7 @@ def _service_name_to_label_key(service):
 def _chat_models_by_service():
     grouped = {}
     for vendor, module in vendor_to_module.items():
-        for config in module.model_configs():
+        for index, config in enumerate(module.model_configs()):
             if config.get('type') != 'chat':
                 continue
             service = config.get('service', '')
@@ -130,9 +130,10 @@ def _chat_models_by_service():
             grouped.setdefault(service, [])
             config_copy = copy.deepcopy(config)
             config_copy['handler_vendor'] = vendor
+            config_copy['_source_index'] = index
             grouped[service].append(config_copy)
     for _, models in grouped.items():
-        models.sort(key=lambda item: (0 if item.get('is_origin_vendor', False) else 1, item.get('order', 999999), item.get('model', '')))
+        models[:] = _sort_chat_models_for_display(models)
         deduped_models = []
         used_models = set()
         for model in models:
@@ -140,9 +141,45 @@ def _chat_models_by_service():
             if model_name == '' or model_name in used_models:
                 continue
             used_models.add(model_name)
+            model.pop('_source_index', None)
             deduped_models.append(model)
         models[:] = deduped_models
     return grouped
+
+
+def _sort_model_configs_for_display(configs):
+    chat_models = []
+    other_models = []
+    for config in configs:
+        if config.get('type') == 'chat':
+            chat_models.append(config)
+        else:
+            other_models.append(config)
+    chat_models = _sort_chat_models_for_display(chat_models)
+    return chat_models + other_models
+
+
+def _should_preserve_openai_chat_order(item):
+    return item.get('handler_vendor') == 'openai' or item.get('vendor') == 'openai'
+
+
+def _sort_chat_models_for_display(models):
+    default_models = [item for item in models if item.get('is_default', False)]
+    normal_models = [item for item in models if not item.get('is_default', False)]
+
+    default_models.sort(key=lambda item: str(item.get('model', '')), reverse=True)
+
+    preserved_models = []
+    remaining_models = []
+    for item in normal_models:
+        if _should_preserve_openai_chat_order(item):
+            preserved_models.append(item)
+        else:
+            remaining_models.append(item)
+
+    preserved_models.sort(key=lambda item: int(item.get('_source_index', 0)))
+    remaining_models.sort(key=lambda item: str(item.get('model', '')), reverse=True)
+    return default_models + preserved_models + remaining_models
 
 
 def _default_model_template_by_service():
@@ -774,10 +811,9 @@ def test_vendor_connection(vendor_setting):
 
 
 def _sanitize_model_config(new_config):
-    if 'url' in new_config:
-        del new_config['url']
-    if 'endpoint' in new_config:
-        del new_config['endpoint']
+    for field in ['url', 'endpoint', 'input_price', 'output_price', 'currency']:
+        if field in new_config:
+            del new_config[field]
     return new_config
 
 
@@ -984,12 +1020,20 @@ def _get_legacy_handler_models(handler_vendor):
     module = vendor_to_module.get(handler_vendor)
     if module is None:
         return []
-    return module.model_configs()
+    configs = module.model_configs()
+    if handler_vendor == 'openai':
+        return copy.deepcopy(configs)
+    return _sort_model_configs_for_display(configs)
 
 def list_models(app_id):
     models = []
     for vendor,module in vendor_to_module.items():
-        for config in module.model_configs():
+        module_configs = module.model_configs()
+        if vendor == 'openai':
+            iter_configs = module_configs
+        else:
+            iter_configs = _sort_model_configs_for_display(module_configs)
+        for config in iter_configs:
             new_config = copy.deepcopy(config)
             _sanitize_model_config(new_config)
             new_config['vendor'] = vendor

@@ -379,7 +379,7 @@ def sync_model_config(app_id, node_id, sync_preset_prompt=True):
         }
     }    
 
-def get_model_patch_config(app_id, node_id=None, primary="openai/gpt-4o-mini", fallbacks=['volcengine/Doubao-1.5-pro-32k', 'volcengine/DeepSeek-R1']):
+def get_model_patch_config(app_id, node_id=None, primary="openai/gpt-5-mini", fallbacks=['volcengine/Doubao-1.5-pro-32k', 'volcengine/DeepSeek-R1']):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
         token = config.get('access_token', '')
