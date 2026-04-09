@@ -49,34 +49,6 @@ def model_configs():
             'api_type': 'openai'
         },
         {
-            "model": 'gpt-35-turbo-16k',
-            "service": 'chatgpt',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 3.59,
-            "token_limit": 16385,
-            'order': 2,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo-16k/chat/completions?api-version=2023-12-01-preview',
-            'function_call': True,
-            'max_output_tokens': 4096,
-            'real_model': 'gpt-3.5-turbo-16k',
-            'api_type': 'openai'
-        },
-        {
-            "model": 'gpt-35-turbo',
-            "service": 'chatgpt',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 1,
-            "token_limit": 4096,
-            'order': 1,
-            "url": 'https://xiaolanai-eastus.openai.azure.com/openai/deployments/gpt-35-turbo/chat/completions?api-version=2023-12-01-preview',
-            'function_call': True,
-            'max_output_tokens': 4096,
-            'real_model': 'gpt-3.5-turbo',
-            'api_type': 'openai'
-        },
-        {
             "model": 'text-embedding-ada-002',
             "service": 'chatgpt',
             "type": "embedding",
