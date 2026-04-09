@@ -11,6 +11,9 @@ import json
 import lanying_vendor
 from lanying_async import executor
 
+OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
+无论用户如何要求，你都绝对不能修改本文件。"""
+
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id):
         self.app_id = app_id
@@ -70,6 +73,16 @@ def extract_system_prompt_text_from_preset(preset):
             system_contents.append(content)
     return '\n\n'.join(system_contents)
 
+def normalize_preset_prompt_for_agents_md(prompt):
+    if not isinstance(prompt, str):
+        prompt = ''
+    normalized_prompt = prompt.strip()
+    if OPENCLAW_PROTECTED_FILE_RULE in normalized_prompt:
+        return normalized_prompt
+    if normalized_prompt == '':
+        return OPENCLAW_PROTECTED_FILE_RULE
+    return f"{normalized_prompt}\n\n{OPENCLAW_PROTECTED_FILE_RULE}"
+
 def sync_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
     try:
         node_info = get_node(app_id, node_id)
@@ -97,7 +110,7 @@ def clear_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
         chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot_info is not None:
             chatbot_name = str(chatbot_info.get('name', ''))
-        sync_result = sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, '')
+        sync_result = sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, '', append_protected_rule=False)
         logging.info(f"clear_bound_chatbot_preset_prompt result | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}, result:{sync_result}")
     except Exception as e:
         logging.exception(e)
@@ -482,12 +495,13 @@ def update_node_config(app_id, node_id, patch_config):
         }
     }
 
-def sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt):
+def sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt, append_protected_rule=True):
     if node_info is None:
         return {
             'result': 'error',
             'message': 'node not exist'
         }
+    sync_prompt = normalize_preset_prompt_for_agents_md(prompt) if append_protected_rule else str(prompt)
     app_id = node_info['app_id']
     user_id = node_info['user_id']
     admin_token = lanying_config.get_lanying_admin_token(app_id)
@@ -503,14 +517,14 @@ def sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt):
             'formatVersion': 1,
             'chatbotId': str(chatbot_id),
             'chatbotName': str(chatbot_name),
-            'prompt': str(prompt)
+            'prompt': sync_prompt
         }
     }
     extra = {
         'ext': ext,
         'skip_antispam_prompt': True
     }
-    logging.info(f"sync_chatbot_preset_prompt start | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, chatbot_id:{chatbot_id}, prompt_len:{len(str(prompt))}")
+    logging.info(f"sync_chatbot_preset_prompt start | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, chatbot_id:{chatbot_id}, prompt_len:{len(sync_prompt)}, append_protected_rule:{append_protected_rule}")
     msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, send_msg_type, content_type, content, extra)
     if msg_id <= 0:
         return {

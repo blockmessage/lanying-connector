@@ -73,13 +73,17 @@ def extract_transformed_system_message_from_preset(preset):
                 system_message_list.append(transformed_content)
     return '\n\n'.join(system_message_list)
 
+def extract_sync_system_message_from_preset(preset):
+    prompt = extract_transformed_system_message_from_preset(preset)
+    return lanying_openclaw.normalize_preset_prompt_for_agents_md(prompt)
+
 def maybe_sync_chatbot_preset_prompt(app_id, chatbot_id, chatbot_name, preset):
     try:
         node_info = lanying_openclaw.get_chatbot_node_info(app_id, chatbot_id)
         if node_info is None:
             logging.info(f"maybe_sync_chatbot_preset_prompt skip for no openclaw bind | app_id:{app_id}, chatbot_id:{chatbot_id}")
             return
-        prompt = extract_transformed_system_message_from_preset(preset)
+        prompt = extract_sync_system_message_from_preset(preset)
         sync_result = lanying_openclaw.sync_chatbot_preset_prompt(node_info, chatbot_id, chatbot_name, prompt)
         if sync_result.get('result') != 'ok':
             logging.info(f"maybe_sync_chatbot_preset_prompt failed | app_id:{app_id}, chatbot_id:{chatbot_id}, result:{sync_result}")
@@ -4315,8 +4319,8 @@ def configure_chatbot():
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
     old_chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-    old_system_message = extract_transformed_system_message_from_preset(old_chatbot_info.get('preset', {}) if isinstance(old_chatbot_info, dict) else {})
-    new_system_message = extract_transformed_system_message_from_preset(preset)
+    old_system_message = extract_sync_system_message_from_preset(old_chatbot_info.get('preset', {}) if isinstance(old_chatbot_info, dict) else {})
+    new_system_message = extract_sync_system_message_from_preset(preset)
     old_model = ''
     if isinstance(old_chatbot_info, dict) and isinstance(old_chatbot_info.get('preset', {}), dict):
         old_model = str(old_chatbot_info['preset'].get('model', '')).strip()
