@@ -295,6 +295,53 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual(out['messages'][0]['role'], 'user')
         self.assertNotIn('developer', [item['role'] for item in out['messages']])
 
+    def test_list_models_openai_api_returns_vendor_prefixed_ids(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        fake_request = types.SimpleNamespace(headers={'Authorization': 'Bearer app-test-key'})
+
+        with mock.patch.object(m, 'check_authorization', return_value={'result': 'ok', 'app_id': 'app', 'config': {}}), \
+             mock.patch.object(m.lanying_vendor, 'list_models', create=True, return_value=[
+                 {'vendor': 'openai', 'model': 'gpt-4o-mini', 'quota': 0.49, 'quota_without_content_security': 0.38, 'token_limit': 128000, 'max_output_tokens': 16384, 'reasoning': False, 'function_call': True},
+                 {'vendor': 'azure2', 'model': 'gpt-4o', 'quota': 8.0, 'token_limit': 128000, 'max_output_tokens': 16384, 'reasoning': True, 'function_call': False},
+                 {'vendor': 'openai', 'model': 'hidden-model', 'hidden': True},
+             ]):
+            out = m.list_models_openai_api(fake_request)
+
+        self.assertEqual(out['result'], 'ok')
+        self.assertEqual(out['response']['object'], 'list')
+        self.assertEqual(
+            [item['id'] for item in out['response']['data']],
+            ['openai/gpt-4o-mini', 'azure2/gpt-4o']
+        )
+        self.assertEqual(out['response']['data'][0]['object'], 'model')
+        self.assertEqual(out['response']['data'][0]['owned_by'], 'openai')
+        self.assertEqual(out['response']['data'][0]['quota'], 0.49)
+        self.assertEqual(out['response']['data'][0]['quota_without_content_security'], 0.38)
+        self.assertEqual(out['response']['data'][0]['token_limit'], 128000)
+        self.assertEqual(out['response']['data'][0]['max_output_tokens'], 16384)
+        self.assertEqual(out['response']['data'][0]['reasoning'], False)
+        self.assertEqual(out['response']['data'][0]['function_call'], True)
+        self.assertEqual(out['response']['data'][1]['reasoning'], True)
+        self.assertEqual(out['response']['data'][1]['function_call'], False)
+
+    def test_list_models_openai_api_returns_auth_error(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        fake_request = types.SimpleNamespace(headers={})
+
+        with mock.patch.object(m, 'check_authorization', return_value={'result': 'error', 'msg': 'bad_authorization', 'code': 'bad_authorization'}):
+            out = m.list_models_openai_api(fake_request)
+
+        self.assertEqual(out['result'], 'error')
+        self.assertEqual(out['code'], 'bad_authorization')
+
 
 if __name__ == '__main__':
     unittest.main()

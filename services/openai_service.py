@@ -3662,6 +3662,53 @@ def user_default_embedding_name_key(app_id, user_id):
 def list_models(app_id):
     return lanying_vendor.list_models(app_id)
 
+
+def _to_openai_compatible_model_id(model_config):
+    vendor = str(model_config.get('vendor', '') or '').strip()
+    model = str(model_config.get('model', '') or '').strip()
+    if vendor == '' or model == '':
+        return ''
+    return f'{vendor}/{model}'
+
+
+def list_models_openai_api(request):
+    auth_result = check_authorization(request)
+    if auth_result['result'] == 'error':
+        logging.info(f"check_authorization deny for list models, msg={auth_result['msg']}")
+        return auth_result
+    app_id = auth_result['app_id']
+    now = int(time.time())
+    data = []
+    for model_config in lanying_vendor.list_models(app_id):
+        if not isinstance(model_config, dict):
+            continue
+        if model_config.get('hidden', False):
+            continue
+        model_id = _to_openai_compatible_model_id(model_config)
+        if model_id == '':
+            continue
+        data.append({
+            'id': model_id,
+            'object': 'model',
+            'created': now,
+            'owned_by': str(model_config.get('vendor', '') or 'lanying'),
+            'root': model_id,
+            'parent': None,
+            'quota': model_config.get('quota', 0),
+            'quota_without_content_security': model_config.get('quota_without_content_security', model_config.get('quota', 0)),
+            'token_limit': model_config.get('token_limit', 0),
+            'max_output_tokens': model_config.get('max_output_tokens', 0),
+            'reasoning': bool(model_config.get('reasoning', False)),
+            'function_call': bool(model_config.get('function_call', False))
+        })
+    return {
+        'result': 'ok',
+        'response': {
+            'object': 'list',
+            'data': data
+        }
+    }
+
 def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_tool_calls=None):
     usage_source = 'openai'
     if 'total_tokens' in usage:

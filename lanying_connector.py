@@ -353,6 +353,7 @@ def get_message_limit_state(service):
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
 @app.route("/v1/chat/completions", methods=["POST"])
+@app.route("/v1/models", methods=["GET"])
 @app.route("/v1/embeddings", methods=["POST"])
 @app.route("/v1/engines/text-embedding-ada-002/embeddings", methods=["POST"])
 @app.route("/v1/images/generations", methods=["POST"])
@@ -361,7 +362,10 @@ def openai_request():
     try:
         service = "openai"
         service_module = get_service_module(service)
-        res = service_module.handle_request(request, "json")
+        if request.path == "/v1/models":
+            res = service_module.list_models_openai_api(request)
+        else:
+            res = service_module.handle_request(request, "json")
         if res['result'] == 'error':
             return to_openai_error_response(res)
         else:
