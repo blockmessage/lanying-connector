@@ -2,25 +2,33 @@ def calc_adjusted_points(
     input_price,
     output_price,
     currency="USD",
+    fx=7.0,  # ✅ 汇率参数（默认7）
     input_weight=0.75,
     output_weight=0.25,
     base_price=0.00075,
     fixed=0.22222222,
-    variable=0.77777778,
     digits=2,
 ):
     input_price = float(input_price)
     output_price = float(output_price)
     currency = str(currency or "USD").upper()
 
+    # 1️⃣ 单位统一：1M → 1k
     if currency == "USD":
         input_price = input_price / 1000.0
         output_price = output_price / 1000.0
-    elif currency != "CNY":
+        fx_factor = fx      # USD 用汇率
+    elif currency == "CNY":
+        fx_factor = 1.0     # CNY 不用汇率
+    else:
         raise ValueError("currency must be USD or CNY")
 
+    # 2️⃣ 合成 price
     price = input_price * input_weight + output_price * output_weight
-    adjusted = fixed + variable * (price / base_price)
+
+    # 3️⃣ 核心公式（统一）
+    adjusted = fixed + (price / base_price) * (fx_factor / 9)
+
     return round(adjusted, digits)
 
 
@@ -99,3 +107,12 @@ def format_quota_diff_report(configs, digits=2, diff_digits=8):
         "items": items,
         "mismatched_items": mismatched,
     }
+
+def show_report():
+    import lanying_vendor_openai
+    import lanying_vendor_aliyun
+    report = format_quota_diff_report(
+        lanying_vendor_openai.model_configs() + lanying_vendor_aliyun.model_configs()
+    )
+    for line in report["lines"]:
+        print(line)

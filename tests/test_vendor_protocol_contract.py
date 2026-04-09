@@ -221,6 +221,38 @@ class VendorProtocolContractTests(unittest.TestCase):
         self.assertEqual(out.get('stream_options', {}).get('include_usage'), True)
         self.assertIn('tools', out)
 
+    def test_aliyun_model_configs_include_current_common_qwen_models(self):
+        m = importlib.import_module('lanying_vendor_aliyun')
+        models = {item.get('model'): item for item in m.model_configs()}
+
+        self.assertIn('qwen3.5-flash', models)
+        self.assertIn('qwen3.6-plus', models)
+        self.assertIn('qwen3-max', models)
+        self.assertIn('qwen-flash', models)
+        self.assertIn('qwen-plus', models)
+        self.assertIn('qwen-max', models)
+        self.assertIn('qwen-plus-latest', models)
+        self.assertIn('qwen-max-latest', models)
+        self.assertNotIn('qwen-turbo', models)
+        self.assertNotIn('qwen-max-longcontext', models)
+        self.assertEqual(models['qwen3.5-flash'].get('is_default'), True)
+        self.assertEqual(models['qwen3.5-flash'].get('quota'), 0.8)
+        self.assertEqual(models['qwen3.5-flash'].get('currency'), 'CNY')
+        self.assertEqual(models['qwen3.5-flash'].get('input_price'), 0.0012)
+        self.assertEqual(models['qwen3.5-flash'].get('output_price'), 0.012)
+        self.assertEqual(models['qwen3.6-plus'].get('reasoning'), True)
+        self.assertEqual(models['qwen3.6-plus'].get('quota'), 2.89)
+        self.assertEqual(models['qwen3.6-plus'].get('input_price'), 0.008)
+        self.assertEqual(models['qwen3.6-plus'].get('output_price'), 0.048)
+        self.assertEqual(models['qwen3-max'].get('quota'), 2.04)
+        self.assertEqual(models['qwen3-max'].get('input_price'), 0.007)
+        self.assertEqual(models['qwen3-max'].get('output_price'), 0.028)
+        self.assertEqual(models['qwen3-max'].get('function_call'), True)
+        self.assertEqual(models['qwen-plus'].get('quota'), 3.13)
+        self.assertEqual(models['qwen-plus'].get('output_price'), 0.064)
+        self.assertEqual(models['qwen-max'].get('quota'), 0.84)
+        self.assertEqual(models['qwen-max-latest'].get('function_call'), True)
+
     def test_openai_format_preset_keeps_tools_for_modern_reasoning_models(self):
         m = importlib.import_module('lanying_vendor_openai')
         preset = {

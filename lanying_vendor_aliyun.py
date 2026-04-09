@@ -7,56 +7,114 @@ import lanying_openai_compat
 
 SUPPORT_NATIVE_TOOLS = True
 
+
+def _chat_model_config(model, quota, token_limit, max_output_tokens, **kwargs):
+    config = {
+        "model": model,
+        "is_origin_vendor": True,
+        "service": 'qwen',
+        "type": "chat",
+        "is_prefix": False,
+        "quota": quota,
+        "token_limit": token_limit,
+        'max_output_tokens': max_output_tokens
+    }
+    config.update(kwargs)
+    return config
+
+
+def _priced_chat_model_config(model, quota, input_price, output_price, token_limit, max_output_tokens, currency='CNY', **kwargs):
+    config = _chat_model_config(model, quota, token_limit, max_output_tokens, **kwargs)
+    config['input_price'] = float(input_price)
+    config['output_price'] = float(output_price)
+    config['currency'] = str(currency or 'CNY').upper()
+    return config
+
+def show_models():
+    for model in model_configs():
+        print(f'{model["model"]}\t{model["input_price"]}\t{model["output_price"]}')
+
 def model_configs():
     return [
-        {
-            "model": 'qwen-turbo',
-            "is_origin_vendor": True,
-            "service": 'qwen',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 0.67,
-            "token_limit": 8000,
-            'order': 1,
-            'max_output_tokens': 2000,
-            'function_call': True
-        },
-        {
-            "model": 'qwen-plus',
-            "is_origin_vendor": True,
-            "service": 'qwen',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 1.11,
-            "token_limit": 32000,
-            'order': 2,
-            'max_output_tokens': 2000,
-            'function_call': True
-        },
-        {
-            "model": 'qwen-max',
-            "is_origin_vendor": True,
-            "service": 'qwen',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 9.11,
-            "token_limit": 8000,
-            'order': 3,
-            'max_output_tokens': 2000,
-            'function_call': True
-        },
-        {
-            "model": 'qwen-max-longcontext',
-            "is_origin_vendor": True,
-            "service": 'qwen',
-            "type": "chat",
-            "is_prefix": False,
-            "quota": 9.11,
-            "token_limit": 32000,
-            'order': 4,
-            'max_output_tokens': 2000,
-            'function_call': True
-        }
+        _priced_chat_model_config(
+            'qwen3.5-flash',
+            0.8,
+            0.0012,
+            0.012,
+            1000000,
+            32768,
+            is_default=True,
+            reasoning=True,
+            function_call=True
+        ),
+        _priced_chat_model_config(
+            'qwen3.6-plus',
+            2.89,
+            0.008,
+            0.048,
+            1000000,
+            65536,
+            reasoning=True,
+            function_call=True
+        ),
+        _priced_chat_model_config(
+            'qwen3-max',
+            2.04,
+            0.007,
+            0.028,
+            262144,
+            65536,
+            reasoning=True,
+            function_call=True
+        ),
+        _priced_chat_model_config(
+            'qwen-flash',
+            0.8,
+            0.0012,
+            0.012,
+            1000000,
+            32768,
+            reasoning=True,
+            function_call=True
+        ),
+        _priced_chat_model_config(
+            'qwen-plus',
+            3.13,
+            0.0048,
+            0.064,
+            1000000,
+            32768,
+            reasoning=True,
+            function_call=True
+        ),
+        _priced_chat_model_config(
+            'qwen-max',
+            0.84,
+            0.0024,
+            0.0096,
+            32768,
+            8192,
+            function_call=True
+        ),
+        _priced_chat_model_config(
+            'qwen-plus-latest',
+            3.13,
+            0.0048,
+            0.064,
+            1000000,
+            32768,
+            reasoning=True,
+            function_call=True
+        ),
+        _priced_chat_model_config(
+            'qwen-max-latest',
+            0.84,
+            0.0024,
+            0.0096,
+            131072,
+            8192,
+            function_call=True
+        )
     ]
 
 def prepare_chat(auth_info, preset):
