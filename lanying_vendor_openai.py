@@ -799,3 +799,26 @@ def get_api_base_and_headers(prepare_info):
             "Authorization": f"Bearer {api_key}",
         }
     return (api_base, headers)
+
+
+def list_remote_models(auth_info):
+    prepare_info = {
+        'api_key': str(auth_info.get('api_key', '') or '').strip(),
+        'api_endpoint': str(auth_info.get('api_endpoint', '') or '').strip(),
+        'api_endpoint_server_location': str(auth_info.get('api_endpoint_server_location', 'overseas') or 'overseas').strip(),
+        'auth_info': auth_info,
+    }
+    api_base, headers = get_api_base_and_headers(prepare_info)
+    url = api_base.rstrip('/') + '/models'
+    request_timeout = get_request_timeout(prepare_info)
+    response = requests.request("GET", url, headers=headers, timeout=request_timeout)
+    response_data = response.text
+    try:
+        response_data = response.json()
+    except Exception:
+        pass
+    return {
+        'result': 'ok',
+        'status_code': response.status_code,
+        'response': response_data
+    }

@@ -192,6 +192,35 @@ def prepare_chat(auth_info, preset):
 def should_use_proxy_for_custom_endpoint(prepare_info):
     return str(prepare_info.get('api_endpoint_server_location', 'overseas') or 'overseas').strip().lower() != 'domestic'
 
+
+def list_remote_models(auth_info):
+    prepare_info = {
+        'api_key': str(auth_info.get('api_key', '') or '').strip(),
+        'api_endpoint': str(auth_info.get('api_endpoint', '') or '').strip(),
+        'api_endpoint_server_location': str(auth_info.get('api_endpoint_server_location', 'overseas') or 'overseas').strip(),
+        'auth_info': auth_info,
+    }
+    api_endpoint = str(prepare_info.get('api_endpoint', '') or '').strip() or os.getenv('AZURE2_API_ENDPOINT', '')
+    if api_endpoint == '':
+        return {
+            'result': 'error',
+            'message': 'api_endpoint_not_configured'
+        }
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + prepare_info['api_key']}
+    url = maybe_add_proxy_headers(prepare_info, api_endpoint, headers).rstrip('/') + '/v1/models'
+    request_timeout = get_request_timeout(prepare_info)
+    response = requests.request("GET", url, headers=headers, timeout=request_timeout)
+    response_data = response.text
+    try:
+        response_data = response.json()
+    except Exception:
+        pass
+    return {
+        'result': 'ok',
+        'status_code': response.status_code,
+        'response': response_data
+    }
+
 def chat(prepare_info, preset, model_config):
     real_model = model_config.get('real_model', None)
     final_preset = format_preset(preset)

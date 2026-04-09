@@ -810,6 +810,54 @@ def test_vendor_connection(vendor_setting):
     return _test_vendor_connection_once(vendor_setting, handler_vendor, model_config)
 
 
+def fetch_vendor_remote_models(vendor_setting):
+    vendor_setting = normalize_vendor_setting_handler_vendor(vendor_setting)
+    vendor_info = _vendor_setting_to_vendor_info(vendor_setting)
+    handler_vendor = get_vendor_handler_vendor(vendor_info)
+    if handler_vendor not in vendor_to_module:
+        return {
+            'result': 'error',
+            'message': 'handler_vendor_not_valid'
+        }
+    if not is_valid_vendor_api_endpoint(vendor_setting.api_endpoint):
+        return {
+            'result': 'error',
+            'message': 'api_endpoint_not_valid'
+        }
+    module = vendor_to_module.get(handler_vendor)
+    if module is None or not hasattr(module, 'list_remote_models'):
+        return {
+            'result': 'error',
+            'message': 'vendor_remote_model_list_not_supported'
+        }
+    auth_info = {
+        'app_id': vendor_setting.app_id,
+        'vendor_type': vendor_setting.vendor_type,
+        'api_key': vendor_setting.api_key,
+        'secret_key': vendor_setting.secret_key,
+        'api_group_id': vendor_setting.api_group_id,
+        'api_endpoint': str(vendor_setting.api_endpoint or '').strip(),
+        'api_endpoint_server_location': vendor_setting.api_endpoint_server_location,
+        'key_type': 'self',
+        'validation_mode': True,
+        'validation_timeout_seconds': 8
+    }
+    try:
+        result = module.list_remote_models(auth_info)
+        if isinstance(result, dict):
+            return result
+    except Exception as e:
+        logging.info(
+            f"fetch vendor remote models exception | app_id:{vendor_setting.app_id}, "
+            f"vendor_type:{vendor_setting.vendor_type}, handler_vendor:{handler_vendor}"
+        )
+        logging.exception(e)
+    return {
+        'result': 'error',
+        'message': 'fetch_vendor_remote_models_failed'
+    }
+
+
 def _sanitize_model_config(new_config):
     for field in ['url', 'endpoint', 'input_price', 'output_price', 'currency']:
         if field in new_config:

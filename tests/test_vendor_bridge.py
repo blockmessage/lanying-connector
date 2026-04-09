@@ -49,6 +49,19 @@ class _NativeModule:
         }
 
 
+class _ListModelsModule:
+    @staticmethod
+    def list_remote_models(auth_info):
+        return {
+            "result": "ok",
+            "status_code": 200,
+            "response": {
+                "data": [{"id": "model-a"}, {"id": "model-b"}],
+                "seen_api_key": auth_info.get("api_key", ""),
+            },
+        }
+
+
 @unittest.skipIf(lanying_vendor is None, "optional vendor dependencies are not installed in this environment")
 class VendorBridgeTests(unittest.TestCase):
     def setUp(self):
@@ -132,6 +145,56 @@ class VendorBridgeTests(unittest.TestCase):
         self.assertEqual(out["finish_reason"], "tool_calls")
         self.assertIn("tool_calls", out)
         self.assertEqual(out["tool_calls"][0]["function"]["name"], "f1")
+
+    def test_fetch_vendor_remote_models_returns_vendor_raw_response(self):
+        lanying_vendor.vendor_to_module["list_models_test"] = _ListModelsModule
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.example.com/v1",
+            model_config=[],
+            config_version=2,
+            handler_vendor="list_models_test",
+        )
+
+        with mock.patch.object(lanying_vendor, "normalize_vendor_setting_handler_vendor", return_value=vendor_setting), \
+             mock.patch.object(lanying_vendor, "is_valid_vendor_api_endpoint", return_value=True), \
+             mock.patch.object(lanying_vendor, "get_vendor_handler_vendor", return_value="list_models_test"):
+            out = lanying_vendor.fetch_vendor_remote_models(vendor_setting)
+
+        self.assertEqual(out["result"], "ok")
+        self.assertEqual(out["status_code"], 200)
+        self.assertEqual(out["response"]["data"][0]["id"], "model-a")
+        self.assertEqual(out["response"]["seen_api_key"], "k")
+
+    def test_fetch_vendor_remote_models_returns_unsupported_when_module_has_no_method(self):
+        lanying_vendor.vendor_to_module["native_test"] = _NativeModule
+        vendor_setting = lanying_vendor.VendorSetting(
+            app_id="app",
+            tenement_id="tenement",
+            vendor_type="openai",
+            name="test",
+            api_key="k",
+            secret_key="",
+            api_group_id="",
+            api_endpoint="https://api.example.com/v1",
+            model_config=[],
+            config_version=2,
+            handler_vendor="native_test",
+        )
+
+        with mock.patch.object(lanying_vendor, "normalize_vendor_setting_handler_vendor", return_value=vendor_setting), \
+             mock.patch.object(lanying_vendor, "is_valid_vendor_api_endpoint", return_value=True), \
+             mock.patch.object(lanying_vendor, "get_vendor_handler_vendor", return_value="native_test"):
+            out = lanying_vendor.fetch_vendor_remote_models(vendor_setting)
+
+        self.assertEqual(out["result"], "error")
+        self.assertEqual(out["message"], "vendor_remote_model_list_not_supported")
 
     def test_get_module_uses_handler_vendor_for_v2_custom_vendor(self):
         lanying_vendor.vendor_to_module["native_test"] = _NativeModule
