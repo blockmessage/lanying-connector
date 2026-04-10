@@ -141,9 +141,11 @@ def _chat_models_by_service():
         used_models = set()
         for model in models:
             model_name = str(model.get('model', '')).strip()
-            if model_name == '' or model_name in used_models:
+            handler_vendor = str(model.get('handler_vendor', '')).strip()
+            dedupe_key = (handler_vendor, model_name)
+            if model_name == '' or dedupe_key in used_models:
                 continue
-            used_models.add(model_name)
+            used_models.add(dedupe_key)
             model.pop('_source_index', None)
             deduped_models.append(model)
         models[:] = deduped_models
@@ -237,6 +239,18 @@ def api_type_configs():
             'extra_param_defs': _default_extra_param_defs(),
             'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
             'endpoint_required': True
+        },
+        {
+            'vendor': 'wanjie',
+            'label_key': 'vendor_wanjie',
+            'handler_vendor': 'wanjie',
+            'fields': ['api_key', 'api_endpoint'],
+            'model_fields': [],
+            'services': ['xiaomi', 'kimi', 'chatgpt', 'claude'],
+            'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
+            'endpoint_required': False
         },
         {
             'vendor': 'openrouter',
@@ -389,18 +403,6 @@ def api_type_configs():
             'fields': ['api_key'],
             'model_fields': [],
             'services': ['kimi'],
-            'allow_custom_models': True,
-            'extra_param_defs': _default_extra_param_defs(),
-            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
-            'endpoint_required': False
-        },
-        {
-            'vendor': 'wanjie',
-            'label_key': 'vendor_wanjie',
-            'handler_vendor': 'wanjie',
-            'fields': ['api_key'],
-            'model_fields': [],
-            'services': ['xiaomi', 'kimi', 'chatgpt', 'claude'],
             'allow_custom_models': True,
             'extra_param_defs': _default_extra_param_defs(),
             'custom_model_extra_param_defs': _custom_model_extra_param_defs(),

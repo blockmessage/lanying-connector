@@ -468,6 +468,44 @@ class VendorBridgeTests(unittest.TestCase):
             ["zeta-9", "middle-5", "alpha-1"]
         )
 
+    def test_chat_models_by_service_keeps_same_model_name_for_different_handler_vendors(self):
+        class _VendorOneModule:
+            @staticmethod
+            def model_configs():
+                return [
+                    {"model": "shared-model", "type": "chat", "service": "shared-service"},
+                ]
+
+        class _VendorTwoModule:
+            @staticmethod
+            def model_configs():
+                return [
+                    {"model": "shared-model", "type": "chat", "service": "shared-service"},
+                ]
+
+        old_one = lanying_vendor.vendor_to_module.get("vendor_one_test")
+        old_two = lanying_vendor.vendor_to_module.get("vendor_two_test")
+        lanying_vendor.vendor_to_module["vendor_one_test"] = _VendorOneModule
+        lanying_vendor.vendor_to_module["vendor_two_test"] = _VendorTwoModule
+        try:
+            grouped = lanying_vendor._chat_models_by_service()
+        finally:
+            if old_one is None:
+                del lanying_vendor.vendor_to_module["vendor_one_test"]
+            else:
+                lanying_vendor.vendor_to_module["vendor_one_test"] = old_one
+            if old_two is None:
+                del lanying_vendor.vendor_to_module["vendor_two_test"]
+            else:
+                lanying_vendor.vendor_to_module["vendor_two_test"] = old_two
+
+        shared_models = [item for item in grouped["shared-service"] if item["model"] == "shared-model"]
+        self.assertEqual(len(shared_models), 2)
+        self.assertEqual(
+            sorted([item.get("handler_vendor") for item in shared_models]),
+            ["vendor_one_test", "vendor_two_test"]
+        )
+
     def test_sanitize_model_config_hides_internal_pricing_fields(self):
         config = {
             "model": "gpt-test",

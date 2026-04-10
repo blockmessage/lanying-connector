@@ -10,6 +10,13 @@ SUPPORT_NATIVE_TOOLS = True
 WANJIE_API_BASE = 'https://maas-openapi.wanjiedata.com/api/v1'
 
 
+def _get_api_base(prepare_info_or_auth_info):
+    api_endpoint = str((prepare_info_or_auth_info or {}).get('api_endpoint', '') or '').strip()
+    if api_endpoint != '':
+        return api_endpoint.rstrip('/')
+    return WANJIE_API_BASE
+
+
 def _chat_model_config(model, service, quota, token_limit, max_output_tokens, **kwargs):
     config = {
         "model": model,
@@ -67,15 +74,16 @@ def model_configs():
 
 def prepare_chat(auth_info, preset):
     prepare_info = lanying_vendor_openai.prepare_chat(auth_info, preset)
-    prepare_info['api_endpoint'] = WANJIE_API_BASE
-    prepare_info['api_endpoint_server_location'] = 'domestic'
+    prepare_info['api_endpoint'] = _get_api_base(auth_info)
+    prepare_info['api_endpoint_server_location'] = str(auth_info.get('api_endpoint_server_location', 'domestic') or 'domestic').strip().lower()
     prepare_info['auth_info'] = dict(auth_info or {})
     prepare_info['auth_info']['vendor_type'] = 'wanjie'
     return prepare_info
 
 
 def chat(prepare_info, preset, model_config):
-    url = WANJIE_API_BASE + '/chat/completions'
+    api_base = _get_api_base(prepare_info)
+    url = api_base + '/chat/completions'
     final_preset = lanying_vendor_openai.format_preset(preset, model_config)
     api_key = prepare_info["api_key"]
     headers = {"Content-Type": "application/json", "Authorization": f'Bearer {api_key}'}
@@ -183,6 +191,7 @@ def format_preset(preset, model_config):
 
 
 def list_remote_models(auth_info):
+    api_base = _get_api_base(auth_info)
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {str(auth_info.get('api_key', '') or '').strip()}"
@@ -194,7 +203,7 @@ def list_remote_models(auth_info):
             request_timeout = timeout_seconds
     except Exception:
         pass
-    response = requests.request("GET", WANJIE_API_BASE + '/models', headers=headers, timeout=request_timeout)
+    response = requests.request("GET", api_base + '/models', headers=headers, timeout=request_timeout)
     response_data = response.text
     try:
         response_data = response.json()

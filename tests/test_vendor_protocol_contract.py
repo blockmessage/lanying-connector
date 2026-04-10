@@ -545,6 +545,17 @@ class VendorProtocolContractTests(unittest.TestCase):
         self.assertEqual(prepare_info.get('api_endpoint_server_location'), 'domestic')
         self.assertEqual(prepare_info.get('auth_info', {}).get('vendor_type'), 'wanjie')
 
+    def test_wanjie_prepare_chat_prefers_custom_api_endpoint(self):
+        m = importlib.import_module('lanying_vendor_wanjie')
+        prepare_info = m.prepare_chat({
+            'api_key': 'k',
+            'api_endpoint': 'https://wanjie-proxy.example.com/v1',
+            'api_endpoint_server_location': 'overseas'
+        }, {'messages': [{'role': 'user', 'content': 'hi'}]})
+
+        self.assertEqual(prepare_info.get('api_endpoint'), 'https://wanjie-proxy.example.com/v1')
+        self.assertEqual(prepare_info.get('api_endpoint_server_location'), 'overseas')
+
     def test_wanjie_list_remote_models_uses_direct_bearer_auth(self):
         m = importlib.import_module('lanying_vendor_wanjie')
         response = _FakeResponse(200, {'data': [{'id': 'wanjie-model'}]})
@@ -560,6 +571,21 @@ class VendorProtocolContractTests(unittest.TestCase):
         self.assertEqual(args[1], 'https://maas-openapi.wanjiedata.com/api/v1/models')
         self.assertEqual(kwargs['headers'].get('Authorization'), 'Bearer secret')
         self.assertNotIn('X-Lanying-Proxy-Api-Endpoint', kwargs['headers'])
+
+    def test_wanjie_list_remote_models_uses_custom_api_endpoint(self):
+        m = importlib.import_module('lanying_vendor_wanjie')
+        response = _FakeResponse(200, {'data': [{'id': 'wanjie-model'}]})
+
+        with mock.patch.object(m.requests, 'request', return_value=response) as mocked_request:
+            out = m.list_remote_models({
+                'api_key': 'secret',
+                'api_endpoint': 'https://wanjie-proxy.example.com/v1'
+            })
+
+        self.assertEqual(out['result'], 'ok')
+        args, kwargs = mocked_request.call_args
+        self.assertEqual(args[1], 'https://wanjie-proxy.example.com/v1/models')
+        self.assertEqual(kwargs['headers'].get('Authorization'), 'Bearer secret')
 
     def test_pricing_compare_model_quota_reports_difference(self):
         pricing = importlib.import_module('lanying_vendor_pricing')
@@ -800,7 +826,7 @@ class OpenAIEndpointPriorityTests(unittest.TestCase):
 
         self.assertIsNotNone(config)
         self.assertEqual(config.get('handler_vendor'), 'wanjie')
-        self.assertEqual(config.get('fields'), ['api_key'])
+        self.assertEqual(config.get('fields'), ['api_key', 'api_endpoint'])
         self.assertEqual(config.get('services'), ['xiaomi', 'kimi', 'chatgpt', 'claude'])
 
     def test_wanjie_custom_model_uses_official_model_template_by_model_id(self):
@@ -829,6 +855,16 @@ class OpenAIEndpointPriorityTests(unittest.TestCase):
         self.assertEqual(out.get('token_limit'), 200000)
         self.assertEqual(out.get('max_output_tokens'), 64000)
         self.assertEqual(out.get('vendor'), 'custom_vendor_wanjie')
+
+    def test_service_catalog_keeps_same_model_name_for_different_handler_vendors(self):
+        vendor_module = importlib.import_module('lanying_vendor')
+        chatgpt = next((item for item in vendor_module.service_catalog() if item.get('service') == 'chatgpt'), None)
+
+        self.assertIsNotNone(chatgpt)
+        same_model = [item for item in (chatgpt.get('models') or []) if item.get('model') == 'gpt-4']
+        self.assertTrue(len(same_model) >= 2)
+        self.assertIn('openai', [item.get('handler_vendor') for item in same_model])
+        self.assertIn('azure', [item.get('handler_vendor') for item in same_model])
 
 
 if __name__ == '__main__':
