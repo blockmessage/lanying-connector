@@ -120,7 +120,7 @@ def remove_openclaw_group_edge_mention(content, to_user_nickname):
         return content
     escaped_nickname = re.escape(nickname)
     result = re.sub(r'^@' + escaped_nickname + r'(?:\u2005| )+', '', content)
-    result = re.sub(r'(?:\u2005| )+@' + escaped_nickname + r'(?:\u2005| )*$', '', result)
+    result = re.sub(r'@' + escaped_nickname + r'(?:\u2005| )*$', '', result)
     return result.strip()
 
 def preprocess_openclaw_group_message(msg):
