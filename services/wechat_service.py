@@ -391,7 +391,7 @@ def handle_wechat_group_message(wc_id, account, data, parse_res):
         #maybe_update_user_profile_from_wechat(app_id, wid, from_user, from_user_id)
         config = lanying_config.get_service_config(app_id, service)
         redis.setex(message_deduplication, 3*86400, "1")
-        msg_config = transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id)
+        msg_config = transform_at_list_to_im(app_id, atlist, content, wc_id, from_user, from_user_id, to_user_id)
         router_res = lanying_user_router.handle_group_msg_route_to_im(app_id, service, from_user_id, to_user_id, router_sub_user_ids, group_id)
         if router_res['result'] == 'ok':
             msg_ext = {'ai':{'role':'user', 'channel':'wechat'}}
@@ -500,9 +500,20 @@ def transform_wechat_msg_to_im_groupchat_msg(config, app_id, wechat_msg_data, ro
             }
             lanying_im_api.send_message_async(config, app_id, router_res['from'], router_res['to'], 2, 2, '', extra)
 
-def transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id):
+def transform_at_list_to_im(app_id, atlist, content, wc_id, from_user, from_user_id, to_user_id):
+    msg_config = {}
+    from_user_nickname = get_wechat_user_nickname(app_id, from_user)
+    if from_user_nickname == '' and from_user_id:
+        from_user_nickname = get_wechat_user_nickname_by_user_id(app_id, from_user_id)
+    to_user_nickname = get_wechat_user_nickname(app_id, wc_id)
+    if to_user_nickname == '' and to_user_id:
+        to_user_nickname = get_wechat_user_nickname_by_user_id(app_id, to_user_id)
+    if from_user_nickname != '':
+        msg_config['from_user_nickname'] = from_user_nickname
+    if to_user_nickname != '':
+        msg_config['to_user_nickname'] = to_user_nickname
     if content.startswith('@所有人') and len(atlist) > 0:
-        return {'mentionAll': True}
+        msg_config['mentionAll'] = True
     else:
         mention_list = []
         for now_wc_id in atlist:
@@ -517,9 +528,8 @@ def transform_at_list_to_im(app_id, atlist, content, wc_id, to_user_id):
                     if user_id:
                         mention_list.append(user_id)
         if len(mention_list) > 0:
-            return {'mentionList': mention_list}
-        else:
-            return {}
+            msg_config['mentionList'] = mention_list
+    return msg_config
 
 def check_wid(wid):
     global_wid_info = lanying_wechat_chatbot.get_global_wid_info(wid)
@@ -921,6 +931,20 @@ def get_wechat_username(app_id, user_id):
         return str(result,'utf-8')
     logging.info(f"get_wechat_username | not found, app_id:{app_id}, user_id:{user_id}")
     return None
+
+def get_wechat_user_nickname(app_id, username):
+    if username is None or username == '':
+        return ''
+    redis = lanying_redis.get_redis_connection()
+    user_info_key = wechat_user_info_key(app_id, username)
+    info = lanying_redis.redis_hgetall(redis, user_info_key)
+    return info.get('nickname', '')
+
+def get_wechat_user_nickname_by_user_id(app_id, user_id):
+    username = get_wechat_username(app_id, user_id)
+    if username is None:
+        return ''
+    return get_wechat_user_nickname(app_id, username)
 
 def get_wechat_group_id(app_id, group_id):
     redis = lanying_redis.get_redis_connection()
