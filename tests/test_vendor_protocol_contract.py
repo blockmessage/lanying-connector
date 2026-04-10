@@ -117,6 +117,59 @@ def _install_fake_anthropic_if_needed():
     sys.modules['anthropic.types'] = types_mod
 
 
+def _install_fake_zhipuai_if_needed():
+    if 'zhipuai' in sys.modules and 'zhipuai.core._errors' in sys.modules:
+        return
+
+    zhipuai_mod = types.ModuleType('zhipuai')
+    core_mod = types.ModuleType('zhipuai.core')
+    errors_mod = types.ModuleType('zhipuai.core._errors')
+
+    class ZhipuAI:
+        def __init__(self, *args, **kwargs):
+            self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **k: None))
+
+    zhipuai_mod.ZhipuAI = ZhipuAI
+    core_mod._errors = errors_mod
+
+    sys.modules['zhipuai'] = zhipuai_mod
+    sys.modules['zhipuai.core'] = core_mod
+    sys.modules['zhipuai.core._errors'] = errors_mod
+
+
+def _install_fake_etcd3_if_needed():
+    if 'etcd3' in sys.modules:
+        return
+
+    etcd3_mod = types.ModuleType('etcd3')
+
+    class PutEvent:
+        pass
+
+    class DeleteEvent:
+        pass
+
+    class _Events:
+        pass
+
+    _Events.PutEvent = PutEvent
+    _Events.DeleteEvent = DeleteEvent
+
+    class _FakeClient:
+        def get_prefix(self, _prefix):
+            return []
+
+        def add_watch_prefix_callback(self, _prefix, _callback):
+            return None
+
+    def client(*args, **kwargs):
+        return _FakeClient()
+
+    etcd3_mod.client = client
+    etcd3_mod.events = _Events
+    sys.modules['etcd3'] = etcd3_mod
+
+
 class _FakeResponse:
     def __init__(self, status_code, payload):
         self.status_code = status_code
@@ -134,6 +187,8 @@ class VendorProtocolContractTests(unittest.TestCase):
         _install_fake_requests_if_needed()
         _install_fake_redis_if_needed()
         _install_fake_anthropic_if_needed()
+        _install_fake_zhipuai_if_needed()
+        _install_fake_etcd3_if_needed()
 
     def test_baidu_chat_returns_tool_calls_contract(self):
         m = importlib.import_module('lanying_vendor_baidu')
@@ -451,6 +506,61 @@ class VendorProtocolContractTests(unittest.TestCase):
             self.assertIn('output_price', models[model])
             self.assertEqual(models[model].get('currency'), 'USD')
 
+    def test_wanjie_model_configs_include_first_party_chat_models(self):
+        m = importlib.import_module('lanying_vendor_wanjie')
+        pricing = importlib.import_module('lanying_vendor_pricing')
+        models = {item.get('model'): item for item in m.model_configs()}
+
+        self.assertIn('claude-sonnet-4-5-20250929', models)
+        self.assertIn('GPT-4o', models)
+        self.assertIn('kimi-k2', models)
+        self.assertIn('mimo-v2-pro', models)
+        self.assertEqual(models['mimo-v2-pro'].get('service'), 'xiaomi')
+        self.assertEqual(models['kimi-k2'].get('service'), 'kimi')
+        self.assertEqual(models['GPT-4o'].get('service'), 'chatgpt')
+        self.assertEqual(models['claude-sonnet-4-5-20250929'].get('service'), 'claude')
+        self.assertEqual(models['claude-sonnet-4-5-20250929'].get('currency'), 'CNY')
+        self.assertEqual(models['claude-sonnet-4-5-20250929'].get('input_price'), 0.02139)
+        self.assertEqual(models['claude-sonnet-4-5-20250929'].get('output_price'), 0.10695)
+        self.assertEqual(models['claude-sonnet-4-5-20250929'].get('quota'), pricing.calc_adjusted_points(0.02139, 0.10695, currency='CNY'))
+        self.assertEqual(models['claude-sonnet-4-20250514'].get('token_limit'), 200000)
+        self.assertEqual(models['claude-sonnet-4-20250514'].get('max_output_tokens'), 64000)
+        self.assertEqual(models['claude-opus-4-20250514'].get('max_output_tokens'), 32000)
+        self.assertEqual(models['GPT-4.1'].get('token_limit'), 1047576)
+        self.assertEqual(models['GPT-4.1'].get('max_output_tokens'), 32768)
+        self.assertEqual(models['gpt-5.4'].get('token_limit'), 400000)
+        self.assertEqual(models['gpt-5.4'].get('max_output_tokens'), 128000)
+        self.assertEqual(models['GPT-4o'].get('token_limit'), 128000)
+        self.assertEqual(models['GPT-4o'].get('max_output_tokens'), 16384)
+        self.assertEqual(models['kimi-k2'].get('token_limit'), 256000)
+        self.assertEqual(models['mimo-v2-pro'].get('token_limit'), 256000)
+        self.assertEqual(models['mimo-v2-pro'].get('max_output_tokens'), 8192)
+        self.assertTrue(all(item.get('type') == 'chat' for item in models.values()))
+
+    def test_wanjie_prepare_chat_uses_domestic_direct_endpoint(self):
+        m = importlib.import_module('lanying_vendor_wanjie')
+        prepare_info = m.prepare_chat({'api_key': 'k'}, {'messages': [{'role': 'user', 'content': 'hi'}]})
+
+        self.assertEqual(prepare_info.get('api_endpoint'), 'https://maas-openapi.wanjiedata.com/api/v1')
+        self.assertEqual(prepare_info.get('api_endpoint_server_location'), 'domestic')
+        self.assertEqual(prepare_info.get('auth_info', {}).get('vendor_type'), 'wanjie')
+
+    def test_wanjie_list_remote_models_uses_direct_bearer_auth(self):
+        m = importlib.import_module('lanying_vendor_wanjie')
+        response = _FakeResponse(200, {'data': [{'id': 'wanjie-model'}]})
+
+        with mock.patch.object(m.requests, 'request', return_value=response) as mocked_request:
+            out = m.list_remote_models({'api_key': 'secret', 'validation_timeout_seconds': 8})
+
+        self.assertEqual(out['result'], 'ok')
+        self.assertEqual(out['status_code'], 200)
+        self.assertEqual(out['response']['data'][0]['id'], 'wanjie-model')
+        args, kwargs = mocked_request.call_args
+        self.assertEqual(args[0], 'GET')
+        self.assertEqual(args[1], 'https://maas-openapi.wanjiedata.com/api/v1/models')
+        self.assertEqual(kwargs['headers'].get('Authorization'), 'Bearer secret')
+        self.assertNotIn('X-Lanying-Proxy-Api-Endpoint', kwargs['headers'])
+
     def test_pricing_compare_model_quota_reports_difference(self):
         pricing = importlib.import_module('lanying_vendor_pricing')
         out = pricing.compare_model_quota({
@@ -638,6 +748,10 @@ class OpenAIEndpointPriorityTests(unittest.TestCase):
     def setUpClass(cls):
         _install_fake_tiktoken_if_needed()
         _install_fake_requests_if_needed()
+        _install_fake_redis_if_needed()
+        _install_fake_anthropic_if_needed()
+        _install_fake_zhipuai_if_needed()
+        _install_fake_etcd3_if_needed()
 
     def test_user_api_endpoint_bypasses_proxy_headers(self):
         m = importlib.import_module('lanying_vendor_openai')
@@ -671,6 +785,50 @@ class OpenAIEndpointPriorityTests(unittest.TestCase):
         self.assertEqual(headers.get('Authorization'), 'Basic proxy-secret')
         self.assertEqual(headers.get('Authorization-Next'), 'Bearer user-secret')
         self.assertEqual(headers.get('X-Lanying-Proxy-Api-Endpoint'), 'https://api.openai.com/v1')
+
+    def test_service_catalog_contains_xiaomi_from_wanjie_models(self):
+        vendor_module = importlib.import_module('lanying_vendor')
+        catalog = vendor_module.service_catalog()
+        xiaomi = next((item for item in catalog if item.get('service') == 'xiaomi'), None)
+
+        self.assertIsNotNone(xiaomi)
+        self.assertTrue(any(model.get('model') == 'mimo-v2-pro' for model in xiaomi.get('models', [])))
+
+    def test_api_type_configs_include_wanjie(self):
+        vendor_module = importlib.import_module('lanying_vendor')
+        config = vendor_module.get_api_type_config('wanjie')
+
+        self.assertIsNotNone(config)
+        self.assertEqual(config.get('handler_vendor'), 'wanjie')
+        self.assertEqual(config.get('fields'), ['api_key'])
+        self.assertEqual(config.get('services'), ['xiaomi', 'kimi', 'chatgpt', 'claude'])
+
+    def test_wanjie_custom_model_uses_official_model_template_by_model_id(self):
+        vendor_module = importlib.import_module('lanying_vendor')
+        vendor_info = {
+            'vendor_id': 'custom_vendor_wanjie',
+            'vendor_type': 'wanjie',
+            'handler_vendor': 'wanjie',
+            'name': 'Custom Wanjie',
+            'config_version': 2,
+            'model_config': [
+                {
+                    'service': 'claude',
+                    'model': 'claude-sonnet-4-20250514',
+                    'enabled': True,
+                    'source': 'custom',
+                    'extra_params': []
+                }
+            ]
+        }
+
+        out = vendor_module._get_v2_chat_model_config(vendor_info, 'custom_vendor_wanjie', 'claude-sonnet-4-20250514')
+
+        self.assertIsNotNone(out)
+        self.assertEqual(out.get('model'), 'claude-sonnet-4-20250514')
+        self.assertEqual(out.get('token_limit'), 200000)
+        self.assertEqual(out.get('max_output_tokens'), 64000)
+        self.assertEqual(out.get('vendor'), 'custom_vendor_wanjie')
 
 
 if __name__ == '__main__':

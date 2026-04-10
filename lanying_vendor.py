@@ -9,6 +9,7 @@ import lanying_vendor_deepseek
 import lanying_vendor_aliyun
 import lanying_vendor_volcengine
 import lanying_vendor_moonshot
+import lanying_vendor_wanjie
 import lanying_vendor_aws
 import lanying_vendor_siliconflow
 import lanying_vendor_ppinfra
@@ -39,10 +40,12 @@ vendor_to_module = {
     "azure2": lanying_vendor_azure2,
     "claude": lanying_vendor_claude,
     'aliyun': lanying_vendor_aliyun,
-    'moonshot': lanying_vendor_moonshot
+    'moonshot': lanying_vendor_moonshot,
+    'wanjie': lanying_vendor_wanjie
 }
 
 OPENROUTER_SERVICES = ['chatgpt', 'claude', 'deepseek', 'doubao', 'kimi', 'ernie', 'qwen', 'zhipuai', 'minimax']
+SERVICE_CATALOG_ORDER = OPENROUTER_SERVICES + ['xiaomi']
 AGGREGATE_API_TYPE_VENDORS = ['openai', 'openrouter', 'volcengine', 'aws', 'siliconflow', 'azure', 'aliyun']
 
 
@@ -193,10 +196,15 @@ def _default_model_template_by_service():
 def service_catalog():
     catalog = []
     grouped = _chat_models_by_service()
-    for service in OPENROUTER_SERVICES:
+    services = []
+    for service in SERVICE_CATALOG_ORDER:
+        if service not in services:
+            services.append(service)
+    for service in grouped.keys():
+        if service not in services:
+            services.append(service)
+    for service in services:
         service_models = grouped.get(service, [])
-        if len(service_models) == 0:
-            continue
         models = []
         for config in service_models:
             models.append({
@@ -381,6 +389,18 @@ def api_type_configs():
             'fields': ['api_key'],
             'model_fields': [],
             'services': ['kimi'],
+            'allow_custom_models': True,
+            'extra_param_defs': _default_extra_param_defs(),
+            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
+            'endpoint_required': False
+        },
+        {
+            'vendor': 'wanjie',
+            'label_key': 'vendor_wanjie',
+            'handler_vendor': 'wanjie',
+            'fields': ['api_key'],
+            'model_fields': [],
+            'services': ['xiaomi', 'kimi', 'chatgpt', 'claude'],
             'allow_custom_models': True,
             'extra_param_defs': _default_extra_param_defs(),
             'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
@@ -948,6 +968,23 @@ def _find_catalog_model_template(service, model):
     return None
 
 
+def _find_handler_model_template(vendor_info, service, model):
+    handler_vendor = get_vendor_handler_vendor(vendor_info)
+    module = vendor_to_module.get(handler_vendor)
+    if module is None:
+        return None
+    for config in module.model_configs():
+        if config.get('type') != 'chat':
+            continue
+        if config.get('model') != model:
+            continue
+        config_service = str(config.get('service', '')).strip()
+        if service not in ['', config_service]:
+            continue
+        return copy.deepcopy(config)
+    return None
+
+
 def _extra_param_definitions_for_entry(vendor_info, model_entry):
     defs = []
     api_type_config = get_api_type_config(vendor_info.get('vendor_type', ''))
@@ -1033,6 +1070,8 @@ def _get_v2_chat_model_config(vendor_info, vendor_id, model):
         if entry.get('model') != model or entry.get('enabled') is not True:
             continue
         template = _find_catalog_model_template(entry['service'], entry['model'])
+        if template is None:
+            template = _find_handler_model_template(vendor_info, entry['service'], entry['model'])
         if template is None and entry.get('source') == 'custom':
             template = _service_default_template(entry['service'])
             if template:
@@ -1050,6 +1089,8 @@ def _append_v2_chat_models(models, vendor_info, vendor_id):
     vendor_show_name = vendor_info.get('name', '')
     for entry in _build_v2_vendor_model_entries(vendor_info):
         template = _find_catalog_model_template(entry['service'], entry['model'])
+        if template is None:
+            template = _find_handler_model_template(vendor_info, entry['service'], entry['model'])
         if template is None and entry.get('source') == 'custom':
             template = _service_default_template(entry['service'])
             if template:
