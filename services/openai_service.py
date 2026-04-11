@@ -136,6 +136,15 @@ def preprocess_openclaw_group_message(msg):
     cleaned_content = remove_openclaw_group_edge_mention(content, to_user_nickname)
     return cleaned_content, cleaned_content.startswith('/')
 
+def preprocess_openclaw_direct_message(msg):
+    if not isinstance(msg, dict):
+        return '', False
+    content = msg.get('content', '')
+    if not isinstance(content, str):
+        return content, False
+    cleaned_content = content.strip()
+    return cleaned_content, cleaned_content.startswith('/')
+
 def handle_embedding_request(request):
     auth_result = check_embedding_authorization(request)
     if auth_result['result'] == 'error':
@@ -1104,12 +1113,15 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             if customHistory['role'] and customHistory['content']:
                 customHistoryList.append({'role':customHistory['role'], 'content': customHistory['content']})
         addHistory(redis, historyListKey, {'list':customHistoryList, 'time':now})
-    is_openclaw_groupchat = msg_type == 'GROUPCHAT' and 'openclaw_node_info' in config
+    is_openclaw_redirect = 'openclaw_node_info' in config and msg_type in ['CHAT', 'GROUPCHAT']
     openclaw_direct_command = False
-    if is_openclaw_groupchat:
-        content, openclaw_direct_command = preprocess_openclaw_group_message(msg)
+    if is_openclaw_redirect:
+        if msg_type == 'GROUPCHAT':
+            content, openclaw_direct_command = preprocess_openclaw_group_message(msg)
+        else:
+            content, openclaw_direct_command = preprocess_openclaw_direct_message(msg)
         msg['content'] = content
-        logging.info(f"preprocess_openclaw_group_message | content:{content}, openclaw_direct_command:{openclaw_direct_command}")
+        logging.info(f"preprocess_openclaw_message | msg_type:{msg_type}, content:{content}, openclaw_direct_command:{openclaw_direct_command}")
     if 'ai_generate' in lcExt and lcExt['ai_generate'] == False and not openclaw_direct_command:
         if msg_type == 'CHAT':
             history['user'] = content
@@ -1281,13 +1293,14 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 add_debug_message(config, f"prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n", {'need_antispam_check': True})
     userHistoryList = []
     if msg_type == 'CHAT':
-        history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
-        if history_result['result'] == 'error':
-            return history_result
-        userHistoryList = history_result['data']
-        for userHistory in userHistoryList:
-            logging.info(f'userHistory:{userHistory}')
-            messages.append(userHistory)
+        if not openclaw_direct_command:
+            history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
+            if history_result['result'] == 'error':
+                return history_result
+            userHistoryList = history_result['data']
+            for userHistory in userHistoryList:
+                logging.info(f'userHistory:{userHistory}')
+                messages.append(userHistory)
         messages.append({"role": "user", "content": ask_message_content})
     else:
         if openclaw_direct_command:
