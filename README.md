@@ -165,7 +165,6 @@ python3 -m py_compile \
   lanying_vendor_zhipuai.py \
   lanying_vendor_deepseek.py \
   lanying_vendor_azure.py \
-  lanying_vendor_azure2.py \
   lanying_vendor_baidu.py \
   lanying_vendor_minimax.py \
   lanying_vendor_claude.py \

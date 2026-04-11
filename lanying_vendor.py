@@ -3,7 +3,6 @@ import lanying_vendor_minimax
 import lanying_vendor_baidu
 import lanying_vendor_zhipuai
 import lanying_vendor_azure
-import lanying_vendor_azure2
 import lanying_vendor_claude
 import lanying_vendor_deepseek
 import lanying_vendor_aliyun
@@ -37,7 +36,6 @@ vendor_to_module = {
     'baidu': lanying_vendor_baidu,
     'zhipuai': lanying_vendor_zhipuai,
     "azure": lanying_vendor_azure,
-    "azure2": lanying_vendor_azure2,
     "claude": lanying_vendor_claude,
     'aliyun': lanying_vendor_aliyun,
     'moonshot': lanying_vendor_moonshot,
@@ -124,6 +122,8 @@ def _service_name_to_label_key(service):
 def _chat_models_by_service():
     grouped = {}
     for vendor, module in vendor_to_module.items():
+        if vendor in HIDDEN_VENDOR_CONFIGS:
+            continue
         for index, config in enumerate(module.model_configs()):
             if config.get('type') != 'chat':
                 continue
@@ -361,18 +361,6 @@ def api_type_configs():
             'endpoint_required': True
         },
         {
-            'vendor': 'azure2',
-            'label_key': 'vendor_azure2',
-            'handler_vendor': 'azure2',
-            'fields': ['api_key', 'api_endpoint'],
-            'model_fields': [],
-            'services': ['chatgpt'],
-            'allow_custom_models': True,
-            'extra_param_defs': _default_extra_param_defs(),
-            'custom_model_extra_param_defs': _custom_model_extra_param_defs(),
-            'endpoint_required': True
-        },
-        {
             'vendor': 'claude',
             'label_key': 'vendor_claude',
             'handler_vendor': 'claude',
@@ -437,26 +425,6 @@ def backup_rules():
                     'transforms':{
                         'gpt-35-turbo': 'gpt-3.5-turbo',
                         'gpt-35-turbo-16k': 'gpt-3.5-turbo'
-                    }
-                }
-            ]
-        },
-        {
-            'vendor': 'azure2',
-            'backups':[
-                {
-                    'vendor': 'openai',
-                    'transforms':{
-                    }
-                }
-            ]
-        },
-        {
-            'vendor': 'openai',
-            'backups':[
-                {
-                    'vendor': 'azure2',
-                    'transforms':{
                     }
                 }
             ]
@@ -569,16 +537,6 @@ def embedding_backup_rules():
                 }
             ]
         },
-        {
-            'vendor': 'azure2',
-            'backups':[
-                {
-                    'vendor': 'openai',
-                    'transforms':{
-                    }
-                }
-            ]
-        }
     ]
 
 def get_module(app_id, vendor):
