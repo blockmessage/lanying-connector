@@ -122,8 +122,6 @@ def _service_name_to_label_key(service):
 def _chat_models_by_service():
     grouped = {}
     for vendor, module in vendor_to_module.items():
-        if vendor in HIDDEN_VENDOR_CONFIGS:
-            continue
         for index, config in enumerate(module.model_configs()):
             if config.get('type') != 'chat':
                 continue

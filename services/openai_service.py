@@ -890,15 +890,17 @@ def handle_chat_message_try(config, msg, retry_times):
     ctype = msg['ctype']
     content = msg.get('content','')
     command_ext = {}
+    is_openclaw_redirect = 'openclaw_node_info' in config
     if msg_type == 'CHAT':
         if ctype == 'TEXT':
             if content.startswith("/"):
-                result = handle_embedding_command(msg, config)
-                if isinstance(result, str):
-                    if len(result) > 0:
-                        return result
-                elif result["result"] == "continue":
-                    command_ext = result["command_ext"]
+                if not is_openclaw_redirect:
+                    result = handle_embedding_command(msg, config)
+                    if isinstance(result, str):
+                        if len(result) > 0:
+                            return result
+                    elif result["result"] == "continue":
+                        command_ext = result["command_ext"]
             elif content.startswith('http://') or content.startswith('https://'):
                 result = handle_chat_links(msg, config)
                 if len(result) > 0:
