@@ -5707,7 +5707,7 @@ def add_quota_used_statistic_internal(app_id, quota):
         redis.hincrbyfloat(everyday_key, app_id, quota)
         everyday_count = redis.hincrbyfloat(everyday_key, 'total', quota)
         notify_size = 1000
-        everyday_notify_size = 100
+        everyday_notify_size = 500
         if (new_total // notify_size) > ((new_total - quota) // notify_size) or (everyday_count // everyday_notify_size) > ((everyday_count - quota) // everyday_notify_size):
             lanying_slack.async_send_message(f'[智能消息]所有APP累计用量：{new_total} quota, 今日用量: {everyday_count} quota， 最后一次调用的AppID: {app_id}')
 
