@@ -53,6 +53,96 @@ presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
+openclaw_group_active_expire_seconds = 12 * 3600
+openclaw_cold_start_history_max_messages = 12
+openclaw_cold_start_history_max_chars = 4096
+openclaw_group_active_key_expire_seconds = 3 * 24 * 3600
+openclaw_min_api_version = int(os.getenv('OPENCLAW_MIN_API_VERSION', '2'))
+
+def openclaw_active_group_key(app_id, group_id):
+    return f"lanying:connector:openclaw:active_group:{app_id}:{group_id}"
+
+def encode_openclaw_active_group_target(expire_at, chatbot_user_id, node_id):
+    return json.dumps({
+        'expire_at': int(expire_at),
+        'chatbot_user_id': str(chatbot_user_id),
+        'node_id': str(node_id),
+    }, ensure_ascii=False, separators=(',', ':'))
+
+def decode_openclaw_active_group_target(raw_value):
+    if raw_value is None:
+        return None
+    try:
+        value = raw_value.decode('utf-8') if isinstance(raw_value, bytes) else str(raw_value)
+        payload = json.loads(value)
+        if not isinstance(payload, dict):
+            return None
+        expire_at = int(payload.get('expire_at', 0))
+        chatbot_user_id = str(payload.get('chatbot_user_id', '')).strip()
+        node_id = str(payload.get('node_id', '')).strip()
+        if expire_at <= 0 or chatbot_user_id == '' or node_id == '':
+            return None
+        return {
+            'expire_at': expire_at,
+            'chatbot_user_id': chatbot_user_id,
+            'node_id': node_id,
+        }
+    except Exception:
+        return None
+
+def touch_openclaw_active_group_target(redis, app_id, group_id, chatbot_id, chatbot_user_id, node_id):
+    try:
+        key = openclaw_active_group_key(app_id, group_id)
+        expire_at = int(time.time()) + openclaw_group_active_expire_seconds
+        redis.hset(
+            key,
+            str(chatbot_id),
+            encode_openclaw_active_group_target(expire_at, chatbot_user_id, node_id),
+        )
+        redis.expire(key, openclaw_group_active_key_expire_seconds)
+    except Exception:
+        logging.exception(
+            f"touch_openclaw_active_group_target failed | app_id:{app_id}, group_id:{group_id}, chatbot_id:{chatbot_id}, chatbot_user_id:{chatbot_user_id}, node_id:{node_id}"
+        )
+
+def list_openclaw_active_group_targets(app_id, group_id):
+    redis = lanying_redis.get_redis_connection()
+    key = openclaw_active_group_key(app_id, group_id)
+    now = int(time.time())
+    targets = []
+    expired_chatbot_ids = []
+    try:
+        entries = redis.hgetall(key) or {}
+        for raw_chatbot_id, raw_value in entries.items():
+            chatbot_id = raw_chatbot_id.decode('utf-8') if isinstance(raw_chatbot_id, bytes) else str(raw_chatbot_id)
+            target = decode_openclaw_active_group_target(raw_value)
+            if target is None or target['expire_at'] <= now:
+                expired_chatbot_ids.append(chatbot_id)
+                continue
+            node_info = lanying_openclaw.get_chatbot_node_info(app_id, chatbot_id)
+            if not node_info:
+                expired_chatbot_ids.append(chatbot_id)
+                continue
+            node_id = str(node_info.get('node_id', ''))
+            user_id = str(node_info.get('user_id', ''))
+            if node_id == '' or user_id == '' or node_id != target['node_id']:
+                expired_chatbot_ids.append(chatbot_id)
+                continue
+            targets.append({
+                'chatbot_id': chatbot_id,
+                'chatbot_user_id': target['chatbot_user_id'],
+                'node_id': node_id,
+                'openclaw_node_info': node_info,
+                'expire_at': target['expire_at'],
+            })
+        if expired_chatbot_ids:
+            redis.hdel(key, *expired_chatbot_ids)
+        logging.info(
+            f"list_openclaw_active_group_targets | app_id:{app_id}, group_id:{group_id}, target_count:{len(targets)}, expired_chatbot_ids:{expired_chatbot_ids}"
+        )
+    except Exception:
+        logging.exception(f"list_openclaw_active_group_targets failed | app_id:{app_id}, group_id:{group_id}")
+    return targets
 
 def extract_transformed_system_message_from_preset(preset):
     if not isinstance(preset, dict):
@@ -668,7 +758,6 @@ def init_chatbot_config(config, msg):
 
 def check_message_chatbot_id(config, msg):
     app_id = msg['appId']
-    from_user_id = str(msg['from']['uid'])
     to_user_id = str(msg['to']['uid'])
     msg_type = msg['type']
     if msg_type == 'CHAT':
@@ -676,9 +765,8 @@ def check_message_chatbot_id(config, msg):
         if is_chatbot:
             return {'result': 'ok', 'chatbot_user_id': to_user_id}
     elif msg_type == 'GROUPCHAT':
-        group_id = to_user_id
-        msg_config = lanying_utils.safe_json_loads(msg.get('config'))
-        chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, from_user_id, msg_config)
+        router_target = resolve_group_openclaw_router_request_target(config, msg)
+        chatbot_user_id = router_target['chatbot_user_id'] if router_target else None
         if chatbot_user_id:
             return {'result': 'ok', 'chatbot_user_id': chatbot_user_id}
     return {'result': 'error', 'message': 'no chatbot'}
@@ -714,8 +802,8 @@ def check_message_need_reply(config, msg):
             return {'result':'ok', 'chatbot_user_id': toUserId}
     elif msg_type == 'GROUPCHAT':
         group_id = toUserId
-        msg_config = lanying_utils.safe_json_loads(msg.get('config'))
-        chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, msg_config)
+        router_target = resolve_group_openclaw_router_request_target(config, msg)
+        chatbot_user_id = router_target['chatbot_user_id'] if router_target else None
         if chatbot_user_id:
             try:
                 ext = json.loads(msg['ext'])
@@ -747,6 +835,81 @@ def find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, 
         if fromUserId != user_id and is_chatbot_user_id(app_id, user_id, config):
             return user_id
     return None
+
+def resolve_group_openclaw_router_request_target(config, msg):
+    app_id = msg['appId']
+    from_user_id = str(msg['from']['uid'])
+    group_id = str(msg['to']['uid'])
+    msg_config = lanying_utils.safe_json_loads(msg.get('config'))
+    chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, from_user_id, msg_config)
+    if not chatbot_user_id:
+        return None
+    chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
+    if chatbot_id is None:
+        return None
+    openclaw_node_info = lanying_openclaw.get_chatbot_node_info(app_id, chatbot_id)
+    node_id = str(openclaw_node_info.get('node_id', '')) if openclaw_node_info else ''
+    return {
+        'chatbot_id': str(chatbot_id),
+        'chatbot_user_id': str(chatbot_user_id),
+        'node_id': node_id,
+        'openclaw_node_info': openclaw_node_info,
+        'mention_hit': True,
+    }
+
+def parse_openclaw_api_version(value):
+    try:
+        raw = str(value).strip()
+        if raw == '':
+            return None
+        return int(raw)
+    except Exception:
+        return None
+
+def openclaw_node_supports_router_context(node_info):
+    if not isinstance(node_info, dict):
+        return False
+    current_version = parse_openclaw_api_version(node_info.get('api_version', ''))
+    if current_version is None:
+        return False
+    return current_version >= openclaw_min_api_version
+
+def extract_current_msg_id(msg):
+    if not isinstance(msg, dict):
+        return ''
+    return str(msg.get('msgId', '')).strip()
+
+def extract_history_item_msg_id(item):
+    if not isinstance(item, dict):
+        return ''
+    return str(item.get('msg_id', '')).strip()
+
+def list_group_openclaw_router_context_targets(config, msg):
+    app_id = msg['appId']
+    group_id = str(msg['to']['uid'])
+    from_user_id = str(msg['from']['uid'])
+    msg_config = lanying_utils.safe_json_loads(msg.get('config'))
+    if find_chatbot_user_id_in_group_mention(config, app_id, group_id, from_user_id, msg_config):
+        return []
+    targets = []
+    for target in list_openclaw_active_group_targets(app_id, group_id):
+        if openclaw_node_supports_router_context(target.get('openclaw_node_info')):
+            targets.append(target)
+        else:
+            logging.info(
+                f"skip router_context target for legacy plugin | app_id:{app_id}, group_id:{group_id}, chatbot_id:{target['chatbot_id']}, node_id:{target['node_id']}, api_version:{target.get('openclaw_node_info', {}).get('api_version', '')}, min_api_version:{openclaw_min_api_version}"
+            )
+    return targets
+
+def is_openclaw_self_group_message_for_target(msg, target):
+    try:
+        if not isinstance(msg, dict) or not isinstance(target, dict):
+            return False
+        from_user_id = str(msg.get('from', {}).get('uid', '')).strip()
+        chatbot_user_id = str(target.get('chatbot_user_id', '')).strip()
+        return from_user_id != '' and chatbot_user_id != '' and from_user_id == chatbot_user_id
+    except Exception:
+        return False
 
 def handle_sync_messages(config, msg):
     set_sync_mode(config)
@@ -794,6 +957,41 @@ def handle_chat_message(config, msg):
         maybe_transcription_audio_msg(config, msg)
         maybe_save_image_msg(config, msg)
         maybe_add_history(config, msg)
+        if msg_type == 'GROUPCHAT':
+            group_context_targets = list_group_openclaw_router_context_targets(config, msg)
+            if len(group_context_targets) > 0:
+                content, _ = preprocess_openclaw_group_message(msg)
+                if content != msg.get('content', ''):
+                    msg = copy.deepcopy(msg)
+                    msg['content'] = content
+                delivered_target_count = 0
+                skipped_self_target_count = 0
+                for target in group_context_targets:
+                    if is_openclaw_self_group_message_for_target(msg, target):
+                        skipped_self_target_count += 1
+                        logging.info(
+                            f"skip router_context target | app_id:{app_id}, group_id:{msg['to']['uid']}, chatbot_id:{target['chatbot_id']}, node_id:{target['node_id']}, reason:self_message_for_target"
+                        )
+                        continue
+                    delivered_target_count += 1
+                    logging.info(
+                        f"redirect_to_openclaw early router_context fanout | app_id:{app_id}, group_id:{msg['to']['uid']}, chatbot_id:{target['chatbot_id']}, node_id:{target['node_id']}"
+                    )
+                    lanying_openclaw.redirect_to_openclaw(
+                        target['openclaw_node_info'],
+                        copy.deepcopy(msg),
+                        '',
+                        router_type='router_context',
+                        cold_start=False,
+                    )
+                if delivered_target_count > 0 or skipped_self_target_count > 0:
+                    logging.info(
+                        f"router_context fanout summary | app_id:{app_id}, group_id:{msg['to']['uid']}, delivered_target_count:{delivered_target_count}, skipped_self_target_count:{skipped_self_target_count}"
+                    )
+                    return ''
+            logging.info(
+                f"skip router_context fanout | app_id:{app_id}, group_id:{msg['to']['uid']}, target_count:0"
+            )
         reply = handle_chat_message_try(config, msg, 3)
     except Exception as e:
         logging.error("fail to handle_chat_message:")
@@ -1339,13 +1537,43 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     }
     if 'openclaw_node_info' in config:
         openclaw_node_info = config['openclaw_node_info']
-        if msg_type == 'GROUPCHAT' and not openclaw_direct_command:
-            try:
-                msg = fill_msg_context(msg, userHistoryList)
-            except Exception:
-                logging.exception("fill_msg_context failed")
+        router_type = 'router_request'
+        is_cold_start = False
+        if msg_type == 'GROUPCHAT':
+            group_id = toUserId
+            chatbot_id = str(config.get('chatbot_id', ''))
+            chatbot_user_id = str(config.get('chatbot_user_id', ''))
+            if router_type == 'router_request':
+                active_targets = list_openclaw_active_group_targets(app_id, group_id)
+                is_cold_start = True
+                for target in active_targets:
+                    if target['chatbot_id'] == chatbot_id:
+                        is_cold_start = False
+                        break
+                if is_cold_start:
+                    msg = fill_msg_context(msg, userHistoryList, chatbot_user_id)
+                elif not openclaw_node_supports_router_context(openclaw_node_info):
+                    msg = fill_msg_context_legacy(msg, userHistoryList, chatbot_user_id)
+                if chatbot_id != '' and chatbot_user_id != '' and openclaw_node_info.get('node_id', '') != '':
+                    touch_openclaw_active_group_target(
+                        redis,
+                        app_id,
+                        group_id,
+                        chatbot_id,
+                        chatbot_user_id,
+                        openclaw_node_info.get('node_id', ''),
+                    )
+                logging.info(
+                    f"redirect_to_openclaw router_request target | app_id:{app_id}, group_id:{group_id}, chatbot_id:{chatbot_id}, chatbot_user_id:{chatbot_user_id}, node_id:{openclaw_node_info.get('node_id', '')}, cold_start:{is_cold_start}"
+                )
         logging.info(f"redirect_to_openclaw | node: {openclaw_node_info}, msg: {msg}")
-        return lanying_openclaw.redirect_to_openclaw(openclaw_node_info, msg, openclaw_embedding_knowledge)
+        return lanying_openclaw.redirect_to_openclaw(
+            openclaw_node_info,
+            msg,
+            openclaw_embedding_knowledge,
+            router_type=router_type,
+            cold_start=is_cold_start,
+        )
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
     response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
     response = lanying_openai_compat.normalize_vendor_response(response)
@@ -2245,10 +2473,16 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
             else:
                 logging.info(f"group_history_use_mode skip other user message:{message_from}")
                 continue
+        history_metadata = history.get('metadata', {})
+        history_msg_id = ''
+        if isinstance(history_metadata, dict):
+            history_msg_id = str(history_metadata.get('msg_id', '')).strip()
         if message_from == ai_user_id:
             now_message = {'role': 'assistant', 'content': message_content}
         else:
             now_message = {'role': 'user', 'content': message_content, 'name': message_from}
+        if history_msg_id != '':
+            now_message['msg_id'] = history_msg_id
         nowHistoryList = []
         last_tool_call_id = ''
         if 'function_messages' in history and 'function_messages_owner' in history:
@@ -2331,25 +2565,26 @@ def reversed_history_generator(historyListKey):
         if last_type == 'ask' or last_type == 'both':
             yield last_history
 
-def fill_msg_context(msg, userHistoryList):
-    if not isinstance(msg, dict):
-        return msg
-    body = str(msg.get('content', '')).strip()
-    if len(body) == 0:
-        return msg
-    if not isinstance(userHistoryList, list) or len(userHistoryList) == 0:
-        return msg
-
+def build_msg_context_lines(history_items, chatbot_user_id='', current_msg_id=''):
+    chatbot_user_id = str(chatbot_user_id).strip()
+    current_msg_id = str(current_msg_id).strip()
+    skipped_self_history_count = 0
+    skipped_same_msg_id_count = 0
     lines = []
-    for item in userHistoryList:
+    for item in history_items:
         if not isinstance(item, dict):
+            continue
+        history_name = str(item.get('name', '')).strip()
+        if chatbot_user_id != '' and history_name == chatbot_user_id:
+            skipped_self_history_count += 1
+            continue
+        history_msg_id = extract_history_item_msg_id(item)
+        if current_msg_id != '' and history_msg_id != '' and current_msg_id == history_msg_id:
+            skipped_same_msg_id_count += 1
             continue
         content = str(item.get('content', '')).strip()
         if len(content) == 0:
             continue
-        if content == body:
-            continue
-
         speaker_name = str(item.get('name', '')).strip()
         role = str(item.get('role', '')).strip().lower()
         if len(speaker_name) > 0:
@@ -2359,6 +2594,74 @@ def fill_msg_context(msg, userHistoryList):
         else:
             speaker = 'USER'
         lines.append(f"[{speaker}] {content}")
+    return lines, skipped_self_history_count, skipped_same_msg_id_count
+
+def fill_msg_context_legacy(msg, userHistoryList, chatbot_user_id=''):
+    if not isinstance(msg, dict):
+        return msg
+    body = str(msg.get('content', '')).strip()
+    if len(body) == 0:
+        return msg
+    if not isinstance(userHistoryList, list) or len(userHistoryList) == 0:
+        return msg
+
+    current_msg_id = extract_current_msg_id(msg)
+    if current_msg_id == '':
+        logging.info(
+            f"fill_msg_context_legacy skip current message de-dup without msg_id | chatbot_user_id:{chatbot_user_id}, input_count:{len(userHistoryList)}"
+        )
+    lines, skipped_self_history_count, skipped_same_msg_id_count = build_msg_context_lines(
+        userHistoryList,
+        chatbot_user_id,
+        current_msg_id,
+    )
+    logging.info(
+        f"fill_msg_context_legacy history filter | chatbot_user_id:{chatbot_user_id}, current_msg_id:{current_msg_id}, input_count:{len(userHistoryList)}, selected_count:{len(lines)}, skipped_self_history_count:{skipped_self_history_count}, skipped_same_msg_id_count:{skipped_same_msg_id_count}"
+    )
+    if len(lines) == 0:
+        return msg
+
+    pending_context = "[Group context messages since last trigger]\n" + "\n".join(lines)
+    msg['content'] = f"{pending_context}\n\n[Current message]\n{body}"
+    return msg
+
+def fill_msg_context(msg, userHistoryList, chatbot_user_id=''):
+    if not isinstance(msg, dict):
+        return msg
+    body = str(msg.get('content', '')).strip()
+    if len(body) == 0:
+        return msg
+    if not isinstance(userHistoryList, list) or len(userHistoryList) == 0:
+        return msg
+
+    selected_history = []
+    total_chars = 0
+    for item in reversed(userHistoryList):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get('content', '')).strip()
+        if len(content) == 0:
+            continue
+        projected_chars = total_chars + len(content)
+        if len(selected_history) >= openclaw_cold_start_history_max_messages or projected_chars > openclaw_cold_start_history_max_chars:
+            break
+        selected_history.append(item)
+        total_chars = projected_chars
+
+    selected_history.reverse()
+    current_msg_id = extract_current_msg_id(msg)
+    if current_msg_id == '':
+        logging.info(
+            f"fill_msg_context skip current message de-dup without msg_id | chatbot_user_id:{chatbot_user_id}, input_count:{len(userHistoryList)}, selected_history_count:{len(selected_history)}"
+        )
+    lines, skipped_self_history_count, skipped_same_msg_id_count = build_msg_context_lines(
+        selected_history,
+        chatbot_user_id,
+        current_msg_id,
+    )
+    logging.info(
+        f"fill_msg_context history filter | chatbot_user_id:{chatbot_user_id}, current_msg_id:{current_msg_id}, input_count:{len(userHistoryList)}, selected_count:{len(lines)}, skipped_self_history_count:{skipped_self_history_count}, skipped_same_msg_id_count:{skipped_same_msg_id_count}"
+    )
 
     if len(lines) == 0:
         return msg

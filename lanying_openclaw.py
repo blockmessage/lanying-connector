@@ -311,9 +311,14 @@ def handle_client_event(event, app_id, user_id, ctype):
     logging.info(f"handle client event | event: {event}, app_id: {app_id}, user_id: {user_id}, ctype: {ctype}")
     if event['type'] == 'online':
         node_list = get_node_list(app_id)['data']['list']
+        plugin_version = str(event.get('plugin_version', '')).strip()
+        api_version = str(event.get('api_version', '')).strip()
         for node in node_list:
             if node['user_id'] == user_id:
                 node_id = node['node_id']
+                update_node_field(app_id, node_id, 'plugin_version', plugin_version)
+                update_node_field(app_id, node_id, 'api_version', api_version)
+                logging.info(f"update node versions | node_id: {node_id}, plugin_version:{plugin_version}, api_version:{api_version}")
                 if node['status'] == 'wait':
                     logging.info(f"change node status to normal | node_id: {node_id}")
                     update_node_field(app_id, node_id, 'status', 'normal')
@@ -641,6 +646,10 @@ def get_node(app_id, node_id):
             dto['access_type'] = 'public'
         if 'access_list' not in dto:
             dto['access_list'] = ''
+        if 'plugin_version' not in dto:
+            dto['plugin_version'] = ''
+        if 'api_version' not in dto:
+            dto['api_version'] = ''
         dto['chatbot_id'] = ''
         chatbot_id = get_node_chatbot_id(app_id, node_id)
         if chatbot_id is not None:
@@ -921,7 +930,7 @@ def convert_from_meta_message(meta_message):
         'timestamp': str(meta_message.get('timestamp', '0'))
     }
 
-def redirect_to_openclaw(node_info, message, knowledge=''):
+def redirect_to_openclaw(node_info, message, knowledge='', router_type='router_request', cold_start=False):
     if node_info['status'] != 'normal':
         return 'OpenClaw状态异常'
     app_id = node_info['app_id']
@@ -953,7 +962,7 @@ def redirect_to_openclaw(node_info, message, knowledge=''):
     logging.info(f"redirect_to_openclaw transform meta | message: {message}, meta: {meta_message}")
     ext = {
         'openclaw': {
-            'type': 'router_request',
+            'type': router_type,
             'message': meta_message
         },
         'ai': {
@@ -962,6 +971,8 @@ def redirect_to_openclaw(node_info, message, knowledge=''):
     }
     if isinstance(knowledge, str) and knowledge.strip() != '':
         ext['openclaw']['knowledge'] = knowledge.strip()
+    if cold_start:
+        ext['openclaw']['cold_start'] = True
     extra = {
         'ext': ext,
         'skip_antispam_prompt': True
