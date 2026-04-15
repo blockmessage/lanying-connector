@@ -2050,9 +2050,16 @@ def calc_functions_tokens(functions, model, vendor):
             token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
         return token_cnt
     except Exception as e:
-        logging.exception(e)
+        error_text = str(e).strip().replace('\n', ' ')
+        if len(error_text) > 280:
+            error_text = error_text[:280] + '...'
+        logging.error(
+            f"calc_functions_tokens token counter failed | model:{model}, vendor:{vendor}, function_count:{len(functions)}, error_type:{type(e).__name__}, error_summary:{error_text}"
+        )
         token_cnt = len(json.dumps(functions, ensure_ascii=False))
-        logging.info(f"fallback token_cnt:{token_cnt}")
+        logging.info(
+            f"fallback token_cnt:{token_cnt} | model:{model}, vendor:{vendor}, function_count:{len(functions)}, reason:token_counter_validation_failed"
+        )
         return token_cnt
 
 def calc_function_tokens(function, model, vendor):
