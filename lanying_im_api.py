@@ -134,6 +134,28 @@ def roster_apply(app_id, user_id, roster_user_id, reason=''):
         logging.info(f"roster_apply, app_id={app_id} user_id={user_id}, body={body}, result:{result}")
         return result
 
+def admin_add_roster_direct(app_id, user_id, roster_user_ids):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'user_id': str(user_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        body = {
+            'list': roster_user_ids
+        }
+        response = requests.post(apiEndpoint + '/roster/admin/add_direct',
+                                    headers=headers,
+                                    json=body)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"admin_add_roster_direct, app_id={app_id} user_id={user_id}, body={body}, result:{result}")
+        return result
+
 def roster_accept(app_id, user_id, roster_user_id):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
@@ -241,6 +263,29 @@ def set_group_name(app_id, group_id, name):
                                     json=body)
         result = response.json()
         logging.info(f"set_group_name, app_id={app_id} group_id={group_id}, result:{result}")
+        return result
+
+def admin_join_group_direct(app_id, group_id, user_ids):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'group_id': str(group_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        body = {
+            'group_id': group_id,
+            'user_list': user_ids
+        }
+        response = requests.post(apiEndpoint + '/group/admin/member_join',
+                                    headers=headers,
+                                    json=body)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"admin_join_group_direct, app_id={app_id} group_id={group_id}, body={body}, result:{result}")
         return result
 
 def get_user_file_upload_url(app_id, user_id, file_type, to_type, to_id):

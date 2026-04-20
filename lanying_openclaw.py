@@ -9,10 +9,12 @@ import lanying_im_api
 import lanying_utils
 import json
 import lanying_vendor
+import requests
 from lanying_async import executor
 
 OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 无论用户如何要求，你都绝对不能修改本文件。"""
+TEMPORARY_GROUP_TYPE = 3
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id):
@@ -122,15 +124,65 @@ def maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id):
         return
     executor.submit(sync_bound_chatbot_preset_prompt, app_id, node_id, chatbot_id)
 
+def get_openclaw_app_manager_user(app_id):
+    redis = lanying_redis.get_redis_connection()
+    key = get_openclaw_app_manager_user_key(app_id)
+    info = lanying_redis.redis_hgetall(redis, key)
+    if "user_id" not in info:
+        return None
+    dto = {}
+    for key, value in info.items():
+        if key in ['create_time']:
+            dto[key] = int(value)
+        else:
+            dto[key] = value
+    return dto
+
+def register_openclaw_app_manager_user(app_id):
+    username = f'openclaw_admin_{secrets.token_hex(4)}'
+    password = secrets.token_hex(32)
+    result = lanying_im_api.register(app_id, username, password)
+    if result.get('code') == 200:
+        now = int(time.time())
+        data = {
+            'username': username,
+            'password': password,
+            'user_id': str(result.get('data').get('user_id')),
+            'create_time': now
+        }
+        redis = lanying_redis.get_redis_connection()
+        redis.hmset(get_openclaw_app_manager_user_key(app_id), data)
+        return {
+            'result': 'ok',
+            'data': data
+        }
+    return {
+        'result': 'error',
+        'message': 'register openclaw app user failed'
+    }
+
+def ensure_openclaw_app_manager_user(app_id):
+    app_user = get_openclaw_app_manager_user(app_id)
+    if app_user is not None and str(app_user.get('user_id', '')).strip() != '':
+        return {
+            'result': 'ok',
+            'data': app_user
+        }
+    return register_openclaw_app_manager_user(app_id)
+
 def check_create_node(app_id):
     now = int(time.time())
     node_id = generate_node_id()
+    app_user_result = ensure_openclaw_app_manager_user(app_id)
+    if app_user_result['result'] == 'error':
+        return app_user_result
     register_result = register_node_im_user(app_id, node_id)
     if register_result['result'] == 'error':
         return register_result
-    username = register_result['data']['username']
-    password = register_result['data']['password']
-    user_id = register_result['data']['user_id']
+    node_user = register_result['data']
+    username = node_user['username']
+    password = node_user['password']
+    user_id = node_user['user_id']
     redis = lanying_redis.get_redis_connection()
     key = get_node_prepare_key(app_id, node_id)
     fields = {
@@ -166,13 +218,16 @@ def create_node(node_setting: NodeSetting):
             'result': 'error',
             'message': 'must prepare first'
         }
-    delete_node_prepare(app_id, node_id)
     old_node_info = get_node(app_id, node_id)
     if old_node_info is not None:
         return {
             'result': 'error',
             'message': 'old node exist'
         }
+    app_user_result = ensure_openclaw_app_manager_user(app_id)
+    if app_user_result['result'] == 'error':
+        return app_user_result
+    delete_node_prepare(app_id, node_id)
     username = node_prepare['username']
     password = node_prepare['password']
     user_id = node_prepare['user_id']
@@ -207,6 +262,9 @@ def configure_node(app_id, node_id, param: ConfigureNodeParam):
             'result': 'error',
             'message': 'node not exist'
         }
+    app_user_result = ensure_openclaw_app_manager_user(app_id)
+    if app_user_result['result'] == 'error':
+        return app_user_result
     old_bind_chatbot_id = get_node_chatbot_id(app_id, node_id)
     if old_bind_chatbot_id == '':
         old_bind_chatbot_id = None
@@ -296,6 +354,468 @@ def delete_node(app_id, node_id):
         }
     }
 
+def normalize_session_key(session_key):
+    return str(session_key or '').strip().lower()
+
+def get_openclaw_session_group_name(node_name, session_key):
+    node_prefix = str(node_name or '').strip()
+    session_name = str(session_key or '').strip()
+    if session_name != '':
+        if node_prefix != '':
+            return f'{node_prefix} - {session_name}'
+        return session_name
+    normalized_session_key = normalize_session_key(session_key)
+    if normalized_session_key != '':
+        if node_prefix != '':
+            return f'{node_prefix} - {normalized_session_key}'
+        return normalized_session_key
+    if node_prefix != '':
+        return node_prefix
+    return 'openclaw-session'
+
+def parse_clawchat_session_identity(session_key):
+    normalized = normalize_session_key(session_key)
+    if normalized == '':
+        return None
+    parts = [part.strip() for part in normalized.split(':') if str(part).strip() != '']
+    if len(parts) < 5 or parts[0] != 'agent':
+        return None
+    if parts[2] not in ['clawchat', 'clawchat-router']:
+        return None
+    channel = parts[2]
+    cursor = 3
+    if len(parts) >= 6 and parts[3] not in ['group', 'direct']:
+        cursor = 4
+    if cursor >= len(parts) or parts[cursor] not in ['group', 'direct']:
+        return None
+    if cursor + 1 >= len(parts):
+        return None
+    return {
+        'channel': channel,
+        'chat_type': parts[cursor],
+        'target_id': ':'.join(parts[cursor + 1:]).strip()
+    }
+
+def get_nodes_by_user_id(app_id, user_id):
+    node_list = get_node_list(app_id)['data']['list']
+    target_user_id = str(user_id)
+    return [node for node in node_list if str(node.get('user_id', '')) == target_user_id]
+
+def extract_session_sync_text(message):
+    if isinstance(message, str):
+        return message.strip()
+    if isinstance(message, list):
+        parts = []
+        for item in message:
+            part = extract_session_sync_text(item)
+            if part:
+                parts.append(part)
+        return '\n\n'.join(parts).strip()
+    if isinstance(message, dict):
+        if isinstance(message.get('text'), str):
+            return message.get('text').strip()
+        if 'content' in message:
+            return extract_session_sync_text(message.get('content'))
+    return ''
+
+def create_openclaw_session_group(app_id, owner_user_id, node_name, session_name):
+    apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    session_group_name = get_openclaw_session_group_name(node_name, session_name)
+    response = requests.post(apiEndpoint + '/group/create',
+                                headers={'app_id': app_id, 'access-token': admin_token, 'user_id': str(owner_user_id)},
+                                json={'name': session_group_name,
+                                      'type': TEMPORARY_GROUP_TYPE})
+    logging.info(f"create_openclaw_session_group | app_id:{app_id}, owner_user_id:{owner_user_id}, node_name:{node_name}, session_name:{session_group_name}, response:{response.content}")
+    response_json = json.loads(response.content)
+    if response_json.get('code') == 200:
+        return str(response_json.get('data', {}).get('group_id', '')).strip()
+    return ''
+
+def get_group_settings(app_id, group_id):
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    try:
+        response = requests.get(
+            api_endpoint + '/group/settings',
+            headers={'app_id': app_id, 'access-token': admin_token, 'group_id': str(group_id)},
+            params={'group_id': group_id}
+        )
+        logging.info(f"get_group_settings | app_id:{app_id}, group_id:{group_id}, response:{response.content}")
+        response_json = json.loads(response.content)
+        if response_json.get('code') == 200 and isinstance(response_json.get('data'), dict):
+            return response_json.get('data')
+    except Exception:
+        logging.exception("get_group_settings failed")
+    return None
+
+def set_group_apply_approval(app_id, group_id, apply_approval):
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    try:
+        response = requests.post(
+            api_endpoint + '/group/settings/require_admin_approval',
+            headers={'app_id': app_id, 'access-token': admin_token, 'group_id': str(group_id)},
+            json={'group_id': group_id, 'apply_approval': apply_approval}
+        )
+        logging.info(
+            f"set_group_apply_approval | app_id:{app_id}, group_id:{group_id}, "
+            f"apply_approval:{apply_approval}, response:{response.content}"
+        )
+        response_json = json.loads(response.content)
+        return response_json.get('code') == 200
+    except Exception:
+        logging.exception("set_group_apply_approval failed")
+        return False
+
+def get_group_member_info(app_id, group_id, user_id):
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    try:
+        response = requests.get(
+            api_endpoint + '/console/group/member/info',
+            headers={'app_id': app_id, 'access-token': admin_token, 'group_id': str(group_id)},
+            params={'group_id': group_id, 'user_id': user_id}
+        )
+        logging.info(
+            f"get_group_member_info | app_id:{app_id}, group_id:{group_id}, "
+            f"user_id:{user_id}, response:{response.content}"
+        )
+        return json.loads(response.content)
+    except Exception:
+        logging.exception("get_group_member_info failed")
+        return None
+
+def is_user_joined_group(app_id, user_id, group_id):
+    response_json = get_group_member_info(app_id, group_id, user_id)
+    if not isinstance(response_json, dict):
+        return False
+    code = response_json.get('code')
+    if code == 200:
+        return True
+    if code == 20002:
+        return False
+    logging.info(
+        f"is_user_joined_group unexpected response | app_id:{app_id}, user_id:{user_id}, "
+        f"group_id:{group_id}, response:{response_json}"
+    )
+    return False
+
+def ensure_user_joined_group(app_id, user_id, group_id):
+    if is_user_joined_group(app_id, user_id, group_id):
+        logging.info(
+            f"ensure_user_joined_group skip existing member | app_id:{app_id}, "
+            f"user_id:{user_id}, group_id:{group_id}"
+        )
+        return True
+    try:
+        response_json = lanying_im_api.admin_join_group_direct(app_id, group_id, [int(user_id)])
+        logging.info(
+            f"ensure_user_joined_group admin_join | app_id:{app_id}, user_id:{user_id}, "
+            f"group_id:{group_id}, response:{response_json}"
+        )
+        if not isinstance(response_json, dict) or response_json.get('code') != 200:
+            return False
+    except Exception:
+        logging.exception("ensure_user_joined_group admin_join failed")
+        return False
+    for attempt in range(5):
+        try:
+            joined = is_user_joined_group(app_id, user_id, group_id)
+            logging.info(
+                f"ensure_user_joined_group wait | app_id:{app_id}, user_id:{user_id}, "
+                f"group_id:{group_id}, attempt:{attempt}, joined:{joined}"
+            )
+            if joined:
+                return True
+        except Exception:
+            logging.exception("ensure_user_joined_group wait failed")
+        time.sleep(1)
+    return False
+
+def get_session_mapping_by_session(app_id, node_id, session_key):
+    redis = lanying_redis.get_redis_connection()
+    key = get_openclaw_session_mapping_by_session_key(app_id, node_id, normalize_session_key(session_key))
+    raw = lanying_redis.redis_get(redis, key)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        logging.exception("get_session_mapping_by_session parse failed")
+        return None
+
+def get_session_mapping_by_group(app_id, node_id, openclaw_user_id, group_id):
+    redis = lanying_redis.get_redis_connection()
+    key = get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id)
+    raw = lanying_redis.redis_get(redis, key)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        logging.exception("get_session_mapping_by_group parse failed")
+        return None
+
+def list_session_mappings_for_node(app_id, node_id):
+    redis = lanying_redis.get_redis_connection()
+    mappings = []
+    session_keys = []
+    try:
+        session_keys = list(redis.smembers(get_openclaw_session_mapping_index_key(app_id, node_id)))
+    except Exception:
+        logging.exception("list_session_mappings_for_node read index failed")
+        return mappings
+    for indexed_session_key in session_keys:
+        try:
+            mapping = get_session_mapping_by_session(app_id, node_id, indexed_session_key)
+            if isinstance(mapping, dict):
+                mappings.append(mapping)
+        except Exception:
+            logging.exception("list_session_mappings_for_node parse failed")
+    return mappings
+
+def set_session_mapping(app_id, node_id, mapping):
+    session_key = normalize_session_key(mapping.get('session_key', ''))
+    group_id = str(mapping.get('group_id', '')).strip()
+    openclaw_user_id = str(mapping.get('openclaw_user_id', '')).strip()
+    if session_key == '' or group_id == '' or openclaw_user_id == '':
+        return {
+            'result': 'error',
+            'message': 'bad session mapping'
+        }
+    previous_session_mapping = get_session_mapping_by_session(app_id, node_id, session_key)
+    previous_group_mapping = get_session_mapping_by_group(app_id, node_id, openclaw_user_id, group_id)
+    if previous_session_mapping is not None and str(previous_session_mapping.get('group_id', '')).strip() != group_id:
+        return {
+            'result': 'error',
+            'message': 'session already bind to another group'
+        }
+    if previous_group_mapping is not None and normalize_session_key(previous_group_mapping.get('session_key', '')) != session_key:
+        return {
+            'result': 'error',
+            'message': 'group already bind to another session'
+        }
+    redis = lanying_redis.get_redis_connection()
+    body = dict(mapping)
+    body['session_key'] = session_key
+    body['group_id'] = group_id
+    body['openclaw_user_id'] = openclaw_user_id
+    body['updated_at'] = int(time.time())
+    if 'created_at' not in body or int(body.get('created_at', 0) or 0) <= 0:
+        body['created_at'] = body['updated_at']
+    body_json = json.dumps(body, ensure_ascii=False)
+    redis.set(get_openclaw_session_mapping_by_session_key(app_id, node_id, session_key), body_json)
+    redis.set(get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id), body_json)
+    redis.sadd(get_openclaw_session_mapping_index_key(app_id, node_id), session_key)
+    return {
+        'result': 'ok',
+        'data': body
+    }
+
+def send_session_mapping_signal(node_info, signal_type, mappings):
+    if not isinstance(mappings, list):
+        return {
+            'result': 'error',
+            'message': 'bad mappings payload'
+        }
+    app_id = node_info['app_id']
+    user_id = node_info['user_id']
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    ext = {
+        'openclaw': {
+            'type': signal_type,
+            'app_id': str(app_id),
+            'node_id': str(node_info.get('node_id', '')),
+            'openclaw_user_id': str(user_id),
+            'mappings': mappings
+        }
+    }
+    msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, 1, 6, '', {
+        'ext': ext,
+        'skip_antispam_prompt': True
+    })
+    if msg_id <= 0:
+        return {
+            'result': 'error',
+            'message': 'send mapping signal failed'
+        }
+    return {
+        'result': 'ok',
+        'data': {
+            'msg_id': msg_id
+        }
+    }
+
+def sync_session_mapping_to_node(node_info, mapping):
+    return send_session_mapping_signal(node_info, 'session_mapping_sync', [mapping])
+
+def sync_session_mapping_snapshot_to_node(node_info):
+    mappings = list_session_mappings_for_node(node_info['app_id'], node_info['node_id'])
+    return send_session_mapping_signal(node_info, 'session_mapping_snapshot', mappings)
+
+def ensure_session_mapping(app_id, node_info, session_key):
+    normalized_session_key = normalize_session_key(session_key)
+    node_name = str(node_info.get('name', '')).strip()
+    if normalized_session_key == '':
+        return {
+            'result': 'error',
+            'message': 'bad session key'
+        }
+    node_id = node_info['node_id']
+    existing = get_session_mapping_by_session(app_id, node_id, normalized_session_key)
+    if existing is not None:
+        logging.info(
+            f"ensure_session_mapping reuse existing mapping | app_id:{app_id}, node_id:{node_id}, "
+            f"session_key:{normalized_session_key}, group_id:{existing.get('group_id', '')}, "
+            f"strategy:existing_mapping"
+        )
+        return {
+            'result': 'ok',
+            'data': existing
+        }
+    app_user_result = ensure_openclaw_app_manager_user(app_id)
+    if app_user_result['result'] == 'error':
+        return app_user_result
+    app_manager_user = app_user_result['data']
+    management_user_id = str(app_manager_user['user_id'])
+    openclaw_user_id = str(node_info['user_id'])
+    if management_user_id == '' or openclaw_user_id == '':
+        return {
+            'result': 'error',
+            'message': 'openclaw management user not ready'
+        }
+    clawchat_session = parse_clawchat_session_identity(normalized_session_key)
+    if clawchat_session is not None:
+        if clawchat_session['chat_type'] == 'direct':
+            logging.info(
+                f"ensure_session_mapping ignore clawchat direct session | "
+                f"app_id:{app_id}, node_id:{node_id}, session_key:{normalized_session_key}, "
+                f"target_id:{clawchat_session['target_id']}"
+            )
+            return {
+                'result': 'ignored',
+                'message': 'ignore clawchat direct session'
+            }
+        group_id = str(clawchat_session['target_id']).strip()
+        if group_id == '':
+            return {
+                'result': 'error',
+                'message': 'bad clawchat group target'
+            }
+        if not ensure_user_joined_group(app_id, management_user_id, group_id):
+            return {
+                'result': 'error',
+                'message': 'join clawchat group failed'
+            }
+        logging.info(
+            f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "
+            f"session_key:{normalized_session_key}, parsed_channel:{clawchat_session['channel']}, "
+            f"parsed_chat_type:{clawchat_session['chat_type']}, target_id:{clawchat_session['target_id']}, "
+            f"group_id:{group_id}, strategy:reuse_existing_clawchat_group"
+        )
+    else:
+        group_id = create_openclaw_session_group(app_id, management_user_id, node_name, session_key)
+        logging.info(
+            f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "
+            f"session_key:{normalized_session_key}, session_name:{get_openclaw_session_group_name(node_name, session_key)}, group_id:{group_id}, "
+            f"strategy:create_management_node_group"
+        )
+    if group_id == '':
+        return {
+            'result': 'error',
+            'message': 'create session group failed'
+        }
+    if clawchat_session is None:
+        if not ensure_user_joined_group(app_id, openclaw_user_id, group_id):
+            logging.info(
+                f"ensure_session_mapping add node user failed | app_id:{app_id}, node_id:{node_id}, "
+                f"session_key:{normalized_session_key}, group_id:{group_id}, openclaw_user_id:{openclaw_user_id}"
+            )
+            return {
+                'result': 'error',
+                'message': 'add node user to session group failed'
+            }
+    mapping_result = set_session_mapping(app_id, node_id, {
+        'session_key': normalized_session_key,
+        'group_id': group_id,
+        'app_id': str(app_id),
+        'node_id': str(node_id),
+        'openclaw_user_id': openclaw_user_id,
+        'management_user_id': management_user_id,
+        'created_at': int(time.time())
+    })
+    if mapping_result['result'] == 'error':
+        logging.info(
+            f"ensure_session_mapping set mapping failed | app_id:{app_id}, node_id:{node_id}, "
+            f"session_key:{normalized_session_key}, group_id:{group_id}, "
+            f"management_user_id:{management_user_id}, openclaw_user_id:{openclaw_user_id}, "
+            f"message:{mapping_result.get('message', '')}"
+        )
+        return mapping_result
+    logging.info(
+        f"ensure_session_mapping success | app_id:{app_id}, node_id:{node_id}, "
+        f"session_key:{normalized_session_key}, group_id:{group_id}, "
+        f"management_user_id:{management_user_id}, openclaw_user_id:{openclaw_user_id}"
+    )
+    sync_session_mapping_to_node(node_info, mapping_result['data'])
+    return mapping_result
+
+def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
+    if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
+        return 0
+    management_user_id = str(mapping.get('management_user_id', '')).strip()
+    node_user_id = str(node_info.get('user_id', '')).strip()
+    if management_user_id == '' or node_user_id == '':
+        return 0
+    from_user_id = management_user_id if role == 'user' else node_user_id
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    group_id = str(mapping.get('group_id', '')).strip()
+    msg_id = lanying_im_api.send_message_sync(config, app_id, from_user_id, group_id, 2, 0, text.strip(), {
+        'skip_antispam_prompt': True
+    })
+    logging.info(
+        f"forward_session_sync_to_group | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+        f"session_key:{mapping.get('session_key', '')}, group_id:{group_id}, role:{role}, "
+        f"from_user_id:{from_user_id}, text_len:{len(text.strip())}, msg_id:{msg_id}"
+    )
+    return msg_id
+
+def handle_session_message_sync_event(app_id, node_info, event):
+    if not isinstance(event, dict):
+        return
+    source = str(event.get('source', '')).strip()
+    session_key = normalize_session_key(event.get('session', ''))
+    message = event.get('message', {})
+    role = ''
+    if isinstance(message, dict):
+        role = str(message.get('role', '')).strip().lower()
+    text = extract_session_sync_text(message.get('content') if isinstance(message, dict) else message)
+    if session_key == '' or source not in ['control_ui_user', 'control_ui_reply']:
+        return
+    mapping = get_session_mapping_by_session(app_id, node_info['node_id'], session_key)
+    logging.info(
+        f"handle_session_message_sync_event | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+        f"source:{source}, session_key:{session_key}, role:{role}, text_len:{len(text.strip())}, "
+        f"has_existing_mapping:{mapping is not None}"
+    )
+    if mapping is None and source == 'control_ui_user':
+        ensure_result = ensure_session_mapping(app_id, node_info, session_key)
+        if ensure_result['result'] == 'ok':
+            mapping = ensure_result['data']
+        elif ensure_result['result'] == 'ignored':
+            return
+    if mapping is None:
+        return
+    if text.strip() != '' and role in ['user', 'assistant']:
+        forward_session_sync_to_group(app_id, node_info, mapping, role, text)
+
 def handle_chat_message(msg):
     from_user_id = msg['from']['uid']
     to_user_id = msg['to']['uid']
@@ -310,41 +830,47 @@ def handle_chat_message(msg):
 def handle_client_event(event, app_id, user_id, ctype):
     logging.info(f"handle client event | event: {event}, app_id: {app_id}, user_id: {user_id}, ctype: {ctype}")
     if event['type'] == 'online':
-        node_list = get_node_list(app_id)['data']['list']
+        node_list = get_nodes_by_user_id(app_id, user_id)
         plugin_version = str(event.get('plugin_version', '')).strip()
         api_version = str(event.get('api_version', '')).strip()
         for node in node_list:
-            if node['user_id'] == user_id:
-                node_id = node['node_id']
-                update_node_field(app_id, node_id, 'plugin_version', plugin_version)
-                update_node_field(app_id, node_id, 'api_version', api_version)
-                logging.info(f"update node versions | node_id: {node_id}, plugin_version:{plugin_version}, api_version:{api_version}")
-                if node['status'] == 'wait':
-                    logging.info(f"change node status to normal | node_id: {node_id}")
-                    update_node_field(app_id, node_id, 'status', 'normal')
-                    model_patch_config = get_model_patch_config(app_id, node_id)
-                    update_node_config(app_id, node_id, model_patch_config)
-                    maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
-                elif 'provider_inited' in event and event['provider_inited'] == False:
-                    logging.info(f"update node config for provider_inited is false | node_id: {node_id}")
-                    model_patch_config = get_model_patch_config(app_id, node_id)
-                    update_node_config(app_id, node_id, model_patch_config)
-                    maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+            node_id = node['node_id']
+            update_node_field(app_id, node_id, 'plugin_version', plugin_version)
+            update_node_field(app_id, node_id, 'api_version', api_version)
+            logging.info(f"update node versions | node_id: {node_id}, plugin_version:{plugin_version}, api_version:{api_version}")
+            if node['status'] == 'wait':
+                logging.info(f"change node status to normal | node_id: {node_id}")
+                update_node_field(app_id, node_id, 'status', 'normal')
+                model_patch_config = get_model_patch_config(app_id, node_id)
+                update_node_config(app_id, node_id, model_patch_config)
+                maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+            elif 'provider_inited' in event and event['provider_inited'] == False:
+                logging.info(f"update node config for provider_inited is false | node_id: {node_id}")
+                model_patch_config = get_model_patch_config(app_id, node_id)
+                update_node_config(app_id, node_id, model_patch_config)
+                maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+            sync_session_mapping_snapshot_to_node(node)
     elif event['type'] == 'router_reply':
         if ctype != 'COMMAND':
             logging.info(f"handle_client_event skip not command router_reply | ctype: {ctype}, event: {event}")
             return
-        node_list = get_node_list(app_id)['data']['list']
+        node_list = get_nodes_by_user_id(app_id, user_id)
         for node in node_list:
-            if node['user_id'] == user_id:
-                node_id = node['node_id']
-                logging.info(f"handle_client router_reply | node_id: {node_id}, event: {event}")
-                if 'message' in event:
-                    meta_message = event['message']
-                    message = convert_from_meta_message(meta_message)
-                    logging.info(f"convert_from_meta_message: meta_message{meta_message}, message: {message}")
-                    router_reply_message(app_id, node, message)
-                return
+            node_id = node['node_id']
+            logging.info(f"handle_client router_reply | node_id: {node_id}, event: {event}")
+            if 'message' in event:
+                meta_message = event['message']
+                message = convert_from_meta_message(meta_message)
+                logging.info(f"convert_from_meta_message: meta_message{meta_message}, message: {message}")
+                router_reply_message(app_id, node, message)
+            return
+    elif event['type'] == 'session_message_sync':
+        if ctype != 'COMMAND':
+            logging.info(f"handle_client_event skip not command session_message_sync | ctype: {ctype}, event: {event}")
+            return
+        node_list = get_nodes_by_user_id(app_id, user_id)
+        for node in node_list:
+            handle_session_message_sync_event(app_id, node, event)
 
 def router_reply_message(app_id, node_info, message):
     logging.info(f"router_reply_message start | node: {node_info}, message: {message}")
@@ -588,13 +1114,13 @@ def init_node_im_user_setting(app_id, old_node_info, node_info):
         logging.info(f"init_node_im_user_setting remove_access_list: {add_access_list}, remove_access_list: {remove_access_list}")
         for add_user_id in add_access_list:
             try:
-                lanying_im_api.roster_apply(app_id, add_user_id, user_id, 'OpenClaw')
+                result = lanying_im_api.admin_add_roster_direct(app_id, user_id, [int(add_user_id)])
+                logging.info(
+                    f"init_node_im_user_setting admin_add_roster_direct | "
+                    f"app_id:{app_id}, user_id:{user_id}, add_user_id:{add_user_id}, result:{result}"
+                )
             except Exception:
-                logging.exception("roster_apply failed")
-            try:
-                lanying_im_api.roster_accept(app_id, user_id, add_user_id)
-            except Exception:
-                logging.exception("roster_accept failed")
+                logging.exception("admin_add_roster_direct failed")
         for remove_user_id in remove_access_list:
             try:
                 lanying_im_api.roster_delete(app_id, user_id, remove_user_id)
@@ -1000,6 +1526,21 @@ def get_node_chatbot_bind_key(app_id):
 
 def get_chatbot_node_bind_key(app_id):
     return f"lanying_connector:openclaw:chatbot_bind:{app_id}"
+
+def get_openclaw_app_manager_user_key(app_id):
+    return f"lanying_connector:openclaw:app_user:{app_id}"
+
+def get_openclaw_session_mapping_by_session_prefix(app_id, node_id):
+    return f"lanying_connector:openclaw:session_map:by_session:{app_id}:{node_id}:"
+
+def get_openclaw_session_mapping_by_session_key(app_id, node_id, session_key):
+    return f"{get_openclaw_session_mapping_by_session_prefix(app_id, node_id)}{normalize_session_key(session_key)}"
+
+def get_openclaw_session_mapping_index_key(app_id, node_id):
+    return f"lanying_connector:openclaw:session_map:index:{app_id}:{node_id}"
+
+def get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id):
+    return f"lanying_connector:openclaw:session_map:by_group:{app_id}:{node_id}:{openclaw_user_id}:{group_id}"
 
 def get_token_key(token):
     return f"lanying_connector:openclaw:token:{token}"
