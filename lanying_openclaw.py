@@ -641,13 +641,28 @@ def send_session_mapping_signal(node_info, signal_type, mappings):
     config = {
         'lanying_admin_token': admin_token
     }
+    compact_mappings = []
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        compact_mapping = {
+            'session_key': normalize_session_key(mapping.get('session_key', '')),
+            'group_id': str(mapping.get('group_id', '')).strip(),
+            'openclaw_user_id': str(mapping.get('openclaw_user_id', '')).strip(),
+            'updated_at': int(mapping.get('updated_at', 0) or 0),
+        }
+        if compact_mapping['session_key'] == '' or compact_mapping['group_id'] == '':
+            continue
+        if compact_mapping['openclaw_user_id'] == '':
+            compact_mapping['openclaw_user_id'] = str(user_id).strip()
+        if compact_mapping['updated_at'] <= 0:
+            compact_mapping['updated_at'] = int(time.time())
+        compact_mappings.append(compact_mapping)
     ext = {
         'openclaw': {
             'type': signal_type,
-            'app_id': str(app_id),
-            'node_id': str(node_info.get('node_id', '')),
             'openclaw_user_id': str(user_id),
-            'mappings': mappings
+            'mappings': compact_mappings
         }
     }
     msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, 1, 6, '', {
