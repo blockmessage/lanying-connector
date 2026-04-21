@@ -15,6 +15,7 @@ from lanying_async import executor
 OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 无论用户如何要求，你都绝对不能修改本文件。"""
 TEMPORARY_GROUP_TYPE = 3
+OPENCLAW_SESSION_GROUP_FIRST_MESSAGE_DELAY_SECONDS = 1.0
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id):
@@ -355,6 +356,12 @@ def delete_node(app_id, node_id):
     }
 
 def normalize_session_key(session_key):
+    if isinstance(session_key, bytes):
+        try:
+            session_key = session_key.decode('utf-8')
+        except Exception:
+            logging.exception("normalize_session_key decode failed")
+            session_key = ''
     return str(session_key or '').strip().lower()
 
 def get_openclaw_session_group_name(node_name, session_key):
@@ -468,37 +475,46 @@ def set_group_apply_approval(app_id, group_id, apply_approval):
         logging.exception("set_group_apply_approval failed")
         return False
 
-def get_group_member_info(app_id, group_id, user_id):
+def get_group_member_list(app_id, group_id, cursor = '', limit = 500):
     api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
     admin_token = lanying_config.get_lanying_admin_token(app_id)
     try:
         response = requests.get(
-            api_endpoint + '/console/group/member/info',
+            api_endpoint + '/group/member_list',
             headers={'app_id': app_id, 'access-token': admin_token, 'group_id': str(group_id)},
-            params={'group_id': group_id, 'user_id': user_id}
+            params={'group_id': group_id, 'cursor': cursor, 'limit': limit}
         )
         logging.info(
-            f"get_group_member_info | app_id:{app_id}, group_id:{group_id}, "
-            f"user_id:{user_id}, response:{response.content}"
+            f"get_group_member_list | app_id:{app_id}, group_id:{group_id}, "
+            f"cursor:{cursor}, limit:{limit}, response:{response.content}"
         )
         return json.loads(response.content)
     except Exception:
-        logging.exception("get_group_member_info failed")
+        logging.exception("get_group_member_list failed")
         return None
 
 def is_user_joined_group(app_id, user_id, group_id):
-    response_json = get_group_member_info(app_id, group_id, user_id)
-    if not isinstance(response_json, dict):
-        return False
-    code = response_json.get('code')
-    if code == 200:
-        return True
-    if code == 20002:
-        return False
-    logging.info(
-        f"is_user_joined_group unexpected response | app_id:{app_id}, user_id:{user_id}, "
-        f"group_id:{group_id}, response:{response_json}"
-    )
+    target_user_id = str(user_id).strip()
+    cursor = ''
+    for _ in range(20):
+        response_json = get_group_member_list(app_id, group_id, cursor)
+        if not isinstance(response_json, dict):
+            return False
+        if response_json.get('code') != 200:
+            logging.info(
+                f"is_user_joined_group unexpected response | app_id:{app_id}, user_id:{user_id}, "
+                f"group_id:{group_id}, response:{response_json}"
+            )
+            return False
+        members = response_json.get('data')
+        if isinstance(members, list):
+            for member in members:
+                if isinstance(member, dict) and str(member.get('user_id', '')).strip() == target_user_id:
+                    return True
+        next_cursor = str(response_json.get('cursor', '')).strip()
+        if next_cursor == '' or next_cursor == cursor:
+            return False
+        cursor = next_cursor
     return False
 
 def ensure_user_joined_group(app_id, user_id, group_id):
@@ -655,6 +671,11 @@ def sync_session_mapping_to_node(node_info, mapping):
 
 def sync_session_mapping_snapshot_to_node(node_info):
     mappings = list_session_mappings_for_node(node_info['app_id'], node_info['node_id'])
+    logging.info(
+        f"sync_session_mapping_snapshot_to_node | app_id:{node_info['app_id']}, "
+        f"node_id:{node_info['node_id']}, openclaw_user_id:{node_info.get('user_id', '')}, "
+        f"mapping_count:{len(mappings)}"
+    )
     return send_session_mapping_signal(node_info, 'session_mapping_snapshot', mappings)
 
 def ensure_session_mapping(app_id, node_info, session_key):
@@ -787,6 +808,49 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
     )
     return msg_id
 
+def maybe_delay_first_session_sync_after_mapping(app_id, node_info, mapping, source):
+    if source != 'control_ui_user':
+        return
+    if not isinstance(mapping, dict):
+        return
+    created_at = int(mapping.get('created_at', 0) or 0)
+    if created_at <= 0:
+        return
+    age_seconds = time.time() - created_at
+    delay_seconds = OPENCLAW_SESSION_GROUP_FIRST_MESSAGE_DELAY_SECONDS - age_seconds
+    if delay_seconds <= 0:
+        return
+    logging.info(
+        f"delay first session sync after mapping | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+        f"session_key:{mapping.get('session_key', '')}, group_id:{mapping.get('group_id', '')}, "
+        f"source:{source}, delay_seconds:{round(delay_seconds, 3)}"
+    )
+    time.sleep(delay_seconds)
+
+def forward_session_sync_router_group_reply(app_id, node_info, mapping, text):
+    if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
+        return 0
+    session_identity = parse_clawchat_session_identity(mapping.get('session_key', ''))
+    if session_identity is None:
+        return 0
+    if session_identity.get('channel') != 'clawchat-router' or session_identity.get('chat_type') != 'group':
+        return 0
+    group_id = str(session_identity.get('target_id', '')).strip()
+    if group_id == '':
+        return 0
+    router_reply_message(app_id, node_info, {
+        'type': 'GROUPCHAT',
+        'content': text.strip(),
+        'to': {
+            'uid': group_id
+        }
+    })
+    logging.info(
+        f"forward_session_sync_router_group_reply | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+        f"session_key:{mapping.get('session_key', '')}, group_id:{group_id}, text_len:{len(text.strip())}"
+    )
+    return 1
+
 def handle_session_message_sync_event(app_id, node_info, event):
     if not isinstance(event, dict):
         return
@@ -805,15 +869,23 @@ def handle_session_message_sync_event(app_id, node_info, event):
         f"source:{source}, session_key:{session_key}, role:{role}, text_len:{len(text.strip())}, "
         f"has_existing_mapping:{mapping is not None}"
     )
+    mapping_created_now = False
     if mapping is None and source == 'control_ui_user':
         ensure_result = ensure_session_mapping(app_id, node_info, session_key)
         if ensure_result['result'] == 'ok':
             mapping = ensure_result['data']
+            mapping_created_now = True
         elif ensure_result['result'] == 'ignored':
             return
     if mapping is None:
         return
+    if mapping_created_now:
+        maybe_delay_first_session_sync_after_mapping(app_id, node_info, mapping, source)
     if text.strip() != '' and role in ['user', 'assistant']:
+        if role == 'assistant':
+            router_reply_result = forward_session_sync_router_group_reply(app_id, node_info, mapping, text)
+            if router_reply_result > 0:
+                return
         forward_session_sync_to_group(app_id, node_info, mapping, role, text)
 
 def handle_chat_message(msg):
