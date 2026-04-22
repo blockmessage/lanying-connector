@@ -441,26 +441,7 @@ def parse_json_object(value):
 def is_merge_sub_sessions_enabled(node_info):
     if not isinstance(node_info, dict):
         return False
-    direct_keys = [
-        'merge_sub_sessions',
-        'merge_child_sessions',
-        'merge_subagent_sessions',
-        'mergeSubSessions',
-        'mergeChildSessions',
-        'mergeSubagentSessions',
-    ]
-    for key in direct_keys:
-        if key in node_info and parse_bool_flag(node_info.get(key)):
-            return True
-    nested_keys = ['config', 'settings', 'ext', 'extra', 'config_patch', 'patch_config']
-    for key in nested_keys:
-        obj = parse_json_object(node_info.get(key))
-        if not isinstance(obj, dict):
-            continue
-        for candidate in direct_keys:
-            if parse_bool_flag(obj.get(candidate)):
-                return True
-    return False
+    return parse_bool_flag(node_info.get('merge_sub_sessions'))
 
 def resolve_session_lineage(app_id, node_id, session_key, parent_session_key='', root_session_key=''):
     normalized_session_key = normalize_session_key(session_key)
