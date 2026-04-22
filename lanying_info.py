@@ -290,24 +290,24 @@ def info_openclaw_nodes(app_id):
         node_list_result = lanying_openclaw.get_node_list(app_id)
         if node_list_result.get('result') == 'ok':
             node_list = node_list_result.get('data', {}).get('list', [])
-            set_cache('app_id', app_id)
             if len(node_list) > 0:
+                set_cache('app_id', app_id)
                 set_cache('node_id', str(node_list[0].get('node_id', '')))
-            summary = []
-            for node in node_list:
-                summary.append({
-                    'node_id': str(node.get('node_id', '')),
-                    'name': node.get('name', ''),
-                    'user_id': str(node.get('user_id', '')),
-                    'chatbot_id': str(node.get('chatbot_id', '')),
-                    'merge_sub_sessions': str(node.get('merge_sub_sessions', 'off'))
-                })
-            return {
-                'result': 'ok',
-                'data': {
-                    'openclaw_nodes': summary
+                summary = []
+                for node in node_list:
+                    summary.append({
+                        'node_id': str(node.get('node_id', '')),
+                        'name': node.get('name', ''),
+                        'user_id': str(node.get('user_id', '')),
+                        'chatbot_id': str(node.get('chatbot_id', '')),
+                        'merge_sub_sessions': str(node.get('merge_sub_sessions', 'off'))
+                    })
+                return {
+                    'result': 'ok',
+                    'data': {
+                        'openclaw_nodes': summary
+                    }
                 }
-            }
 
 def info_openclaw_node(node_id):
     app_id = cache.get('app_id')
