@@ -363,8 +363,17 @@ def normalize_session_key(session_key):
             session_key = ''
     return str(session_key or '').strip().lower()
 
-def get_openclaw_session_group_name(node_name, session_key):
-    node_prefix = str(node_name or '').strip()
+def get_openclaw_session_group_name(node_name, node_id, session_key):
+    node_name_text = str(node_name or '').strip()
+    node_id_text = str(node_id or '').strip()
+    if node_name_text != '' and node_id_text != '':
+        node_prefix = f'{node_name_text} - {node_id_text}'
+    elif node_name_text != '':
+        node_prefix = node_name_text
+    elif node_id_text != '':
+        node_prefix = f'OpenClaw-{node_id_text}'
+    else:
+        node_prefix = ''
     session_name = str(session_key or '').strip()
     if session_name != '':
         if node_prefix != '':
@@ -424,15 +433,15 @@ def extract_session_sync_text(message):
             return extract_session_sync_text(message.get('content'))
     return ''
 
-def create_openclaw_session_group(app_id, owner_user_id, node_name, session_name):
+def create_openclaw_session_group(app_id, owner_user_id, node_name, node_id, session_name):
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     admin_token = lanying_config.get_lanying_admin_token(app_id)
-    session_group_name = get_openclaw_session_group_name(node_name, session_name)
+    session_group_name = get_openclaw_session_group_name(node_name, node_id, session_name)
     response = requests.post(apiEndpoint + '/group/create',
                                 headers={'app_id': app_id, 'access-token': admin_token, 'user_id': str(owner_user_id)},
                                 json={'name': session_group_name,
                                       'type': TEMPORARY_GROUP_TYPE})
-    logging.info(f"create_openclaw_session_group | app_id:{app_id}, owner_user_id:{owner_user_id}, node_name:{node_name}, session_name:{session_group_name}, response:{response.content}")
+    logging.info(f"create_openclaw_session_group | app_id:{app_id}, owner_user_id:{owner_user_id}, node_name:{node_name}, node_id:{node_id}, session_name:{session_group_name}, response:{response.content}")
     response_json = json.loads(response.content)
     if response_json.get('code') == 200:
         return str(response_json.get('data', {}).get('group_id', '')).strip()
@@ -753,10 +762,10 @@ def ensure_session_mapping(app_id, node_info, session_key):
             f"group_id:{group_id}, strategy:reuse_existing_clawchat_group"
         )
     else:
-        group_id = create_openclaw_session_group(app_id, management_user_id, node_name, session_key)
+        group_id = create_openclaw_session_group(app_id, management_user_id, node_name, node_id, session_key)
         logging.info(
             f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "
-            f"session_key:{normalized_session_key}, session_name:{get_openclaw_session_group_name(node_name, session_key)}, group_id:{group_id}, "
+            f"session_key:{normalized_session_key}, session_name:{get_openclaw_session_group_name(node_name, node_id, session_key)}, group_id:{group_id}, "
             f"strategy:create_management_node_group"
         )
     if group_id == '':
