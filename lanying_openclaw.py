@@ -461,12 +461,21 @@ def resolve_session_lineage(app_id, node_id, session_key, parent_session_key='',
     if normalized_root_session_key == '':
         normalized_root_session_key = normalized_parent_session_key or normalized_session_key
     return {
+        'session_key': normalized_session_key,
         'parent_session_key': normalized_parent_session_key,
         'root_session_key': normalized_root_session_key or normalized_session_key,
     }
 
+def resolve_effective_target_session_key(session_key, lineage, merge_sub_sessions):
+    normalized_session_key = normalize_session_key(session_key)
+    normalized_root_session_key = normalize_optional_session_key(lineage.get('root_session_key', ''))
+    if merge_sub_sessions and normalized_root_session_key != '' and normalized_root_session_key != normalized_session_key:
+        return normalized_root_session_key
+    return normalized_session_key
+
 def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user_id):
     node_id = node_info['node_id']
+    openclaw_user_id = str(node_info.get('user_id', '')).strip()
     parent_session_key = normalize_optional_session_key(lineage.get('parent_session_key', ''))
     root_session_key = normalize_optional_session_key(lineage.get('root_session_key', ''))
     if parent_session_key != '':
@@ -475,43 +484,172 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
             sender_user_id = str(parent_mapping.get('sender_user_id', '')).strip()
             if sender_user_id != '':
                 logging.info(
-                    f"resolve_inherited_sender_user_id resolved from parent mapping | "
+                    f"resolve_inherited_identity resolved from parent mapping | "
                     f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
                     f"root_session_key:{root_session_key}, sender_user_id:{sender_user_id}"
                 )
-                return sender_user_id
+                return {
+                    'sender_user_id': sender_user_id,
+                    'source': 'parent',
+                    'management_user_id': str(management_user_id).strip(),
+                    'openclaw_user_id': openclaw_user_id,
+                }
             logging.info(
-                f"resolve_inherited_sender_user_id fallback to management user because parent mapping sender is empty | "
+                f"resolve_inherited_identity fallback to management user because parent mapping sender is empty | "
                 f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
                 f"root_session_key:{root_session_key}, management_user_id:{str(management_user_id).strip()}"
             )
-            return str(management_user_id).strip()
+            return {
+                'sender_user_id': str(management_user_id).strip(),
+                'source': 'management',
+                'management_user_id': str(management_user_id).strip(),
+                'openclaw_user_id': openclaw_user_id,
+            }
     if root_session_key != '':
         root_mapping = get_session_mapping_by_session(app_id, node_id, root_session_key)
         if isinstance(root_mapping, dict):
             sender_user_id = str(root_mapping.get('sender_user_id', '')).strip()
             if sender_user_id != '':
                 logging.info(
-                    f"resolve_inherited_sender_user_id resolved from root mapping | "
+                    f"resolve_inherited_identity resolved from root mapping | "
                     f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
                     f"root_session_key:{root_session_key}, sender_user_id:{sender_user_id}"
                 )
-                return sender_user_id
+                return {
+                    'sender_user_id': sender_user_id,
+                    'source': 'root',
+                    'management_user_id': str(management_user_id).strip(),
+                    'openclaw_user_id': openclaw_user_id,
+                }
     identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
     if isinstance(identity, dict) and identity.get('chat_type') == 'direct':
         resolved_user_id = str(identity.get('target_id', '')).strip()
         logging.info(
-            f"resolve_inherited_sender_user_id resolved from direct identity fallback | "
+            f"resolve_inherited_identity resolved from direct identity fallback | "
             f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
             f"root_session_key:{root_session_key}, sender_user_id:{resolved_user_id}"
         )
-        return resolved_user_id
+        return {
+            'sender_user_id': resolved_user_id,
+            'source': 'direct',
+            'management_user_id': str(management_user_id).strip(),
+            'openclaw_user_id': openclaw_user_id,
+        }
     logging.info(
-        f"resolve_inherited_sender_user_id fallback to management user | "
+        f"resolve_inherited_identity fallback to management user | "
         f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
         f"root_session_key:{root_session_key}, management_user_id:{str(management_user_id).strip()}"
     )
-    return str(management_user_id).strip()
+    return {
+        'sender_user_id': str(management_user_id).strip(),
+        'source': 'management',
+        'management_user_id': str(management_user_id).strip(),
+        'openclaw_user_id': openclaw_user_id,
+    }
+
+def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, inherited_identity, management_user_id, openclaw_user_id):
+    normalized_session_key = normalize_session_key(session_key)
+    effective_target_session_key = resolve_effective_target_session_key(
+        normalized_session_key,
+        lineage,
+        merge_sub_sessions,
+    )
+    clawchat_session = parse_clawchat_session_identity(normalized_session_key)
+    root_clawchat_session = parse_clawchat_session_identity(lineage.get('root_session_key', ''))
+    sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip()
+    if merge_sub_sessions and normalize_optional_session_key(lineage.get('root_session_key', '')) != normalized_session_key:
+        return {
+            'mode': 'metadata_only',
+            'group_id': '',
+            'owner_user_id': '',
+            'effective_target_session_key': effective_target_session_key,
+            'clawchat_session': clawchat_session,
+            'root_clawchat_session': root_clawchat_session,
+            'sender_user_id': sender_user_id or str(management_user_id).strip(),
+        }
+    if clawchat_session is not None and clawchat_session.get('chat_type') == 'direct':
+        return {
+            'mode': 'ignored',
+            'group_id': '',
+            'owner_user_id': '',
+            'effective_target_session_key': effective_target_session_key,
+            'clawchat_session': clawchat_session,
+            'root_clawchat_session': root_clawchat_session,
+            'sender_user_id': sender_user_id or str(management_user_id).strip(),
+        }
+    if clawchat_session is not None:
+        return {
+            'mode': 'reuse_clawchat_group',
+            'group_id': str(clawchat_session.get('target_id', '')).strip(),
+            'owner_user_id': str(management_user_id).strip(),
+            'effective_target_session_key': effective_target_session_key,
+            'clawchat_session': clawchat_session,
+            'root_clawchat_session': root_clawchat_session,
+            'sender_user_id': sender_user_id or str(management_user_id).strip(),
+        }
+    return {
+        'mode': 'create_temp_group',
+        'group_id': '',
+        'owner_user_id': resolve_session_group_owner_user_id(
+            management_user_id,
+            openclaw_user_id,
+            sender_user_id,
+            root_clawchat_session,
+        ),
+        'effective_target_session_key': effective_target_session_key,
+        'clawchat_session': clawchat_session,
+        'root_clawchat_session': root_clawchat_session,
+        'sender_user_id': sender_user_id or str(management_user_id).strip(),
+    }
+
+def merge_existing_session_mapping(existing, lineage, effective_target_session_key, inherited_identity):
+    merged_existing = dict(existing)
+    merged_existing['parent_session_key'] = normalize_optional_session_key(lineage.get('parent_session_key', ''))
+    merged_existing['root_session_key'] = normalize_optional_session_key(lineage.get('root_session_key', ''))
+    merged_existing['effective_target_session_key'] = normalize_optional_session_key(effective_target_session_key)
+    sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip()
+    if sender_user_id != '':
+        merged_existing['sender_user_id'] = sender_user_id
+    return merged_existing
+
+def build_session_mapping_payload(app_id, node_id, openclaw_user_id, management_user_id, session_key, group_id, lineage, effective_target_session_key, inherited_identity):
+    sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip() or str(management_user_id).strip()
+    return {
+        'session_key': normalize_session_key(session_key),
+        'group_id': str(group_id).strip(),
+        'app_id': str(app_id),
+        'node_id': str(node_id),
+        'openclaw_user_id': str(openclaw_user_id).strip(),
+        'management_user_id': str(management_user_id).strip(),
+        'sender_user_id': sender_user_id,
+        'parent_session_key': normalize_optional_session_key(lineage.get('parent_session_key', '')),
+        'root_session_key': normalize_optional_session_key(lineage.get('root_session_key', '')),
+        'effective_target_session_key': normalize_optional_session_key(effective_target_session_key),
+        'created_at': int(time.time())
+    }
+
+def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, management_user_id, inherited_identity, root_clawchat_session):
+    if not ensure_user_joined_group(app_id, openclaw_user_id, group_id):
+        return {
+            'result': 'error',
+            'message': 'add node user to session group failed'
+        }
+    inherited_sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip()
+    if (
+        root_clawchat_session is not None and
+        root_clawchat_session.get('chat_type') == 'direct' and
+        inherited_sender_user_id != '' and
+        inherited_sender_user_id != str(management_user_id).strip() and
+        inherited_sender_user_id != str(openclaw_user_id).strip()
+    ):
+        if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
+            return {
+                'result': 'error',
+                'message': 'add inherited direct user to session group failed'
+            }
+    return {
+        'result': 'ok'
+    }
 
 def resolve_session_group_owner_user_id(management_user_id, openclaw_user_id, inherited_sender_user_id, root_clawchat_session):
     normalized_management_user_id = str(management_user_id).strip()
@@ -856,17 +994,32 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
         root_session_key,
     )
     merge_sub_sessions = is_merge_sub_sessions_enabled(node_info)
-    inherited_sender_user_id = resolve_inherited_sender_user_id(
+    inherited_identity = resolve_inherited_sender_user_id(
         app_id,
         node_info,
         lineage,
         management_user_id,
     )
+    inherited_sender_user_id = str(inherited_identity.get('sender_user_id', '')).strip()
+    effective_target_session_key = resolve_effective_target_session_key(
+        normalized_session_key,
+        lineage,
+        merge_sub_sessions,
+    )
+    mapping_decision = resolve_session_mapping_decision(
+        normalized_session_key,
+        lineage,
+        merge_sub_sessions,
+        inherited_identity,
+        management_user_id,
+        openclaw_user_id,
+    )
     logging.info(
         f"ensure_session_mapping inheritance context | app_id:{app_id}, node_id:{node_id}, "
         f"session_key:{normalized_session_key}, parent_session_key:{lineage['parent_session_key']}, "
         f"root_session_key:{lineage['root_session_key']}, merge_sub_sessions:{merge_sub_sessions}, "
-        f"inherited_sender_user_id:{inherited_sender_user_id}, management_user_id:{management_user_id}, "
+        f"inherited_sender_user_id:{inherited_sender_user_id}, inherited_source:{inherited_identity.get('source', '')}, "
+        f"effective_target_session_key:{effective_target_session_key}, management_user_id:{management_user_id}, "
         f"openclaw_user_id:{openclaw_user_id}"
     )
     existing = get_session_mapping_by_session(app_id, node_id, normalized_session_key)
@@ -884,16 +1037,12 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
                 f"root_session_key:{lineage['root_session_key']}"
             )
         else:
-            merged_existing = dict(existing)
-            merged_existing['parent_session_key'] = lineage['parent_session_key']
-            merged_existing['root_session_key'] = lineage['root_session_key']
-            merged_existing['effective_target_session_key'] = (
-                lineage['root_session_key']
-                if merge_sub_sessions and lineage['root_session_key'] != normalized_session_key
-                else normalized_session_key
+            merged_existing = merge_existing_session_mapping(
+                existing,
+                lineage,
+                effective_target_session_key,
+                inherited_identity,
             )
-            if inherited_sender_user_id != '':
-                merged_existing['sender_user_id'] = inherited_sender_user_id
             if (
                 normalize_optional_session_key(existing.get('parent_session_key', '')) != merged_existing.get('parent_session_key', '') or
                 normalize_optional_session_key(existing.get('root_session_key', '')) != merged_existing.get('root_session_key', '') or
@@ -915,20 +1064,18 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
                 'result': 'ok',
                 'data': existing
             }
-    if merge_sub_sessions and lineage['root_session_key'] != normalized_session_key:
-        mapping_result = set_session_mapping(app_id, node_id, {
-            'session_key': normalized_session_key,
-            'group_id': '',
-            'app_id': str(app_id),
-            'node_id': str(node_id),
-            'openclaw_user_id': openclaw_user_id,
-            'management_user_id': management_user_id,
-            'sender_user_id': inherited_sender_user_id or management_user_id,
-            'parent_session_key': lineage['parent_session_key'],
-            'root_session_key': lineage['root_session_key'],
-            'effective_target_session_key': lineage['root_session_key'],
-            'created_at': int(time.time())
-        })
+    if mapping_decision['mode'] == 'metadata_only':
+        mapping_result = set_session_mapping(app_id, node_id, build_session_mapping_payload(
+            app_id,
+            node_id,
+            openclaw_user_id,
+            management_user_id,
+            normalized_session_key,
+            '',
+            lineage,
+            mapping_decision['effective_target_session_key'],
+            inherited_identity,
+        ))
         if mapping_result['result'] == 'error':
             return mapping_result
         logging.info(
@@ -938,20 +1085,21 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
         )
         sync_session_mapping_to_node(node_info, mapping_result['data'])
         return mapping_result
-    clawchat_session = parse_clawchat_session_identity(normalized_session_key)
-    root_clawchat_session = parse_clawchat_session_identity(lineage['root_session_key'])
-    if clawchat_session is not None:
-        if clawchat_session['chat_type'] == 'direct':
+    clawchat_session = mapping_decision['clawchat_session']
+    root_clawchat_session = mapping_decision['root_clawchat_session']
+    if mapping_decision['mode'] == 'ignored':
+        if clawchat_session is not None:
             logging.info(
                 f"ensure_session_mapping ignore clawchat direct session | "
                 f"app_id:{app_id}, node_id:{node_id}, session_key:{normalized_session_key}, "
                 f"target_id:{clawchat_session['target_id']}"
             )
-            return {
-                'result': 'ignored',
-                'message': 'ignore clawchat direct session'
-            }
-        group_id = str(clawchat_session['target_id']).strip()
+        return {
+            'result': 'ignored',
+            'message': 'ignore clawchat direct session'
+        }
+    group_id = str(mapping_decision.get('group_id', '')).strip()
+    if mapping_decision['mode'] == 'reuse_clawchat_group':
         if group_id == '':
             return {
                 'result': 'error',
@@ -969,12 +1117,7 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
             f"group_id:{group_id}, strategy:reuse_existing_clawchat_group"
         )
     else:
-        session_group_owner_user_id = resolve_session_group_owner_user_id(
-            management_user_id,
-            openclaw_user_id,
-            inherited_sender_user_id,
-            root_clawchat_session,
-        )
+        session_group_owner_user_id = str(mapping_decision.get('owner_user_id', '')).strip()
         group_id = create_openclaw_session_group(
             app_id,
             session_group_owner_user_id,
@@ -994,49 +1137,31 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
             'message': 'create session group failed'
         }
     if clawchat_session is None:
-        if not ensure_user_joined_group(app_id, openclaw_user_id, group_id):
+        membership_result = ensure_session_mapping_group_members(
+            app_id,
+            group_id,
+            openclaw_user_id,
+            management_user_id,
+            inherited_identity,
+            root_clawchat_session,
+        )
+        if membership_result['result'] == 'error':
             logging.info(
-                f"ensure_session_mapping add node user failed | app_id:{app_id}, node_id:{node_id}, "
-                f"session_key:{normalized_session_key}, group_id:{group_id}, openclaw_user_id:{openclaw_user_id}"
+                f"ensure_session_mapping add group member failed | app_id:{app_id}, node_id:{node_id}, "
+                f"session_key:{normalized_session_key}, group_id:{group_id}, message:{membership_result.get('message', '')}"
             )
-            return {
-                'result': 'error',
-                'message': 'add node user to session group failed'
-            }
-        if (
-            root_clawchat_session is not None and
-            root_clawchat_session.get('chat_type') == 'direct' and
-            inherited_sender_user_id != '' and
-            inherited_sender_user_id != management_user_id and
-            inherited_sender_user_id != openclaw_user_id
-        ):
-            if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
-                logging.info(
-                    f"ensure_session_mapping add inherited direct user failed | app_id:{app_id}, "
-                    f"node_id:{node_id}, session_key:{normalized_session_key}, group_id:{group_id}, "
-                    f"inherited_sender_user_id:{inherited_sender_user_id}"
-                )
-                return {
-                    'result': 'error',
-                    'message': 'add inherited direct user to session group failed'
-                }
-    mapping_result = set_session_mapping(app_id, node_id, {
-        'session_key': normalized_session_key,
-        'group_id': group_id,
-        'app_id': str(app_id),
-        'node_id': str(node_id),
-        'openclaw_user_id': openclaw_user_id,
-        'management_user_id': management_user_id,
-        'sender_user_id': inherited_sender_user_id or management_user_id,
-        'parent_session_key': lineage['parent_session_key'],
-        'root_session_key': lineage['root_session_key'],
-        'effective_target_session_key': (
-            lineage['root_session_key']
-            if merge_sub_sessions and lineage['root_session_key'] != normalized_session_key
-            else normalized_session_key
-        ),
-        'created_at': int(time.time())
-    })
+            return membership_result
+    mapping_result = set_session_mapping(app_id, node_id, build_session_mapping_payload(
+        app_id,
+        node_id,
+        openclaw_user_id,
+        management_user_id,
+        normalized_session_key,
+        group_id,
+        lineage,
+        mapping_decision['effective_target_session_key'],
+        inherited_identity,
+    ))
     if mapping_result['result'] == 'error':
         logging.info(
             f"ensure_session_mapping set mapping failed | app_id:{app_id}, node_id:{node_id}, "
@@ -1125,7 +1250,7 @@ def resolve_effective_session_sync_target(app_id, node_info, mapping):
     target_session_key = effective_target_session_key or root_session_key or session_key
     target_identity = parse_clawchat_session_identity(target_session_key)
     if isinstance(target_identity, dict) and target_identity.get('chat_type') == 'direct':
-        resolved_sender_user_id = resolve_inherited_sender_user_id(
+        inherited_identity = resolve_inherited_sender_user_id(
             app_id,
             node_info,
             {
@@ -1134,10 +1259,12 @@ def resolve_effective_session_sync_target(app_id, node_info, mapping):
             },
             str(mapping.get('management_user_id', '')).strip(),
         )
+        resolved_sender_user_id = str(inherited_identity.get('sender_user_id', '')).strip()
         logging.info(
             f"resolve_effective_session_sync_target resolved direct target | "
             f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
             f"target_session_key:{target_session_key}, target_user_id:{str(target_identity.get('target_id', '')).strip()}, "
+            f"identity_source:{inherited_identity.get('source', '')}, "
             f"sender_user_id:{resolved_sender_user_id}"
         )
         return {
