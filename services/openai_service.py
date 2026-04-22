@@ -213,6 +213,41 @@ def remove_openclaw_group_edge_mention(content, to_user_nickname):
     result = re.sub(r'@' + escaped_nickname + r'(?:\u2005| )*$', '', result)
     return result.strip()
 
+def remove_openclaw_command_prefix_mentions(content, mention_candidates=None):
+    if not isinstance(content, str):
+        return content
+    result = content.strip()
+    candidates = []
+    if isinstance(mention_candidates, list):
+        for candidate in mention_candidates:
+            candidate_text = str(candidate).strip()
+            if candidate_text != '':
+                candidates.append(candidate_text)
+    while result.startswith('@'):
+        original_result = result
+        matched = False
+        for candidate in candidates:
+            escaped_candidate = re.escape(candidate)
+            prefix_pattern = r'^@' + escaped_candidate + r'(?:\u2005| )+(.*)$'
+            prefix_match = re.match(prefix_pattern, result, flags=re.DOTALL)
+            if prefix_match:
+                next_content = prefix_match.group(1).strip()
+                if next_content.startswith('/'):
+                    result = next_content
+                    matched = True
+                    break
+        if matched:
+            continue
+        generic_match = re.match(r'^@([^\s\u2005]+)(?:\u2005| )+(.*)$', result, flags=re.DOTALL)
+        if generic_match:
+            next_content = generic_match.group(2).strip()
+            if next_content.startswith('/'):
+                result = next_content
+                continue
+        if result == original_result:
+            break
+    return result
+
 def preprocess_openclaw_group_message(msg):
     if not isinstance(msg, dict):
         return '', False
@@ -221,9 +256,18 @@ def preprocess_openclaw_group_message(msg):
         return content, False
     msg_config = lanying_utils.safe_json_loads(msg.get('config'), {})
     to_user_nickname = ''
+    mention_candidates = []
     if isinstance(msg_config, dict):
         to_user_nickname = msg_config.get('to_user_nickname', '')
+        mention_candidates.extend([
+            msg_config.get('to_user_nickname', ''),
+            msg_config.get('to_user_name', ''),
+            msg_config.get('chatbot_name', ''),
+            msg_config.get('chatbot_id', ''),
+            msg_config.get('chatbot_user_id', ''),
+        ])
     cleaned_content = remove_openclaw_group_edge_mention(content, to_user_nickname)
+    cleaned_content = remove_openclaw_command_prefix_mentions(cleaned_content, mention_candidates)
     return cleaned_content, cleaned_content.startswith('/')
 
 def preprocess_openclaw_direct_message(msg):
