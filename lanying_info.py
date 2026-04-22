@@ -4,6 +4,7 @@ import lanying_embedding
 import json
 import lanying_pgvector
 import lanying_grow_ai
+import lanying_openclaw
 lanying_config.init()
 
 cache = {}
@@ -45,6 +46,11 @@ def info1(any):
     rules = [info_chatbot_ids,
              info_embedding_ids,
              info_lanying_connector,
+             info_openclaw_app_manager_user,
+             info_openclaw_nodes,
+             info_openclaw_node,
+             info_openclaw_session_mapping_list,
+             info_openclaw_session_mapping,
              info_embedding_uuid_info,
              info_embedding_doc_id_list_by_embedding_name,
              info_embedding_doc_id_list,
@@ -267,6 +273,107 @@ def info_lanying_connector(app_id):
             }
         }
 
+def info_openclaw_app_manager_user(app_id):
+    if is_app_id(app_id):
+        app_manager_user = lanying_openclaw.get_openclaw_app_manager_user(app_id)
+        if app_manager_user is not None:
+            set_cache('app_id', app_id)
+            return {
+                'result': 'ok',
+                'data': {
+                    'openclaw_app_manager_user': app_manager_user
+                }
+            }
+
+def info_openclaw_nodes(app_id):
+    if is_app_id(app_id):
+        node_list_result = lanying_openclaw.get_node_list(app_id)
+        if node_list_result.get('result') == 'ok':
+            node_list = node_list_result.get('data', {}).get('list', [])
+            set_cache('app_id', app_id)
+            if len(node_list) > 0:
+                set_cache('node_id', str(node_list[0].get('node_id', '')))
+            summary = []
+            for node in node_list:
+                summary.append({
+                    'node_id': str(node.get('node_id', '')),
+                    'name': node.get('name', ''),
+                    'user_id': str(node.get('user_id', '')),
+                    'chatbot_id': str(node.get('chatbot_id', '')),
+                    'merge_sub_sessions': str(node.get('merge_sub_sessions', 'off'))
+                })
+            return {
+                'result': 'ok',
+                'data': {
+                    'openclaw_nodes': summary
+                }
+            }
+
+def info_openclaw_node(node_id):
+    app_id = cache.get('app_id')
+    if is_app_id(app_id) and is_node_id(node_id):
+        node_info = lanying_openclaw.get_node(app_id, str(node_id))
+        if node_info is not None:
+            set_cache('node_id', str(node_id))
+            return {
+                'result': 'ok',
+                'data': {
+                    'openclaw_node': node_info
+                }
+            }
+
+def info_openclaw_session_mapping_list(node_id):
+    app_id = cache.get('app_id')
+    if is_app_id(app_id) and is_node_id(node_id):
+        node_id_text = str(node_id)
+        mappings = lanying_openclaw.list_session_mappings_for_node(app_id, node_id_text)
+        if len(mappings) > 0:
+            set_cache('node_id', node_id_text)
+            summary = []
+            for mapping in sorted(mappings, key=lambda item: str(item.get('session_key', ''))):
+                summary.append({
+                    'session_key': mapping.get('session_key', ''),
+                    'group_id': str(mapping.get('group_id', '')),
+                    'openclaw_user_id': str(mapping.get('openclaw_user_id', '')),
+                    'management_user_id': str(mapping.get('management_user_id', '')),
+                    'sender_user_id': str(mapping.get('sender_user_id', '')),
+                    'parent_session_key': mapping.get('parent_session_key', ''),
+                    'root_session_key': mapping.get('root_session_key', ''),
+                    'effective_target_session_key': mapping.get('effective_target_session_key', ''),
+                    'updated_at': int(mapping.get('updated_at', 0) or 0),
+                })
+            return {
+                'result': 'ok',
+                'data': {
+                    'openclaw_session_mappings': summary
+                }
+            }
+
+def info_openclaw_session_mapping(session_key):
+    app_id = cache.get('app_id')
+    node_id = cache.get('node_id')
+    normalized_session_key = lanying_openclaw.normalize_session_key(session_key)
+    if is_app_id(app_id) and is_node_id(node_id) and normalized_session_key != '':
+        mapping = lanying_openclaw.get_session_mapping_by_session(app_id, str(node_id), normalized_session_key)
+        if mapping is not None:
+            return {
+                'result': 'ok',
+                'data': {
+                    'openclaw_session_mapping': mapping,
+                    'openclaw_session_inheritance': {
+                        'session_key': mapping.get('session_key', ''),
+                        'sender_user_id': str(mapping.get('sender_user_id', '')),
+                        'management_user_id': str(mapping.get('management_user_id', '')),
+                        'openclaw_user_id': str(mapping.get('openclaw_user_id', '')),
+                        'parent_session_key': mapping.get('parent_session_key', ''),
+                        'root_session_key': mapping.get('root_session_key', ''),
+                        'effective_target_session_key': mapping.get('effective_target_session_key', ''),
+                        'parsed_session_identity': lanying_openclaw.parse_clawchat_session_identity(mapping.get('session_key', '')),
+                        'parsed_root_identity': lanying_openclaw.parse_clawchat_session_identity(mapping.get('root_session_key', ''))
+                    }
+                }
+            }
+
 def info_grow_ai_task_id_list(app_id):
     if is_app_id(app_id):
         id_list = lanying_grow_ai.get_task_id_list(app_id)
@@ -320,3 +427,6 @@ def is_app_id(any):
     if isinstance(any, str) and len(any) > 0 and len(any) < 20:
         return True
     return False
+
+def is_node_id(any):
+    return isinstance(any, str) and any.isdigit() and len(any) > 0
