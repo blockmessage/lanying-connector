@@ -370,9 +370,7 @@ def normalize_session_key(session_key):
 def get_openclaw_session_group_name(node_name, node_id, session_key):
     node_name_text = str(node_name or '').strip()
     node_id_text = str(node_id or '').strip()
-    if node_name_text != '' and node_id_text != '':
-        node_prefix = f'{node_name_text} - {node_id_text}'
-    elif node_name_text != '':
+    if node_name_text != '':
         node_prefix = node_name_text
     elif node_id_text != '':
         node_prefix = f'OpenClaw-{node_id_text}'
