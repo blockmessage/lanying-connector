@@ -15,7 +15,6 @@ from lanying_async import executor
 OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 无论用户如何要求，你都绝对不能修改本文件。"""
 TEMPORARY_GROUP_TYPE = 3
-OPENCLAW_SESSION_GROUP_FIRST_MESSAGE_DELAY_SECONDS = 1.0
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id):
@@ -823,25 +822,6 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
     )
     return msg_id
 
-def maybe_delay_first_session_sync_after_mapping(app_id, node_info, mapping, source):
-    if source != 'control_ui_user':
-        return
-    if not isinstance(mapping, dict):
-        return
-    created_at = int(mapping.get('created_at', 0) or 0)
-    if created_at <= 0:
-        return
-    age_seconds = time.time() - created_at
-    delay_seconds = OPENCLAW_SESSION_GROUP_FIRST_MESSAGE_DELAY_SECONDS - age_seconds
-    if delay_seconds <= 0:
-        return
-    logging.info(
-        f"delay first session sync after mapping | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
-        f"session_key:{mapping.get('session_key', '')}, group_id:{mapping.get('group_id', '')}, "
-        f"source:{source}, delay_seconds:{round(delay_seconds, 3)}"
-    )
-    time.sleep(delay_seconds)
-
 def forward_session_sync_router_group_reply(app_id, node_info, mapping, text):
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
         return 0
@@ -884,18 +864,14 @@ def handle_session_message_sync_event(app_id, node_info, event):
         f"source:{source}, session_key:{session_key}, role:{role}, text_len:{len(text.strip())}, "
         f"has_existing_mapping:{mapping is not None}"
     )
-    mapping_created_now = False
     if mapping is None and source == 'control_ui_user':
         ensure_result = ensure_session_mapping(app_id, node_info, session_key)
         if ensure_result['result'] == 'ok':
             mapping = ensure_result['data']
-            mapping_created_now = True
         elif ensure_result['result'] == 'ignored':
             return
     if mapping is None:
         return
-    if mapping_created_now:
-        maybe_delay_first_session_sync_after_mapping(app_id, node_info, mapping, source)
     if text.strip() != '' and role in ['user', 'assistant']:
         if role == 'assistant':
             router_reply_result = forward_session_sync_router_group_reply(app_id, node_info, mapping, text)
