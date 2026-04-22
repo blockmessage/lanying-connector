@@ -17,7 +17,7 @@ OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 TEMPORARY_GROUP_TYPE = 3
 
 class NodeSetting:
-    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id):
+    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, merge_sub_sessions='off'):
         self.app_id = app_id
         self.name = name
         self.product_id = product_id
@@ -27,6 +27,7 @@ class NodeSetting:
         self.access_type = access_type
         self.access_list = access_list
         self.chatbot_id = chatbot_id
+        self.merge_sub_sessions = merge_sub_sessions
 
     def to_hmset_fields(self):
         return {
@@ -38,16 +39,18 @@ class NodeSetting:
             'lanying_link': self.lanying_link,
             'access_type': self.access_type,
             'access_list': self.access_list,
-            'chatbot_id': self.chatbot_id
+            'chatbot_id': self.chatbot_id,
+            'merge_sub_sessions': self.merge_sub_sessions
         }
 
 class ConfigureNodeParam:
-    def __init__(self, name, lanying_link, access_type, access_list, chatbot_id):
+    def __init__(self, name, lanying_link, access_type, access_list, chatbot_id, merge_sub_sessions='off'):
         self.name = name
         self.lanying_link = lanying_link
         self.access_type = access_type
         self.access_list = access_list
         self.chatbot_id = chatbot_id
+        self.merge_sub_sessions = merge_sub_sessions
 
     def to_hmset_fields(self):
         return {
@@ -55,7 +58,8 @@ class ConfigureNodeParam:
             'lanying_link': self.lanying_link,
             'access_type': self.access_type,
             'access_list': self.access_list,
-            'chatbot_id': self.chatbot_id
+            'chatbot_id': self.chatbot_id,
+            'merge_sub_sessions': self.merge_sub_sessions
         }
 
 def extract_system_prompt_text_from_preset(preset):
@@ -411,6 +415,136 @@ def parse_clawchat_session_identity(session_key):
         'target_id': ':'.join(parts[cursor + 1:]).strip()
     }
 
+def normalize_optional_session_key(value):
+    normalized = normalize_session_key(value)
+    return normalized if normalized != '' else ''
+
+def parse_bool_flag(value):
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    normalized = str(value).strip().lower()
+    return normalized in ['1', 'true', 'yes', 'y', 'on']
+
+def parse_json_object(value):
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or value.strip() == '':
+        return None
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+def is_merge_sub_sessions_enabled(node_info):
+    if not isinstance(node_info, dict):
+        return False
+    direct_keys = [
+        'merge_sub_sessions',
+        'merge_child_sessions',
+        'merge_subagent_sessions',
+        'mergeSubSessions',
+        'mergeChildSessions',
+        'mergeSubagentSessions',
+    ]
+    for key in direct_keys:
+        if key in node_info and parse_bool_flag(node_info.get(key)):
+            return True
+    nested_keys = ['config', 'settings', 'ext', 'extra', 'config_patch', 'patch_config']
+    for key in nested_keys:
+        obj = parse_json_object(node_info.get(key))
+        if not isinstance(obj, dict):
+            continue
+        for candidate in direct_keys:
+            if parse_bool_flag(obj.get(candidate)):
+                return True
+    return False
+
+def resolve_session_lineage(app_id, node_id, session_key, parent_session_key='', root_session_key=''):
+    normalized_session_key = normalize_session_key(session_key)
+    normalized_parent_session_key = normalize_optional_session_key(parent_session_key)
+    normalized_root_session_key = normalize_optional_session_key(root_session_key)
+    existing_mapping = get_session_mapping_by_session(app_id, node_id, normalized_session_key)
+    if normalized_parent_session_key == '' and isinstance(existing_mapping, dict):
+        normalized_parent_session_key = normalize_optional_session_key(existing_mapping.get('parent_session_key', ''))
+    if normalized_root_session_key == '' and isinstance(existing_mapping, dict):
+        normalized_root_session_key = normalize_optional_session_key(existing_mapping.get('root_session_key', ''))
+    if normalized_root_session_key == '' and normalized_parent_session_key != '':
+        parent_mapping = get_session_mapping_by_session(app_id, node_id, normalized_parent_session_key)
+        if isinstance(parent_mapping, dict):
+            normalized_root_session_key = normalize_optional_session_key(parent_mapping.get('root_session_key', ''))
+            if normalized_root_session_key == '':
+                normalized_root_session_key = normalize_optional_session_key(parent_mapping.get('effective_target_session_key', ''))
+    if normalized_root_session_key == '':
+        normalized_root_session_key = normalized_parent_session_key or normalized_session_key
+    return {
+        'parent_session_key': normalized_parent_session_key,
+        'root_session_key': normalized_root_session_key or normalized_session_key,
+    }
+
+def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user_id):
+    node_id = node_info['node_id']
+    parent_session_key = normalize_optional_session_key(lineage.get('parent_session_key', ''))
+    root_session_key = normalize_optional_session_key(lineage.get('root_session_key', ''))
+    if parent_session_key != '':
+        parent_mapping = get_session_mapping_by_session(app_id, node_id, parent_session_key)
+        if isinstance(parent_mapping, dict):
+            sender_user_id = str(parent_mapping.get('sender_user_id', '')).strip()
+            if sender_user_id != '':
+                logging.info(
+                    f"resolve_inherited_sender_user_id resolved from parent mapping | "
+                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                    f"root_session_key:{root_session_key}, sender_user_id:{sender_user_id}"
+                )
+                return sender_user_id
+            logging.info(
+                f"resolve_inherited_sender_user_id fallback to management user because parent mapping sender is empty | "
+                f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                f"root_session_key:{root_session_key}, management_user_id:{str(management_user_id).strip()}"
+            )
+            return str(management_user_id).strip()
+    if root_session_key != '':
+        root_mapping = get_session_mapping_by_session(app_id, node_id, root_session_key)
+        if isinstance(root_mapping, dict):
+            sender_user_id = str(root_mapping.get('sender_user_id', '')).strip()
+            if sender_user_id != '':
+                logging.info(
+                    f"resolve_inherited_sender_user_id resolved from root mapping | "
+                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                    f"root_session_key:{root_session_key}, sender_user_id:{sender_user_id}"
+                )
+                return sender_user_id
+    identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
+    if isinstance(identity, dict) and identity.get('chat_type') == 'direct':
+        resolved_user_id = str(identity.get('target_id', '')).strip()
+        logging.info(
+            f"resolve_inherited_sender_user_id resolved from direct identity fallback | "
+            f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+            f"root_session_key:{root_session_key}, sender_user_id:{resolved_user_id}"
+        )
+        return resolved_user_id
+    logging.info(
+        f"resolve_inherited_sender_user_id fallback to management user | "
+        f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+        f"root_session_key:{root_session_key}, management_user_id:{str(management_user_id).strip()}"
+    )
+    return str(management_user_id).strip()
+
+def resolve_session_group_owner_user_id(management_user_id, openclaw_user_id, inherited_sender_user_id, root_clawchat_session):
+    normalized_management_user_id = str(management_user_id).strip()
+    normalized_openclaw_user_id = str(openclaw_user_id).strip()
+    normalized_inherited_sender_user_id = str(inherited_sender_user_id).strip()
+    if (
+        isinstance(root_clawchat_session, dict) and
+        root_clawchat_session.get('chat_type') == 'group' and
+        normalized_inherited_sender_user_id != '' and
+        normalized_inherited_sender_user_id != normalized_openclaw_user_id
+    ):
+        return normalized_inherited_sender_user_id
+    return normalized_management_user_id
+
 def get_nodes_by_user_id(app_id, user_id):
     node_list = get_node_list(app_id)['data']['list']
     target_user_id = str(user_id)
@@ -603,19 +737,25 @@ def set_session_mapping(app_id, node_id, mapping):
     session_key = normalize_session_key(mapping.get('session_key', ''))
     group_id = str(mapping.get('group_id', '')).strip()
     openclaw_user_id = str(mapping.get('openclaw_user_id', '')).strip()
-    if session_key == '' or group_id == '' or openclaw_user_id == '':
+    if session_key == '' or openclaw_user_id == '':
         return {
             'result': 'error',
             'message': 'bad session mapping'
         }
     previous_session_mapping = get_session_mapping_by_session(app_id, node_id, session_key)
-    previous_group_mapping = get_session_mapping_by_group(app_id, node_id, openclaw_user_id, group_id)
-    if previous_session_mapping is not None and str(previous_session_mapping.get('group_id', '')).strip() != group_id:
+    previous_group_mapping = (
+        get_session_mapping_by_group(app_id, node_id, openclaw_user_id, group_id)
+        if group_id != '' else None
+    )
+    previous_session_group_id = ''
+    if previous_session_mapping is not None:
+        previous_session_group_id = str(previous_session_mapping.get('group_id', '')).strip()
+    if previous_session_mapping is not None and previous_session_group_id not in ['', group_id]:
         return {
             'result': 'error',
             'message': 'session already bind to another group'
         }
-    if previous_group_mapping is not None and normalize_session_key(previous_group_mapping.get('session_key', '')) != session_key:
+    if group_id != '' and previous_group_mapping is not None and normalize_session_key(previous_group_mapping.get('session_key', '')) != session_key:
         return {
             'result': 'error',
             'message': 'group already bind to another session'
@@ -630,7 +770,10 @@ def set_session_mapping(app_id, node_id, mapping):
         body['created_at'] = body['updated_at']
     body_json = json.dumps(body, ensure_ascii=False)
     redis.set(get_openclaw_session_mapping_by_session_key(app_id, node_id, session_key), body_json)
-    redis.set(get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id), body_json)
+    if group_id != '':
+        redis.set(get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id), body_json)
+    elif previous_session_group_id != '':
+        redis.delete(get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, previous_session_group_id))
     redis.sadd(get_openclaw_session_mapping_index_key(app_id, node_id), session_key)
     return {
         'result': 'ok',
@@ -657,9 +800,12 @@ def send_session_mapping_signal(node_info, signal_type, mappings):
             'session_key': normalize_session_key(mapping.get('session_key', '')),
             'group_id': str(mapping.get('group_id', '')).strip(),
             'openclaw_user_id': str(mapping.get('openclaw_user_id', '')).strip(),
+            'parent_session_key': normalize_optional_session_key(mapping.get('parent_session_key', '')),
+            'root_session_key': normalize_optional_session_key(mapping.get('root_session_key', '')),
+            'effective_target_session_key': normalize_optional_session_key(mapping.get('effective_target_session_key', '')),
             'updated_at': int(mapping.get('updated_at', 0) or 0),
         }
-        if compact_mapping['session_key'] == '' or compact_mapping['group_id'] == '':
+        if compact_mapping['session_key'] == '':
             continue
         if compact_mapping['openclaw_user_id'] == '':
             compact_mapping['openclaw_user_id'] = str(user_id).strip()
@@ -701,7 +847,7 @@ def sync_session_mapping_snapshot_to_node(node_info):
     )
     return send_session_mapping_signal(node_info, 'session_mapping_snapshot', mappings)
 
-def ensure_session_mapping(app_id, node_info, session_key):
+def ensure_session_mapping(app_id, node_info, session_key, parent_session_key='', root_session_key=''):
     normalized_session_key = normalize_session_key(session_key)
     node_name = str(node_info.get('name', '')).strip()
     if normalized_session_key == '':
@@ -710,17 +856,6 @@ def ensure_session_mapping(app_id, node_info, session_key):
             'message': 'bad session key'
         }
     node_id = node_info['node_id']
-    existing = get_session_mapping_by_session(app_id, node_id, normalized_session_key)
-    if existing is not None:
-        logging.info(
-            f"ensure_session_mapping reuse existing mapping | app_id:{app_id}, node_id:{node_id}, "
-            f"session_key:{normalized_session_key}, group_id:{existing.get('group_id', '')}, "
-            f"strategy:existing_mapping"
-        )
-        return {
-            'result': 'ok',
-            'data': existing
-        }
     app_user_result = ensure_openclaw_app_manager_user(app_id)
     if app_user_result['result'] == 'error':
         return app_user_result
@@ -732,7 +867,98 @@ def ensure_session_mapping(app_id, node_info, session_key):
             'result': 'error',
             'message': 'openclaw management user not ready'
         }
+    lineage = resolve_session_lineage(
+        app_id,
+        node_id,
+        normalized_session_key,
+        parent_session_key,
+        root_session_key,
+    )
+    merge_sub_sessions = is_merge_sub_sessions_enabled(node_info)
+    inherited_sender_user_id = resolve_inherited_sender_user_id(
+        app_id,
+        node_info,
+        lineage,
+        management_user_id,
+    )
+    logging.info(
+        f"ensure_session_mapping inheritance context | app_id:{app_id}, node_id:{node_id}, "
+        f"session_key:{normalized_session_key}, parent_session_key:{lineage['parent_session_key']}, "
+        f"root_session_key:{lineage['root_session_key']}, merge_sub_sessions:{merge_sub_sessions}, "
+        f"inherited_sender_user_id:{inherited_sender_user_id}, management_user_id:{management_user_id}, "
+        f"openclaw_user_id:{openclaw_user_id}"
+    )
+    existing = get_session_mapping_by_session(app_id, node_id, normalized_session_key)
+    if existing is not None:
+        existing_group_id = str(existing.get('group_id', '')).strip()
+        should_recreate_group_mapping = (
+            existing_group_id == '' and
+            not merge_sub_sessions and
+            lineage['root_session_key'] != normalized_session_key
+        )
+        if should_recreate_group_mapping:
+            logging.info(
+                f"ensure_session_mapping recreate child group mapping after merge disabled | "
+                f"app_id:{app_id}, node_id:{node_id}, session_key:{normalized_session_key}, "
+                f"root_session_key:{lineage['root_session_key']}"
+            )
+        else:
+            merged_existing = dict(existing)
+            merged_existing['parent_session_key'] = lineage['parent_session_key']
+            merged_existing['root_session_key'] = lineage['root_session_key']
+            merged_existing['effective_target_session_key'] = (
+                lineage['root_session_key']
+                if merge_sub_sessions and lineage['root_session_key'] != normalized_session_key
+                else normalized_session_key
+            )
+            if inherited_sender_user_id != '':
+                merged_existing['sender_user_id'] = inherited_sender_user_id
+            if (
+                normalize_optional_session_key(existing.get('parent_session_key', '')) != merged_existing.get('parent_session_key', '') or
+                normalize_optional_session_key(existing.get('root_session_key', '')) != merged_existing.get('root_session_key', '') or
+                normalize_optional_session_key(existing.get('effective_target_session_key', '')) != merged_existing.get('effective_target_session_key', '') or
+                str(existing.get('sender_user_id', '')).strip() != str(merged_existing.get('sender_user_id', '')).strip()
+            ):
+                update_result = set_session_mapping(app_id, node_id, merged_existing)
+                if update_result['result'] == 'ok':
+                    existing = update_result['data']
+                    sync_session_mapping_to_node(node_info, existing)
+            logging.info(
+                f"ensure_session_mapping reuse existing mapping | app_id:{app_id}, node_id:{node_id}, "
+                f"session_key:{normalized_session_key}, group_id:{existing.get('group_id', '')}, "
+                f"parent_session_key:{existing.get('parent_session_key', '')}, root_session_key:{existing.get('root_session_key', '')}, "
+                f"effective_target_session_key:{existing.get('effective_target_session_key', '')}, "
+                f"strategy:existing_mapping"
+            )
+            return {
+                'result': 'ok',
+                'data': existing
+            }
+    if merge_sub_sessions and lineage['root_session_key'] != normalized_session_key:
+        mapping_result = set_session_mapping(app_id, node_id, {
+            'session_key': normalized_session_key,
+            'group_id': '',
+            'app_id': str(app_id),
+            'node_id': str(node_id),
+            'openclaw_user_id': openclaw_user_id,
+            'management_user_id': management_user_id,
+            'sender_user_id': inherited_sender_user_id or management_user_id,
+            'parent_session_key': lineage['parent_session_key'],
+            'root_session_key': lineage['root_session_key'],
+            'effective_target_session_key': lineage['root_session_key'],
+            'created_at': int(time.time())
+        })
+        if mapping_result['result'] == 'error':
+            return mapping_result
+        logging.info(
+            f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "
+            f"session_key:{normalized_session_key}, root_session_key:{lineage['root_session_key']}, "
+            f"strategy:merge_sub_session_metadata_only"
+        )
+        sync_session_mapping_to_node(node_info, mapping_result['data'])
+        return mapping_result
     clawchat_session = parse_clawchat_session_identity(normalized_session_key)
+    root_clawchat_session = parse_clawchat_session_identity(lineage['root_session_key'])
     if clawchat_session is not None:
         if clawchat_session['chat_type'] == 'direct':
             logging.info(
@@ -762,10 +988,23 @@ def ensure_session_mapping(app_id, node_info, session_key):
             f"group_id:{group_id}, strategy:reuse_existing_clawchat_group"
         )
     else:
-        group_id = create_openclaw_session_group(app_id, management_user_id, node_name, node_id, session_key)
+        session_group_owner_user_id = resolve_session_group_owner_user_id(
+            management_user_id,
+            openclaw_user_id,
+            inherited_sender_user_id,
+            root_clawchat_session,
+        )
+        group_id = create_openclaw_session_group(
+            app_id,
+            session_group_owner_user_id,
+            node_name,
+            node_id,
+            session_key,
+        )
         logging.info(
             f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "
             f"session_key:{normalized_session_key}, session_name:{get_openclaw_session_group_name(node_name, node_id, session_key)}, group_id:{group_id}, "
+            f"owner_user_id:{session_group_owner_user_id}, inherited_sender_user_id:{inherited_sender_user_id}, "
             f"strategy:create_management_node_group"
         )
     if group_id == '':
@@ -783,6 +1022,23 @@ def ensure_session_mapping(app_id, node_info, session_key):
                 'result': 'error',
                 'message': 'add node user to session group failed'
             }
+        if (
+            root_clawchat_session is not None and
+            root_clawchat_session.get('chat_type') == 'direct' and
+            inherited_sender_user_id != '' and
+            inherited_sender_user_id != management_user_id and
+            inherited_sender_user_id != openclaw_user_id
+        ):
+            if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
+                logging.info(
+                    f"ensure_session_mapping add inherited direct user failed | app_id:{app_id}, "
+                    f"node_id:{node_id}, session_key:{normalized_session_key}, group_id:{group_id}, "
+                    f"inherited_sender_user_id:{inherited_sender_user_id}"
+                )
+                return {
+                    'result': 'error',
+                    'message': 'add inherited direct user to session group failed'
+                }
     mapping_result = set_session_mapping(app_id, node_id, {
         'session_key': normalized_session_key,
         'group_id': group_id,
@@ -790,6 +1046,14 @@ def ensure_session_mapping(app_id, node_info, session_key):
         'node_id': str(node_id),
         'openclaw_user_id': openclaw_user_id,
         'management_user_id': management_user_id,
+        'sender_user_id': inherited_sender_user_id or management_user_id,
+        'parent_session_key': lineage['parent_session_key'],
+        'root_session_key': lineage['root_session_key'],
+        'effective_target_session_key': (
+            lineage['root_session_key']
+            if merge_sub_sessions and lineage['root_session_key'] != normalized_session_key
+            else normalized_session_key
+        ),
         'created_at': int(time.time())
     })
     if mapping_result['result'] == 'error':
@@ -811,11 +1075,12 @@ def ensure_session_mapping(app_id, node_info, session_key):
 def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
         return 0
+    sender_user_id = str(mapping.get('sender_user_id', '')).strip()
     management_user_id = str(mapping.get('management_user_id', '')).strip()
     node_user_id = str(node_info.get('user_id', '')).strip()
-    if management_user_id == '' or node_user_id == '':
+    if node_user_id == '':
         return 0
-    from_user_id = management_user_id if role == 'user' else node_user_id
+    from_user_id = (sender_user_id or management_user_id) if role == 'user' else node_user_id
     admin_token = lanying_config.get_lanying_admin_token(app_id)
     config = {
         'lanying_admin_token': admin_token
@@ -830,6 +1095,92 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
         f"from_user_id:{from_user_id}, text_len:{len(text.strip())}, msg_id:{msg_id}"
     )
     return msg_id
+
+def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_user_id, role, text):
+    if not isinstance(text, str) or text.strip() == '':
+        return 0
+    node_user_id = str(node_info.get('user_id', '')).strip()
+    normalized_target_user_id = str(target_user_id).strip()
+    normalized_sender_user_id = str(sender_user_id).strip()
+    if node_user_id == '' or normalized_target_user_id == '':
+        return 0
+    if role == 'user':
+        from_user_id = normalized_sender_user_id or normalized_target_user_id
+        to_user_id = node_user_id
+    else:
+        from_user_id = node_user_id
+        to_user_id = normalized_target_user_id
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    msg_id = lanying_im_api.send_message_sync(
+        config,
+        app_id,
+        from_user_id,
+        to_user_id,
+        1,
+        0,
+        text.strip(),
+        {
+            'skip_antispam_prompt': True
+        }
+    )
+    logging.info(
+        f"forward_session_sync_to_direct | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+        f"role:{role}, from_user_id:{from_user_id}, to_user_id:{to_user_id}, "
+        f"text_len:{len(text.strip())}, msg_id:{msg_id}"
+    )
+    return msg_id
+
+def resolve_effective_session_sync_target(app_id, node_info, mapping):
+    if not isinstance(mapping, dict):
+        return {
+            'kind': 'none'
+        }
+    session_key = normalize_optional_session_key(mapping.get('session_key', ''))
+    effective_target_session_key = normalize_optional_session_key(mapping.get('effective_target_session_key', ''))
+    root_session_key = normalize_optional_session_key(mapping.get('root_session_key', ''))
+    target_session_key = effective_target_session_key or root_session_key or session_key
+    target_identity = parse_clawchat_session_identity(target_session_key)
+    if isinstance(target_identity, dict) and target_identity.get('chat_type') == 'direct':
+        resolved_sender_user_id = resolve_inherited_sender_user_id(
+            app_id,
+            node_info,
+            {
+                'parent_session_key': normalize_optional_session_key(mapping.get('parent_session_key', '')),
+                'root_session_key': target_session_key,
+            },
+            str(mapping.get('management_user_id', '')).strip(),
+        )
+        logging.info(
+            f"resolve_effective_session_sync_target resolved direct target | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+            f"target_session_key:{target_session_key}, target_user_id:{str(target_identity.get('target_id', '')).strip()}, "
+            f"sender_user_id:{resolved_sender_user_id}"
+        )
+        return {
+            'kind': 'direct',
+            'session_key': target_session_key,
+            'target_user_id': str(target_identity.get('target_id', '')).strip(),
+            'sender_user_id': resolved_sender_user_id,
+        }
+    target_mapping = mapping
+    if target_session_key != '' and target_session_key != session_key:
+        resolved_mapping = get_session_mapping_by_session(app_id, node_info['node_id'], target_session_key)
+        if isinstance(resolved_mapping, dict):
+            target_mapping = resolved_mapping
+    logging.info(
+        f"resolve_effective_session_sync_target resolved group target | "
+        f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+        f"target_session_key:{target_session_key}, target_mapping_session_key:{normalize_optional_session_key(target_mapping.get('session_key', '')) or session_key}, "
+        f"group_id:{str(target_mapping.get('group_id', '')).strip()}"
+    )
+    return {
+        'kind': 'group',
+        'mapping': target_mapping,
+        'session_key': normalize_optional_session_key(target_mapping.get('session_key', '')) or session_key,
+    }
 
 def forward_session_sync_router_group_reply(app_id, node_info, mapping, text):
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
@@ -860,6 +1211,8 @@ def handle_session_message_sync_event(app_id, node_info, event):
         return
     source = str(event.get('source', '')).strip()
     session_key = normalize_session_key(event.get('session', ''))
+    parent_session_key = normalize_optional_session_key(event.get('parent_session', ''))
+    root_session_key = normalize_optional_session_key(event.get('root_session', ''))
     message = event.get('message', {})
     role = ''
     if isinstance(message, dict):
@@ -870,11 +1223,18 @@ def handle_session_message_sync_event(app_id, node_info, event):
     mapping = get_session_mapping_by_session(app_id, node_info['node_id'], session_key)
     logging.info(
         f"handle_session_message_sync_event | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
-        f"source:{source}, session_key:{session_key}, role:{role}, text_len:{len(text.strip())}, "
+        f"source:{source}, session_key:{session_key}, parent_session_key:{parent_session_key}, "
+        f"root_session_key:{root_session_key}, role:{role}, text_len:{len(text.strip())}, "
         f"has_existing_mapping:{mapping is not None}"
     )
-    if mapping is None and source == 'control_ui_user':
-        ensure_result = ensure_session_mapping(app_id, node_info, session_key)
+    if source == 'control_ui_user':
+        ensure_result = ensure_session_mapping(
+            app_id,
+            node_info,
+            session_key,
+            parent_session_key,
+            root_session_key,
+        )
         if ensure_result['result'] == 'ok':
             mapping = ensure_result['data']
         elif ensure_result['result'] == 'ignored':
@@ -882,11 +1242,44 @@ def handle_session_message_sync_event(app_id, node_info, event):
     if mapping is None:
         return
     if text.strip() != '' and role in ['user', 'assistant']:
-        if role == 'assistant':
-            router_reply_result = forward_session_sync_router_group_reply(app_id, node_info, mapping, text)
+        target_session_key = normalize_optional_session_key(
+            mapping.get('effective_target_session_key', '') or mapping.get('root_session_key', '')
+        )
+        target_identity = parse_clawchat_session_identity(target_session_key)
+        if (
+            target_session_key != '' and
+            target_session_key != session_key and
+            not (isinstance(target_identity, dict) and target_identity.get('chat_type') == 'direct') and
+            get_session_mapping_by_session(app_id, node_info['node_id'], target_session_key) is None
+        ):
+            ensure_root_result = ensure_session_mapping(app_id, node_info, target_session_key)
+            if ensure_root_result['result'] == 'ok':
+                logging.info(
+                    f"handle_session_message_sync_event ensured target mapping | app_id:{app_id}, "
+                    f"node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                    f"target_session_key:{target_session_key}"
+                )
+        target = resolve_effective_session_sync_target(app_id, node_info, mapping)
+        if target.get('kind') == 'group' and role == 'assistant':
+            router_reply_result = forward_session_sync_router_group_reply(
+                app_id,
+                node_info,
+                target.get('mapping', mapping),
+                text,
+            )
             if router_reply_result > 0:
                 return
-        forward_session_sync_to_group(app_id, node_info, mapping, role, text)
+        if target.get('kind') == 'direct':
+            forward_session_sync_to_direct(
+                app_id,
+                node_info,
+                target.get('target_user_id', ''),
+                target.get('sender_user_id', ''),
+                role,
+                text,
+            )
+            return
+        forward_session_sync_to_group(app_id, node_info, target.get('mapping', mapping), role, text)
 
 def handle_chat_message(msg):
     from_user_id = msg['from']['uid']
@@ -1248,6 +1641,8 @@ def get_node(app_id, node_id):
             dto['plugin_version'] = ''
         if 'api_version' not in dto:
             dto['api_version'] = ''
+        if 'merge_sub_sessions' not in dto or str(dto.get('merge_sub_sessions', '')).strip() == '':
+            dto['merge_sub_sessions'] = 'off'
         dto['chatbot_id'] = ''
         chatbot_id = get_node_chatbot_id(app_id, node_id)
         if chatbot_id is not None:
