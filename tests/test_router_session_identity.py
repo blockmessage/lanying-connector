@@ -361,7 +361,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
              }), \
              mock.patch.object(m, "forward_session_sync_router_group_reply", return_value=1) as mocked_group_reply, \
              mock.patch.object(m, "forward_session_sync_router_direct_reply") as mocked_direct_router_reply, \
-             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct:
+             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct, \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group:
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
@@ -375,16 +376,23 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 },
             )
 
-        mocked_group_reply.assert_called_once()
+        mocked_group_reply.assert_not_called()
         mocked_direct_router_reply.assert_not_called()
         mocked_direct.assert_not_called()
+        mocked_group.assert_called_once_with(
+            "app-id",
+            node_info,
+            parent_mapping,
+            "assistant",
+            "nested child reply",
+        )
 
     def test_router_group_root_assistant_sync_prefers_router_reply(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
         mapping = {
             "session_key": "agent:main:subagent:test-child",
-            "group_id": "temporary-session-group",
+            "group_id": "",
             "root_session_key": "agent:main:clawchat-router:group:group-42",
             "effective_target_session_key": "agent:main:subagent:test-child",
         }
@@ -414,6 +422,40 @@ class RouterSessionIdentityTests(unittest.TestCase):
         forwarded_mapping = mocked_group_reply.call_args.args[2]
         self.assertEqual(forwarded_mapping["session_key"], "agent:main:clawchat-router:group:group-42")
         mocked_group_forward.assert_not_called()
+
+    def test_router_group_child_group_assistant_sync_stays_in_child_group(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "temporary-session-group",
+            "root_session_key": "agent:main:clawchat-router:group:group-42",
+            "effective_target_session_key": "agent:main:subagent:test-child",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "group",
+                 "mapping": mapping,
+                 "session_key": "agent:main:subagent:test-child",
+             }), \
+             mock.patch.object(m, "forward_session_sync_router_group_reply", return_value=1) as mocked_group_reply, \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group_forward:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "source": "control_ui_reply",
+                    "session": "agent:main:subagent:test-child",
+                    "message": {
+                        "role": "assistant",
+                        "content": "reply should stay in child group",
+                    },
+                },
+            )
+
+        mocked_group_reply.assert_not_called()
+        mocked_group_forward.assert_called_once()
 
     def test_router_child_mapping_errors_without_bound_chatbot(self):
         m = lanying_openclaw

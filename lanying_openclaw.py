@@ -1624,6 +1624,22 @@ def resolve_router_group_reply_mapping(mapping):
             return router_mapping
     return None
 
+def should_forward_group_sync_via_router_reply(target_mapping):
+    if not isinstance(target_mapping, dict):
+        return None
+    target_session_key = normalize_optional_session_key(target_mapping.get('session_key', ''))
+    target_identity = parse_clawchat_session_identity(target_session_key)
+    if (
+        isinstance(target_identity, dict) and
+        target_identity.get('channel') == 'clawchat-router' and
+        target_identity.get('chat_type') == 'group'
+    ):
+        return target_mapping
+    group_id = str(target_mapping.get('group_id', '')).strip()
+    if group_id != '':
+        return None
+    return resolve_router_group_reply_mapping(target_mapping)
+
 def send_router_reply_signal(node_info, message):
     if not isinstance(message, dict):
         return 0
@@ -1762,7 +1778,8 @@ def handle_session_message_sync_event(app_id, node_info, event):
             # Compatibility guard for older plugin nodes / historical sessions.
             # The primary fix is preserving router origin in plugin execution ctx;
             # this path keeps lineage-based router replies working until all nodes converge.
-            router_group_mapping = resolve_router_group_reply_mapping(target.get('mapping', mapping))
+            target_mapping = target.get('mapping', mapping)
+            router_group_mapping = should_forward_group_sync_via_router_reply(target_mapping)
             if router_group_mapping is not None:
                 router_reply_result = forward_session_sync_router_group_reply(
                     app_id,
@@ -1772,14 +1789,6 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 )
                 if router_reply_result > 0:
                     return
-            router_reply_result = forward_session_sync_router_group_reply(
-                app_id,
-                node_info,
-                target.get('mapping', mapping),
-                text,
-            )
-            if router_reply_result > 0:
-                return
         if (
             target.get('kind') == 'direct' and
             role == 'assistant' and
