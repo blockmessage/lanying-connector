@@ -17,3 +17,8 @@ build/
 
 .env
 api-env
+
+.vscode/
+info.log
+log/
+make-shell.sh
