@@ -134,6 +134,40 @@ class RouterSessionIdentityTests(unittest.TestCase):
             ],
         )
 
+    def test_direct_root_child_group_members_include_sender_and_openclaw_only(self):
+        m = lanying_openclaw
+        joined_users = []
+
+        def _record_join(app_id, user_id, group_id):
+            joined_users.append((app_id, user_id, group_id))
+            return True
+
+        with mock.patch.object(m, "ensure_user_joined_group", side_effect=_record_join):
+            result = m.ensure_session_mapping_group_members(
+                "app-id",
+                "group-2",
+                "openclaw-user",
+                "management-user",
+                {
+                    "sender_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                },
+                {
+                    "channel": "clawchat",
+                    "chat_type": "direct",
+                    "target_id": "sender-user",
+                },
+            )
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(
+            joined_users,
+            [
+                ("app-id", "sender-user", "group-2"),
+                ("app-id", "openclaw-user", "group-2"),
+            ],
+        )
+
     def test_router_assistant_forwarding_uses_chatbot_user(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}

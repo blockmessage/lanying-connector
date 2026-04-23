@@ -811,6 +811,7 @@ def build_session_mapping_payload(app_id, node_id, openclaw_user_id, management_
 def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, management_user_id, inherited_identity, root_clawchat_session):
     inherited_sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip()
     chatbot_user_id = str((inherited_identity or {}).get('chatbot_user_id', '')).strip()
+    normalized_openclaw_user_id = str(openclaw_user_id).strip()
     if is_router_root_session(root_clawchat_session):
         if chatbot_user_id == '':
             return {
@@ -835,34 +836,28 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
         root_clawchat_session is not None and
         root_clawchat_session.get('chat_type') == 'direct' and
         inherited_sender_user_id != '' and
-        inherited_sender_user_id != str(openclaw_user_id).strip()
+        inherited_sender_user_id != normalized_openclaw_user_id
     )
-    if not direct_root_with_external_sender:
-        if not ensure_user_joined_group(app_id, openclaw_user_id, group_id):
-            return {
-                'result': 'error',
-                'message': 'add node user to session group failed'
-            }
-    if (
-        direct_root_with_external_sender and
-        inherited_sender_user_id != '' and
-        inherited_sender_user_id != str(management_user_id).strip() and
-        inherited_sender_user_id != str(openclaw_user_id).strip()
-    ):
+    if direct_root_with_external_sender:
         if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
             return {
                 'result': 'error',
                 'message': 'add inherited direct user to session group failed'
             }
-    if (
-        direct_root_with_external_sender and
-        str(management_user_id).strip() != '' and
-        str(management_user_id).strip() != inherited_sender_user_id
-    ):
-        if not ensure_user_joined_group(app_id, management_user_id, group_id):
+        if normalized_openclaw_user_id != '' and normalized_openclaw_user_id != inherited_sender_user_id:
+            if not ensure_user_joined_group(app_id, normalized_openclaw_user_id, group_id):
+                return {
+                    'result': 'error',
+                    'message': 'add node user to direct session group failed'
+                }
+        return {
+            'result': 'ok'
+        }
+    if normalized_openclaw_user_id != '':
+        if not ensure_user_joined_group(app_id, normalized_openclaw_user_id, group_id):
             return {
                 'result': 'error',
-                'message': 'add management chatbot user to session group failed'
+                'message': 'add node user to session group failed'
             }
     return {
         'result': 'ok'
