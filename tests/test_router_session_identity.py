@@ -207,6 +207,30 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "chatbot-user")
         self.assertEqual(mocked_send.call_args.args[3], "sender-user")
 
+    def test_direct_root_assistant_forwarding_uses_openclaw_user_in_group(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=321) as mocked_send:
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-1",
+                    "sender_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat:direct:sender-user",
+                },
+                "assistant",
+                "hello from child",
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "openclaw-user")
+        self.assertEqual(mocked_send.call_args.args[3], "group-1")
+
     def test_router_mapping_signal_carries_chatbot_user_id(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "user_id": "openclaw-user"}

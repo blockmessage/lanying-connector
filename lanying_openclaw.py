@@ -1446,17 +1446,9 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
         return 0
     root_clawchat_session = parse_clawchat_session_identity(mapping.get('root_session_key', ''))
     router_root_session = is_router_root_session(root_clawchat_session)
-    prefer_inherited_sender_for_assistant = (
-        role == 'assistant' and
-        not router_root_session and
-        isinstance(root_clawchat_session, dict) and
-        root_clawchat_session.get('chat_type') == 'direct' and
-        sender_user_id != '' and
-        sender_user_id != node_user_id
-    )
     if role == 'assistant' and router_root_session:
         from_user_id = chatbot_user_id
-    elif role == 'user' or prefer_inherited_sender_for_assistant:
+    elif role == 'user':
         from_user_id = sender_user_id or management_user_id
     else:
         from_user_id = node_user_id
