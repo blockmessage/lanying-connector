@@ -100,6 +100,75 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(payload["sender_user_id"], "sender-user")
         self.assertEqual(payload["chatbot_user_id"], "chatbot-user")
 
+    def test_direct_root_child_mapping_owner_prefers_openclaw_user(self):
+        m = lanying_openclaw
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:direct:sender-user",
+            "root_session_key": "agent:main:clawchat:direct:sender-user",
+        }
+        inherited = {
+            "sender_user_id": "sender-user",
+            "chatbot_user_id": "",
+        }
+
+        decision = m.resolve_session_mapping_decision(
+            "agent:main:subagent:test-child",
+            lineage,
+            False,
+            inherited,
+            "management-user",
+            "openclaw-user",
+        )
+
+        self.assertEqual(decision["mode"], "create_temp_group")
+        self.assertEqual(decision["owner_user_id"], "openclaw-user")
+
+    def test_group_root_child_mapping_owner_prefers_openclaw_user(self):
+        m = lanying_openclaw
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:group:group-1",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+        inherited = {
+            "sender_user_id": "sender-user",
+            "chatbot_user_id": "",
+        }
+
+        decision = m.resolve_session_mapping_decision(
+            "agent:main:subagent:test-child",
+            lineage,
+            False,
+            inherited,
+            "management-user",
+            "openclaw-user",
+        )
+
+        self.assertEqual(decision["mode"], "create_temp_group")
+        self.assertEqual(decision["owner_user_id"], "openclaw-user")
+
+    def test_non_router_owner_falls_back_to_management_when_openclaw_missing(self):
+        m = lanying_openclaw
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:group:group-1",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+        inherited = {
+            "sender_user_id": "sender-user",
+            "chatbot_user_id": "",
+        }
+
+        decision = m.resolve_session_mapping_decision(
+            "agent:main:subagent:test-child",
+            lineage,
+            False,
+            inherited,
+            "management-user",
+            "",
+        )
+
+        self.assertEqual(decision["mode"], "create_temp_group")
+        self.assertEqual(decision["owner_user_id"], "management-user")
+
     def test_router_group_members_include_sender_and_chatbot_only(self):
         m = lanying_openclaw
         joined_users = []

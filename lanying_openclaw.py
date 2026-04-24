@@ -866,24 +866,11 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
 def resolve_session_group_owner_user_id(management_user_id, openclaw_user_id, inherited_sender_user_id, chatbot_user_id, root_clawchat_session):
     normalized_management_user_id = str(management_user_id).strip()
     normalized_openclaw_user_id = str(openclaw_user_id).strip()
-    normalized_inherited_sender_user_id = str(inherited_sender_user_id).strip()
     normalized_chatbot_user_id = str(chatbot_user_id).strip()
     if is_router_root_session(root_clawchat_session):
         return normalized_chatbot_user_id
-    if (
-        isinstance(root_clawchat_session, dict) and
-        root_clawchat_session.get('chat_type') == 'direct' and
-        normalized_inherited_sender_user_id != '' and
-        normalized_inherited_sender_user_id != normalized_openclaw_user_id
-    ):
-        return normalized_inherited_sender_user_id
-    if (
-        isinstance(root_clawchat_session, dict) and
-        root_clawchat_session.get('chat_type') == 'group' and
-        normalized_inherited_sender_user_id != '' and
-        normalized_inherited_sender_user_id != normalized_openclaw_user_id
-    ):
-        return normalized_inherited_sender_user_id
+    if normalized_openclaw_user_id != '':
+        return normalized_openclaw_user_id
     return normalized_management_user_id
 
 def get_nodes_by_user_id(app_id, user_id):
