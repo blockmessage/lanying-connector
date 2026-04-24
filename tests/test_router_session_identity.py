@@ -123,7 +123,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(decision["mode"], "create_temp_group")
         self.assertEqual(decision["owner_user_id"], "openclaw-user")
 
-    def test_group_root_child_mapping_owner_prefers_openclaw_user(self):
+    def test_group_root_child_mapping_owner_uses_openclaw_user(self):
         m = lanying_openclaw
         lineage = {
             "parent_session_key": "agent:main:clawchat:group:group-1",
@@ -168,6 +168,52 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(decision["mode"], "create_temp_group")
         self.assertEqual(decision["owner_user_id"], "management-user")
+
+    def test_merge_sub_sessions_keeps_creating_child_group_for_clawchat_root(self):
+        m = lanying_openclaw
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:group:group-1",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+        inherited = {
+            "sender_user_id": "sender-user",
+            "chatbot_user_id": "",
+        }
+
+        decision = m.resolve_session_mapping_decision(
+            "agent:main:subagent:test-child",
+            lineage,
+            True,
+            inherited,
+            "management-user",
+            "openclaw-user",
+        )
+
+        self.assertEqual(decision["mode"], "create_temp_group")
+        self.assertEqual(decision["owner_user_id"], "openclaw-user")
+
+    def test_merge_sub_sessions_non_clawchat_child_stays_metadata_only(self):
+        m = lanying_openclaw
+        lineage = {
+            "parent_session_key": "agent:main:session-parent",
+            "root_session_key": "agent:main:session-root",
+        }
+        inherited = {
+            "sender_user_id": "sender-user",
+            "chatbot_user_id": "",
+        }
+
+        decision = m.resolve_session_mapping_decision(
+            "agent:main:subagent:test-child",
+            lineage,
+            True,
+            inherited,
+            "management-user",
+            "openclaw-user",
+        )
+
+        self.assertEqual(decision["mode"], "metadata_only")
+        self.assertEqual(decision["owner_user_id"], "")
 
     def test_router_group_members_include_sender_and_chatbot_only(self):
         m = lanying_openclaw
@@ -234,6 +280,40 @@ class RouterSessionIdentityTests(unittest.TestCase):
             [
                 ("app-id", "sender-user", "group-2"),
                 ("app-id", "openclaw-user", "group-2"),
+            ],
+        )
+
+    def test_group_root_child_group_members_include_sender_and_openclaw_only(self):
+        m = lanying_openclaw
+        joined_users = []
+
+        def _record_join(app_id, user_id, group_id):
+            joined_users.append((app_id, user_id, group_id))
+            return True
+
+        with mock.patch.object(m, "ensure_user_joined_group", side_effect=_record_join):
+            result = m.ensure_session_mapping_group_members(
+                "app-id",
+                "group-3",
+                "openclaw-user",
+                "management-user",
+                {
+                    "sender_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                },
+                {
+                    "channel": "clawchat",
+                    "chat_type": "group",
+                    "target_id": "group-1",
+                },
+            )
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(
+            joined_users,
+            [
+                ("app-id", "sender-user", "group-3"),
+                ("app-id", "openclaw-user", "group-3"),
             ],
         )
 

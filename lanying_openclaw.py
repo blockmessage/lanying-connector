@@ -670,7 +670,12 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
     chatbot_user_id = str((inherited_identity or {}).get('chatbot_user_id', '')).strip()
     router_root_session = is_router_root_session(root_clawchat_session)
     resolved_sender_user_id = sender_user_id or ('' if router_root_session else str(management_user_id).strip())
-    if merge_sub_sessions and normalize_optional_session_key(lineage.get('root_session_key', '')) != normalized_session_key:
+    should_merge_to_metadata_only = (
+        merge_sub_sessions and
+        normalize_optional_session_key(lineage.get('root_session_key', '')) != normalized_session_key and
+        root_clawchat_session is None
+    )
+    if should_merge_to_metadata_only:
         return {
             'mode': 'metadata_only',
             'group_id': '',
@@ -849,6 +854,27 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
                 return {
                     'result': 'error',
                     'message': 'add node user to direct session group failed'
+                }
+        return {
+            'result': 'ok'
+        }
+    group_root_with_external_sender = (
+        root_clawchat_session is not None and
+        root_clawchat_session.get('chat_type') == 'group' and
+        inherited_sender_user_id != '' and
+        inherited_sender_user_id != normalized_openclaw_user_id
+    )
+    if group_root_with_external_sender:
+        if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
+            return {
+                'result': 'error',
+                'message': 'add inherited group user to session group failed'
+            }
+        if normalized_openclaw_user_id != '':
+            if not ensure_user_joined_group(app_id, normalized_openclaw_user_id, group_id):
+                return {
+                    'result': 'error',
+                    'message': 'add node user to group session group failed'
                 }
         return {
             'result': 'ok'
