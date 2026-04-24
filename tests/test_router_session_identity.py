@@ -192,7 +192,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(decision["mode"], "create_temp_group")
         self.assertEqual(decision["owner_user_id"], "openclaw-user")
 
-    def test_merge_sub_sessions_non_clawchat_child_stays_metadata_only(self):
+    def test_merge_sub_sessions_non_clawchat_subagent_child_creates_group(self):
         m = lanying_openclaw
         lineage = {
             "parent_session_key": "agent:main:session-parent",
@@ -205,6 +205,29 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         decision = m.resolve_session_mapping_decision(
             "agent:main:subagent:test-child",
+            lineage,
+            True,
+            inherited,
+            "management-user",
+            "openclaw-user",
+        )
+
+        self.assertEqual(decision["mode"], "create_temp_group")
+        self.assertEqual(decision["owner_user_id"], "openclaw-user")
+
+    def test_merge_sub_sessions_non_clawchat_non_subagent_stays_metadata_only(self):
+        m = lanying_openclaw
+        lineage = {
+            "parent_session_key": "agent:main:session-parent",
+            "root_session_key": "agent:main:session-root",
+        }
+        inherited = {
+            "sender_user_id": "sender-user",
+            "chatbot_user_id": "",
+        }
+
+        decision = m.resolve_session_mapping_decision(
+            "agent:main:session-child",
             lineage,
             True,
             inherited,
@@ -317,6 +340,36 @@ class RouterSessionIdentityTests(unittest.TestCase):
             ],
         )
 
+    def test_generic_root_child_group_members_include_management_and_openclaw_only(self):
+        m = lanying_openclaw
+        joined_users = []
+
+        def _record_join(app_id, user_id, group_id):
+            joined_users.append((app_id, user_id, group_id))
+            return True
+
+        with mock.patch.object(m, "ensure_user_joined_group", side_effect=_record_join):
+            result = m.ensure_session_mapping_group_members(
+                "app-id",
+                "group-4",
+                "openclaw-user",
+                "management-user",
+                {
+                    "sender_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                },
+                None,
+            )
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(
+            joined_users,
+            [
+                ("app-id", "management-user", "group-4"),
+                ("app-id", "openclaw-user", "group-4"),
+            ],
+        )
+
     def test_router_assistant_forwarding_uses_chatbot_user(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
@@ -379,6 +432,30 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(mocked_send.call_args.args[2], "openclaw-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-1")
+
+    def test_generic_root_user_forwarding_uses_management_user_in_group(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=222) as mocked_send:
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-9",
+                    "sender_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:main",
+                },
+                "user",
+                "first line",
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "management-user")
+        self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
     def test_router_mapping_signal_carries_chatbot_user_id(self):
         m = lanying_openclaw

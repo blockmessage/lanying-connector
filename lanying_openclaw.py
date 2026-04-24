@@ -673,7 +673,8 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
     should_merge_to_metadata_only = (
         merge_sub_sessions and
         normalize_optional_session_key(lineage.get('root_session_key', '')) != normalized_session_key and
-        root_clawchat_session is None
+        root_clawchat_session is None and
+        ':subagent:' not in normalized_session_key
     )
     if should_merge_to_metadata_only:
         return {
@@ -875,6 +876,23 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
                 return {
                     'result': 'error',
                     'message': 'add node user to group session group failed'
+                }
+        return {
+            'result': 'ok'
+        }
+    if not isinstance(root_clawchat_session, dict):
+        normalized_management_user_id = str(management_user_id).strip()
+        if normalized_management_user_id != '' and normalized_management_user_id != normalized_openclaw_user_id:
+            if not ensure_user_joined_group(app_id, normalized_management_user_id, group_id):
+                return {
+                    'result': 'error',
+                    'message': 'add management user to generic session group failed'
+                }
+        if normalized_openclaw_user_id != '':
+            if not ensure_user_joined_group(app_id, normalized_openclaw_user_id, group_id):
+                return {
+                    'result': 'error',
+                    'message': 'add node user to generic session group failed'
                 }
         return {
             'result': 'ok'
@@ -1462,7 +1480,10 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
     if role == 'assistant' and router_root_session:
         from_user_id = chatbot_user_id
     elif role == 'user':
-        from_user_id = sender_user_id or management_user_id
+        if root_clawchat_session is None:
+            from_user_id = management_user_id or sender_user_id
+        else:
+            from_user_id = sender_user_id or management_user_id
     else:
         from_user_id = node_user_id
     if from_user_id == '':
