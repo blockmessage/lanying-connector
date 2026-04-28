@@ -943,6 +943,23 @@ def _find_handler_model_template(vendor_info, service, model):
     return None
 
 
+def _resolve_v2_chat_model_template(vendor_info, model_entry):
+    service = model_entry.get('service', '')
+    model = model_entry.get('model', '')
+    template = _find_catalog_model_template(service, model)
+    if template is not None:
+        return template, True
+    template = _find_handler_model_template(vendor_info, service, model)
+    if template is not None:
+        return template, True
+    if model_entry.get('source') == 'custom':
+        template = _service_default_template(service)
+        if template:
+            template['model'] = model
+            return template, False
+    return None, False
+
+
 def _extra_param_definitions_for_entry(vendor_info, model_entry):
     defs = []
     api_type_config = get_api_type_config(vendor_info.get('vendor_type', ''))
@@ -1027,16 +1044,15 @@ def _get_v2_chat_model_config(vendor_info, vendor_id, model):
     for entry in entries:
         if entry.get('model') != model or entry.get('enabled') is not True:
             continue
-        template = _find_catalog_model_template(entry['service'], entry['model'])
-        if template is None:
-            template = _find_handler_model_template(vendor_info, entry['service'], entry['model'])
-        if template is None and entry.get('source') == 'custom':
-            template = _service_default_template(entry['service'])
-            if template:
-                template['model'] = entry['model']
+        template, exact_match = _resolve_v2_chat_model_template(vendor_info, entry)
         if template is None:
             continue
         new_config = _sanitize_model_config(copy.deepcopy(template))
+        if not exact_match:
+            new_config.pop('model_show_name', None)
+            new_config.pop('real_model', None)
+            new_config.pop('is_default', None)
+            new_config['handler_vendor'] = get_vendor_handler_vendor(vendor_info)
         _apply_custom_vendor_common_fields(new_config, vendor_id, vendor_show_name, True)
         _apply_model_entry_fields(new_config, entry, vendor_info)
         return new_config
@@ -1046,16 +1062,15 @@ def _get_v2_chat_model_config(vendor_info, vendor_id, model):
 def _append_v2_chat_models(models, vendor_info, vendor_id):
     vendor_show_name = vendor_info.get('name', '')
     for entry in _build_v2_vendor_model_entries(vendor_info):
-        template = _find_catalog_model_template(entry['service'], entry['model'])
-        if template is None:
-            template = _find_handler_model_template(vendor_info, entry['service'], entry['model'])
-        if template is None and entry.get('source') == 'custom':
-            template = _service_default_template(entry['service'])
-            if template:
-                template['model'] = entry['model']
+        template, exact_match = _resolve_v2_chat_model_template(vendor_info, entry)
         if template is None:
             continue
         new_config = _sanitize_model_config(copy.deepcopy(template))
+        if not exact_match:
+            new_config.pop('model_show_name', None)
+            new_config.pop('real_model', None)
+            new_config.pop('is_default', None)
+            new_config['handler_vendor'] = get_vendor_handler_vendor(vendor_info)
         _apply_custom_vendor_common_fields(new_config, vendor_id, vendor_show_name, True)
         _apply_model_entry_fields(new_config, entry, vendor_info)
         new_config['enabled'] = entry.get('enabled') is True

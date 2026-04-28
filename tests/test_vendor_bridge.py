@@ -265,6 +265,232 @@ class VendorBridgeTests(unittest.TestCase):
         self.assertEqual(out["token_limit"], 128000)
         self.assertEqual(out["max_output_tokens"], 8192)
 
+    def test_v2_custom_model_service_fallback_does_not_inherit_model_show_name(self):
+        lanying_vendor.get_vendor = lambda app_id, vendor_id: {
+            "vendor_id": vendor_id,
+            "vendor_type": "openai",
+            "handler_vendor": "openai",
+            "name": "Test",
+            "config_version": 2,
+            "model_config": [
+                {
+                    "service": "deepseek",
+                    "model": "deepseek-v4-pro",
+                    "enabled": True,
+                    "source": "custom",
+                    "extra_params": [],
+                }
+            ],
+        }
+
+        out = lanying_vendor.get_chat_model_config("app", "custom_vendor_4", "deepseek-v4-pro")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["model"], "deepseek-v4-pro")
+        self.assertEqual(out["handler_vendor"], "openai")
+        self.assertNotIn("model_show_name", out)
+
+    def test_v2_custom_model_exact_match_keeps_model_show_name(self):
+        lanying_vendor.get_vendor = lambda app_id, vendor_id: {
+            "vendor_id": vendor_id,
+            "vendor_type": "deepseek",
+            "handler_vendor": "deepseek",
+            "name": "Test",
+            "config_version": 2,
+            "model_config": [
+                {
+                    "service": "deepseek",
+                    "model": "deepseek-reasoner",
+                    "enabled": True,
+                    "source": "custom",
+                    "extra_params": [],
+                }
+            ],
+        }
+
+        out = lanying_vendor.get_chat_model_config("app", "custom_vendor_5", "deepseek-reasoner")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["model_show_name"], "deepseek-reasoner (R1)")
+
+    def test_v2_custom_model_service_fallback_does_not_inherit_real_model(self):
+        lanying_vendor.get_vendor = lambda app_id, vendor_id: {
+            "vendor_id": vendor_id,
+            "vendor_type": "openai",
+            "handler_vendor": "openai",
+            "name": "Test",
+            "config_version": 2,
+            "model_config": [
+                {
+                    "service": "doubao",
+                    "model": "my-doubao-compatible-model",
+                    "enabled": True,
+                    "source": "custom",
+                    "extra_params": [],
+                }
+            ],
+        }
+
+        out = lanying_vendor.get_chat_model_config("app", "custom_vendor_7", "my-doubao-compatible-model")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["model"], "my-doubao-compatible-model")
+        self.assertEqual(out["handler_vendor"], "openai")
+        self.assertNotIn("real_model", out)
+
+    def test_v2_custom_model_service_fallback_does_not_inherit_is_default(self):
+        lanying_vendor.get_vendor = lambda app_id, vendor_id: {
+            "vendor_id": vendor_id,
+            "vendor_type": "openai",
+            "handler_vendor": "openai",
+            "name": "Test",
+            "config_version": 2,
+            "model_config": [
+                {
+                    "service": "chatgpt",
+                    "model": "my-chatgpt-compatible-model-2",
+                    "enabled": True,
+                    "source": "custom",
+                    "extra_params": [],
+                }
+            ],
+        }
+
+        out = lanying_vendor.get_chat_model_config("app", "custom_vendor_10", "my-chatgpt-compatible-model-2")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["handler_vendor"], "openai")
+        self.assertNotIn("is_default", out)
+
+    def test_v2_custom_model_exact_match_keeps_real_model(self):
+        lanying_vendor.get_vendor = lambda app_id, vendor_id: {
+            "vendor_id": vendor_id,
+            "vendor_type": "volcengine",
+            "handler_vendor": "volcengine",
+            "name": "Test",
+            "config_version": 2,
+            "model_config": [
+                {
+                    "service": "doubao",
+                    "model": "Doubao-1.5-pro-32k",
+                    "enabled": True,
+                    "source": "custom",
+                    "extra_params": [],
+                }
+            ],
+        }
+
+        out = lanying_vendor.get_chat_model_config("app", "custom_vendor_8", "Doubao-1.5-pro-32k")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["real_model"], "doubao-1-5-pro-32k-250115")
+
+    def test_list_models_v2_custom_service_fallback_does_not_inherit_model_show_name(self):
+        with mock.patch.object(lanying_vendor, "get_vendor_list", return_value={
+            "data": {
+                "list": [
+                    {
+                        "vendor_id": "custom_vendor_6",
+                        "vendor_type": "openai",
+                        "handler_vendor": "openai",
+                        "name": "Test",
+                        "config_version": 2,
+                        "model_config": [
+                            {
+                                "service": "deepseek",
+                                "model": "deepseek-v4-flash",
+                                "enabled": True,
+                                "source": "custom",
+                                "extra_params": [],
+                            }
+                        ],
+                    }
+                ]
+            }
+        }):
+            models = lanying_vendor.list_models("app")
+
+        target = next(
+            (
+                item for item in models
+                if item.get("vendor") == "custom_vendor_6"
+                and item.get("model") == "deepseek-v4-flash"
+            ),
+            None,
+        )
+        self.assertIsNotNone(target)
+        self.assertEqual(target.get("handler_vendor"), "openai")
+        self.assertNotIn("model_show_name", target)
+
+    def test_list_models_v2_custom_service_fallback_does_not_inherit_real_model(self):
+        with mock.patch.object(lanying_vendor, "get_vendor_list", return_value={
+            "data": {
+                "list": [
+                    {
+                        "vendor_id": "custom_vendor_9",
+                        "vendor_type": "openai",
+                        "handler_vendor": "openai",
+                        "name": "Test",
+                        "config_version": 2,
+                        "model_config": [
+                            {
+                                "service": "doubao",
+                                "model": "my-doubao-compatible-model",
+                                "enabled": True,
+                                "source": "custom",
+                                "extra_params": [],
+                            }
+                        ],
+                    }
+                ]
+            }
+        }):
+            models = lanying_vendor.list_models("app")
+
+        target = next(
+            (
+                item for item in models
+                if item.get("vendor") == "custom_vendor_9"
+                and item.get("model") == "my-doubao-compatible-model"
+            ),
+            None,
+        )
+        self.assertIsNotNone(target)
+        self.assertEqual(target.get("handler_vendor"), "openai")
+        self.assertNotIn("real_model", target)
+
+    def test_list_models_v2_custom_service_fallback_does_not_inherit_is_default(self):
+        with mock.patch.object(lanying_vendor, "get_vendor_list", return_value={
+            "data": {
+                "list": [
+                    {
+                        "vendor_id": "custom_vendor_11",
+                        "vendor_type": "openai",
+                        "handler_vendor": "openai",
+                        "name": "Test",
+                        "config_version": 2,
+                        "model_config": [
+                            {
+                                "service": "chatgpt",
+                                "model": "my-chatgpt-compatible-model-2",
+                                "enabled": True,
+                                "source": "custom",
+                                "extra_params": [],
+                            }
+                        ],
+                    }
+                ]
+            }
+        }):
+            models = lanying_vendor.list_models("app")
+
+        target = next(
+            (
+                item for item in models
+                if item.get("vendor") == "custom_vendor_11"
+                and item.get("model") == "my-chatgpt-compatible-model-2"
+            ),
+            None,
+        )
+        self.assertIsNotNone(target)
+        self.assertEqual(target.get("handler_vendor"), "openai")
+        self.assertNotIn("is_default", target)
+
     def test_check_vendor_valid_normalizes_handler_vendor(self):
         vendor_setting = lanying_vendor.VendorSetting(
             app_id="app",
