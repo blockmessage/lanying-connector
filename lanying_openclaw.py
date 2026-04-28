@@ -1549,24 +1549,22 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
     )
     return msg_id
 
-def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_user_id, chatbot_user_id, role, text, delivery_ext=None):
+def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_user_id, chatbot_user_id, role, text, route_session_key='', delivery_ext=None):
     if not isinstance(text, str) or text.strip() == '':
         return 0
     node_user_id = str(node_info.get('user_id', '')).strip()
     normalized_target_user_id = str(target_user_id).strip()
     normalized_sender_user_id = str(sender_user_id).strip()
     normalized_chatbot_user_id = str(chatbot_user_id).strip()
-    delivery_session_key = ''
-    if isinstance(delivery_ext, dict):
-        delivery_session_key = normalize_session_key(delivery_ext.get('openclaw', {}).get('session', ''))
-    delivery_identity = parse_clawchat_session_identity(delivery_session_key)
+    normalized_route_session_key = normalize_session_key(route_session_key)
+    route_identity = parse_clawchat_session_identity(normalized_route_session_key)
     is_router_direct_session = (
-        isinstance(delivery_identity, dict) and
-        delivery_identity.get('channel') == 'clawchat-router' and
-        delivery_identity.get('chat_type') == 'direct'
+        isinstance(route_identity, dict) and
+        route_identity.get('channel') == 'clawchat-router' and
+        route_identity.get('chat_type') == 'direct'
     )
     use_chatbot_direct = is_router_direct_session or (
-        delivery_session_key == '' and normalized_chatbot_user_id != ''
+        normalized_route_session_key == '' and normalized_chatbot_user_id != ''
     )
     if role == 'user' and use_chatbot_direct and normalized_chatbot_user_id == '':
         normalized_chatbot_user_id = resolve_bound_chatbot_user_id(app_id, str(node_info.get('node_id', '')).strip())
@@ -1915,6 +1913,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 target.get('chatbot_user_id', ''),
                 role,
                 text,
+                target.get('session_key', ''),
                 delivery_ext,
             )
             return

@@ -429,6 +429,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "chatbot-user",
                 "assistant",
                 "hello direct",
+                "agent:main:clawchat-router:direct:sender-user",
             )
 
         self.assertEqual(mocked_send.call_args.args[2], "chatbot-user")
@@ -502,6 +503,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "",
                 "user",
                 "question text",
+                "agent:main:clawchat-router:direct:sender-user",
                 delivery_ext,
             )
 
@@ -535,6 +537,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "",
                 "user",
                 "question text",
+                "agent:main:clawchat-router:direct:sender-user",
                 delivery_ext,
             )
 
@@ -562,6 +565,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "",
                 "user",
                 "question text",
+                "agent:main:clawchat:direct:sender-user",
                 delivery_ext,
             )
 
@@ -589,6 +593,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "",
                 "assistant",
                 "assistant reply",
+                "agent:main:clawchat:direct:sender-user",
                 delivery_ext,
             )
 
@@ -616,6 +621,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "",
                 "user",
                 "question text",
+                "agent:main:clawchat:direct:sender-user",
                 delivery_ext,
             )
 
