@@ -1000,6 +1000,48 @@ def get_message_ai_ext(msg):
         pass
     return {}
 
+def get_message_openclaw_ext(msg):
+    try:
+        ext = lanying_utils.safe_json_loads(msg.get('ext', ''), {})
+        if not isinstance(ext, dict):
+            return {}
+        openclaw_ext = ext.get('openclaw', {})
+        if isinstance(openclaw_ext, dict):
+            return openclaw_ext
+    except Exception:
+        pass
+    return {}
+
+def build_openclaw_reply_ext(msg):
+    openclaw_in = get_message_openclaw_ext(msg)
+    openclaw_type = str(openclaw_in.get('type', '')).strip()
+    if openclaw_type not in ['session_message_sync', 'session_sync_delivery']:
+        return {}
+    session_key = str(openclaw_in.get('session', '')).strip()
+    if session_key == '':
+        return {}
+    reply_openclaw = {
+        'type': 'session_sync_delivery',
+        'session': session_key,
+        'source': 'control_ui_reply',
+        'role': 'assistant',
+    }
+    request_source = str(openclaw_in.get('source', '')).strip()
+    if request_source != '':
+        reply_openclaw['request_source'] = request_source
+    request_role = str(openclaw_in.get('role', '')).strip().lower()
+    if request_role != '':
+        reply_openclaw['request_role'] = request_role
+    request_message_id = str(openclaw_in.get('message_id', '')).strip()
+    if request_message_id != '':
+        reply_openclaw['request_message_id'] = request_message_id
+    request_msg_id = str(msg.get('msgId', '')).strip()
+    if request_msg_id != '':
+        reply_openclaw['request_msg_id'] = request_msg_id
+    return {
+        'openclaw': reply_openclaw
+    }
+
 def is_ai_generate_disabled_msg(msg):
     return get_message_ai_ext(msg).get('ai_generate') == False
 
@@ -1113,6 +1155,7 @@ def handle_chat_message(config, msg):
                     'error_message': now_reply if error_message == '' else error_message
                 }
             }
+            reply_ext.update(build_openclaw_reply_ext(msg))
             if 'feedback' in lcExt:
                 reply_ext['ai']['feedback'] = lcExt['feedback']
             replyMessageAsync(config, now_reply, reply_ext)
@@ -1674,6 +1717,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 'role': 'ai'
             }
         }
+    reply_ext.update(build_openclaw_reply_ext(msg))
     if 'feedback' in lcExt:
         reply_ext['ai']['feedback'] = lcExt['feedback']
     function_call_times = 5

@@ -285,6 +285,26 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'ext': '{"openclaw":{"type":"session_sync_delivery","role":"user"}}'
         }))
 
+    def test_build_openclaw_reply_ext_contains_sync_context(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        msg = {
+            'msgId': 'mid-1',
+            'ext': '{"openclaw":{"type":"session_message_sync","session":"agent:main:clawchat:direct:u1","source":"control_ui_user","role":"user","message_id":"evt-1"}}'
+        }
+        out = m.build_openclaw_reply_ext(msg)
+        self.assertEqual(out['openclaw']['type'], 'session_sync_delivery')
+        self.assertEqual(out['openclaw']['session'], 'agent:main:clawchat:direct:u1')
+        self.assertEqual(out['openclaw']['source'], 'control_ui_reply')
+        self.assertEqual(out['openclaw']['role'], 'assistant')
+        self.assertEqual(out['openclaw']['request_source'], 'control_ui_user')
+        self.assertEqual(out['openclaw']['request_role'], 'user')
+        self.assertEqual(out['openclaw']['request_message_id'], 'evt-1')
+        self.assertEqual(out['openclaw']['request_msg_id'], 'mid-1')
+
     def test_append_message_can_drop_developer_prompt_when_context_is_full(self):
         try:
             m = importlib.import_module('openai_service')

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -510,8 +511,116 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(extra["ext"]["openclaw"]["source"], "control_ui_user")
         self.assertEqual(extra["ext"]["openclaw"]["role"], "user")
         self.assertEqual(extra["ext"]["openclaw"]["message_id"], "msg-1")
-        self.assertNotIn("ai", extra["ext"])
+        self.assertEqual(extra["ext"]["ai"]["ai_generate"], False)
         self.assertEqual(extra["skip_antispam_prompt"], True)
+
+    def test_session_sync_user_forwarding_targets_chatbot_in_direct(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        delivery_ext = m.build_session_sync_delivery_ext(
+            "agent:main:clawchat-router:direct:sender-user",
+            "control_ui_user",
+            "user",
+            "msg-user-1",
+        )
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=223) as mocked_send:
+            m.forward_session_sync_to_direct(
+                "app-id",
+                node_info,
+                "sender-user",
+                "sender-user",
+                "",
+                "user",
+                "question text",
+                delivery_ext,
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        self.assertEqual(mocked_send.call_args.args[3], "chatbot-user")
+
+    def test_session_sync_user_forwarding_falls_back_to_node_user_without_chatbot(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        delivery_ext = m.build_session_sync_delivery_ext(
+            "agent:main:clawchat:direct:sender-user",
+            "control_ui_user",
+            "user",
+            "msg-user-2",
+        )
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value=""), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
+            m.forward_session_sync_to_direct(
+                "app-id",
+                node_info,
+                "sender-user",
+                "sender-user",
+                "",
+                "user",
+                "question text",
+                delivery_ext,
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        self.assertEqual(mocked_send.call_args.args[3], "openclaw-user")
+
+    def test_session_sync_assistant_forwarding_keeps_openclaw_sender_without_chatbot(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        delivery_ext = m.build_session_sync_delivery_ext(
+            "agent:main:clawchat:direct:sender-user",
+            "control_ui_reply",
+            "assistant",
+            "msg-assistant-1",
+        )
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=225) as mocked_send:
+            m.forward_session_sync_to_direct(
+                "app-id",
+                node_info,
+                "sender-user",
+                "sender-user",
+                "",
+                "assistant",
+                "assistant reply",
+                delivery_ext,
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "openclaw-user")
+        self.assertEqual(mocked_send.call_args.args[3], "sender-user")
+
+    def test_session_sync_user_forwarding_clawchat_direct_does_not_target_chatbot(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        delivery_ext = m.build_session_sync_delivery_ext(
+            "agent:main:clawchat:direct:sender-user",
+            "control_ui_user",
+            "user",
+            "msg-user-3",
+        )
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=226) as mocked_send:
+            m.forward_session_sync_to_direct(
+                "app-id",
+                node_info,
+                "sender-user",
+                "sender-user",
+                "",
+                "user",
+                "question text",
+                delivery_ext,
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        self.assertEqual(mocked_send.call_args.args[3], "openclaw-user")
 
     def test_session_sync_delivery_ext_marks_reply_as_no_generate(self):
         m = lanying_openclaw
@@ -582,6 +691,18 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 node_info,
                 "sender-user",
                 "child reply",
+                {
+                    "openclaw": {
+                        "type": "session_sync_delivery",
+                        "session": "agent:main:clawchat-router:direct:sender-user",
+                        "source": "control_ui_reply",
+                        "role": "assistant",
+                        "request_source": "control_ui_user",
+                    },
+                    "ai": {
+                        "ai_generate": False
+                    }
+                },
             )
 
         self.assertEqual(result, 99)
@@ -592,6 +713,47 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["type"], "router_reply")
         self.assertEqual(ext["openclaw"]["message"]["to"], "sender-user")
         self.assertEqual(ext["openclaw"]["message"]["toType"], "roster")
+        payload_ext = json.loads(ext["openclaw"]["message"]["ext"])
+        self.assertEqual(payload_ext["openclaw"]["session"], "agent:main:clawchat-router:direct:sender-user")
+
+    def test_router_reply_message_carries_openclaw_delivery_context(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_utils, "safe_json_loads", return_value={
+                 "openclaw": {
+                     "type": "session_sync_delivery",
+                     "session": "agent:main:clawchat-router:direct:sender-user",
+                     "source": "control_ui_user",
+                     "role": "user",
+                     "message_id": "oc-req-1",
+                 }
+             }), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=100) as mocked_send:
+            m.router_reply_message(
+                "app-id",
+                node_info,
+                {
+                    "type": "CHAT",
+                    "content": "reply content",
+                    "msgId": "im-req-1",
+                    "ext": '{"openclaw":{"type":"session_sync_delivery","session":"agent:main:clawchat-router:direct:sender-user","source":"control_ui_user","role":"user","message_id":"oc-req-1"}}',
+                    "to": {"uid": "sender-user"},
+                },
+            )
+
+        ext = mocked_send.call_args.args[7]["ext"]
+        self.assertEqual(ext["ai"]["role"], "ai")
+        self.assertEqual(ext["openclaw"]["type"], "session_sync_delivery")
+        self.assertEqual(ext["openclaw"]["session"], "agent:main:clawchat-router:direct:sender-user")
+        self.assertEqual(ext["openclaw"]["source"], "control_ui_reply")
+        self.assertEqual(ext["openclaw"]["role"], "assistant")
+        self.assertEqual(ext["openclaw"]["request_source"], "control_ui_user")
+        self.assertEqual(ext["openclaw"]["request_role"], "user")
+        self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-1")
+        self.assertEqual(ext["openclaw"]["request_msg_id"], "im-req-1")
 
     def test_router_root_direct_assistant_sync_prefers_router_reply(self):
         m = lanying_openclaw

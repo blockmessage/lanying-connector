@@ -1468,9 +1468,47 @@ def build_session_sync_delivery_ext(session_key, source, role, message_id=''):
     if normalized_message_id != '':
         openclaw['message_id'] = normalized_message_id
     ext = {'openclaw': openclaw}
-    # Only assistant-side sync deliveries should suppress connector generation.
-    if normalized_source == 'control_ui_reply' or normalized_role == 'assistant':
+    # Session visible-delivery events from OpenClaw are display-only in IM.
+    if normalized_source in ['control_ui_user', 'control_ui_reply']:
         ext['ai'] = {'ai_generate': False}
+    return ext
+
+def build_router_reply_delivery_ext(message):
+    ext = {
+        'ai': {
+            'role': 'ai'
+        }
+    }
+    if not isinstance(message, dict):
+        return ext
+    msg_ext = lanying_utils.safe_json_loads(message.get('ext', ''), {})
+    if not isinstance(msg_ext, dict):
+        return ext
+    openclaw_in = msg_ext.get('openclaw', {})
+    if not isinstance(openclaw_in, dict):
+        return ext
+    session_key = normalize_session_key(openclaw_in.get('session', ''))
+    if session_key == '':
+        return ext
+    reply_openclaw = {
+        'type': 'session_sync_delivery',
+        'session': session_key,
+        'source': 'control_ui_reply',
+        'role': 'assistant',
+    }
+    request_source = str(openclaw_in.get('source', '')).strip()
+    if request_source != '':
+        reply_openclaw['request_source'] = request_source
+    request_role = str(openclaw_in.get('role', '')).strip().lower()
+    if request_role != '':
+        reply_openclaw['request_role'] = request_role
+    request_message_id = str(openclaw_in.get('message_id', '')).strip()
+    if request_message_id != '':
+        reply_openclaw['request_message_id'] = request_message_id
+    request_msg_id = str(message.get('msgId', '')).strip()
+    if request_msg_id != '':
+        reply_openclaw['request_msg_id'] = request_msg_id
+    ext['openclaw'] = reply_openclaw
     return ext
 
 def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delivery_ext=None):
@@ -1518,13 +1556,30 @@ def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_use
     normalized_target_user_id = str(target_user_id).strip()
     normalized_sender_user_id = str(sender_user_id).strip()
     normalized_chatbot_user_id = str(chatbot_user_id).strip()
+    delivery_session_key = ''
+    if isinstance(delivery_ext, dict):
+        delivery_session_key = normalize_session_key(delivery_ext.get('openclaw', {}).get('session', ''))
+    delivery_identity = parse_clawchat_session_identity(delivery_session_key)
+    is_router_direct_session = (
+        isinstance(delivery_identity, dict) and
+        delivery_identity.get('channel') == 'clawchat-router' and
+        delivery_identity.get('chat_type') == 'direct'
+    )
+    use_chatbot_direct = is_router_direct_session or (
+        delivery_session_key == '' and normalized_chatbot_user_id != ''
+    )
+    if role == 'user' and use_chatbot_direct and normalized_chatbot_user_id == '':
+        normalized_chatbot_user_id = resolve_bound_chatbot_user_id(app_id, str(node_info.get('node_id', '')).strip())
     if node_user_id == '' or normalized_target_user_id == '':
         return 0
     if role == 'user':
         from_user_id = normalized_sender_user_id or normalized_target_user_id
-        to_user_id = node_user_id
+        to_user_id = normalized_chatbot_user_id if use_chatbot_direct and normalized_chatbot_user_id != '' else node_user_id
     else:
-        from_user_id = normalized_chatbot_user_id or node_user_id
+        if use_chatbot_direct:
+            from_user_id = normalized_chatbot_user_id or node_user_id
+        else:
+            from_user_id = node_user_id
         to_user_id = normalized_target_user_id
     if from_user_id == '':
         return 0
@@ -1623,7 +1678,7 @@ def resolve_parent_group_session_sync_target(app_id, node_info, mapping):
         'session_key': normalize_optional_session_key(parent_mapping.get('session_key', '')) or parent_session_key,
     }
 
-def forward_session_sync_router_group_reply(app_id, node_info, mapping, text):
+def forward_session_sync_router_group_reply(app_id, node_info, mapping, text, delivery_ext=None):
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
         return 0
     session_identity = parse_clawchat_session_identity(mapping.get('session_key', ''))
@@ -1637,6 +1692,7 @@ def forward_session_sync_router_group_reply(app_id, node_info, mapping, text):
     router_reply_message(app_id, node_info, {
         'type': 'GROUPCHAT',
         'content': text.strip(),
+        'ext': json.dumps(delivery_ext, ensure_ascii=False) if isinstance(delivery_ext, dict) and len(delivery_ext) > 0 else '',
         'to': {
             'uid': group_id
         }
@@ -1718,7 +1774,7 @@ def send_router_reply_signal(node_info, message):
     )
     return msg_id
 
-def forward_session_sync_router_direct_reply(app_id, node_info, target_user_id, text):
+def forward_session_sync_router_direct_reply(app_id, node_info, target_user_id, text, delivery_ext=None):
     normalized_target_user_id = str(target_user_id).strip()
     normalized_text = str(text).strip()
     if normalized_target_user_id == '' or normalized_text == '':
@@ -1730,7 +1786,7 @@ def forward_session_sync_router_direct_reply(app_id, node_info, target_user_id, 
         'to': normalized_target_user_id,
         'content': normalized_text,
         'type': 'text',
-        'ext': '',
+        'ext': json.dumps(delivery_ext, ensure_ascii=False) if isinstance(delivery_ext, dict) and len(delivery_ext) > 0 else '',
         'config': '',
         'attach': '',
         'status': 1,
@@ -1831,6 +1887,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
                     node_info,
                     router_group_mapping,
                     text,
+                    delivery_ext,
                 )
                 if router_reply_result > 0:
                     return
@@ -1845,6 +1902,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 node_info,
                 target.get('target_user_id', ''),
                 text,
+                delivery_ext,
             )
             if router_reply_result > 0:
                 return
@@ -1935,11 +1993,7 @@ def router_reply_message(app_id, node_info, message):
     if str(chatbot_user_id) == str(to_id):
         logging.info(f"router_reply_message stop for to is chatbot | chatbot_user_id: {chatbot_user_id}, to_id: {to_id}, message: {message}")
         return
-    ext = {
-        'ai': {
-          'role': 'ai'
-        }
-    }
+    ext = build_router_reply_delivery_ext(message)
     extra = {
         'ext': ext
     }
