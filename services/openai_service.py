@@ -985,6 +985,24 @@ def maybe_sync_to_openclaw(msg):
     except Exception:
         pass
 
+def get_message_ai_ext(msg):
+    try:
+        ext = lanying_utils.safe_json_loads(msg.get('ext', ''), {})
+        if not isinstance(ext, dict):
+            return {}
+        ai_ext = ext.get('ai', {})
+        if isinstance(ai_ext, dict):
+            return ai_ext
+        lanying_connector_ext = ext.get('lanying_connector', {})
+        if isinstance(lanying_connector_ext, dict):
+            return lanying_connector_ext
+    except Exception:
+        pass
+    return {}
+
+def is_ai_generate_disabled_msg(msg):
+    return get_message_ai_ext(msg).get('ai_generate') == False
+
 def handle_chat_message(config, msg):
     maybe_sync_to_openclaw(msg)
     app_id = msg['appId']
@@ -1001,6 +1019,15 @@ def handle_chat_message(config, msg):
         maybe_transcription_audio_msg(config, msg)
         maybe_save_image_msg(config, msg)
         maybe_add_history(config, msg)
+        if msg_type == 'GROUPCHAT' and is_ai_generate_disabled_msg(msg):
+            skip_group_router_context_fanout = True
+            if 'openclaw_node_info' in config:
+                _, openclaw_direct_command = preprocess_openclaw_group_message(msg)
+                if openclaw_direct_command:
+                    skip_group_router_context_fanout = False
+            if skip_group_router_context_fanout:
+                logging.info(f"skip group router_context fanout for ai_generate false | msgId: {msg.get('msgId', '')}")
+                return ''
         if msg_type == 'GROUPCHAT':
             group_context_targets = list_group_openclaw_router_context_targets(config, msg)
             if len(group_context_targets) > 0:

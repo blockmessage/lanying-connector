@@ -238,6 +238,30 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(decision["mode"], "metadata_only")
         self.assertEqual(decision["owner_user_id"], "")
 
+    def test_clawchat_direct_session_stays_metadata_only(self):
+        m = lanying_openclaw
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:direct:sender-user",
+            "root_session_key": "agent:main:clawchat:direct:sender-user",
+        }
+        inherited = {
+            "sender_user_id": "sender-user",
+            "chatbot_user_id": "",
+        }
+
+        decision = m.resolve_session_mapping_decision(
+            "agent:main:clawchat:direct:sender-user",
+            lineage,
+            False,
+            inherited,
+            "management-user",
+            "openclaw-user",
+        )
+
+        self.assertEqual(decision["mode"], "metadata_only")
+        self.assertEqual(decision["group_id"], "")
+        self.assertEqual(decision["effective_target_session_key"], "agent:main:clawchat:direct:sender-user")
+
     def test_router_group_members_include_sender_and_chatbot_only(self):
         m = lanying_openclaw
         joined_users = []
@@ -457,6 +481,52 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "management-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
+    def test_session_sync_forwarding_marks_visible_delivery(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        delivery_ext = m.build_session_sync_delivery_ext(
+            "agent:main:clawchat:direct:sender-user",
+            "control_ui_user",
+            "user",
+            "msg-1",
+        )
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=222) as mocked_send:
+            m.forward_session_sync_to_direct(
+                "app-id",
+                node_info,
+                "sender-user",
+                "sender-user",
+                "",
+                "user",
+                "question text",
+                delivery_ext,
+            )
+
+        extra = mocked_send.call_args.args[7]
+        self.assertEqual(extra["ext"]["openclaw"]["type"], "session_sync_delivery")
+        self.assertEqual(extra["ext"]["openclaw"]["session"], "agent:main:clawchat:direct:sender-user")
+        self.assertEqual(extra["ext"]["openclaw"]["source"], "control_ui_user")
+        self.assertEqual(extra["ext"]["openclaw"]["role"], "user")
+        self.assertEqual(extra["ext"]["openclaw"]["message_id"], "msg-1")
+        self.assertNotIn("ai", extra["ext"])
+        self.assertEqual(extra["skip_antispam_prompt"], True)
+
+    def test_session_sync_delivery_ext_marks_reply_as_no_generate(self):
+        m = lanying_openclaw
+        delivery_ext = m.build_session_sync_delivery_ext(
+            "agent:main:clawchat:direct:sender-user",
+            "control_ui_reply",
+            "assistant",
+            "msg-2",
+        )
+        self.assertEqual(delivery_ext["openclaw"]["type"], "session_sync_delivery")
+        self.assertEqual(delivery_ext["openclaw"]["source"], "control_ui_reply")
+        self.assertEqual(delivery_ext["openclaw"]["role"], "assistant")
+        self.assertEqual(delivery_ext["openclaw"]["message_id"], "msg-2")
+        self.assertEqual(delivery_ext["ai"]["ai_generate"], False)
+
     def test_router_mapping_signal_carries_chatbot_user_id(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "user_id": "openclaw-user"}
@@ -611,6 +681,17 @@ class RouterSessionIdentityTests(unittest.TestCase):
             parent_mapping,
             "assistant",
             "nested child reply",
+            {
+                "openclaw": {
+                    "type": "session_sync_delivery",
+                    "session": "agent:main:subagent:test-grandchild",
+                    "source": "control_ui_reply",
+                    "role": "assistant",
+                },
+                "ai": {
+                    "ai_generate": False,
+                }
+            },
         )
 
     def test_router_group_root_assistant_sync_prefers_router_reply(self):

@@ -689,7 +689,7 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
         }
     if clawchat_session is not None and clawchat_session.get('chat_type') == 'direct':
         return {
-            'mode': 'ignored',
+            'mode': 'metadata_only',
             'group_id': '',
             'owner_user_id': '',
             'effective_target_session_key': effective_target_session_key,
@@ -1353,17 +1353,6 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
         return mapping_result
     clawchat_session = mapping_decision['clawchat_session']
     root_clawchat_session = mapping_decision['root_clawchat_session']
-    if mapping_decision['mode'] == 'ignored':
-        if clawchat_session is not None:
-            logging.info(
-                f"ensure_session_mapping ignore clawchat direct session | "
-                f"app_id:{app_id}, node_id:{node_id}, session_key:{normalized_session_key}, "
-                f"target_id:{clawchat_session['target_id']}"
-            )
-        return {
-            'result': 'ignored',
-            'message': 'ignore clawchat direct session'
-        }
     if is_router_root_session(root_clawchat_session) and str(mapping_decision.get('chatbot_user_id', '')).strip() == '':
         logging.info(
             f"ensure_session_mapping router chatbot user missing | app_id:{app_id}, node_id:{node_id}, "
@@ -1466,7 +1455,25 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
     sync_session_mapping_to_node(node_info, mapping_result['data'])
     return mapping_result
 
-def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
+def build_session_sync_delivery_ext(session_key, source, role, message_id=''):
+    normalized_source = str(source or '').strip()
+    normalized_role = str(role or '').strip().lower()
+    openclaw = {
+        'type': 'session_sync_delivery',
+        'session': normalize_session_key(session_key),
+        'source': normalized_source,
+        'role': normalized_role
+    }
+    normalized_message_id = str(message_id or '').strip()
+    if normalized_message_id != '':
+        openclaw['message_id'] = normalized_message_id
+    ext = {'openclaw': openclaw}
+    # Only assistant-side sync deliveries should suppress connector generation.
+    if normalized_source == 'control_ui_reply' or normalized_role == 'assistant':
+        ext['ai'] = {'ai_generate': False}
+    return ext
+
+def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delivery_ext=None):
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
         return 0
     sender_user_id = str(mapping.get('sender_user_id', '')).strip()
@@ -1494,6 +1501,7 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
     }
     group_id = str(mapping.get('group_id', '')).strip()
     msg_id = lanying_im_api.send_message_sync(config, app_id, from_user_id, group_id, 2, 0, text.strip(), {
+        'ext': delivery_ext or {},
         'skip_antispam_prompt': True
     })
     logging.info(
@@ -1503,7 +1511,7 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text):
     )
     return msg_id
 
-def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_user_id, chatbot_user_id, role, text):
+def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_user_id, chatbot_user_id, role, text, delivery_ext=None):
     if not isinstance(text, str) or text.strip() == '':
         return 0
     node_user_id = str(node_info.get('user_id', '')).strip()
@@ -1533,6 +1541,7 @@ def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_use
         0,
         text.strip(),
         {
+            'ext': delivery_ext or {},
             'skip_antispam_prompt': True
         }
     )
@@ -1750,6 +1759,8 @@ def handle_session_message_sync_event(app_id, node_info, event):
     text = extract_session_sync_text(message.get('content') if isinstance(message, dict) else message)
     if session_key == '' or source not in ['control_ui_user', 'control_ui_reply']:
         return
+    message_id = str(event.get('message_id', '')).strip()
+    delivery_ext = build_session_sync_delivery_ext(session_key, source, role, message_id)
     should_materialize_clawchat_group = not (
         source == 'control_ui_user' and
         role == 'user' and
@@ -1846,9 +1857,10 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 target.get('chatbot_user_id', ''),
                 role,
                 text,
+                delivery_ext,
             )
             return
-        forward_session_sync_to_group(app_id, node_info, target.get('mapping', mapping), role, text)
+        forward_session_sync_to_group(app_id, node_info, target.get('mapping', mapping), role, text, delivery_ext)
 
 def handle_chat_message(msg):
     from_user_id = msg['from']['uid']

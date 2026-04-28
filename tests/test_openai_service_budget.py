@@ -269,6 +269,22 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         if service_dir not in sys.path:
             sys.path.insert(0, service_dir)
 
+    def test_ai_generate_disabled_msg_is_detected_from_ai_ext(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        self.assertTrue(m.is_ai_generate_disabled_msg({
+            'ext': '{"ai":{"ai_generate":false}}'
+        }))
+        self.assertTrue(m.is_ai_generate_disabled_msg({
+            'ext': '{"lanying_connector":{"ai_generate":false}}'
+        }))
+        self.assertFalse(m.is_ai_generate_disabled_msg({
+            'ext': '{"openclaw":{"type":"session_sync_delivery","role":"user"}}'
+        }))
+
     def test_append_message_can_drop_developer_prompt_when_context_is_full(self):
         try:
             m = importlib.import_module('openai_service')
