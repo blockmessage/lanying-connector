@@ -1538,6 +1538,16 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
         'lanying_admin_token': admin_token
     }
     group_id = str(mapping.get('group_id', '')).strip()
+    if group_id == '':
+        return 0
+    if not ensure_user_joined_group(app_id, from_user_id, group_id):
+        logging.info(
+            f"forward_session_sync_to_group skip for sender not in group | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+            f"session_key:{mapping.get('session_key', '')}, group_id:{group_id}, "
+            f"role:{role}, from_user_id:{from_user_id}"
+        )
+        return 0
     msg_id = lanying_im_api.send_message_sync(config, app_id, from_user_id, group_id, 2, 0, text.strip(), {
         'ext': delivery_ext or {},
         'skip_antispam_prompt': True

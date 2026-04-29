@@ -400,6 +400,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
 
         with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
              mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=123) as mocked_send:
             m.forward_session_sync_to_group(
                 "app-id",
@@ -416,6 +417,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "hello from child",
             )
 
+        mocked_join.assert_called_once_with("app-id", "chatbot-user", "group-1")
         self.assertEqual(mocked_send.call_args.args[2], "chatbot-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-1")
 
@@ -440,6 +442,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
 
         with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
              mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=321) as mocked_send:
             m.forward_session_sync_to_group(
                 "app-id",
@@ -456,6 +459,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "hello from child",
             )
 
+        mocked_join.assert_called_once_with("app-id", "openclaw-user", "group-1")
         self.assertEqual(mocked_send.call_args.args[2], "openclaw-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-1")
 
@@ -464,6 +468,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
 
         with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
              mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=222) as mocked_send:
             m.forward_session_sync_to_group(
                 "app-id",
@@ -480,6 +485,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "first line",
             )
 
+        mocked_join.assert_called_once_with("app-id", "management-user", "group-9")
         self.assertEqual(mocked_send.call_args.args[2], "management-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
@@ -493,6 +499,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         ]:
             with self.subTest(root_session_key=root_session_key), \
                  mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+                 mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
                  mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=223) as mocked_send:
                 m.forward_session_sync_to_group(
                     "app-id",
@@ -509,6 +516,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                     "question from session",
                 )
 
+            mocked_join.assert_called_once_with("app-id", "management-user", "group-9")
             self.assertEqual(mocked_send.call_args.args[2], "management-user")
             self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
@@ -517,6 +525,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
 
         with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
              mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
             m.forward_session_sync_to_group(
                 "app-id",
@@ -533,6 +542,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "direct question from session",
             )
 
+        mocked_join.assert_called_once_with("app-id", "sender-user", "group-9")
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
