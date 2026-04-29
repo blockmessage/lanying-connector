@@ -147,7 +147,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(decision["mode"], "create_temp_group")
         self.assertEqual(decision["owner_user_id"], "openclaw-user")
 
-    def test_non_router_owner_falls_back_to_management_when_openclaw_missing(self):
+    def test_non_router_owner_uses_management_when_openclaw_missing(self):
         m = lanying_openclaw
         lineage = {
             "parent_session_key": "agent:main:clawchat:group:group-1",
@@ -169,6 +169,30 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(decision["mode"], "create_temp_group")
         self.assertEqual(decision["owner_user_id"], "management-user")
+
+    def test_router_group_missing_sender_does_not_inherit_management_user(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        lineage = {
+            "parent_session_key": "agent:main:clawchat-router:group:group-1",
+            "root_session_key": "agent:main:clawchat-router:group:group-1",
+        }
+
+        with mock.patch.object(m, "get_node_chatbot_id", return_value="chatbot-id"), \
+             mock.patch.object(m.lanying_chatbot, "get_chatbot", return_value={"user_id": "chatbot-user"}), \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=None):
+            inherited = m.resolve_inherited_sender_user_id(
+                "app-id",
+                node_info,
+                lineage,
+                "management-user",
+                "",
+            )
+
+        self.assertEqual(inherited["sender_user_id"], "")
+        self.assertEqual(inherited["source"], "missing")
+        self.assertEqual(inherited["management_user_id"], "management-user")
+        self.assertEqual(inherited["chatbot_user_id"], "chatbot-user")
 
     def test_merge_sub_sessions_keeps_creating_child_group_for_clawchat_root(self):
         m = lanying_openclaw
@@ -541,6 +565,44 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
+    def test_group_user_forwarding_does_not_fallback_between_management_and_sender(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m, "ensure_user_joined_group") as mocked_join, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync") as mocked_send:
+            openclaw_group_result = m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-9",
+                    "sender_user_id": "sender-user",
+                    "management_user_id": "",
+                    "root_session_key": "agent:main:clawchat:group:group-9",
+                },
+                "user",
+                "question from OpenClaw group",
+            )
+            router_group_result = m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-9",
+                    "sender_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat-router:group:group-9",
+                },
+                "user",
+                "question from IM group",
+            )
+
+        self.assertEqual(openclaw_group_result, 0)
+        self.assertEqual(router_group_result, 0)
+        mocked_join.assert_not_called()
+        mocked_send.assert_not_called()
+
     def test_existing_mapping_sender_is_repaired_by_explicit_sender_only(self):
         m = lanying_openclaw
         existing = {
@@ -618,7 +680,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 node_info,
                 "sender-user",
                 "sender-user",
-                "",
+                "chatbot-user",
                 "user",
                 "question text",
                 "agent:main:clawchat-router:direct:sender-user",
@@ -662,7 +724,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "chatbot-user")
 
-    def test_session_sync_user_forwarding_falls_back_to_node_user_without_chatbot(self):
+    def test_session_sync_user_forwarding_targets_node_user_for_clawchat_direct(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
         delivery_ext = m.build_session_sync_delivery_ext(
@@ -689,6 +751,37 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "openclaw-user")
+
+    def test_session_sync_user_forwarding_does_not_fallback_without_required_direct_identity(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value=""), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync") as mocked_send:
+            missing_sender_result = m.forward_session_sync_to_direct(
+                "app-id",
+                node_info,
+                "sender-user",
+                "",
+                "",
+                "user",
+                "question text",
+                "agent:main:clawchat:direct:sender-user",
+            )
+            missing_chatbot_result = m.forward_session_sync_to_direct(
+                "app-id",
+                node_info,
+                "sender-user",
+                "sender-user",
+                "",
+                "user",
+                "question text",
+                "agent:main:clawchat-router:direct:sender-user",
+            )
+
+        self.assertEqual(missing_sender_result, 0)
+        self.assertEqual(missing_chatbot_result, 0)
+        mocked_send.assert_not_called()
 
     def test_session_sync_assistant_forwarding_keeps_openclaw_sender_without_chatbot(self):
         m = lanying_openclaw

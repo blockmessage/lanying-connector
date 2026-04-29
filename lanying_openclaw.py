@@ -633,7 +633,7 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
     if isinstance(identity, dict) and identity.get('chat_type') == 'direct':
         resolved_user_id = str(identity.get('target_id', '')).strip()
         logging.info(
-            f"resolve_inherited_identity resolved from direct identity fallback | "
+            f"resolve_inherited_identity resolved from direct identity | "
             f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
             f"root_session_key:{root_session_key}, sender_user_id:{resolved_user_id}"
         )
@@ -644,8 +644,21 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
             'openclaw_user_id': openclaw_user_id,
             'chatbot_user_id': chatbot_user_id,
         }
+    if is_router_root_session(identity):
+        logging.info(
+            f"resolve_inherited_identity missing router sender user | "
+            f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+            f"root_session_key:{root_session_key}"
+        )
+        return {
+            'sender_user_id': '',
+            'source': 'missing',
+            'management_user_id': str(management_user_id).strip(),
+            'openclaw_user_id': openclaw_user_id,
+            'chatbot_user_id': chatbot_user_id,
+        }
     logging.info(
-        f"resolve_inherited_identity fallback to management user | "
+        f"resolve_inherited_identity resolved generic session as management user | "
         f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
         f"root_session_key:{root_session_key}, management_user_id:{str(management_user_id).strip()}"
     )
@@ -1532,9 +1545,9 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
         from_user_id = chatbot_user_id
     elif role == 'user':
         if root_clawchat_session is None or openclaw_group_root_session:
-            from_user_id = management_user_id or sender_user_id
+            from_user_id = management_user_id
         else:
-            from_user_id = sender_user_id or management_user_id
+            from_user_id = sender_user_id
     else:
         from_user_id = node_user_id
     if from_user_id == '':
@@ -1579,23 +1592,22 @@ def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_use
         route_identity.get('channel') == 'clawchat-router' and
         route_identity.get('chat_type') == 'direct'
     )
-    use_chatbot_direct = is_router_direct_session or (
-        normalized_route_session_key == '' and normalized_chatbot_user_id != ''
-    )
-    if role == 'user' and use_chatbot_direct and normalized_chatbot_user_id == '':
+    if role == 'user' and is_router_direct_session and normalized_chatbot_user_id == '':
         normalized_chatbot_user_id = resolve_bound_chatbot_user_id(app_id, str(node_info.get('node_id', '')).strip())
     if node_user_id == '' or normalized_target_user_id == '':
         return 0
     if role == 'user':
-        from_user_id = normalized_sender_user_id or normalized_target_user_id
-        to_user_id = normalized_chatbot_user_id if use_chatbot_direct and normalized_chatbot_user_id != '' else node_user_id
+        from_user_id = normalized_sender_user_id
+        to_user_id = normalized_chatbot_user_id if is_router_direct_session else node_user_id
     else:
-        if use_chatbot_direct:
-            from_user_id = normalized_chatbot_user_id or node_user_id
+        if is_router_direct_session:
+            if normalized_chatbot_user_id == '':
+                normalized_chatbot_user_id = resolve_bound_chatbot_user_id(app_id, str(node_info.get('node_id', '')).strip())
+            from_user_id = normalized_chatbot_user_id
         else:
             from_user_id = node_user_id
         to_user_id = normalized_target_user_id
-    if from_user_id == '':
+    if from_user_id == '' or to_user_id == '':
         return 0
     admin_token = lanying_config.get_lanying_admin_token(app_id)
     config = {
