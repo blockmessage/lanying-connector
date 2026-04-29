@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 import types
 import unittest
@@ -200,6 +201,19 @@ def _install_fake_openai_service_local_modules_if_needed():
         if name not in sys.modules:
             sys.modules[name] = types.ModuleType(name)
 
+    def safe_json_loads(value, default=None):
+        if value is None or value == '':
+            return default
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+
+    sys.modules['lanying_utils'].safe_json_loads = safe_json_loads
+    sys.modules['lanying_utils'].is_valid_public_url = lambda *args, **kwargs: False
+
     sys.modules['lanying_openai_compat'].get_tools_as_functions = lambda preset: []
 
     if 'lanying_tasks' not in sys.modules:
@@ -284,6 +298,87 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertFalse(m.is_ai_generate_disabled_msg({
             'ext': '{"openclaw":{"type":"session_sync_delivery","role":"user"}}'
         }))
+
+    def test_openclaw_delivery_no_reentry_msg_is_detected_from_openclaw_ext(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        self.assertTrue(m.is_openclaw_delivery_no_reentry_msg({
+            'ext': '{"openclaw":{"type":"session_sync_delivery","session":"agent:main"}}'
+        }))
+        self.assertTrue(m.is_openclaw_delivery_no_reentry_msg({
+            'ext': '{"openclaw":{"type":"im_reply_delivery","source":"im_reply"}}'
+        }))
+        self.assertFalse(m.is_openclaw_delivery_no_reentry_msg({
+            'ext': '{"openclaw":{"type":"session_message_sync","session":"agent:main"}}'
+        }))
+
+    def test_maybe_sync_to_openclaw_skips_delivery_no_reentry_messages(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        base_msg = {
+            'msgId': 'mid-no-reentry',
+            'appId': 1,
+            'from': {'uid': 'openclaw-user'},
+            'to': {'uid': 'openclaw-user'},
+            'ext': '{"openclaw":{"type":"session_sync_delivery","session":"agent:main"}}',
+        }
+        executor = mock.Mock()
+        with mock.patch.object(m, 'executor', executor):
+            m.maybe_sync_to_openclaw(base_msg)
+        executor.submit.assert_not_called()
+
+        command_msg = dict(base_msg)
+        command_msg['ext'] = '{"openclaw":{"type":"session_message_sync","session":"agent:main"}}'
+        executor = mock.Mock()
+        with (
+            mock.patch.object(m, 'executor', executor),
+            mock.patch.object(m.lanying_openclaw, 'handle_chat_message', create=True),
+        ):
+            m.maybe_sync_to_openclaw(command_msg)
+        executor.submit.assert_called_once()
+
+    def test_handle_chat_message_skips_router_context_for_delivery_no_reentry_command_text(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'openclaw_node_info': {'node_id': 'node-1'},
+        }
+        msg = {
+            'msgId': 'mid-command-looking-delivery',
+            'appId': 1,
+            'type': 'GROUPCHAT',
+            'content': '/subagents spawn main hi',
+            'from': {'uid': 'user-1'},
+            'to': {'uid': 'group-1'},
+            'ext': '{"openclaw":{"type":"session_sync_delivery","session":"agent:main"},"ai":{"ai_generate":false}}',
+        }
+        with (
+            mock.patch.object(m, 'maybe_sync_to_openclaw') as maybe_sync,
+            mock.patch.object(m, 'init_chatbot_config'),
+            mock.patch.object(m, 'maybe_reply_message_read_ack'),
+            mock.patch.object(m, 'maybe_transcription_audio_msg'),
+            mock.patch.object(m, 'maybe_save_image_msg'),
+            mock.patch.object(m, 'maybe_add_history'),
+            mock.patch.object(m, 'list_group_openclaw_router_context_targets') as list_targets,
+            mock.patch.object(m.lanying_openclaw, 'redirect_to_openclaw', create=True) as redirect,
+            mock.patch.object(m, 'handle_chat_message_try') as handle_try,
+        ):
+            result = m.handle_chat_message(config, msg)
+
+        self.assertEqual(result, '')
+        maybe_sync.assert_called_once_with(msg)
+        list_targets.assert_not_called()
+        redirect.assert_not_called()
+        handle_try.assert_not_called()
 
     def test_build_openclaw_reply_ext_contains_sync_context(self):
         try:

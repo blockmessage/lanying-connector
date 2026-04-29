@@ -974,12 +974,30 @@ def is_system_msg(msg):
         pass
     return False
 
+def get_message_ext(msg):
+    raw_ext = msg.get('ext', '') if isinstance(msg, dict) else ''
+    ext = lanying_utils.safe_json_loads(raw_ext, {})
+    if isinstance(ext, dict):
+        return ext
+    if isinstance(raw_ext, dict):
+        return raw_ext
+    try:
+        parsed = json.loads(raw_ext)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {}
+
 def maybe_sync_to_openclaw(msg):
     try:
+        if is_openclaw_delivery_no_reentry_msg(msg):
+            logging.info(f"skip sync to OpenClaw for delivery no-reentry message | msgId: {msg.get('msgId', '')}")
+            return
         from_user_id = msg['from']['uid']
         to_user_id = msg['to']['uid']
         if from_user_id == to_user_id:
-            ext = lanying_utils.safe_json_loads(msg['ext'], {})
+            ext = get_message_ext(msg)
             if isinstance(ext, dict) and 'openclaw' in ext:
                 executor.submit(lanying_openclaw.handle_chat_message, msg)
     except Exception:
@@ -987,11 +1005,9 @@ def maybe_sync_to_openclaw(msg):
 
 def get_message_ai_ext(msg):
     try:
-        ext = lanying_utils.safe_json_loads(msg.get('ext', ''), {})
-        if not isinstance(ext, dict):
-            return {}
+        ext = get_message_ext(msg)
         ai_ext = ext.get('ai', {})
-        if isinstance(ai_ext, dict):
+        if isinstance(ai_ext, dict) and len(ai_ext) > 0:
             return ai_ext
         lanying_connector_ext = ext.get('lanying_connector', {})
         if isinstance(lanying_connector_ext, dict):
@@ -1002,15 +1018,18 @@ def get_message_ai_ext(msg):
 
 def get_message_openclaw_ext(msg):
     try:
-        ext = lanying_utils.safe_json_loads(msg.get('ext', ''), {})
-        if not isinstance(ext, dict):
-            return {}
+        ext = get_message_ext(msg)
         openclaw_ext = ext.get('openclaw', {})
         if isinstance(openclaw_ext, dict):
             return openclaw_ext
     except Exception:
         pass
     return {}
+
+def is_openclaw_delivery_no_reentry_msg(msg):
+    openclaw_in = get_message_openclaw_ext(msg)
+    openclaw_type = str(openclaw_in.get('type', '')).strip()
+    return openclaw_type in ['session_sync_delivery', 'im_reply_delivery']
 
 def build_openclaw_reply_ext(msg):
     openclaw_in = get_message_openclaw_ext(msg)
@@ -1056,11 +1075,15 @@ def handle_chat_message(config, msg):
         logging.info(f"skip process for system message | msgId: {msg_id}")
         return ''
     try:
+        no_reentry = is_openclaw_delivery_no_reentry_msg(msg)
         init_chatbot_config(config, msg)
         maybe_reply_message_read_ack(config, msg)
         maybe_transcription_audio_msg(config, msg)
         maybe_save_image_msg(config, msg)
         maybe_add_history(config, msg)
+        if no_reentry:
+            logging.info(f"skip AI/OpenClaw processing for delivery no-reentry message | msgId: {msg.get('msgId', '')}, msg_type:{msg_type}")
+            return ''
         if msg_type == 'GROUPCHAT' and is_ai_generate_disabled_msg(msg):
             skip_group_router_context_fanout = True
             if 'openclaw_node_info' in config:
