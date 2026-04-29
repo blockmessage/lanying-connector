@@ -66,7 +66,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         with mock.patch.object(m, "get_node_chatbot_id", return_value="chatbot-id"), \
              mock.patch.object(m.lanying_chatbot, "get_chatbot", return_value={"user_id": "chatbot-user"}):
-            inherited = m.resolve_inherited_sender_user_id(
+            inherited = m.resolve_inherited_origin_identity(
                 "app-id",
                 node_info,
                 lineage,
@@ -93,12 +93,15 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 inherited,
             )
 
-        self.assertEqual(inherited["sender_user_id"], "sender-user")
+        self.assertEqual(inherited["origin_kind"], "im_user")
+        self.assertEqual(inherited["origin_user_id"], "sender-user")
         self.assertEqual(inherited["chatbot_user_id"], "chatbot-user")
         self.assertEqual(decision["owner_user_id"], "chatbot-user")
-        self.assertEqual(decision["sender_user_id"], "sender-user")
+        self.assertEqual(decision["origin_kind"], "im_user")
+        self.assertEqual(decision["origin_user_id"], "sender-user")
         self.assertEqual(decision["chatbot_user_id"], "chatbot-user")
-        self.assertEqual(payload["sender_user_id"], "sender-user")
+        self.assertEqual(payload["origin_kind"], "im_user")
+        self.assertEqual(payload["origin_user_id"], "sender-user")
         self.assertEqual(payload["chatbot_user_id"], "chatbot-user")
 
     def test_direct_root_child_mapping_owner_prefers_openclaw_user(self):
@@ -108,7 +111,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "root_session_key": "agent:main:clawchat:direct:sender-user",
         }
         inherited = {
-            "sender_user_id": "sender-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
             "chatbot_user_id": "",
         }
 
@@ -131,7 +135,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "root_session_key": "agent:main:clawchat:group:group-1",
         }
         inherited = {
-            "sender_user_id": "sender-user",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "sender-user",
             "chatbot_user_id": "",
         }
 
@@ -154,7 +159,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "root_session_key": "agent:main:clawchat:group:group-1",
         }
         inherited = {
-            "sender_user_id": "sender-user",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
             "chatbot_user_id": "",
         }
 
@@ -181,7 +187,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         with mock.patch.object(m, "get_node_chatbot_id", return_value="chatbot-id"), \
              mock.patch.object(m.lanying_chatbot, "get_chatbot", return_value={"user_id": "chatbot-user"}), \
              mock.patch.object(m, "get_session_mapping_by_session", return_value=None):
-            inherited = m.resolve_inherited_sender_user_id(
+            inherited = m.resolve_inherited_origin_identity(
                 "app-id",
                 node_info,
                 lineage,
@@ -189,7 +195,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "",
             )
 
-        self.assertEqual(inherited["sender_user_id"], "")
+        self.assertEqual(inherited["origin_kind"], "")
+        self.assertEqual(inherited["origin_user_id"], "")
         self.assertEqual(inherited["source"], "missing")
         self.assertEqual(inherited["management_user_id"], "management-user")
         self.assertEqual(inherited["chatbot_user_id"], "chatbot-user")
@@ -201,7 +208,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "root_session_key": "agent:main:clawchat:group:group-1",
         }
         inherited = {
-            "sender_user_id": "sender-user",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
             "chatbot_user_id": "",
         }
 
@@ -224,7 +232,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "root_session_key": "agent:main:session-root",
         }
         inherited = {
-            "sender_user_id": "sender-user",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
             "chatbot_user_id": "",
         }
 
@@ -247,7 +256,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "root_session_key": "agent:main:session-root",
         }
         inherited = {
-            "sender_user_id": "sender-user",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
             "chatbot_user_id": "",
         }
 
@@ -270,7 +280,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "root_session_key": "agent:main:clawchat:direct:sender-user",
         }
         inherited = {
-            "sender_user_id": "sender-user",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
             "chatbot_user_id": "",
         }
 
@@ -302,7 +313,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "openclaw-user",
                 "management-user",
                 {
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "chatbot-user",
                 },
                 {
@@ -336,7 +348,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "openclaw-user",
                 "management-user",
                 {
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "direct_user",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "",
                 },
                 {
@@ -370,7 +383,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "openclaw-user",
                 "management-user",
                 {
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "openclaw_control",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "",
                 },
                 {
@@ -404,7 +418,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "openclaw-user",
                 "management-user",
                 {
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "openclaw_control",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "",
                 },
                 None,
@@ -432,7 +447,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-1",
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "chatbot-user",
                     "management_user_id": "management-user",
                     "root_session_key": "agent:main:clawchat-router:direct:sender-user",
@@ -474,7 +490,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-1",
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "direct_user",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "",
                     "management_user_id": "management-user",
                     "root_session_key": "agent:main:clawchat:direct:sender-user",
@@ -500,7 +517,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-9",
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "openclaw_control",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "",
                     "management_user_id": "management-user",
                     "root_session_key": "agent:main:main",
@@ -526,7 +544,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-9",
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "openclaw_control",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "chatbot-user",
                     "management_user_id": "management-user",
                     "root_session_key": "agent:main:clawchat:group:group-9",
@@ -552,7 +571,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-9",
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "chatbot-user",
                     "management_user_id": "management-user",
                     "root_session_key": "agent:main:clawchat-router:group:group-9",
@@ -577,7 +597,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-9",
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "openclaw_control",
+                    "origin_user_id": "sender-user",
                     "management_user_id": "",
                     "root_session_key": "agent:main:clawchat:group:group-9",
                 },
@@ -590,7 +611,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-9",
-                    "sender_user_id": "",
+                    "origin_kind": "",
+                    "origin_user_id": "",
                     "management_user_id": "management-user",
                     "root_session_key": "agent:main:clawchat-router:group:group-9",
                 },
@@ -607,7 +629,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
         m = lanying_openclaw
         existing = {
             "session_key": "agent:main:subagent:test-child",
-            "sender_user_id": "management-user",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "",
             "root_session_key": "agent:main:clawchat-router:group:group-9",
         }
         lineage = {
@@ -620,7 +643,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             lineage,
             "agent:main:subagent:test-child",
             {
-                "sender_user_id": "sender-user",
+                "origin_kind": "im_user",
+                "origin_user_id": "sender-user",
                 "source": "explicit",
             },
         )
@@ -629,13 +653,16 @@ class RouterSessionIdentityTests(unittest.TestCase):
             lineage,
             "agent:main:subagent:test-child",
             {
-                "sender_user_id": "management-user",
+                "origin_kind": "openclaw_control",
+                "origin_user_id": "",
                 "source": "management",
             },
         )
 
-        self.assertEqual(repaired["sender_user_id"], "sender-user")
-        self.assertEqual(preserved["sender_user_id"], "sender-user")
+        self.assertEqual(repaired["origin_kind"], "im_user")
+        self.assertEqual(repaired["origin_user_id"], "sender-user")
+        self.assertEqual(preserved["origin_kind"], "im_user")
+        self.assertEqual(preserved["origin_user_id"], "sender-user")
 
     def test_clawchat_direct_user_forwarding_keeps_sender_user_in_group(self):
         m = lanying_openclaw
@@ -650,7 +677,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {
                     "session_key": "agent:main:subagent:test-child",
                     "group_id": "group-9",
-                    "sender_user_id": "sender-user",
+                    "origin_kind": "direct_user",
+                    "origin_user_id": "sender-user",
                     "chatbot_user_id": "chatbot-user",
                     "management_user_id": "management-user",
                     "root_session_key": "agent:main:clawchat:direct:sender-user",
@@ -853,7 +881,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(delivery_ext["openclaw"]["message_id"], "msg-2")
         self.assertEqual(delivery_ext["ai"]["ai_generate"], False)
 
-    def test_router_mapping_signal_carries_sender_and_chatbot_user_id(self):
+    def test_router_mapping_signal_carries_origin_and_chatbot_user_id(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "user_id": "openclaw-user"}
 
@@ -867,7 +895,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                         "session_key": "agent:main:subagent:test-child",
                         "group_id": "group-1",
                         "openclaw_user_id": "openclaw-user",
-                        "sender_user_id": "sender-user",
+                        "origin_kind": "im_user",
+                        "origin_user_id": "sender-user",
                         "chatbot_user_id": "chatbot-user",
                     }
                 ],
@@ -876,7 +905,11 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(result["result"], "ok")
         ext = mocked_send.call_args.args[7]["ext"]
         self.assertEqual(
-            ext["openclaw"]["mappings"][0]["sender_user_id"],
+            ext["openclaw"]["mappings"][0]["origin_kind"],
+            "im_user",
+        )
+        self.assertEqual(
+            ext["openclaw"]["mappings"][0]["origin_user_id"],
             "sender-user",
         )
         self.assertEqual(
@@ -990,7 +1023,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
              mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
                  "kind": "direct",
                  "target_user_id": "sender-user",
-                 "sender_user_id": "sender-user",
+                 "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
                  "chatbot_user_id": "chatbot-user",
              }), \
              mock.patch.object(m, "forward_session_sync_router_direct_reply", return_value=1) as mocked_router_reply, \
@@ -1036,7 +1070,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
              mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
                  "kind": "direct",
                  "target_user_id": "sender-user",
-                 "sender_user_id": "sender-user",
+                 "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
                  "chatbot_user_id": "chatbot-user",
              }), \
              mock.patch.object(m, "forward_session_sync_router_group_reply", return_value=1) as mocked_group_reply, \

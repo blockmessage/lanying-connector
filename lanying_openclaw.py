@@ -561,10 +561,38 @@ def resolve_bound_chatbot_user_id(app_id, node_id):
         return ''
     return str(chatbot_info.get('user_id', '')).strip()
 
-def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user_id, explicit_sender_user_id=''):
+def infer_origin_identity_from_mapping(mapping):
+    if not isinstance(mapping, dict):
+        return {
+            'origin_kind': '',
+            'origin_user_id': '',
+        }
+    origin_kind = str(mapping.get('origin_kind', '')).strip()
+    origin_user_id = str(mapping.get('origin_user_id', '')).strip()
+    if origin_kind != '' or origin_user_id != '':
+        return {
+            'origin_kind': origin_kind,
+            'origin_user_id': origin_user_id,
+        }
+    return {
+        'origin_kind': '',
+        'origin_user_id': '',
+    }
+
+def normalize_session_mapping_record(mapping):
+    if not isinstance(mapping, dict):
+        return mapping
+    normalized = dict(mapping)
+    origin_identity = infer_origin_identity_from_mapping(normalized)
+    normalized['origin_kind'] = origin_identity.get('origin_kind', '')
+    normalized['origin_user_id'] = origin_identity.get('origin_user_id', '')
+    normalized.pop('sender_user_id', None)
+    return normalized
+
+def resolve_inherited_origin_identity(app_id, node_info, lineage, management_user_id, observed_origin_user_id=''):
     node_id = node_info['node_id']
     openclaw_user_id = str(node_info.get('user_id', '')).strip()
-    explicit_sender_user_id = str(explicit_sender_user_id).strip()
+    observed_origin_user_id = str(observed_origin_user_id).strip()
     parent_session_key = normalize_optional_session_key(lineage.get('parent_session_key', ''))
     root_session_key = normalize_optional_session_key(lineage.get('root_session_key', ''))
     root_clawchat_session = parse_clawchat_session_identity(root_session_key or parent_session_key)
@@ -577,53 +605,65 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
             f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
             f"root_session_key:{root_session_key}, chatbot_user_id:{chatbot_user_id}"
         )
-    if explicit_sender_user_id != '':
+    if observed_origin_user_id != '':
+        origin_kind = ''
+        if router_root_session:
+            origin_kind = 'im_user'
+        elif isinstance(root_clawchat_session, dict) and root_clawchat_session.get('chat_type') == 'direct':
+            origin_kind = 'direct_user'
         logging.info(
-            f"resolve_inherited_identity resolved from explicit sender user | "
+            f"resolve_inherited_identity resolved from observed origin user | "
             f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
-            f"root_session_key:{root_session_key}, sender_user_id:{explicit_sender_user_id}"
+            f"root_session_key:{root_session_key}, origin_kind:{origin_kind}, "
+            f"origin_user_id:{observed_origin_user_id}"
         )
         return {
-            'sender_user_id': explicit_sender_user_id,
+            'origin_kind': origin_kind,
+            'origin_user_id': observed_origin_user_id,
             'source': 'explicit',
             'management_user_id': str(management_user_id).strip(),
             'openclaw_user_id': openclaw_user_id,
             'chatbot_user_id': chatbot_user_id,
         }
     if parent_session_key != '':
-        parent_mapping = get_session_mapping_by_session(app_id, node_id, parent_session_key)
+        parent_mapping = normalize_session_mapping_record(
+            get_session_mapping_by_session(app_id, node_id, parent_session_key)
+        )
         if isinstance(parent_mapping, dict):
-            sender_user_id = str(parent_mapping.get('sender_user_id', '')).strip()
-            if sender_user_id != '':
+            parent_origin_kind = str(parent_mapping.get('origin_kind', '')).strip()
+            parent_origin_user_id = str(parent_mapping.get('origin_user_id', '')).strip()
+            if parent_origin_kind != '' or parent_origin_user_id != '':
                 logging.info(
                     f"resolve_inherited_identity resolved from parent mapping | "
                     f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
-                    f"root_session_key:{root_session_key}, sender_user_id:{sender_user_id}"
+                    f"root_session_key:{root_session_key}, origin_kind:{parent_origin_kind}, "
+                    f"origin_user_id:{parent_origin_user_id}"
                 )
                 return {
-                    'sender_user_id': sender_user_id,
+                    'origin_kind': parent_origin_kind,
+                    'origin_user_id': parent_origin_user_id,
                     'source': 'parent',
                     'management_user_id': str(management_user_id).strip(),
                     'openclaw_user_id': openclaw_user_id,
                     'chatbot_user_id': chatbot_user_id or str(parent_mapping.get('chatbot_user_id', '')).strip(),
                 }
-            logging.info(
-                f"resolve_inherited_identity continue because parent mapping sender is empty | "
-                f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
-                f"root_session_key:{root_session_key}"
-            )
     if root_session_key != '':
-        root_mapping = get_session_mapping_by_session(app_id, node_id, root_session_key)
+        root_mapping = normalize_session_mapping_record(
+            get_session_mapping_by_session(app_id, node_id, root_session_key)
+        )
         if isinstance(root_mapping, dict):
-            sender_user_id = str(root_mapping.get('sender_user_id', '')).strip()
-            if sender_user_id != '':
+            root_origin_kind = str(root_mapping.get('origin_kind', '')).strip()
+            root_origin_user_id = str(root_mapping.get('origin_user_id', '')).strip()
+            if root_origin_kind != '' or root_origin_user_id != '':
                 logging.info(
                     f"resolve_inherited_identity resolved from root mapping | "
                     f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
-                    f"root_session_key:{root_session_key}, sender_user_id:{sender_user_id}"
+                    f"root_session_key:{root_session_key}, origin_kind:{root_origin_kind}, "
+                    f"origin_user_id:{root_origin_user_id}"
                 )
                 return {
-                    'sender_user_id': sender_user_id,
+                    'origin_kind': root_origin_kind,
+                    'origin_user_id': root_origin_user_id,
                     'source': 'root',
                     'management_user_id': str(management_user_id).strip(),
                     'openclaw_user_id': openclaw_user_id,
@@ -635,10 +675,11 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
         logging.info(
             f"resolve_inherited_identity resolved from direct identity | "
             f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
-            f"root_session_key:{root_session_key}, sender_user_id:{resolved_user_id}"
+            f"root_session_key:{root_session_key}, origin_user_id:{resolved_user_id}"
         )
         return {
-            'sender_user_id': resolved_user_id,
+            'origin_kind': 'direct_user',
+            'origin_user_id': resolved_user_id,
             'source': 'direct',
             'management_user_id': str(management_user_id).strip(),
             'openclaw_user_id': openclaw_user_id,
@@ -651,7 +692,8 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
             f"root_session_key:{root_session_key}"
         )
         return {
-            'sender_user_id': '',
+            'origin_kind': '',
+            'origin_user_id': '',
             'source': 'missing',
             'management_user_id': str(management_user_id).strip(),
             'openclaw_user_id': openclaw_user_id,
@@ -663,7 +705,8 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
         f"root_session_key:{root_session_key}, management_user_id:{str(management_user_id).strip()}"
     )
     return {
-        'sender_user_id': str(management_user_id).strip(),
+        'origin_kind': 'openclaw_control',
+        'origin_user_id': '',
         'source': 'management',
         'management_user_id': str(management_user_id).strip(),
         'openclaw_user_id': openclaw_user_id,
@@ -671,6 +714,7 @@ def resolve_inherited_sender_user_id(app_id, node_info, lineage, management_user
     }
 
 def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, inherited_identity, management_user_id, openclaw_user_id):
+    inherited_identity = normalize_session_mapping_record(inherited_identity)
     normalized_session_key = normalize_session_key(session_key)
     effective_target_session_key = resolve_effective_target_session_key(
         normalized_session_key,
@@ -679,10 +723,9 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
     )
     clawchat_session = parse_clawchat_session_identity(normalized_session_key)
     root_clawchat_session = parse_clawchat_session_identity(lineage.get('root_session_key', ''))
-    sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip()
+    origin_kind = str((inherited_identity or {}).get('origin_kind', '')).strip()
+    origin_user_id = str((inherited_identity or {}).get('origin_user_id', '')).strip()
     chatbot_user_id = str((inherited_identity or {}).get('chatbot_user_id', '')).strip()
-    router_root_session = is_router_root_session(root_clawchat_session)
-    resolved_sender_user_id = sender_user_id or ('' if router_root_session else str(management_user_id).strip())
     should_merge_to_metadata_only = (
         merge_sub_sessions and
         normalize_optional_session_key(lineage.get('root_session_key', '')) != normalized_session_key and
@@ -697,7 +740,8 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
             'effective_target_session_key': effective_target_session_key,
             'clawchat_session': clawchat_session,
             'root_clawchat_session': root_clawchat_session,
-            'sender_user_id': resolved_sender_user_id,
+            'origin_kind': origin_kind,
+            'origin_user_id': origin_user_id,
             'chatbot_user_id': chatbot_user_id,
         }
     if clawchat_session is not None and clawchat_session.get('chat_type') == 'direct':
@@ -708,7 +752,8 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
             'effective_target_session_key': effective_target_session_key,
             'clawchat_session': clawchat_session,
             'root_clawchat_session': root_clawchat_session,
-            'sender_user_id': resolved_sender_user_id,
+            'origin_kind': origin_kind,
+            'origin_user_id': origin_user_id,
             'chatbot_user_id': chatbot_user_id,
         }
     if clawchat_session is not None:
@@ -719,7 +764,8 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
             'effective_target_session_key': effective_target_session_key,
             'clawchat_session': clawchat_session,
             'root_clawchat_session': root_clawchat_session,
-            'sender_user_id': resolved_sender_user_id,
+            'origin_kind': origin_kind,
+            'origin_user_id': origin_user_id,
             'chatbot_user_id': chatbot_user_id,
         }
     return {
@@ -728,14 +774,14 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
         'owner_user_id': resolve_session_group_owner_user_id(
             management_user_id,
             openclaw_user_id,
-            sender_user_id,
             chatbot_user_id,
             root_clawchat_session,
         ),
         'effective_target_session_key': effective_target_session_key,
         'clawchat_session': clawchat_session,
         'root_clawchat_session': root_clawchat_session,
-        'sender_user_id': resolved_sender_user_id,
+        'origin_kind': origin_kind,
+        'origin_user_id': origin_user_id,
         'chatbot_user_id': chatbot_user_id,
     }
 
@@ -789,28 +835,38 @@ def maybe_materialize_existing_clawchat_group_mapping(app_id, mapping, managemen
     }
 
 def merge_existing_session_mapping(existing, lineage, effective_target_session_key, inherited_identity):
+    inherited_identity = normalize_session_mapping_record(inherited_identity)
     merged_existing = dict(existing)
     merged_existing['parent_session_key'] = normalize_optional_session_key(lineage.get('parent_session_key', ''))
     merged_existing['root_session_key'] = normalize_optional_session_key(lineage.get('root_session_key', ''))
     merged_existing['effective_target_session_key'] = normalize_optional_session_key(effective_target_session_key)
-    sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip()
-    if sender_user_id != '':
-        existing_sender_user_id = str(existing.get('sender_user_id', '')).strip()
+    origin_kind = str((inherited_identity or {}).get('origin_kind', '')).strip()
+    origin_user_id = str((inherited_identity or {}).get('origin_user_id', '')).strip()
+    if origin_kind != '' or origin_user_id != '':
+        existing_normalized = normalize_session_mapping_record(existing)
+        existing_origin_kind = str(existing_normalized.get('origin_kind', '')).strip()
+        existing_origin_user_id = str(existing_normalized.get('origin_user_id', '')).strip()
         inherited_source = str((inherited_identity or {}).get('source', '')).strip()
-        if existing_sender_user_id == '' or inherited_source == 'explicit':
-            merged_existing['sender_user_id'] = sender_user_id
+        if (
+            existing_origin_kind == '' or
+            inherited_source == 'explicit' or
+            (
+                origin_kind in ['im_user', 'direct_user'] and
+                (existing_origin_kind != origin_kind or existing_origin_user_id != origin_user_id)
+            )
+        ):
+            merged_existing['origin_kind'] = origin_kind
+            merged_existing['origin_user_id'] = origin_user_id
+    merged_existing.pop('sender_user_id', None)
     chatbot_user_id = str((inherited_identity or {}).get('chatbot_user_id', '')).strip()
     if chatbot_user_id != '':
         merged_existing['chatbot_user_id'] = chatbot_user_id
     return merged_existing
 
 def build_session_mapping_payload(app_id, node_id, openclaw_user_id, management_user_id, session_key, group_id, lineage, effective_target_session_key, inherited_identity):
-    root_clawchat_session = parse_clawchat_session_identity(lineage.get('root_session_key', ''))
-    router_root_session = is_router_root_session(root_clawchat_session)
-    sender_user_id = (
-        str((inherited_identity or {}).get('sender_user_id', '')).strip() or
-        ('' if router_root_session else str(management_user_id).strip())
-    )
+    inherited_identity = normalize_session_mapping_record(inherited_identity)
+    origin_kind = str((inherited_identity or {}).get('origin_kind', '')).strip()
+    origin_user_id = str((inherited_identity or {}).get('origin_user_id', '')).strip()
     chatbot_user_id = str((inherited_identity or {}).get('chatbot_user_id', '')).strip()
     return {
         'session_key': normalize_session_key(session_key),
@@ -819,7 +875,8 @@ def build_session_mapping_payload(app_id, node_id, openclaw_user_id, management_
         'node_id': str(node_id),
         'openclaw_user_id': str(openclaw_user_id).strip(),
         'management_user_id': str(management_user_id).strip(),
-        'sender_user_id': sender_user_id,
+        'origin_kind': origin_kind,
+        'origin_user_id': origin_user_id,
         'chatbot_user_id': chatbot_user_id,
         'parent_session_key': normalize_optional_session_key(lineage.get('parent_session_key', '')),
         'root_session_key': normalize_optional_session_key(lineage.get('root_session_key', '')),
@@ -828,7 +885,8 @@ def build_session_mapping_payload(app_id, node_id, openclaw_user_id, management_
     }
 
 def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, management_user_id, inherited_identity, root_clawchat_session):
-    inherited_sender_user_id = str((inherited_identity or {}).get('sender_user_id', '')).strip()
+    inherited_identity = normalize_session_mapping_record(inherited_identity)
+    inherited_origin_user_id = str((inherited_identity or {}).get('origin_user_id', '')).strip()
     chatbot_user_id = str((inherited_identity or {}).get('chatbot_user_id', '')).strip()
     normalized_openclaw_user_id = str(openclaw_user_id).strip()
     if is_router_root_session(root_clawchat_session):
@@ -837,8 +895,8 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
                 'result': 'error',
                 'message': 'router chatbot user not ready'
             }
-        if inherited_sender_user_id != '' and inherited_sender_user_id != chatbot_user_id:
-            if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
+        if inherited_origin_user_id != '' and inherited_origin_user_id != chatbot_user_id:
+            if not ensure_user_joined_group(app_id, inherited_origin_user_id, group_id):
                 return {
                     'result': 'error',
                     'message': 'add inherited router user to session group failed'
@@ -854,16 +912,16 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
     direct_root_with_external_sender = (
         root_clawchat_session is not None and
         root_clawchat_session.get('chat_type') == 'direct' and
-        inherited_sender_user_id != '' and
-        inherited_sender_user_id != normalized_openclaw_user_id
+        inherited_origin_user_id != '' and
+        inherited_origin_user_id != normalized_openclaw_user_id
     )
     if direct_root_with_external_sender:
-        if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
+        if not ensure_user_joined_group(app_id, inherited_origin_user_id, group_id):
             return {
                 'result': 'error',
                 'message': 'add inherited direct user to session group failed'
             }
-        if normalized_openclaw_user_id != '' and normalized_openclaw_user_id != inherited_sender_user_id:
+        if normalized_openclaw_user_id != '' and normalized_openclaw_user_id != inherited_origin_user_id:
             if not ensure_user_joined_group(app_id, normalized_openclaw_user_id, group_id):
                 return {
                     'result': 'error',
@@ -875,11 +933,11 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
     group_root_with_external_sender = (
         root_clawchat_session is not None and
         root_clawchat_session.get('chat_type') == 'group' and
-        inherited_sender_user_id != '' and
-        inherited_sender_user_id != normalized_openclaw_user_id
+        inherited_origin_user_id != '' and
+        inherited_origin_user_id != normalized_openclaw_user_id
     )
     if group_root_with_external_sender:
-        if not ensure_user_joined_group(app_id, inherited_sender_user_id, group_id):
+        if not ensure_user_joined_group(app_id, inherited_origin_user_id, group_id):
             return {
                 'result': 'error',
                 'message': 'add inherited group user to session group failed'
@@ -920,7 +978,7 @@ def ensure_session_mapping_group_members(app_id, group_id, openclaw_user_id, man
         'result': 'ok'
     }
 
-def resolve_session_group_owner_user_id(management_user_id, openclaw_user_id, inherited_sender_user_id, chatbot_user_id, root_clawchat_session):
+def resolve_session_group_owner_user_id(management_user_id, openclaw_user_id, chatbot_user_id, root_clawchat_session):
     normalized_management_user_id = str(management_user_id).strip()
     normalized_openclaw_user_id = str(openclaw_user_id).strip()
     normalized_chatbot_user_id = str(chatbot_user_id).strip()
@@ -1083,7 +1141,7 @@ def get_session_mapping_by_session(app_id, node_id, session_key):
     if not raw:
         return None
     try:
-        return json.loads(raw)
+        return normalize_session_mapping_record(json.loads(raw))
     except Exception:
         logging.exception("get_session_mapping_by_session parse failed")
         return None
@@ -1095,7 +1153,7 @@ def get_session_mapping_by_group(app_id, node_id, openclaw_user_id, group_id):
     if not raw:
         return None
     try:
-        return json.loads(raw)
+        return normalize_session_mapping_record(json.loads(raw))
     except Exception:
         logging.exception("get_session_mapping_by_group parse failed")
         return None
@@ -1119,6 +1177,7 @@ def list_session_mappings_for_node(app_id, node_id):
     return mappings
 
 def set_session_mapping(app_id, node_id, mapping):
+    mapping = normalize_session_mapping_record(mapping)
     session_key = normalize_session_key(mapping.get('session_key', ''))
     group_id = str(mapping.get('group_id', '')).strip()
     openclaw_user_id = str(mapping.get('openclaw_user_id', '')).strip()
@@ -1181,16 +1240,18 @@ def send_session_mapping_signal(node_info, signal_type, mappings):
     for mapping in mappings:
         if not isinstance(mapping, dict):
             continue
+        normalized_mapping = normalize_session_mapping_record(mapping)
         compact_mapping = {
-            'session_key': normalize_session_key(mapping.get('session_key', '')),
-            'group_id': str(mapping.get('group_id', '')).strip(),
-            'openclaw_user_id': str(mapping.get('openclaw_user_id', '')).strip(),
-            'sender_user_id': str(mapping.get('sender_user_id', '')).strip(),
-            'chatbot_user_id': str(mapping.get('chatbot_user_id', '')).strip(),
-            'parent_session_key': normalize_optional_session_key(mapping.get('parent_session_key', '')),
-            'root_session_key': normalize_optional_session_key(mapping.get('root_session_key', '')),
-            'effective_target_session_key': normalize_optional_session_key(mapping.get('effective_target_session_key', '')),
-            'updated_at': int(mapping.get('updated_at', 0) or 0),
+            'session_key': normalize_session_key(normalized_mapping.get('session_key', '')),
+            'group_id': str(normalized_mapping.get('group_id', '')).strip(),
+            'openclaw_user_id': str(normalized_mapping.get('openclaw_user_id', '')).strip(),
+            'origin_kind': str(normalized_mapping.get('origin_kind', '')).strip(),
+            'origin_user_id': str(normalized_mapping.get('origin_user_id', '')).strip(),
+            'chatbot_user_id': str(normalized_mapping.get('chatbot_user_id', '')).strip(),
+            'parent_session_key': normalize_optional_session_key(normalized_mapping.get('parent_session_key', '')),
+            'root_session_key': normalize_optional_session_key(normalized_mapping.get('root_session_key', '')),
+            'effective_target_session_key': normalize_optional_session_key(normalized_mapping.get('effective_target_session_key', '')),
+            'updated_at': int(normalized_mapping.get('updated_at', 0) or 0),
         }
         if compact_mapping['session_key'] == '':
             continue
@@ -1234,7 +1295,7 @@ def sync_session_mapping_snapshot_to_node(node_info):
     )
     return send_session_mapping_signal(node_info, 'session_mapping_snapshot', mappings)
 
-def ensure_session_mapping(app_id, node_info, session_key, parent_session_key='', root_session_key='', sender_user_id='', should_materialize_clawchat_group=True):
+def ensure_session_mapping(app_id, node_info, session_key, parent_session_key='', root_session_key='', observed_origin_user_id='', should_materialize_clawchat_group=True):
     normalized_session_key = normalize_session_key(session_key)
     node_name = str(node_info.get('name', '')).strip()
     if normalized_session_key == '':
@@ -1263,14 +1324,15 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
     )
     merge_sub_sessions = is_merge_sub_sessions_enabled(node_info)
     prewarm_ancestor_session_mappings(app_id, node_info, lineage)
-    inherited_identity = resolve_inherited_sender_user_id(
+    inherited_identity = resolve_inherited_origin_identity(
         app_id,
         node_info,
         lineage,
         management_user_id,
-        sender_user_id,
+        observed_origin_user_id,
     )
-    inherited_sender_user_id = str(inherited_identity.get('sender_user_id', '')).strip()
+    inherited_origin_kind = str(inherited_identity.get('origin_kind', '')).strip()
+    inherited_origin_user_id = str(inherited_identity.get('origin_user_id', '')).strip()
     inherited_chatbot_user_id = str(inherited_identity.get('chatbot_user_id', '')).strip()
     effective_target_session_key = resolve_effective_target_session_key(
         normalized_session_key,
@@ -1289,7 +1351,8 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
         f"ensure_session_mapping inheritance context | app_id:{app_id}, node_id:{node_id}, "
         f"session_key:{normalized_session_key}, parent_session_key:{lineage['parent_session_key']}, "
         f"root_session_key:{lineage['root_session_key']}, merge_sub_sessions:{merge_sub_sessions}, "
-        f"inherited_sender_user_id:{inherited_sender_user_id}, inherited_source:{inherited_identity.get('source', '')}, "
+        f"inherited_origin_kind:{inherited_origin_kind}, inherited_origin_user_id:{inherited_origin_user_id}, "
+        f"inherited_source:{inherited_identity.get('source', '')}, "
         f"inherited_chatbot_user_id:{inherited_chatbot_user_id}, effective_target_session_key:{effective_target_session_key}, management_user_id:{management_user_id}, "
         f"openclaw_user_id:{openclaw_user_id}"
     )
@@ -1318,7 +1381,8 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
                 normalize_optional_session_key(existing.get('parent_session_key', '')) != merged_existing.get('parent_session_key', '') or
                 normalize_optional_session_key(existing.get('root_session_key', '')) != merged_existing.get('root_session_key', '') or
                 normalize_optional_session_key(existing.get('effective_target_session_key', '')) != merged_existing.get('effective_target_session_key', '') or
-                str(existing.get('sender_user_id', '')).strip() != str(merged_existing.get('sender_user_id', '')).strip() or
+                str(normalize_session_mapping_record(existing).get('origin_kind', '')).strip() != str(merged_existing.get('origin_kind', '')).strip() or
+                str(normalize_session_mapping_record(existing).get('origin_user_id', '')).strip() != str(merged_existing.get('origin_user_id', '')).strip() or
                 str(existing.get('chatbot_user_id', '')).strip() != str(merged_existing.get('chatbot_user_id', '')).strip()
             ):
                 update_result = set_session_mapping(app_id, node_id, merged_existing)
@@ -1419,7 +1483,7 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
         logging.info(
             f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "
             f"session_key:{normalized_session_key}, session_name:{get_openclaw_session_group_name(node_name, node_id, session_key)}, group_id:{group_id}, "
-            f"owner_user_id:{session_group_owner_user_id}, inherited_sender_user_id:{inherited_sender_user_id}, "
+            f"owner_user_id:{session_group_owner_user_id}, inherited_origin_user_id:{inherited_origin_user_id}, "
             f"strategy:create_management_node_group"
         )
     if group_id == '':
@@ -1528,7 +1592,9 @@ def build_router_reply_delivery_ext(message):
 def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delivery_ext=None):
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
         return 0
-    sender_user_id = str(mapping.get('sender_user_id', '')).strip()
+    normalized_mapping = normalize_session_mapping_record(mapping)
+    origin_kind = str(normalized_mapping.get('origin_kind', '')).strip()
+    origin_user_id = str(normalized_mapping.get('origin_user_id', '')).strip()
     chatbot_user_id = str(mapping.get('chatbot_user_id', '')).strip()
     management_user_id = str(mapping.get('management_user_id', '')).strip()
     node_user_id = str(node_info.get('user_id', '')).strip()
@@ -1546,8 +1612,10 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
     elif role == 'user':
         if root_clawchat_session is None or openclaw_group_root_session:
             from_user_id = management_user_id
+        elif isinstance(root_clawchat_session, dict) and root_clawchat_session.get('chat_type') == 'direct':
+            from_user_id = origin_user_id if origin_kind == 'direct_user' else ''
         else:
-            from_user_id = sender_user_id
+            from_user_id = origin_user_id if origin_kind == 'im_user' else ''
     else:
         from_user_id = node_user_id
     if from_user_id == '':
@@ -1578,12 +1646,12 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
     )
     return msg_id
 
-def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_user_id, chatbot_user_id, role, text, route_session_key='', delivery_ext=None):
+def forward_session_sync_to_direct(app_id, node_info, target_user_id, origin_user_id, chatbot_user_id, role, text, route_session_key='', delivery_ext=None):
     if not isinstance(text, str) or text.strip() == '':
         return 0
     node_user_id = str(node_info.get('user_id', '')).strip()
     normalized_target_user_id = str(target_user_id).strip()
-    normalized_sender_user_id = str(sender_user_id).strip()
+    normalized_origin_user_id = str(origin_user_id).strip()
     normalized_chatbot_user_id = str(chatbot_user_id).strip()
     normalized_route_session_key = normalize_session_key(route_session_key)
     route_identity = parse_clawchat_session_identity(normalized_route_session_key)
@@ -1597,7 +1665,7 @@ def forward_session_sync_to_direct(app_id, node_info, target_user_id, sender_use
     if node_user_id == '' or normalized_target_user_id == '':
         return 0
     if role == 'user':
-        from_user_id = normalized_sender_user_id
+        from_user_id = normalized_origin_user_id
         to_user_id = normalized_chatbot_user_id if is_router_direct_session else node_user_id
     else:
         if is_router_direct_session:
@@ -1638,13 +1706,14 @@ def resolve_effective_session_sync_target(app_id, node_info, mapping):
         return {
             'kind': 'none'
         }
+    mapping = normalize_session_mapping_record(mapping)
     session_key = normalize_optional_session_key(mapping.get('session_key', ''))
     effective_target_session_key = normalize_optional_session_key(mapping.get('effective_target_session_key', ''))
     root_session_key = normalize_optional_session_key(mapping.get('root_session_key', ''))
     target_session_key = effective_target_session_key or root_session_key or session_key
     target_identity = parse_clawchat_session_identity(target_session_key)
     if isinstance(target_identity, dict) and target_identity.get('chat_type') == 'direct':
-        inherited_identity = resolve_inherited_sender_user_id(
+        inherited_identity = resolve_inherited_origin_identity(
             app_id,
             node_info,
             {
@@ -1653,20 +1722,22 @@ def resolve_effective_session_sync_target(app_id, node_info, mapping):
             },
             str(mapping.get('management_user_id', '')).strip(),
         )
-        resolved_sender_user_id = str(inherited_identity.get('sender_user_id', '')).strip()
+        resolved_origin_kind = str(inherited_identity.get('origin_kind', '')).strip()
+        resolved_origin_user_id = str(inherited_identity.get('origin_user_id', '')).strip()
         resolved_chatbot_user_id = str(inherited_identity.get('chatbot_user_id', '')).strip()
         logging.info(
             f"resolve_effective_session_sync_target resolved direct target | "
             f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
             f"target_session_key:{target_session_key}, target_user_id:{str(target_identity.get('target_id', '')).strip()}, "
             f"identity_source:{inherited_identity.get('source', '')}, "
-            f"sender_user_id:{resolved_sender_user_id}, chatbot_user_id:{resolved_chatbot_user_id}"
+            f"origin_kind:{resolved_origin_kind}, origin_user_id:{resolved_origin_user_id}, chatbot_user_id:{resolved_chatbot_user_id}"
         )
         return {
             'kind': 'direct',
             'session_key': target_session_key,
             'target_user_id': str(target_identity.get('target_id', '')).strip(),
-            'sender_user_id': resolved_sender_user_id,
+            'origin_kind': resolved_origin_kind,
+            'origin_user_id': resolved_origin_user_id,
             'chatbot_user_id': resolved_chatbot_user_id,
         }
     target_mapping = mapping
@@ -1833,7 +1904,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
     session_key = normalize_session_key(event.get('session', ''))
     parent_session_key = normalize_optional_session_key(event.get('parent_session', ''))
     root_session_key = normalize_optional_session_key(event.get('root_session', ''))
-    sender_user_id = str(event.get('sender_user_id', '')).strip()
+    observed_origin_user_id = str(event.get('sender_user_id', '')).strip()
     message = event.get('message', {})
     role = ''
     if isinstance(message, dict):
@@ -1863,7 +1934,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
             session_key,
             parent_session_key,
             root_session_key,
-            sender_user_id,
+            observed_origin_user_id,
             should_materialize_clawchat_group,
         )
         if ensure_result['result'] == 'ok':
@@ -1937,7 +2008,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 app_id,
                 node_info,
                 target.get('target_user_id', ''),
-                target.get('sender_user_id', ''),
+                target.get('origin_user_id', ''),
                 target.get('chatbot_user_id', ''),
                 role,
                 text,
