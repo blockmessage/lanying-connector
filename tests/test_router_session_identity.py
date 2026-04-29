@@ -483,6 +483,59 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "management-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
+    def test_clawchat_group_user_forwarding_uses_management_user_in_group(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        for root_session_key in [
+            "agent:main:clawchat:group:group-9",
+            "agent:main:clawchat-router:group:group-9",
+        ]:
+            with self.subTest(root_session_key=root_session_key), \
+                 mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+                 mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=223) as mocked_send:
+                m.forward_session_sync_to_group(
+                    "app-id",
+                    node_info,
+                    {
+                        "session_key": "agent:main:subagent:test-child",
+                        "group_id": "group-9",
+                        "sender_user_id": "sender-user",
+                        "chatbot_user_id": "chatbot-user",
+                        "management_user_id": "management-user",
+                        "root_session_key": root_session_key,
+                    },
+                    "user",
+                    "question from session",
+                )
+
+            self.assertEqual(mocked_send.call_args.args[2], "management-user")
+            self.assertEqual(mocked_send.call_args.args[3], "group-9")
+
+    def test_clawchat_direct_user_forwarding_keeps_sender_user_in_group(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-9",
+                    "sender_user_id": "sender-user",
+                    "chatbot_user_id": "chatbot-user",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat:direct:sender-user",
+                },
+                "user",
+                "direct question from session",
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        self.assertEqual(mocked_send.call_args.args[3], "group-9")
+
     def test_session_sync_forwarding_marks_visible_delivery(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
