@@ -1522,13 +1522,18 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
         return 0
     root_clawchat_session = parse_clawchat_session_identity(mapping.get('root_session_key', ''))
     router_root_session = is_router_root_session(root_clawchat_session)
+    openclaw_group_root_session = (
+        isinstance(root_clawchat_session, dict) and
+        root_clawchat_session.get('channel') == 'clawchat' and
+        root_clawchat_session.get('chat_type') == 'group'
+    )
     if role == 'assistant' and router_root_session:
         from_user_id = chatbot_user_id
     elif role == 'user':
-        if isinstance(root_clawchat_session, dict) and root_clawchat_session.get('chat_type') == 'direct':
-            from_user_id = sender_user_id or management_user_id
-        else:
+        if root_clawchat_session is None or openclaw_group_root_session:
             from_user_id = management_user_id or sender_user_id
+        else:
+            from_user_id = sender_user_id or management_user_id
     else:
         from_user_id = node_user_id
     if from_user_id == '':
