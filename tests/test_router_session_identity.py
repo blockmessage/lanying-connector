@@ -541,6 +541,40 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
+    def test_existing_mapping_sender_is_repaired_by_explicit_sender_only(self):
+        m = lanying_openclaw
+        existing = {
+            "session_key": "agent:main:subagent:test-child",
+            "sender_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat-router:group:group-9",
+        }
+        lineage = {
+            "parent_session_key": "agent:main:clawchat-router:group:group-9",
+            "root_session_key": "agent:main:clawchat-router:group:group-9",
+        }
+
+        repaired = m.merge_existing_session_mapping(
+            existing,
+            lineage,
+            "agent:main:subagent:test-child",
+            {
+                "sender_user_id": "sender-user",
+                "source": "explicit",
+            },
+        )
+        preserved = m.merge_existing_session_mapping(
+            repaired,
+            lineage,
+            "agent:main:subagent:test-child",
+            {
+                "sender_user_id": "management-user",
+                "source": "management",
+            },
+        )
+
+        self.assertEqual(repaired["sender_user_id"], "sender-user")
+        self.assertEqual(preserved["sender_user_id"], "sender-user")
+
     def test_clawchat_direct_user_forwarding_keeps_sender_user_in_group(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
@@ -726,7 +760,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(delivery_ext["openclaw"]["message_id"], "msg-2")
         self.assertEqual(delivery_ext["ai"]["ai_generate"], False)
 
-    def test_router_mapping_signal_carries_chatbot_user_id(self):
+    def test_router_mapping_signal_carries_sender_and_chatbot_user_id(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "user_id": "openclaw-user"}
 
@@ -740,6 +774,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                         "session_key": "agent:main:subagent:test-child",
                         "group_id": "group-1",
                         "openclaw_user_id": "openclaw-user",
+                        "sender_user_id": "sender-user",
                         "chatbot_user_id": "chatbot-user",
                     }
                 ],
@@ -747,6 +782,10 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(result["result"], "ok")
         ext = mocked_send.call_args.args[7]["ext"]
+        self.assertEqual(
+            ext["openclaw"]["mappings"][0]["sender_user_id"],
+            "sender-user",
+        )
         self.assertEqual(
             ext["openclaw"]["mappings"][0]["chatbot_user_id"],
             "chatbot-user",

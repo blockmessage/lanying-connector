@@ -784,7 +784,7 @@ def merge_existing_session_mapping(existing, lineage, effective_target_session_k
     if sender_user_id != '':
         existing_sender_user_id = str(existing.get('sender_user_id', '')).strip()
         inherited_source = str((inherited_identity or {}).get('source', '')).strip()
-        if existing_sender_user_id == '' or inherited_source != 'explicit':
+        if existing_sender_user_id == '' or inherited_source == 'explicit':
             merged_existing['sender_user_id'] = sender_user_id
     chatbot_user_id = str((inherited_identity or {}).get('chatbot_user_id', '')).strip()
     if chatbot_user_id != '':
@@ -1172,6 +1172,7 @@ def send_session_mapping_signal(node_info, signal_type, mappings):
             'session_key': normalize_session_key(mapping.get('session_key', '')),
             'group_id': str(mapping.get('group_id', '')).strip(),
             'openclaw_user_id': str(mapping.get('openclaw_user_id', '')).strip(),
+            'sender_user_id': str(mapping.get('sender_user_id', '')).strip(),
             'chatbot_user_id': str(mapping.get('chatbot_user_id', '')).strip(),
             'parent_session_key': normalize_optional_session_key(mapping.get('parent_session_key', '')),
             'root_session_key': normalize_optional_session_key(mapping.get('root_session_key', '')),
