@@ -1488,6 +1488,48 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "chatbot-user",
         )
 
+    def test_session_mapping_signal_is_chunked_under_size_limit(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "user_id": "openclaw-user"}
+        large_suffix = "x" * 4000
+        mappings = [
+            {
+                "session_key": f"agent:main:subagent:test-child-{idx}",
+                "group_id": f"group-{idx}",
+                "openclaw_user_id": "openclaw-user",
+                "origin_kind": "im_user",
+                "origin_user_id": f"sender-user-{idx}",
+                "chatbot_user_id": f"chatbot-{large_suffix}-{idx}",
+                "parent_session_key": f"agent:main:session-parent-{large_suffix}-{idx}",
+                "root_session_key": f"agent:main:session-root-{large_suffix}-{idx}",
+                "effective_target_session_key": f"agent:main:session-target-{large_suffix}-{idx}",
+            }
+            for idx in range(3)
+        ]
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[11, 12, 13]) as mocked_send:
+            result = m.send_session_mapping_signal(
+                node_info,
+                "session_mapping_snapshot",
+                mappings,
+            )
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["msg_ids"], [11, 12, 13])
+        self.assertEqual(result["data"]["chunk_count"], 3)
+        self.assertEqual(mocked_send.call_count, 3)
+        delivered_mappings = []
+        for call in mocked_send.call_args_list:
+            ext = call.args[7]["ext"]
+            payload_size = len(json.dumps(ext, ensure_ascii=False).encode("utf-8"))
+            self.assertLessEqual(payload_size, m.SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES)
+            delivered_mappings.extend(ext["openclaw"]["mappings"])
+        self.assertEqual(
+            [mapping["session_key"] for mapping in delivered_mappings],
+            [mapping["session_key"] for mapping in mappings],
+        )
+
     def test_router_group_materialization_uses_chatbot_user(self):
         m = lanying_openclaw
 

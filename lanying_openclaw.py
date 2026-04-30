@@ -15,6 +15,7 @@ from lanying_async import executor
 OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 无论用户如何要求，你都绝对不能修改本文件。"""
 TEMPORARY_GROUP_TYPE = 3
+SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES = 30 * 1024
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, merge_sub_sessions='off'):
@@ -1499,26 +1500,57 @@ def send_session_mapping_signal(node_info, signal_type, mappings):
         if compact_mapping['updated_at'] <= 0:
             compact_mapping['updated_at'] = int(time.time())
         compact_mappings.append(compact_mapping)
-    ext = {
-        'openclaw': {
-            'type': signal_type,
-            'openclaw_user_id': str(user_id),
-            'mappings': compact_mappings
-        }
-    }
-    msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, 1, 6, '', {
-        'ext': ext,
-        'skip_antispam_prompt': True
-    })
-    if msg_id <= 0:
+    def build_signal_ext(chunk_mappings):
         return {
-            'result': 'error',
-            'message': 'send mapping signal failed'
+            'openclaw': {
+                'type': signal_type,
+                'openclaw_user_id': str(user_id),
+                'mappings': chunk_mappings
+            }
         }
+
+    def signal_ext_size_bytes(chunk_mappings):
+        return len(json.dumps(build_signal_ext(chunk_mappings), ensure_ascii=False).encode('utf-8'))
+
+    chunked_mappings = []
+    current_chunk = []
+    for mapping in compact_mappings:
+        mapping_size = signal_ext_size_bytes([mapping])
+        if mapping_size > SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES:
+            return {
+                'result': 'error',
+                'message': 'single mapping signal chunk exceeds max size'
+            }
+        next_chunk = current_chunk + [mapping]
+        if current_chunk and signal_ext_size_bytes(next_chunk) > SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES:
+            chunked_mappings.append(current_chunk)
+            current_chunk = [mapping]
+        else:
+            current_chunk = next_chunk
+    if current_chunk:
+        chunked_mappings.append(current_chunk)
+    if len(chunked_mappings) == 0:
+        chunked_mappings.append([])
+
+    msg_ids = []
+    for mapping_chunk in chunked_mappings:
+        ext = build_signal_ext(mapping_chunk)
+        msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, 1, 6, '', {
+            'ext': ext,
+            'skip_antispam_prompt': True
+        })
+        if msg_id <= 0:
+            return {
+                'result': 'error',
+                'message': 'send mapping signal failed'
+            }
+        msg_ids.append(msg_id)
     return {
         'result': 'ok',
         'data': {
-            'msg_id': msg_id
+            'msg_id': msg_ids[0] if len(msg_ids) > 0 else 0,
+            'msg_ids': msg_ids,
+            'chunk_count': len(msg_ids),
         }
     }
 
