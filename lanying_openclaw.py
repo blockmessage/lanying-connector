@@ -618,6 +618,10 @@ def normalize_observed_origin_facts(observed_origin=''):
         'observed_message_text': observed_message_text,
     }
 
+def is_subagent_bootstrap_observed_text(observed_facts):
+    observed_text = str((observed_facts or {}).get('observed_message_text', '')).strip()
+    return '[Subagent Task]:' in observed_text and '[Subagent Context]' in observed_text
+
 def resolve_observed_origin_kind(observed_facts, root_clawchat_session):
     observed_chat_type = str((observed_facts or {}).get('observed_chat_type', '')).strip().lower()
     if is_router_root_session(root_clawchat_session):
@@ -644,18 +648,79 @@ def apply_control_ui_user_sender_override(mapping):
     overridden['origin_user_id'] = ''
     return overridden
 
+def resolve_root_session_sync_mode(root_clawchat_session):
+    if is_router_root_session(root_clawchat_session):
+        if isinstance(root_clawchat_session, dict) and root_clawchat_session.get('chat_type') == 'direct':
+            return 'router_direct'
+        return 'router_group'
+    if isinstance(root_clawchat_session, dict):
+        if root_clawchat_session.get('channel') == 'clawchat' and root_clawchat_session.get('chat_type') == 'direct':
+            return 'clawchat_direct'
+        if root_clawchat_session.get('channel') == 'clawchat' and root_clawchat_session.get('chat_type') == 'group':
+            return 'clawchat_group'
+    return 'generic'
+
+def is_group_root_session_sync_mode(root_mode):
+    return root_mode in ['clawchat_group', 'router_group']
+
+def is_direct_root_session_sync_mode(root_mode):
+    return root_mode in ['clawchat_direct', 'router_direct']
+
+def should_send_control_ui_user_as_management(observed_facts, mapping):
+    if not is_control_ui_active_user_observation(observed_facts):
+        return False
+    if (
+        str((observed_facts or {}).get('observed_message_type_source', '')).strip() == 'fallback' and
+        is_subagent_bootstrap_observed_text(observed_facts)
+    ):
+        return False
+    root_mode = resolve_root_session_sync_mode(parse_clawchat_session_identity(
+        normalize_optional_session_key((mapping or {}).get('root_session_key', ''))
+    ))
+    return is_group_root_session_sync_mode(root_mode)
+
+def resolve_group_session_sync_user_sender(mapping, node_info, role):
+    normalized_mapping = normalize_session_mapping_record(mapping)
+    origin_kind = str(normalized_mapping.get('origin_kind', '')).strip()
+    origin_user_id = str(normalized_mapping.get('origin_user_id', '')).strip()
+    chatbot_user_id = str(mapping.get('chatbot_user_id', '')).strip()
+    management_user_id = str(mapping.get('management_user_id', '')).strip()
+    node_user_id = str(node_info.get('user_id', '')).strip()
+    root_mode = resolve_root_session_sync_mode(
+        parse_clawchat_session_identity(mapping.get('root_session_key', ''))
+    )
+    if role == 'assistant':
+        if root_mode in ['router_group', 'router_direct']:
+            return chatbot_user_id
+        return node_user_id
+    if role != 'user':
+        return node_user_id
+    if root_mode in ['clawchat_group', 'router_group']:
+        if origin_kind in ['im_user', 'direct_user'] and origin_user_id != '':
+            return origin_user_id
+        if origin_kind == 'openclaw_control':
+            return management_user_id
+        return ''
+    if root_mode in ['clawchat_direct', 'router_direct']:
+        if origin_kind in ['im_user', 'direct_user'] and origin_user_id != '':
+            return origin_user_id
+        return ''
+    if origin_kind == 'openclaw_control':
+        return management_user_id
+    if origin_user_id != '':
+        return origin_user_id
+    return management_user_id
+
 def is_gateway_simulated_user_observation(observed_facts):
     observed_message_type = str((observed_facts or {}).get('observed_message_type', '')).strip()
     if observed_message_type != 'control_ui_user':
         return False
     if str((observed_facts or {}).get('observed_sender_user_id', '')).strip() != '':
         return False
-    observed_source = str((observed_facts or {}).get('observed_message_type_source', '')).strip()
-    if observed_source == 'fallback':
-        return True
-    if observed_source != '':
-        return False
     observed_text = str((observed_facts or {}).get('observed_message_text', '')).strip()
+    observed_source = str((observed_facts or {}).get('observed_message_type_source', '')).strip()
+    if observed_source not in ['', 'fallback']:
+        return False
     return '[Subagent Task]:' in observed_text and '[Subagent Context]' in observed_text
 
 def resolve_existing_mapping_origin_identity(mapping, source, management_user_id, openclaw_user_id, chatbot_user_id=''):
@@ -683,7 +748,8 @@ def resolve_inherited_origin_identity(app_id, node_info, lineage, management_use
     parent_session_key = normalize_optional_session_key(lineage.get('parent_session_key', ''))
     root_session_key = normalize_optional_session_key(lineage.get('root_session_key', ''))
     root_clawchat_session = parse_clawchat_session_identity(root_session_key or parent_session_key)
-    router_root_session = is_router_root_session(root_clawchat_session)
+    root_mode = resolve_root_session_sync_mode(root_clawchat_session)
+    router_root_session = root_mode in ['router_group', 'router_direct']
     chatbot_user_id = ''
     if router_root_session:
         chatbot_user_id = resolve_bound_chatbot_user_id(app_id, node_id)
@@ -717,50 +783,72 @@ def resolve_inherited_origin_identity(app_id, node_info, lineage, management_use
                 )
                 return inherited_identity
     if is_control_ui_active_user_observation(observed_facts):
-        # Keep IM sender continuity for sub-session user turns: control-ui provenance
-        # is only a transport marker and should not override existing IM/direct origin.
-        for inherited_source, inherited_session_key in [('parent', parent_session_key), ('root', root_session_key)]:
-            if inherited_session_key == '':
-                continue
-            inherited_identity = resolve_existing_mapping_origin_identity(
-                get_session_mapping_by_session(app_id, node_id, inherited_session_key),
-                inherited_source,
-                management_user_id,
-                openclaw_user_id,
-                chatbot_user_id,
-            )
-            if (
-                isinstance(inherited_identity, dict) and
-                str(inherited_identity.get('origin_kind', '')).strip() in ['im_user', 'direct_user'] and
-                str(inherited_identity.get('origin_user_id', '')).strip() != ''
-            ):
-                logging.info(
-                    f"resolve_inherited_identity resolved control ui user from {inherited_source} mapping | "
-                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
-                    f"root_session_key:{root_session_key}, origin_kind:{inherited_identity.get('origin_kind', '')}, "
-                    f"origin_user_id:{inherited_identity.get('origin_user_id', '')}, "
-                    f"observed_message_type_source:{observed_facts.get('observed_message_type_source', '')}"
+        if root_mode in ['clawchat_direct', 'router_direct']:
+            direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
+            if isinstance(direct_identity, dict) and direct_identity.get('chat_type') == 'direct':
+                resolved_user_id = str(direct_identity.get('target_id', '')).strip()
+                if resolved_user_id != '':
+                    logging.info(
+                        f"resolve_inherited_identity resolved control ui user from direct root identity | "
+                        f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                        f"root_session_key:{root_session_key}, origin_user_id:{resolved_user_id}"
+                    )
+                    return {
+                        'origin_kind': 'direct_user',
+                        'origin_user_id': resolved_user_id,
+                        'source': 'direct',
+                        'management_user_id': str(management_user_id).strip(),
+                        'openclaw_user_id': openclaw_user_id,
+                        'chatbot_user_id': chatbot_user_id,
+                    }
+        if (
+            str(observed_facts.get('observed_message_type_source', '')).strip() == 'fallback' and
+            is_subagent_bootstrap_observed_text(observed_facts)
+        ):
+            # Fallback control-ui observations are subagent bootstrap envelopes for
+            # IM-originated requests. Preserve the real IM/direct sender when possible.
+            for inherited_source, inherited_session_key in [('parent', parent_session_key), ('root', root_session_key)]:
+                if inherited_session_key == '':
+                    continue
+                inherited_identity = resolve_existing_mapping_origin_identity(
+                    get_session_mapping_by_session(app_id, node_id, inherited_session_key),
+                    inherited_source,
+                    management_user_id,
+                    openclaw_user_id,
+                    chatbot_user_id,
                 )
-                return inherited_identity
-        # When ancestor mapping is not materialized yet (common for direct roots),
-        # recover sender identity from the direct root session key.
-        direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
-        if isinstance(direct_identity, dict) and direct_identity.get('chat_type') == 'direct':
-            resolved_user_id = str(direct_identity.get('target_id', '')).strip()
-            if resolved_user_id != '':
-                logging.info(
-                    f"resolve_inherited_identity resolved control ui user from direct identity | "
-                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
-                    f"root_session_key:{root_session_key}, origin_user_id:{resolved_user_id}"
-                )
-                return {
-                    'origin_kind': 'direct_user',
-                    'origin_user_id': resolved_user_id,
-                    'source': 'direct',
-                    'management_user_id': str(management_user_id).strip(),
-                    'openclaw_user_id': openclaw_user_id,
-                    'chatbot_user_id': chatbot_user_id,
-                }
+                if (
+                    isinstance(inherited_identity, dict) and
+                    str(inherited_identity.get('origin_kind', '')).strip() in ['im_user', 'direct_user'] and
+                    str(inherited_identity.get('origin_user_id', '')).strip() != ''
+                ):
+                    logging.info(
+                        f"resolve_inherited_identity resolved control ui user from {inherited_source} mapping | "
+                        f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                        f"root_session_key:{root_session_key}, origin_kind:{inherited_identity.get('origin_kind', '')}, "
+                        f"origin_user_id:{inherited_identity.get('origin_user_id', '')}, "
+                        f"observed_message_type_source:{observed_facts.get('observed_message_type_source', '')}"
+                    )
+                    return inherited_identity
+            # When ancestor mapping is not materialized yet (common for direct roots),
+            # recover sender identity from the direct root session key.
+            direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
+            if is_direct_root_session_sync_mode(root_mode) and isinstance(direct_identity, dict) and direct_identity.get('chat_type') == 'direct':
+                resolved_user_id = str(direct_identity.get('target_id', '')).strip()
+                if resolved_user_id != '':
+                    logging.info(
+                        f"resolve_inherited_identity resolved control ui user from direct identity | "
+                        f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                        f"root_session_key:{root_session_key}, origin_user_id:{resolved_user_id}"
+                    )
+                    return {
+                        'origin_kind': 'direct_user',
+                        'origin_user_id': resolved_user_id,
+                        'source': 'direct',
+                        'management_user_id': str(management_user_id).strip(),
+                        'openclaw_user_id': openclaw_user_id,
+                        'chatbot_user_id': chatbot_user_id,
+                    }
         logging.info(
             f"resolve_inherited_identity resolved from control ui active user | "
             f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
@@ -946,7 +1034,7 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
 def resolve_clawchat_group_materialize_user_id(app_id, mapping, management_user_id):
     session_identity = parse_clawchat_session_identity(mapping.get('session_key', ''))
     if not is_router_root_session(session_identity):
-        return str(management_user_id).strip()
+        return ''
     chatbot_user_id = str(mapping.get('chatbot_user_id', '')).strip()
     node_id = str(mapping.get('node_id', '')).strip()
     if chatbot_user_id == '' and node_id != '':
@@ -979,8 +1067,8 @@ def maybe_materialize_existing_clawchat_group_mapping(app_id, mapping, managemen
     )
     if materialize_user_id == '':
         return {
-            'result': 'error',
-            'message': 'router chatbot user not ready',
+            'result': 'ok',
+            'mapping': mapping,
         }
     if not ensure_user_joined_group(app_id, materialize_user_id, group_id):
         return {
@@ -1603,18 +1691,14 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
             materialize_user_id = (
                 str(mapping_decision.get('chatbot_user_id', '')).strip()
                 if is_router_root_session(clawchat_session)
-                else management_user_id
+                else ''
             )
-            if materialize_user_id == '':
-                return {
-                    'result': 'error',
-                    'message': 'router chatbot user not ready'
-                }
-            if not ensure_user_joined_group(app_id, materialize_user_id, group_id):
-                return {
-                    'result': 'error',
-                    'message': 'join clawchat group failed'
-                }
+            if materialize_user_id != '':
+                if not ensure_user_joined_group(app_id, materialize_user_id, group_id):
+                    return {
+                        'result': 'error',
+                        'message': 'join clawchat group failed'
+                    }
         logging.info(
             f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "
             f"session_key:{normalized_session_key}, parsed_channel:{clawchat_session['channel']}, "
@@ -1743,36 +1827,11 @@ def build_router_reply_delivery_ext(message):
 def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delivery_ext=None):
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
         return 0
-    normalized_mapping = normalize_session_mapping_record(mapping)
-    origin_kind = str(normalized_mapping.get('origin_kind', '')).strip()
-    origin_user_id = str(normalized_mapping.get('origin_user_id', '')).strip()
     chatbot_user_id = str(mapping.get('chatbot_user_id', '')).strip()
-    management_user_id = str(mapping.get('management_user_id', '')).strip()
     node_user_id = str(node_info.get('user_id', '')).strip()
     if node_user_id == '':
         return 0
-    root_clawchat_session = parse_clawchat_session_identity(mapping.get('root_session_key', ''))
-    router_root_session = is_router_root_session(root_clawchat_session)
-    openclaw_group_root_session = (
-        isinstance(root_clawchat_session, dict) and
-        root_clawchat_session.get('channel') == 'clawchat' and
-        root_clawchat_session.get('chat_type') == 'group'
-    )
-    if role == 'assistant' and router_root_session:
-        from_user_id = chatbot_user_id
-    elif role == 'user':
-        if origin_kind in ['im_user', 'direct_user'] and origin_user_id != '':
-            from_user_id = origin_user_id
-        elif origin_kind == 'openclaw_control':
-            from_user_id = management_user_id
-        elif root_clawchat_session is None or openclaw_group_root_session:
-            from_user_id = management_user_id
-        elif isinstance(root_clawchat_session, dict) and root_clawchat_session.get('chat_type') == 'direct':
-            from_user_id = origin_user_id if origin_kind == 'direct_user' else ''
-        else:
-            from_user_id = origin_user_id if origin_kind == 'im_user' else ''
-    else:
-        from_user_id = node_user_id
+    from_user_id = resolve_group_session_sync_user_sender(mapping, node_info, role)
     if from_user_id == '':
         return 0
     admin_token = lanying_config.get_lanying_admin_token(app_id)
@@ -2181,7 +2240,10 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 delivery_ext,
             )
             return
-        forward_session_sync_to_group(app_id, node_info, target.get('mapping', mapping), role, text, delivery_ext)
+        target_mapping = target.get('mapping', mapping)
+        if target.get('kind') == 'group' and role == 'user' and should_send_control_ui_user_as_management(observed_origin_facts, target_mapping):
+            target_mapping = apply_control_ui_user_sender_override(target_mapping)
+        forward_session_sync_to_group(app_id, node_info, target_mapping, role, text, delivery_ext)
 
 def handle_chat_message(msg):
     from_user_id = msg['from']['uid']
