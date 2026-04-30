@@ -282,7 +282,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(inherited["origin_user_id"], "sender-user")
         self.assertEqual(inherited["source"], "parent")
 
-    def test_control_ui_provenance_does_not_inherit_parent_im_origin(self):
+    def test_control_ui_provenance_inherits_parent_im_origin(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
         parent_mapping = {
@@ -311,9 +311,34 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(inherited["origin_kind"], "openclaw_control")
-        self.assertEqual(inherited["origin_user_id"], "")
-        self.assertEqual(inherited["source"], "control_ui")
+        self.assertEqual(inherited["origin_kind"], "im_user")
+        self.assertEqual(inherited["origin_user_id"], "sender-user")
+        self.assertEqual(inherited["source"], "parent")
+
+    def test_control_ui_user_without_parent_mapping_uses_direct_root_identity(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:direct:sender-user",
+            "root_session_key": "agent:main:clawchat:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=None):
+            inherited = m.resolve_inherited_origin_identity(
+                "app-id",
+                node_info,
+                lineage,
+                "management-user",
+                {
+                    "observed_message_type": "control_ui_user",
+                    "observed_message_type_source": "fallback",
+                    "observed_message_text": "[Subagent Context]\n\n[Subagent Task]: question",
+                },
+            )
+
+        self.assertEqual(inherited["origin_kind"], "direct_user")
+        self.assertEqual(inherited["origin_user_id"], "sender-user")
+        self.assertEqual(inherited["source"], "direct")
 
     def test_merge_sub_sessions_keeps_creating_child_group_for_clawchat_root(self):
         m = lanying_openclaw
@@ -698,7 +723,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
-    def test_control_ui_user_turn_uses_management_without_rewriting_im_mapping(self):
+    def test_control_ui_user_turn_keeps_im_sender_for_group_subsession(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
         mapping = {
@@ -733,8 +758,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(mapping["origin_kind"], "im_user")
         self.assertEqual(mapping["origin_user_id"], "sender-user")
-        mocked_join.assert_called_once_with("app-id", "management-user", "group-9")
-        self.assertEqual(mocked_send.call_args.args[2], "management-user")
+        mocked_join.assert_called_once_with("app-id", "sender-user", "group-9")
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
     def test_gateway_simulated_group_user_turn_keeps_im_sender_mapping(self):

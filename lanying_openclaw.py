@@ -717,6 +717,50 @@ def resolve_inherited_origin_identity(app_id, node_info, lineage, management_use
                 )
                 return inherited_identity
     if is_control_ui_active_user_observation(observed_facts):
+        # Keep IM sender continuity for sub-session user turns: control-ui provenance
+        # is only a transport marker and should not override existing IM/direct origin.
+        for inherited_source, inherited_session_key in [('parent', parent_session_key), ('root', root_session_key)]:
+            if inherited_session_key == '':
+                continue
+            inherited_identity = resolve_existing_mapping_origin_identity(
+                get_session_mapping_by_session(app_id, node_id, inherited_session_key),
+                inherited_source,
+                management_user_id,
+                openclaw_user_id,
+                chatbot_user_id,
+            )
+            if (
+                isinstance(inherited_identity, dict) and
+                str(inherited_identity.get('origin_kind', '')).strip() in ['im_user', 'direct_user'] and
+                str(inherited_identity.get('origin_user_id', '')).strip() != ''
+            ):
+                logging.info(
+                    f"resolve_inherited_identity resolved control ui user from {inherited_source} mapping | "
+                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                    f"root_session_key:{root_session_key}, origin_kind:{inherited_identity.get('origin_kind', '')}, "
+                    f"origin_user_id:{inherited_identity.get('origin_user_id', '')}, "
+                    f"observed_message_type_source:{observed_facts.get('observed_message_type_source', '')}"
+                )
+                return inherited_identity
+        # When ancestor mapping is not materialized yet (common for direct roots),
+        # recover sender identity from the direct root session key.
+        direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
+        if isinstance(direct_identity, dict) and direct_identity.get('chat_type') == 'direct':
+            resolved_user_id = str(direct_identity.get('target_id', '')).strip()
+            if resolved_user_id != '':
+                logging.info(
+                    f"resolve_inherited_identity resolved control ui user from direct identity | "
+                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                    f"root_session_key:{root_session_key}, origin_user_id:{resolved_user_id}"
+                )
+                return {
+                    'origin_kind': 'direct_user',
+                    'origin_user_id': resolved_user_id,
+                    'source': 'direct',
+                    'management_user_id': str(management_user_id).strip(),
+                    'openclaw_user_id': openclaw_user_id,
+                    'chatbot_user_id': chatbot_user_id,
+                }
         logging.info(
             f"resolve_inherited_identity resolved from control ui active user | "
             f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
@@ -2137,9 +2181,6 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 delivery_ext,
             )
             return
-        if target.get('kind') == 'group' and role == 'user' and is_control_ui_active_user_observation(observed_origin_facts):
-            target = dict(target)
-            target['mapping'] = apply_control_ui_user_sender_override(target.get('mapping', mapping))
         forward_session_sync_to_group(app_id, node_info, target.get('mapping', mapping), role, text, delivery_ext)
 
 def handle_chat_message(msg):
