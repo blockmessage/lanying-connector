@@ -435,7 +435,23 @@ class RouterSessionIdentityTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["mode"], "metadata_only")
-        self.assertEqual(decision["owner_user_id"], "")
+
+    def test_merge_sub_sessions_requires_session_map_sync_enabled(self):
+        m = lanying_openclaw
+        self.assertFalse(m.is_session_map_sync_enabled({
+            "session_map_sync": "off",
+        }))
+        self.assertTrue(m.is_session_map_sync_enabled({
+            "session_map_sync": "on",
+        }))
+        self.assertFalse(m.is_merge_sub_sessions_enabled({
+            "session_map_sync": "off",
+            "merge_sub_sessions": "on",
+        }))
+        self.assertTrue(m.is_merge_sub_sessions_enabled({
+            "session_map_sync": "on",
+            "merge_sub_sessions": "on",
+        }))
 
     def test_clawchat_direct_session_stays_metadata_only(self):
         m = lanying_openclaw

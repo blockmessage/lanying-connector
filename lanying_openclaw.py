@@ -18,7 +18,7 @@ TEMPORARY_GROUP_TYPE = 3
 SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES = 30 * 1024
 
 class NodeSetting:
-    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, merge_sub_sessions='off'):
+    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
         self.app_id = app_id
         self.name = name
         self.product_id = product_id
@@ -28,6 +28,7 @@ class NodeSetting:
         self.access_type = access_type
         self.access_list = access_list
         self.chatbot_id = chatbot_id
+        self.session_map_sync = session_map_sync
         self.merge_sub_sessions = merge_sub_sessions
 
     def to_hmset_fields(self):
@@ -41,16 +42,18 @@ class NodeSetting:
             'access_type': self.access_type,
             'access_list': self.access_list,
             'chatbot_id': self.chatbot_id,
+            'session_map_sync': self.session_map_sync,
             'merge_sub_sessions': self.merge_sub_sessions
         }
 
 class ConfigureNodeParam:
-    def __init__(self, name, lanying_link, access_type, access_list, chatbot_id, merge_sub_sessions='off'):
+    def __init__(self, name, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
         self.name = name
         self.lanying_link = lanying_link
         self.access_type = access_type
         self.access_list = access_list
         self.chatbot_id = chatbot_id
+        self.session_map_sync = session_map_sync
         self.merge_sub_sessions = merge_sub_sessions
 
     def to_hmset_fields(self):
@@ -60,6 +63,7 @@ class ConfigureNodeParam:
             'access_type': self.access_type,
             'access_list': self.access_list,
             'chatbot_id': self.chatbot_id,
+            'session_map_sync': self.session_map_sync,
             'merge_sub_sessions': self.merge_sub_sessions
         }
 
@@ -303,6 +307,7 @@ def configure_node(app_id, node_id, param: ConfigureNodeParam):
     redis.hmset(get_node_key(app_id, node_id), fields)
     node_info = get_node(app_id, node_id)
     async_init_node_im_user_setting(app_id, old_node_info, node_info)
+    sync_session_map_settings_to_node(node_info)
     return {
         'result': 'ok',
         'data': {
@@ -437,10 +442,39 @@ def parse_json_object(value):
     except Exception:
         return None
 
+def is_session_map_sync_enabled(node_info):
+    if not isinstance(node_info, dict):
+        return False
+    return parse_bool_flag(node_info.get('session_map_sync'))
+
 def is_merge_sub_sessions_enabled(node_info):
     if not isinstance(node_info, dict):
         return False
-    return parse_bool_flag(node_info.get('merge_sub_sessions'))
+    return is_session_map_sync_enabled(node_info) and parse_bool_flag(node_info.get('merge_sub_sessions'))
+
+def sync_session_map_settings_to_node(node_info):
+    if node_info is None:
+        return {'result': 'error', 'message': 'node not exist'}
+    app_id = str(node_info.get('app_id', '')).strip()
+    user_id = str(node_info.get('user_id', '')).strip()
+    if app_id == '' or user_id == '':
+        return {'result': 'error', 'message': 'bad node info'}
+    ext = {
+        'openclaw': {
+            'type': 'session_map_settings_sync',
+            'settings': {
+                'session_map_sync': 'on' if parse_bool_flag(node_info.get('session_map_sync')) else 'off',
+                'merge_sub_sessions': 'on' if parse_bool_flag(node_info.get('merge_sub_sessions')) else 'off'
+            }
+        }
+    }
+    config = {'lanying_admin_token': lanying_config.get_lanying_admin_token(app_id)}
+    msg_id = lanying_im_api.send_message_sync(
+        config, app_id, user_id, user_id, 1, 6, '', {'ext': ext, 'skip_antispam_prompt': True}
+    )
+    if msg_id <= 0:
+        return {'result': 'error', 'message': 'send message failed'}
+    return {'result': 'ok', 'data': {'msg_id': msg_id}}
 
 def resolve_session_lineage(app_id, node_id, session_key, parent_session_key='', root_session_key=''):
     normalized_session_key = normalize_session_key(session_key)
@@ -1470,6 +1504,15 @@ def send_session_mapping_signal(node_info, signal_type, mappings):
             'result': 'error',
             'message': 'bad mappings payload'
         }
+    if not is_session_map_sync_enabled(node_info):
+        logging.info(
+            f"send_session_mapping_signal skip for session_map_sync disabled | "
+            f"app_id:{node_info.get('app_id', '')}, node_id:{node_info.get('node_id', '')}, signal_type:{signal_type}"
+        )
+        return {
+            'result': 'ignored',
+            'message': 'session_map_sync disabled'
+        }
     app_id = node_info['app_id']
     user_id = node_info['user_id']
     admin_token = lanying_config.get_lanying_admin_token(app_id)
@@ -1573,6 +1616,15 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
         return {
             'result': 'error',
             'message': 'bad session key'
+        }
+    if not is_session_map_sync_enabled(node_info):
+        logging.info(
+            f"ensure_session_mapping skip for session_map_sync disabled | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{normalized_session_key}"
+        )
+        return {
+            'result': 'ignored',
+            'message': 'session_map_sync disabled'
         }
     node_id = node_info['node_id']
     app_user_result = ensure_openclaw_app_manager_user(app_id)
@@ -2146,6 +2198,12 @@ def forward_session_sync_router_direct_reply(app_id, node_info, target_user_id, 
 def handle_session_message_sync_event(app_id, node_info, event):
     if not isinstance(event, dict):
         return
+    if not is_session_map_sync_enabled(node_info):
+        logging.info(
+            f"handle_session_message_sync_event skip for session_map_sync disabled | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}"
+        )
+        return
     source = str(event.get('source', '')).strip()
     session_key = normalize_session_key(event.get('session', ''))
     parent_session_key = normalize_optional_session_key(event.get('parent_session', ''))
@@ -2294,10 +2352,15 @@ def handle_client_event(event, app_id, user_id, ctype):
         node_list = get_nodes_by_user_id(app_id, user_id)
         plugin_version = str(event.get('plugin_version', '')).strip()
         api_version = str(event.get('api_version', '')).strip()
+        event_session_map_sync = 'on' if parse_bool_flag(event.get('session_map_sync')) else 'off'
+        event_merge_sub_sessions = 'on' if (event_session_map_sync == 'on' and parse_bool_flag(event.get('merge_sub_sessions'))) else 'off'
         for node in node_list:
             node_id = node['node_id']
             update_node_field(app_id, node_id, 'plugin_version', plugin_version)
             update_node_field(app_id, node_id, 'api_version', api_version)
+            update_node_field(app_id, node_id, 'session_map_sync', event_session_map_sync)
+            update_node_field(app_id, node_id, 'merge_sub_sessions', event_merge_sub_sessions)
+            node = get_node(app_id, node_id) or node
             logging.info(f"update node versions | node_id: {node_id}, plugin_version:{plugin_version}, api_version:{api_version}")
             if node['status'] == 'wait':
                 logging.info(f"change node status to normal | node_id: {node_id}")
@@ -2310,7 +2373,21 @@ def handle_client_event(event, app_id, user_id, ctype):
                 model_patch_config = get_model_patch_config(app_id, node_id)
                 update_node_config(app_id, node_id, model_patch_config)
                 maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+            sync_session_map_settings_to_node(node)
             sync_session_mapping_snapshot_to_node(node)
+    elif event['type'] == 'session_map_settings_report':
+        node_list = get_nodes_by_user_id(app_id, user_id)
+        session_map_sync = 'on' if parse_bool_flag(event.get('session_map_sync')) else 'off'
+        merge_sub_sessions = 'on' if (session_map_sync == 'on' and parse_bool_flag(event.get('merge_sub_sessions'))) else 'off'
+        for node in node_list:
+            node_id = node['node_id']
+            update_node_field(app_id, node_id, 'session_map_sync', session_map_sync)
+            update_node_field(app_id, node_id, 'merge_sub_sessions', merge_sub_sessions)
+            logging.info(
+                f"handle_client_event sync session_map settings from plugin | "
+                f"app_id:{app_id}, node_id:{node_id}, session_map_sync:{session_map_sync}, "
+                f"merge_sub_sessions:{merge_sub_sessions}"
+            )
     elif event['type'] == 'router_reply':
         if ctype != 'COMMAND':
             logging.info(f"handle_client_event skip not command router_reply | ctype: {ctype}, event: {event}")
@@ -2629,6 +2706,8 @@ def get_node(app_id, node_id):
             dto['plugin_version'] = ''
         if 'api_version' not in dto:
             dto['api_version'] = ''
+        if 'session_map_sync' not in dto or str(dto.get('session_map_sync', '')).strip() == '':
+            dto['session_map_sync'] = 'off'
         if 'merge_sub_sessions' not in dto or str(dto.get('merge_sub_sessions', '')).strip() == '':
             dto['merge_sub_sessions'] = 'off'
         dto['chatbot_id'] = ''

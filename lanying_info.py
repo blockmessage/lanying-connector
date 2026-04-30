@@ -300,6 +300,7 @@ def info_openclaw_nodes(app_id):
                         'name': node.get('name', ''),
                         'user_id': str(node.get('user_id', '')),
                         'chatbot_id': str(node.get('chatbot_id', '')),
+                        'session_map_sync': str(node.get('session_map_sync', 'off')),
                         'merge_sub_sessions': str(node.get('merge_sub_sessions', 'off'))
                     })
                 return {
