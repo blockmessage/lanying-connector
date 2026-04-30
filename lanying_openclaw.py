@@ -2352,14 +2352,10 @@ def handle_client_event(event, app_id, user_id, ctype):
         node_list = get_nodes_by_user_id(app_id, user_id)
         plugin_version = str(event.get('plugin_version', '')).strip()
         api_version = str(event.get('api_version', '')).strip()
-        event_session_map_sync = 'on' if parse_bool_flag(event.get('session_map_sync')) else 'off'
-        event_merge_sub_sessions = 'on' if (event_session_map_sync == 'on' and parse_bool_flag(event.get('merge_sub_sessions'))) else 'off'
         for node in node_list:
             node_id = node['node_id']
             update_node_field(app_id, node_id, 'plugin_version', plugin_version)
             update_node_field(app_id, node_id, 'api_version', api_version)
-            update_node_field(app_id, node_id, 'session_map_sync', event_session_map_sync)
-            update_node_field(app_id, node_id, 'merge_sub_sessions', event_merge_sub_sessions)
             node = get_node(app_id, node_id) or node
             logging.info(f"update node versions | node_id: {node_id}, plugin_version:{plugin_version}, api_version:{api_version}")
             if node['status'] == 'wait':
@@ -2383,11 +2379,13 @@ def handle_client_event(event, app_id, user_id, ctype):
             node_id = node['node_id']
             update_node_field(app_id, node_id, 'session_map_sync', session_map_sync)
             update_node_field(app_id, node_id, 'merge_sub_sessions', merge_sub_sessions)
+            updated_node = get_node(app_id, node_id) or node
             logging.info(
                 f"handle_client_event sync session_map settings from plugin | "
                 f"app_id:{app_id}, node_id:{node_id}, session_map_sync:{session_map_sync}, "
                 f"merge_sub_sessions:{merge_sub_sessions}"
             )
+            sync_session_mapping_snapshot_to_node(updated_node)
     elif event['type'] == 'router_reply':
         if ctype != 'COMMAND':
             logging.info(f"handle_client_event skip not command router_reply | ctype: {ctype}, event: {event}")
