@@ -201,6 +201,120 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(inherited["management_user_id"], "management-user")
         self.assertEqual(inherited["chatbot_user_id"], "chatbot-user")
 
+    def test_clawchat_group_observed_sender_resolves_as_im_user(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:group:group-1",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=None):
+            inherited = m.resolve_inherited_origin_identity(
+                "app-id",
+                node_info,
+                lineage,
+                "management-user",
+                {
+                    "observed_sender_user_id": "sender-user",
+                    "observed_from_user_id": "sender-user",
+                    "observed_to_id": "group-1",
+                    "observed_chat_type": "group",
+                    "observed_channel": "clawchat",
+                    "observed_message_type": "im_inbound_user",
+                },
+            )
+
+        self.assertEqual(inherited["origin_kind"], "im_user")
+        self.assertEqual(inherited["origin_user_id"], "sender-user")
+        self.assertEqual(inherited["source"], "explicit")
+
+    def test_legacy_sender_for_clawchat_group_resolves_as_im_user(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:group:group-1",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=None):
+            inherited = m.resolve_inherited_origin_identity(
+                "app-id",
+                node_info,
+                lineage,
+                "management-user",
+                "sender-user",
+            )
+
+        self.assertEqual(inherited["origin_kind"], "im_user")
+        self.assertEqual(inherited["origin_user_id"], "sender-user")
+
+    def test_gateway_subsession_control_ui_fallback_inherits_parent_im_origin(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        parent_mapping = {
+            "session_key": "agent:main:clawchat:group:group-1",
+            "group_id": "group-1",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:group:group-1",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=parent_mapping):
+            inherited = m.resolve_inherited_origin_identity(
+                "app-id",
+                node_info,
+                lineage,
+                "management-user",
+                {
+                    "observed_message_type": "control_ui_user",
+                    "observed_message_type_source": "fallback",
+                    "observed_message_text": "[Subagent Context]\n\n[Subagent Task]: question",
+                },
+            )
+
+        self.assertEqual(inherited["origin_kind"], "im_user")
+        self.assertEqual(inherited["origin_user_id"], "sender-user")
+        self.assertEqual(inherited["source"], "parent")
+
+    def test_control_ui_provenance_does_not_inherit_parent_im_origin(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        parent_mapping = {
+            "session_key": "agent:main:clawchat:group:group-1",
+            "group_id": "group-1",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+        lineage = {
+            "parent_session_key": "agent:main:clawchat:group:group-1",
+            "root_session_key": "agent:main:clawchat:group:group-1",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=parent_mapping):
+            inherited = m.resolve_inherited_origin_identity(
+                "app-id",
+                node_info,
+                lineage,
+                "management-user",
+                {
+                    "observed_message_type": "control_ui_user",
+                    "observed_message_type_source": "provenance",
+                    "observed_message_text": "[Subagent Context]\n\n[Subagent Task]: question",
+                },
+            )
+
+        self.assertEqual(inherited["origin_kind"], "openclaw_control")
+        self.assertEqual(inherited["origin_user_id"], "")
+        self.assertEqual(inherited["source"], "control_ui")
+
     def test_merge_sub_sessions_keeps_creating_child_group_for_clawchat_root(self):
         m = lanying_openclaw
         lineage = {
@@ -403,7 +517,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             ],
         )
 
-    def test_generic_root_child_group_members_include_management_and_openclaw_only(self):
+    def test_generic_root_child_group_members_do_not_prejoin_management_user(self):
         m = lanying_openclaw
         joined_users = []
 
@@ -429,7 +543,6 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(
             joined_users,
             [
-                ("app-id", "management-user", "group-4"),
                 ("app-id", "openclaw-user", "group-4"),
             ],
         )
@@ -558,6 +671,209 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "management-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
+    def test_clawchat_group_user_forwarding_uses_observed_sender_user_in_group(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-9",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat:group:group-9",
+                },
+                "user",
+                "question from user-triggered session",
+            )
+
+        mocked_join.assert_called_once_with("app-id", "sender-user", "group-9")
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        self.assertEqual(mocked_send.call_args.args[3], "group-9")
+
+    def test_control_ui_user_turn_uses_management_without_rewriting_im_mapping(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-9",
+            "effective_target_session_key": "agent:main:clawchat:group:group-9",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": mapping}), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "source": "control_ui_user",
+                    "session": "agent:main:clawchat:group:group-9",
+                    "observed_message_type": "control_ui_user",
+                    "message": {
+                        "role": "user",
+                        "content": "你好",
+                    },
+                },
+            )
+
+        self.assertEqual(mapping["origin_kind"], "im_user")
+        self.assertEqual(mapping["origin_user_id"], "sender-user")
+        mocked_join.assert_called_once_with("app-id", "management-user", "group-9")
+        self.assertEqual(mocked_send.call_args.args[2], "management-user")
+        self.assertEqual(mocked_send.call_args.args[3], "group-9")
+
+    def test_gateway_simulated_group_user_turn_keeps_im_sender_mapping(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-9",
+            "effective_target_session_key": "agent:main:clawchat:group:group-9",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": mapping}), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "source": "control_ui_user",
+                    "session": "agent:main:clawchat:group:group-9",
+                    "observed_message_type": "im_inbound_user",
+                    "observed_sender_user_id": "sender-user",
+                    "observed_chat_type": "group",
+                    "message": {
+                        "role": "user",
+                        "content": "[Subagent Task]: question from gateway",
+                    },
+                },
+            )
+
+        mocked_join.assert_called_once_with("app-id", "sender-user", "group-9")
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        self.assertEqual(mocked_send.call_args.args[3], "group-9")
+
+    def test_control_ui_direct_user_turn_keeps_existing_direct_sender(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:direct:sender-user",
+            "group_id": "",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:direct:sender-user",
+            "effective_target_session_key": "agent:main:clawchat:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": mapping}), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "source": "control_ui_user",
+                    "session": "agent:main:clawchat:direct:sender-user",
+                    "observed_message_type": "control_ui_user",
+                    "message": {
+                        "role": "user",
+                        "content": "direct control text",
+                    },
+                },
+            )
+
+        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        self.assertEqual(mocked_send.call_args.args[3], "openclaw-user")
+
+    def test_openclaw_group_subsession_sync_sender_sequence(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        user_triggered_mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "group-9",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-9",
+        }
+        console_mapping = dict(user_triggered_mapping)
+        console_mapping["origin_kind"] = "openclaw_control"
+        console_mapping["origin_user_id"] = ""
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                user_triggered_mapping,
+                "user",
+                "question from IM user",
+            )
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                user_triggered_mapping,
+                "assistant",
+                "reply from OpenClaw",
+            )
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                console_mapping,
+                "user",
+                "question from OpenClaw console",
+            )
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                console_mapping,
+                "assistant",
+                "reply from OpenClaw console",
+            )
+
+        sent = [call.args for call in mocked_send.call_args_list]
+        self.assertEqual([args[2] for args in sent], [
+            "sender-user",
+            "openclaw-user",
+            "management-user",
+            "openclaw-user",
+        ])
+        self.assertEqual([args[3] for args in sent], ["group-9"] * 4)
+        self.assertEqual([call.args[1] for call in mocked_join.call_args_list], [
+            "sender-user",
+            "openclaw-user",
+            "management-user",
+            "openclaw-user",
+        ])
+
     def test_router_group_child_user_forwarding_keeps_sender_user_in_group(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
@@ -584,6 +900,69 @@ class RouterSessionIdentityTests(unittest.TestCase):
         mocked_join.assert_called_once_with("app-id", "sender-user", "group-9")
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
+
+    def test_chatbot_group_subsession_sync_sender_sequence(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+        user_triggered_mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "group-9",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat-router:group:group-9",
+        }
+        console_mapping = dict(user_triggered_mapping)
+        console_mapping["origin_kind"] = "openclaw_control"
+        console_mapping["origin_user_id"] = ""
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=225) as mocked_send:
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                user_triggered_mapping,
+                "user",
+                "question from IM user",
+            )
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                user_triggered_mapping,
+                "assistant",
+                "reply from chatbot",
+            )
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                console_mapping,
+                "user",
+                "question from OpenClaw console",
+            )
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                console_mapping,
+                "assistant",
+                "reply from chatbot after console message",
+            )
+
+        sent = [call.args for call in mocked_send.call_args_list]
+        self.assertEqual([args[2] for args in sent], [
+            "sender-user",
+            "chatbot-user",
+            "management-user",
+            "chatbot-user",
+        ])
+        self.assertEqual([args[3] for args in sent], ["group-9"] * 4)
+        self.assertEqual([call.args[1] for call in mocked_join.call_args_list], [
+            "sender-user",
+            "chatbot-user",
+            "management-user",
+            "chatbot-user",
+        ])
 
     def test_group_user_forwarding_does_not_fallback_between_management_and_sender(self):
         m = lanying_openclaw
