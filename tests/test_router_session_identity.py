@@ -1470,7 +1470,11 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
     def test_router_mapping_signal_carries_origin_and_chatbot_user_id(self):
         m = lanying_openclaw
-        node_info = {"app_id": "app-id", "user_id": "openclaw-user"}
+        node_info = {
+            "app_id": "app-id",
+            "user_id": "openclaw-user",
+            "session_map_sync": "on",
+        }
 
         with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
              mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=1) as mocked_send:
@@ -1506,7 +1510,11 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
     def test_session_mapping_signal_is_chunked_under_size_limit(self):
         m = lanying_openclaw
-        node_info = {"app_id": "app-id", "user_id": "openclaw-user"}
+        node_info = {
+            "app_id": "app-id",
+            "user_id": "openclaw-user",
+            "session_map_sync": "on",
+        }
         large_suffix = "x" * 4000
         mappings = [
             {
@@ -1544,6 +1552,10 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(
             [mapping["session_key"] for mapping in delivered_mappings],
             [mapping["session_key"] for mapping in mappings],
+        )
+        self.assertEqual(
+            [mapping["effective_target_session_key"] for mapping in delivered_mappings],
+            [mapping["effective_target_session_key"] for mapping in mappings],
         )
 
     def test_router_group_materialization_uses_chatbot_user(self):
