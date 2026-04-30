@@ -337,10 +337,12 @@ def get_node_list(app_id):
         node_info = get_node(app_id, node_id)
         if node_info:
             node_info_list.append(node_info)
+    app_manager_user = get_openclaw_app_manager_user(app_id)
     return {
         'result': 'ok',
         'data': {
-            'list': node_info_list
+            'list': node_info_list,
+            'openclaw_app_manager_user': app_manager_user or {}
         }
     }
 
