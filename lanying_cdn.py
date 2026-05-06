@@ -225,3 +225,46 @@ def set_cdn_domain_cert(domain_name, ssl_pem, ssl_key):
     result = client.set_cdn_domain_sslcertificate(req)
     show_result(result)
     return result
+
+def set_cdn_http01_challenge_route(domain_name, challenge_origin_host='connector.lanyingim.com'):
+    if has_cdn_http01_challenge_route(domain_name, challenge_origin_host):
+        logging.info(f"set_cdn_http01_challenge_route skipped | domain_name:{domain_name}, reason:already_exists")
+        return {
+            'result': 'ok',
+            'message': 'already_exists'
+        }
+    client = create_client()
+    functions = [
+        {
+            "functionArgs": [
+                {"argName": "enable", "argValue": "on"},
+                {"argName": "name", "argValue": "redirect_http01_challenge"},
+                {"argName": "pos", "argValue": "head"},
+                {"argName": "pri", "argValue": "0"},
+                {
+                    "argName": "rule",
+                    "argValue": "if match_re($uri, '^/\\.well-known/acme-challenge') {\n    rewrite(concat('https://" + challenge_origin_host + "',$uri), 'redirect')\n}"
+                },
+                {"argName": "brk", "argValue": "off"}
+            ],
+            "functionName": "edge_function"
+        }
+    ]
+    functions_str = json.dumps(functions)
+    req = cdn_20180510_models.BatchSetCdnDomainConfigRequest(
+        domain_names=domain_name,
+        functions=functions_str
+    )
+    result = client.batch_set_cdn_domain_config(req)
+    show_result(result)
+    return result
+
+def has_cdn_http01_challenge_route(domain_name, challenge_origin_host='connector.lanyingim.com'):
+    try:
+        result = desc_cdn_config(domain_name)
+        result_map = result.to_map() if hasattr(result, 'to_map') else {}
+        serialized = json.dumps(result_map, ensure_ascii=False)
+        return 'acme-challenge' in serialized and f"https://{challenge_origin_host}" in serialized
+    except Exception as e:
+        logging.exception(e)
+        return False
