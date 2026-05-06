@@ -1596,7 +1596,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
     def test_ensure_session_mapping_openclaw_group_root_does_not_prejoin_management_user(self):
         m = lanying_openclaw
-        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "name": "OpenClaw-15"}
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "name": "OpenClaw-15", "session_map_sync": "on"}
 
         with mock.patch.object(m, "ensure_openclaw_app_manager_user", return_value={
             "result": "ok",
@@ -1636,6 +1636,91 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(result["result"], "ok")
         mocked_join.assert_not_called()
+
+    def test_ensure_session_mapping_promotes_management_user_as_group_admin(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "name": "OpenClaw-15", "session_map_sync": "on"}
+
+        with mock.patch.object(m, "ensure_openclaw_app_manager_user", return_value={
+            "result": "ok",
+            "data": {"user_id": "management-user"},
+        }), \
+             mock.patch.object(m, "resolve_session_lineage", return_value={
+                 "parent_session_key": "",
+                 "root_session_key": "agent:main:main",
+             }), \
+             mock.patch.object(m, "is_merge_sub_sessions_enabled", return_value=False), \
+             mock.patch.object(m, "prewarm_ancestor_session_mappings"), \
+             mock.patch.object(m, "resolve_inherited_origin_identity", return_value={
+                 "origin_kind": "openclaw_control",
+                 "origin_user_id": "",
+                 "chatbot_user_id": "",
+                 "source": "control_ui",
+             }), \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=None), \
+             mock.patch.object(m, "create_openclaw_session_group", return_value="group-9"), \
+             mock.patch.object(m, "ensure_session_mapping_group_members", return_value={"result": "ok"}), \
+             mock.patch.object(m, "ensure_user_group_admin", return_value=True) as mocked_ensure_admin, \
+             mock.patch.object(m, "set_session_mapping", side_effect=lambda app_id, node_id, mapping: {
+                 "result": "ok",
+                 "data": dict(mapping, updated_at=1),
+             }), \
+             mock.patch.object(m, "sync_session_mapping_to_node"):
+            result = m.ensure_session_mapping(
+                "app-id",
+                node_info,
+                "agent:main:main",
+                observed_origin={
+                    "observed_message_type": "control_ui_user",
+                    "observed_message_type_source": "provenance",
+                    "observed_message_text": "hello",
+                },
+            )
+
+        self.assertEqual(result["result"], "ok")
+        mocked_ensure_admin.assert_called_once_with("app-id", "management-user", "group-9")
+
+    def test_ensure_session_mapping_admin_promotion_failure_is_non_blocking(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "name": "OpenClaw-15", "session_map_sync": "on"}
+
+        with mock.patch.object(m, "ensure_openclaw_app_manager_user", return_value={
+            "result": "ok",
+            "data": {"user_id": "management-user"},
+        }), \
+             mock.patch.object(m, "resolve_session_lineage", return_value={
+                 "parent_session_key": "",
+                 "root_session_key": "agent:main:main",
+             }), \
+             mock.patch.object(m, "is_merge_sub_sessions_enabled", return_value=False), \
+             mock.patch.object(m, "prewarm_ancestor_session_mappings"), \
+             mock.patch.object(m, "resolve_inherited_origin_identity", return_value={
+                 "origin_kind": "openclaw_control",
+                 "origin_user_id": "",
+                 "chatbot_user_id": "",
+                 "source": "control_ui",
+             }), \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=None), \
+             mock.patch.object(m, "create_openclaw_session_group", return_value="group-9"), \
+             mock.patch.object(m, "ensure_session_mapping_group_members", return_value={"result": "ok"}), \
+             mock.patch.object(m, "ensure_user_group_admin", return_value=False), \
+             mock.patch.object(m, "set_session_mapping", side_effect=lambda app_id, node_id, mapping: {
+                 "result": "ok",
+                 "data": dict(mapping, updated_at=1),
+             }), \
+             mock.patch.object(m, "sync_session_mapping_to_node"):
+            result = m.ensure_session_mapping(
+                "app-id",
+                node_info,
+                "agent:main:main",
+                observed_origin={
+                    "observed_message_type": "control_ui_user",
+                    "observed_message_type_source": "provenance",
+                    "observed_message_text": "hello",
+                },
+            )
+
+        self.assertEqual(result["result"], "ok")
 
     def test_router_direct_assistant_reply_uses_router_reply_signal(self):
         m = lanying_openclaw

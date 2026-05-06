@@ -1410,6 +1410,28 @@ def ensure_user_joined_group(app_id, user_id, group_id):
         time.sleep(1)
     return False
 
+def ensure_user_group_admin(app_id, user_id, group_id):
+    normalized_user_id = str(user_id).strip()
+    normalized_group_id = str(group_id).strip()
+    if normalized_user_id == '' or normalized_group_id == '':
+        return False
+    if not ensure_user_joined_group(app_id, normalized_user_id, normalized_group_id):
+        logging.info(
+            f"ensure_user_group_admin join failed | app_id:{app_id}, user_id:{normalized_user_id}, "
+            f"group_id:{normalized_group_id}"
+        )
+        return False
+    try:
+        response_json = lanying_im_api.admin_add_group_admin(app_id, normalized_group_id, [int(normalized_user_id)])
+        logging.info(
+            f"ensure_user_group_admin add_admin | app_id:{app_id}, user_id:{normalized_user_id}, "
+            f"group_id:{normalized_group_id}, response:{response_json}"
+        )
+        return isinstance(response_json, dict) and response_json.get('code') == 200
+    except Exception:
+        logging.exception("ensure_user_group_admin add_admin failed")
+        return False
+
 def get_session_mapping_by_session(app_id, node_id, session_key):
     redis = lanying_redis.get_redis_connection()
     key = get_openclaw_session_mapping_by_session_key(app_id, node_id, normalize_session_key(session_key))
@@ -1451,6 +1473,85 @@ def list_session_mappings_for_node(app_id, node_id):
         except Exception:
             logging.exception("list_session_mappings_for_node parse failed")
     return mappings
+
+def migrate_session_mapping_group_admins_for_node(app_id, node_info, dry_run=False):
+    if not isinstance(node_info, dict):
+        return {'result': 'ignored', 'message': 'bad node info'}
+    node_id = str(node_info.get('node_id', '')).strip()
+    if node_id == '':
+        return {'result': 'ignored', 'message': 'bad node id'}
+    if not is_session_map_sync_enabled(node_info):
+        return {'result': 'ignored', 'message': 'session_map_sync disabled'}
+    app_user_result = ensure_openclaw_app_manager_user(app_id)
+    if app_user_result.get('result') != 'ok':
+        return {'result': 'error', 'message': 'openclaw app manager user unavailable'}
+    management_user_id = str(app_user_result.get('data', {}).get('user_id', '')).strip()
+    if management_user_id == '':
+        return {'result': 'error', 'message': 'bad management user id'}
+
+    migrated_groups = set()
+    total = 0
+    success = 0
+    mappings = list_session_mappings_for_node(app_id, node_id)
+    for mapping in mappings:
+        group_id = str(mapping.get('group_id', '')).strip()
+        if group_id == '' or group_id in migrated_groups:
+            continue
+        migrated_groups.add(group_id)
+        total += 1
+        if dry_run:
+            success += 1
+        elif ensure_user_group_admin(app_id, management_user_id, group_id):
+            success += 1
+    logging.info(
+        f"migrate_session_mapping_group_admins_for_node | app_id:{app_id}, node_id:{node_id}, "
+        f"management_user_id:{management_user_id}, total_groups:{total}, success_groups:{success}, dry_run:{dry_run}"
+    )
+    return {
+        'result': 'ok',
+        'data': {
+            'node_id': node_id,
+            'management_user_id': management_user_id,
+            'total_groups': total,
+            'success_groups': success,
+            'dry_run': dry_run
+        }
+    }
+
+def migrate_session_mapping_group_admins(app_id, node_id='', dry_run=False):
+    app_id_text = str(app_id).strip()
+    node_id_text = str(node_id).strip()
+    if app_id_text == '':
+        return {'result': 'error', 'message': 'bad app id'}
+    node_list_result = get_node_list(app_id_text)
+    if node_list_result.get('result') != 'ok':
+        return {'result': 'error', 'message': 'get node list failed', 'data': node_list_result}
+    nodes = node_list_result.get('data', {}).get('list', [])
+    if node_id_text != '':
+        nodes = [node for node in nodes if str(node.get('node_id', '')).strip() == node_id_text]
+
+    node_results = []
+    total_groups = 0
+    success_groups = 0
+    for node in nodes:
+        result = migrate_session_mapping_group_admins_for_node(app_id_text, node, dry_run=dry_run)
+        node_results.append(result)
+        data = result.get('data', {}) if isinstance(result, dict) else {}
+        total_groups += int(data.get('total_groups', 0) or 0)
+        success_groups += int(data.get('success_groups', 0) or 0)
+
+    return {
+        'result': 'ok',
+        'data': {
+            'app_id': app_id_text,
+            'node_id': node_id_text,
+            'dry_run': bool(dry_run),
+            'node_count': len(nodes),
+            'total_groups': total_groups,
+            'success_groups': success_groups,
+            'node_results': node_results
+        }
+    }
 
 def set_session_mapping(app_id, node_id, mapping):
     mapping = normalize_session_mapping_record(mapping)
@@ -1812,6 +1913,12 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
             'result': 'error',
             'message': 'create session group failed'
         }
+    management_admin_ok = ensure_user_group_admin(app_id, management_user_id, group_id)
+    if not management_admin_ok:
+        logging.info(
+            f"ensure_session_mapping add management admin failed (non-blocking) | app_id:{app_id}, node_id:{node_id}, "
+            f"session_key:{normalized_session_key}, group_id:{group_id}, management_user_id:{management_user_id}"
+        )
     if clawchat_session is None:
         membership_result = ensure_session_mapping_group_members(
             app_id,
