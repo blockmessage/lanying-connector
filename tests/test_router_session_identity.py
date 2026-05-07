@@ -56,6 +56,100 @@ lanying_openclaw = _load_lanying_openclaw()
 
 
 class RouterSessionIdentityTests(unittest.TestCase):
+    def test_legacy_router_session_key_is_normalized_to_clawchat_router(self):
+        m = lanying_openclaw
+
+        self.assertEqual(
+            m.normalize_session_key("agent:main:router:group:6726580510113"),
+            "agent:main:clawchat-router:group:6726580510113",
+        )
+        self.assertEqual(
+            m.parse_clawchat_session_identity("agent:main:router:direct:6632092019520"),
+            {
+                "channel": "clawchat-router",
+                "chat_type": "direct",
+                "target_id": "6632092019520",
+            },
+        )
+
+    def test_legacy_agent_main_clawchat_group_and_direct_session_keys_are_canonicalized(self):
+        m = lanying_openclaw
+
+        self.assertEqual(
+            m.normalize_session_key("agent:main:group:6726580510113"),
+            "agent:main:clawchat:group:6726580510113",
+        )
+        self.assertEqual(
+            m.normalize_session_key("agent:main:6632092019520"),
+            "agent:main:clawchat:direct:6632092019520",
+        )
+        self.assertEqual(
+            m.normalize_session_key("agent:main:6597711675232"),
+            "agent:main:clawchat:direct:6597711675232",
+        )
+        self.assertEqual(
+            m.parse_clawchat_session_identity("agent:main:group:6726580510113"),
+            {
+                "channel": "clawchat",
+                "chat_type": "group",
+                "target_id": "6726580510113",
+            },
+        )
+        self.assertEqual(
+            m.parse_clawchat_session_identity("agent:main:6632092019520"),
+            {
+                "channel": "clawchat",
+                "chat_type": "direct",
+                "target_id": "6632092019520",
+            },
+        )
+        self.assertEqual(
+            m.parse_clawchat_session_identity("agent:main:6597711675232"),
+            {
+                "channel": "clawchat",
+                "chat_type": "direct",
+                "target_id": "6597711675232",
+            },
+        )
+        self.assertEqual(m.normalize_session_key("legacy-user"), "legacy-user")
+        self.assertIsNone(m.parse_clawchat_session_identity("legacy-user"))
+
+    def test_legacy_router_session_mapping_record_is_canonicalized(self):
+        m = lanying_openclaw
+
+        normalized = m.normalize_session_mapping_record({
+            "session_key": "agent:main:router:group:6726580510113",
+            "parent_session_key": "agent:main:router:group:6726580510113",
+            "root_session_key": "agent:main:router:group:6726580510113",
+            "effective_target_session_key": "agent:main:router:direct:6632092019520",
+        })
+
+        self.assertEqual(normalized["session_key"], "agent:main:clawchat-router:group:6726580510113")
+        self.assertEqual(normalized["parent_session_key"], "agent:main:clawchat-router:group:6726580510113")
+        self.assertEqual(normalized["root_session_key"], "agent:main:clawchat-router:group:6726580510113")
+        self.assertEqual(
+            normalized["effective_target_session_key"],
+            "agent:main:clawchat-router:direct:6632092019520",
+        )
+
+    def test_legacy_agent_main_clawchat_session_mapping_record_is_canonicalized(self):
+        m = lanying_openclaw
+
+        normalized = m.normalize_session_mapping_record({
+            "session_key": "agent:main:group:6726580510113",
+            "parent_session_key": "agent:main:group:6726580510113",
+            "root_session_key": "agent:main:group:6726580510113",
+            "effective_target_session_key": "agent:main:6597711675232",
+        })
+
+        self.assertEqual(normalized["session_key"], "agent:main:clawchat:group:6726580510113")
+        self.assertEqual(normalized["parent_session_key"], "agent:main:clawchat:group:6726580510113")
+        self.assertEqual(normalized["root_session_key"], "agent:main:clawchat:group:6726580510113")
+        self.assertEqual(
+            normalized["effective_target_session_key"],
+            "agent:main:clawchat:direct:6597711675232",
+        )
+
     def test_router_child_mapping_uses_sender_and_bound_chatbot(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
@@ -1864,6 +1958,15 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_direct.call_args.args[2], "sender-user")
         self.assertEqual(mocked_direct.call_args.args[3], "sender-user")
         self.assertEqual(mocked_direct.call_args.args[5], "user")
+
+    def test_legacy_router_root_session_mode_is_router_direct(self):
+        m = lanying_openclaw
+
+        mode = m.resolve_root_session_sync_mode(
+            m.parse_clawchat_session_identity("agent:main:router:direct:6632092019520")
+        )
+
+        self.assertEqual(mode, "router_direct")
 
     def test_nested_assistant_reply_prefers_parent_group_over_direct_root(self):
         m = lanying_openclaw

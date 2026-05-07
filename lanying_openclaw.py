@@ -373,7 +373,14 @@ def normalize_session_key(session_key):
         except Exception:
             logging.exception("normalize_session_key decode failed")
             session_key = ''
-    return str(session_key or '').strip().lower()
+    normalized = str(session_key or '').strip().lower()
+    if normalized.startswith('agent:main:router:'):
+        return f'agent:main:clawchat-router:{normalized[len("agent:main:router:"):]}'
+    if normalized.startswith('agent:main:group:') and normalized[len('agent:main:group:'):].strip() != '':
+        return f'agent:main:clawchat:group:{normalized[len("agent:main:group:"):].strip()}'
+    if normalized.startswith('agent:main:') and normalized[len('agent:main:'):].isdigit():
+        return f'agent:main:clawchat:direct:{normalized[len("agent:main:"):]}'
+    return normalized
 
 def get_openclaw_session_group_name(node_name, node_id, session_key):
     node_name_text = str(node_name or '').strip()
@@ -620,6 +627,9 @@ def normalize_session_mapping_record(mapping):
     if not isinstance(mapping, dict):
         return mapping
     normalized = dict(mapping)
+    for key in ['session_key', 'parent_session_key', 'root_session_key', 'effective_target_session_key']:
+        if key in normalized:
+            normalized[key] = normalize_optional_session_key(normalized.get(key, ''))
     origin_identity = infer_origin_identity_from_mapping(normalized)
     normalized['origin_kind'] = origin_identity.get('origin_kind', '')
     normalized['origin_user_id'] = origin_identity.get('origin_user_id', '')
