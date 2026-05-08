@@ -1525,15 +1525,40 @@ def migrate_session_mapping_group_admins_for_node(app_id, node_info, dry_run=Fal
     total = 0
     success = 0
     mappings = list_session_mappings_for_node(app_id, node_id)
+    logging.info(
+        f"migrate_session_mapping_group_admins_for_node start | app_id:{app_id}, node_id:{node_id}, "
+        f"management_user_id:{management_user_id}, mapping_count:{len(mappings)}, dry_run:{dry_run}"
+    )
     for mapping in mappings:
         group_id = str(mapping.get('group_id', '')).strip()
-        if group_id == '' or group_id in migrated_groups:
+        if group_id == '':
+            logging.info(
+                f"migrate_session_mapping_group_admins_for_node skip mapping without group | "
+                f"app_id:{app_id}, node_id:{node_id}, session_key:{str(mapping.get('session_key', '')).strip()}"
+            )
+            continue
+        if group_id in migrated_groups:
+            logging.info(
+                f"migrate_session_mapping_group_admins_for_node skip duplicated group | "
+                f"app_id:{app_id}, node_id:{node_id}, group_id:{group_id}"
+            )
             continue
         migrated_groups.add(group_id)
         total += 1
         if dry_run:
+            logging.info(
+                f"migrate_session_mapping_group_admins_for_node dry_run candidate | "
+                f"app_id:{app_id}, node_id:{node_id}, group_id:{group_id}, management_user_id:{management_user_id}"
+            )
             success += 1
-        elif ensure_user_group_admin_sync(app_id, management_user_id, group_id):
+            continue
+        repair_ok = ensure_user_group_admin_sync(app_id, management_user_id, group_id)
+        logging.info(
+            f"migrate_session_mapping_group_admins_for_node repair result | "
+            f"app_id:{app_id}, node_id:{node_id}, group_id:{group_id}, "
+            f"management_user_id:{management_user_id}, success:{repair_ok}"
+        )
+        if repair_ok:
             success += 1
     logging.info(
         f"migrate_session_mapping_group_admins_for_node | app_id:{app_id}, node_id:{node_id}, "
@@ -1544,6 +1569,71 @@ def migrate_session_mapping_group_admins_for_node(app_id, node_info, dry_run=Fal
         'data': {
             'node_id': node_id,
             'management_user_id': management_user_id,
+            'total_groups': total,
+            'success_groups': success,
+            'dry_run': dry_run
+        }
+    }
+
+def migrate_session_mapping_management_users_for_node(app_id, node_info, dry_run=False):
+    if not isinstance(node_info, dict):
+        return {'result': 'ignored', 'message': 'bad node info'}
+    node_id = str(node_info.get('node_id', '')).strip()
+    if node_id == '':
+        return {'result': 'ignored', 'message': 'bad node id'}
+    if not is_session_map_sync_enabled(node_info):
+        return {'result': 'ignored', 'message': 'session_map_sync disabled'}
+
+    migrated_pairs = set()
+    total = 0
+    success = 0
+    mappings = list_session_mappings_for_node(app_id, node_id)
+    logging.info(
+        f"migrate_session_mapping_management_users_for_node start | app_id:{app_id}, node_id:{node_id}, "
+        f"mapping_count:{len(mappings)}, dry_run:{dry_run}"
+    )
+    for mapping in mappings:
+        group_id = str(mapping.get('group_id', '')).strip()
+        management_user_id = str(mapping.get('management_user_id', '')).strip()
+        if group_id == '' or management_user_id == '':
+            logging.info(
+                f"migrate_session_mapping_management_users_for_node skip incomplete mapping | "
+                f"app_id:{app_id}, node_id:{node_id}, session_key:{str(mapping.get('session_key', '')).strip()}, "
+                f"group_id:{group_id}, management_user_id:{management_user_id}"
+            )
+            continue
+        migrate_key = f"{group_id}:{management_user_id}"
+        if migrate_key in migrated_pairs:
+            logging.info(
+                f"migrate_session_mapping_management_users_for_node skip duplicated pair | "
+                f"app_id:{app_id}, node_id:{node_id}, group_id:{group_id}, management_user_id:{management_user_id}"
+            )
+            continue
+        migrated_pairs.add(migrate_key)
+        total += 1
+        if dry_run:
+            logging.info(
+                f"migrate_session_mapping_management_users_for_node dry_run candidate | "
+                f"app_id:{app_id}, node_id:{node_id}, group_id:{group_id}, management_user_id:{management_user_id}"
+            )
+            success += 1
+            continue
+        repair_ok = ensure_user_group_admin_sync(app_id, management_user_id, group_id)
+        logging.info(
+            f"migrate_session_mapping_management_users_for_node repair result | "
+            f"app_id:{app_id}, node_id:{node_id}, group_id:{group_id}, "
+            f"management_user_id:{management_user_id}, success:{repair_ok}"
+        )
+        if repair_ok:
+            success += 1
+    logging.info(
+        f"migrate_session_mapping_management_users_for_node | app_id:{app_id}, node_id:{node_id}, "
+        f"total_pairs:{total}, success_pairs:{success}, dry_run:{dry_run}"
+    )
+    return {
+        'result': 'ok',
+        'data': {
+            'node_id': node_id,
             'total_groups': total,
             'success_groups': success,
             'dry_run': dry_run
@@ -1563,7 +1653,11 @@ def list_openclaw_node_list_app_ids():
     except Exception:
         logging.exception("list_openclaw_node_list_app_ids scan failed")
         return []
-    return sorted(app_ids)
+    resolved_app_ids = sorted(app_ids)
+    logging.info(
+        f"list_openclaw_node_list_app_ids | app_count:{len(resolved_app_ids)}, app_ids:{resolved_app_ids}"
+    )
+    return resolved_app_ids
 
 def migrate_session_mapping_group_admins(app_id, node_id='', dry_run=False):
     app_id_text = str(app_id).strip()
@@ -1571,14 +1665,26 @@ def migrate_session_mapping_group_admins(app_id, node_id='', dry_run=False):
     app_ids = [app_id_text] if app_id_text != '' else list_openclaw_node_list_app_ids()
     if len(app_ids) == 0:
         return {'result': 'error', 'message': 'bad app id'}
+    logging.info(
+        f"migrate_session_mapping_group_admins start | app_id:{app_id_text}, node_id:{node_id_text}, "
+        f"dry_run:{dry_run}, app_ids:{app_ids}"
+    )
 
     app_results = []
     total_node_count = 0
     total_groups = 0
     success_groups = 0
     for current_app_id in app_ids:
+        logging.info(
+            f"migrate_session_mapping_group_admins load node list | app_id:{current_app_id}, "
+            f"node_id_filter:{node_id_text}, dry_run:{dry_run}"
+        )
         node_list_result = get_node_list(current_app_id)
         if node_list_result.get('result') != 'ok':
+            logging.info(
+                f"migrate_session_mapping_group_admins node list failed | app_id:{current_app_id}, "
+                f"node_id_filter:{node_id_text}, result:{node_list_result}"
+            )
             app_result = {
                 'result': 'error',
                 'message': 'get node list failed',
@@ -1598,6 +1704,10 @@ def migrate_session_mapping_group_admins(app_id, node_id='', dry_run=False):
         nodes = node_list_result.get('data', {}).get('list', [])
         if node_id_text != '':
             nodes = [node for node in nodes if str(node.get('node_id', '')).strip() == node_id_text]
+        logging.info(
+            f"migrate_session_mapping_group_admins process app nodes | app_id:{current_app_id}, "
+            f"node_count:{len(nodes)}, node_id_filter:{node_id_text}"
+        )
 
         node_results = []
         app_total_groups = 0
@@ -1621,13 +1731,132 @@ def migrate_session_mapping_group_admins(app_id, node_id='', dry_run=False):
                 'node_results': node_results
             }
         }
+        logging.info(
+            f"migrate_session_mapping_group_admins app summary | app_id:{current_app_id}, "
+            f"node_count:{len(nodes)}, total_groups:{app_total_groups}, "
+            f"success_groups:{app_success_groups}, dry_run:{dry_run}"
+        )
         app_results.append(app_result)
         total_node_count += len(nodes)
         total_groups += app_total_groups
         success_groups += app_success_groups
 
     if app_id_text != '':
+        logging.info(
+            f"migrate_session_mapping_group_admins done single app | app_id:{app_id_text}, node_id:{node_id_text}, "
+            f"total_groups:{total_groups}, success_groups:{success_groups}, dry_run:{dry_run}"
+        )
         return app_results[0]
+    logging.info(
+        f"migrate_session_mapping_group_admins done all apps | app_count:{len(app_ids)}, node_count:{total_node_count}, "
+        f"total_groups:{total_groups}, success_groups:{success_groups}, dry_run:{dry_run}"
+    )
+    return {
+        'result': 'ok',
+        'data': {
+            'app_id': '',
+            'node_id': node_id_text,
+            'dry_run': bool(dry_run),
+            'app_count': len(app_ids),
+            'node_count': total_node_count,
+            'total_groups': total_groups,
+            'success_groups': success_groups,
+            'app_results': app_results
+        }
+    }
+
+def migrate_session_mapping_management_users(app_id, node_id='', dry_run=False):
+    app_id_text = str(app_id).strip()
+    node_id_text = str(node_id).strip()
+    app_ids = [app_id_text] if app_id_text != '' else list_openclaw_node_list_app_ids()
+    if len(app_ids) == 0:
+        return {'result': 'error', 'message': 'bad app id'}
+    logging.info(
+        f"migrate_session_mapping_management_users start | app_id:{app_id_text}, node_id:{node_id_text}, "
+        f"dry_run:{dry_run}, app_ids:{app_ids}"
+    )
+
+    app_results = []
+    total_node_count = 0
+    total_groups = 0
+    success_groups = 0
+    for current_app_id in app_ids:
+        logging.info(
+            f"migrate_session_mapping_management_users load node list | app_id:{current_app_id}, "
+            f"node_id_filter:{node_id_text}, dry_run:{dry_run}"
+        )
+        node_list_result = get_node_list(current_app_id)
+        if node_list_result.get('result') != 'ok':
+            logging.info(
+                f"migrate_session_mapping_management_users node list failed | app_id:{current_app_id}, "
+                f"node_id_filter:{node_id_text}, result:{node_list_result}"
+            )
+            app_result = {
+                'result': 'error',
+                'message': 'get node list failed',
+                'data': {
+                    'app_id': current_app_id,
+                    'node_id': node_id_text,
+                    'dry_run': bool(dry_run),
+                    'node_count': 0,
+                    'total_groups': 0,
+                    'success_groups': 0,
+                    'node_results': [],
+                    'node_list_result': node_list_result,
+                }
+            }
+            app_results.append(app_result)
+            continue
+        nodes = node_list_result.get('data', {}).get('list', [])
+        if node_id_text != '':
+            nodes = [node for node in nodes if str(node.get('node_id', '')).strip() == node_id_text]
+        logging.info(
+            f"migrate_session_mapping_management_users process app nodes | app_id:{current_app_id}, "
+            f"node_count:{len(nodes)}, node_id_filter:{node_id_text}"
+        )
+
+        node_results = []
+        app_total_groups = 0
+        app_success_groups = 0
+        for node in nodes:
+            result = migrate_session_mapping_management_users_for_node(current_app_id, node, dry_run=dry_run)
+            node_results.append(result)
+            data = result.get('data', {}) if isinstance(result, dict) else {}
+            app_total_groups += int(data.get('total_groups', 0) or 0)
+            app_success_groups += int(data.get('success_groups', 0) or 0)
+
+        app_result = {
+            'result': 'ok',
+            'data': {
+                'app_id': current_app_id,
+                'node_id': node_id_text,
+                'dry_run': bool(dry_run),
+                'node_count': len(nodes),
+                'total_groups': app_total_groups,
+                'success_groups': app_success_groups,
+                'node_results': node_results
+            }
+        }
+        logging.info(
+            f"migrate_session_mapping_management_users app summary | app_id:{current_app_id}, "
+            f"node_count:{len(nodes)}, total_groups:{app_total_groups}, "
+            f"success_groups:{app_success_groups}, dry_run:{dry_run}"
+        )
+        app_results.append(app_result)
+        total_node_count += len(nodes)
+        total_groups += app_total_groups
+        success_groups += app_success_groups
+
+    if app_id_text != '':
+        logging.info(
+            f"migrate_session_mapping_management_users done single app | app_id:{app_id_text}, node_id:{node_id_text}, "
+            f"total_groups:{total_groups}, success_groups:{success_groups}, dry_run:{dry_run}"
+        )
+        return app_results[0]
+    logging.info(
+        f"migrate_session_mapping_management_users done all apps | app_count:{len(app_ids)}, node_count:{total_node_count}, "
+        f"total_groups:{total_groups}, success_groups:{success_groups}, dry_run:{dry_run}"
+    )
     return {
         'result': 'ok',
         'data': {
