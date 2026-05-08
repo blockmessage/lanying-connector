@@ -1420,7 +1420,7 @@ def ensure_user_joined_group(app_id, user_id, group_id):
         time.sleep(1)
     return False
 
-def ensure_user_group_admin(app_id, user_id, group_id):
+def ensure_user_group_admin_sync(app_id, user_id, group_id):
     normalized_user_id = str(user_id).strip()
     normalized_group_id = str(group_id).strip()
     if normalized_user_id == '' or normalized_group_id == '':
@@ -1440,6 +1440,28 @@ def ensure_user_group_admin(app_id, user_id, group_id):
         return isinstance(response_json, dict) and response_json.get('code') == 200
     except Exception:
         logging.exception("ensure_user_group_admin add_admin failed")
+        return False
+
+def ensure_user_group_admin(app_id, user_id, group_id):
+    normalized_user_id = str(user_id).strip()
+    normalized_group_id = str(group_id).strip()
+    if normalized_user_id == '' or normalized_group_id == '':
+        return False
+    if not ensure_user_joined_group(app_id, normalized_user_id, normalized_group_id):
+        logging.info(
+            f"ensure_user_group_admin async join failed | app_id:{app_id}, user_id:{normalized_user_id}, "
+            f"group_id:{normalized_group_id}"
+        )
+        return False
+    try:
+        executor.submit(ensure_user_group_admin_sync, app_id, normalized_user_id, normalized_group_id)
+        logging.info(
+            f"ensure_user_group_admin async scheduled | app_id:{app_id}, user_id:{normalized_user_id}, "
+            f"group_id:{normalized_group_id}"
+        )
+        return True
+    except Exception:
+        logging.exception("ensure_user_group_admin async schedule failed")
         return False
 
 def get_session_mapping_by_session(app_id, node_id, session_key):
@@ -1511,7 +1533,7 @@ def migrate_session_mapping_group_admins_for_node(app_id, node_info, dry_run=Fal
         total += 1
         if dry_run:
             success += 1
-        elif ensure_user_group_admin(app_id, management_user_id, group_id):
+        elif ensure_user_group_admin_sync(app_id, management_user_id, group_id):
             success += 1
     logging.info(
         f"migrate_session_mapping_group_admins_for_node | app_id:{app_id}, node_id:{node_id}, "
@@ -2032,6 +2054,7 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
     if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
         return 0
     chatbot_user_id = str(mapping.get('chatbot_user_id', '')).strip()
+    management_user_id = str(mapping.get('management_user_id', '')).strip()
     node_user_id = str(node_info.get('user_id', '')).strip()
     if node_user_id == '':
         return 0
@@ -2045,9 +2068,13 @@ def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delive
     group_id = str(mapping.get('group_id', '')).strip()
     if group_id == '':
         return 0
-    if not ensure_user_joined_group(app_id, from_user_id, group_id):
+    if from_user_id == management_user_id:
+        sender_ready = ensure_user_group_admin(app_id, from_user_id, group_id)
+    else:
+        sender_ready = ensure_user_joined_group(app_id, from_user_id, group_id)
+    if not sender_ready:
         logging.info(
-            f"forward_session_sync_to_group skip for sender not in group | "
+            f"forward_session_sync_to_group skip for sender not ready in group | "
             f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
             f"session_key:{mapping.get('session_key', '')}, group_id:{group_id}, "
             f"role:{role}, from_user_id:{from_user_id}"

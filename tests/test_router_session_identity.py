@@ -809,6 +809,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
 
         with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_group_admin", return_value=True) as mocked_ensure_admin, \
              mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
              mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=223) as mocked_send:
             m.forward_session_sync_to_group(
@@ -827,7 +828,70 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "question from session",
             )
 
+        mocked_ensure_admin.assert_called_once_with("app-id", "management-user", "group-9")
+        mocked_join.assert_not_called()
+        self.assertEqual(mocked_send.call_args.args[2], "management-user")
+        self.assertEqual(mocked_send.call_args.args[3], "group-9")
+
+    def test_ensure_user_group_admin_schedules_async_promotion_after_join(self):
+        m = lanying_openclaw
+
+        with mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
+             mock.patch.object(m.executor, "submit", return_value=None) as mocked_submit:
+            result = m.ensure_user_group_admin("app-id", "management-user", "group-9")
+
+        self.assertTrue(result)
         mocked_join.assert_called_once_with("app-id", "management-user", "group-9")
+        mocked_submit.assert_called_once_with(m.ensure_user_group_admin_sync, "app-id", "management-user", "group-9")
+
+    def test_migrate_session_mapping_group_admins_for_node_uses_sync_repair(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+
+        with mock.patch.object(m, "ensure_openclaw_app_manager_user", return_value={
+            "result": "ok",
+            "data": {"user_id": "management-user"},
+        }), \
+             mock.patch.object(m, "list_session_mappings_for_node", return_value=[
+                 {"group_id": "group-9"},
+                 {"group_id": "group-9"},
+                 {"group_id": "group-10"},
+             ]), \
+             mock.patch.object(m, "ensure_user_group_admin_sync", side_effect=[True, False]) as mocked_repair:
+            result = m.migrate_session_mapping_group_admins_for_node("app-id", node_info, dry_run=False)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["total_groups"], 2)
+        self.assertEqual(result["data"]["success_groups"], 1)
+        self.assertEqual(mocked_repair.call_args_list[0].args, ("app-id", "management-user", "group-9"))
+        self.assertEqual(mocked_repair.call_args_list[1].args, ("app-id", "management-user", "group-10"))
+
+    def test_openclaw_group_user_forwarding_promotes_management_user_as_admin(self):
+        m = lanying_openclaw
+        node_info = {"node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_group_admin", return_value=True) as mocked_ensure_admin, \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=223) as mocked_send:
+            m.forward_session_sync_to_group(
+                "app-id",
+                node_info,
+                {
+                    "session_key": "agent:main:clawchat-router:group:group-9",
+                    "group_id": "group-9",
+                    "origin_kind": "openclaw_control",
+                    "origin_user_id": "",
+                    "chatbot_user_id": "chatbot-user",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat-router:group:group-9",
+                },
+                "user",
+                "question from OpenClaw console",
+            )
+
+        mocked_ensure_admin.assert_called_once_with("app-id", "management-user", "group-9")
+        mocked_join.assert_not_called()
         self.assertEqual(mocked_send.call_args.args[2], "management-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
