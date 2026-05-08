@@ -1923,12 +1923,13 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
             'result': 'error',
             'message': 'create session group failed'
         }
-    management_admin_ok = ensure_user_group_admin(app_id, management_user_id, group_id)
-    if not management_admin_ok:
-        logging.info(
-            f"ensure_session_mapping add management admin failed (non-blocking) | app_id:{app_id}, node_id:{node_id}, "
-            f"session_key:{normalized_session_key}, group_id:{group_id}, management_user_id:{management_user_id}"
-        )
+    if mapping_decision['mode'] != 'reuse_clawchat_group':
+        management_admin_ok = ensure_user_group_admin(app_id, management_user_id, group_id)
+        if not management_admin_ok:
+            logging.info(
+                f"ensure_session_mapping add management admin failed (non-blocking) | app_id:{app_id}, node_id:{node_id}, "
+                f"session_key:{normalized_session_key}, group_id:{group_id}, management_user_id:{management_user_id}"
+            )
     if clawchat_session is None:
         membership_result = ensure_session_mapping_group_members(
             app_id,
