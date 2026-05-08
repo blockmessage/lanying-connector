@@ -1550,38 +1550,95 @@ def migrate_session_mapping_group_admins_for_node(app_id, node_info, dry_run=Fal
         }
     }
 
+def list_openclaw_node_list_app_ids():
+    redis = lanying_redis.get_redis_connection()
+    app_ids = set()
+    prefix = "lanying_connector:openclaw:node_list:"
+    try:
+        for raw_key in redis.scan_iter(match=f"{prefix}*", count=100):
+            key = raw_key.decode('utf-8') if isinstance(raw_key, bytes) else str(raw_key)
+            app_id = key[len(prefix):].strip() if key.startswith(prefix) else ''
+            if app_id != '':
+                app_ids.add(app_id)
+    except Exception:
+        logging.exception("list_openclaw_node_list_app_ids scan failed")
+        return []
+    return sorted(app_ids)
+
 def migrate_session_mapping_group_admins(app_id, node_id='', dry_run=False):
     app_id_text = str(app_id).strip()
     node_id_text = str(node_id).strip()
-    if app_id_text == '':
+    app_ids = [app_id_text] if app_id_text != '' else list_openclaw_node_list_app_ids()
+    if len(app_ids) == 0:
         return {'result': 'error', 'message': 'bad app id'}
-    node_list_result = get_node_list(app_id_text)
-    if node_list_result.get('result') != 'ok':
-        return {'result': 'error', 'message': 'get node list failed', 'data': node_list_result}
-    nodes = node_list_result.get('data', {}).get('list', [])
-    if node_id_text != '':
-        nodes = [node for node in nodes if str(node.get('node_id', '')).strip() == node_id_text]
 
-    node_results = []
+    app_results = []
+    total_node_count = 0
     total_groups = 0
     success_groups = 0
-    for node in nodes:
-        result = migrate_session_mapping_group_admins_for_node(app_id_text, node, dry_run=dry_run)
-        node_results.append(result)
-        data = result.get('data', {}) if isinstance(result, dict) else {}
-        total_groups += int(data.get('total_groups', 0) or 0)
-        success_groups += int(data.get('success_groups', 0) or 0)
+    for current_app_id in app_ids:
+        node_list_result = get_node_list(current_app_id)
+        if node_list_result.get('result') != 'ok':
+            app_result = {
+                'result': 'error',
+                'message': 'get node list failed',
+                'data': {
+                    'app_id': current_app_id,
+                    'node_id': node_id_text,
+                    'dry_run': bool(dry_run),
+                    'node_count': 0,
+                    'total_groups': 0,
+                    'success_groups': 0,
+                    'node_results': [],
+                    'node_list_result': node_list_result,
+                }
+            }
+            app_results.append(app_result)
+            continue
+        nodes = node_list_result.get('data', {}).get('list', [])
+        if node_id_text != '':
+            nodes = [node for node in nodes if str(node.get('node_id', '')).strip() == node_id_text]
 
+        node_results = []
+        app_total_groups = 0
+        app_success_groups = 0
+        for node in nodes:
+            result = migrate_session_mapping_group_admins_for_node(current_app_id, node, dry_run=dry_run)
+            node_results.append(result)
+            data = result.get('data', {}) if isinstance(result, dict) else {}
+            app_total_groups += int(data.get('total_groups', 0) or 0)
+            app_success_groups += int(data.get('success_groups', 0) or 0)
+
+        app_result = {
+            'result': 'ok',
+            'data': {
+                'app_id': current_app_id,
+                'node_id': node_id_text,
+                'dry_run': bool(dry_run),
+                'node_count': len(nodes),
+                'total_groups': app_total_groups,
+                'success_groups': app_success_groups,
+                'node_results': node_results
+            }
+        }
+        app_results.append(app_result)
+        total_node_count += len(nodes)
+        total_groups += app_total_groups
+        success_groups += app_success_groups
+
+    if app_id_text != '':
+        return app_results[0]
     return {
         'result': 'ok',
         'data': {
-            'app_id': app_id_text,
+            'app_id': '',
             'node_id': node_id_text,
             'dry_run': bool(dry_run),
-            'node_count': len(nodes),
+            'app_count': len(app_ids),
+            'node_count': total_node_count,
             'total_groups': total_groups,
             'success_groups': success_groups,
-            'node_results': node_results
+            'app_results': app_results
         }
     }
 

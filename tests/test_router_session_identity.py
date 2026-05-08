@@ -866,6 +866,40 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_repair.call_args_list[0].args, ("app-id", "management-user", "group-9"))
         self.assertEqual(mocked_repair.call_args_list[1].args, ("app-id", "management-user", "group-10"))
 
+    def test_list_openclaw_node_list_app_ids_scans_node_list_keys(self):
+        m = lanying_openclaw
+        fake_redis = types.SimpleNamespace(
+            scan_iter=lambda match, count=100: iter([
+                b"lanying_connector:openclaw:node_list:app-b",
+                b"lanying_connector:openclaw:node_list:app-a",
+                b"lanying_connector:openclaw:node_list:app-b",
+            ])
+        )
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis):
+            app_ids = m.list_openclaw_node_list_app_ids()
+        self.assertEqual(app_ids, ["app-a", "app-b"])
+
+    def test_migrate_session_mapping_group_admins_scans_all_apps_when_app_id_empty(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "list_openclaw_node_list_app_ids", return_value=["app-a", "app-b"]), \
+             mock.patch.object(m, "get_node_list", side_effect=[
+                 {"result": "ok", "data": {"list": [{"node_id": "1"}, {"node_id": "2"}]}},
+                 {"result": "ok", "data": {"list": [{"node_id": "3"}]}},
+             ]), \
+             mock.patch.object(m, "migrate_session_mapping_group_admins_for_node", side_effect=[
+                 {"result": "ok", "data": {"total_groups": 2, "success_groups": 2}},
+                 {"result": "ok", "data": {"total_groups": 3, "success_groups": 2}},
+                 {"result": "ok", "data": {"total_groups": 5, "success_groups": 4}},
+             ]):
+            result = m.migrate_session_mapping_group_admins("", dry_run=True)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["app_count"], 2)
+        self.assertEqual(result["data"]["node_count"], 3)
+        self.assertEqual(result["data"]["total_groups"], 10)
+        self.assertEqual(result["data"]["success_groups"], 8)
+        self.assertEqual(len(result["data"]["app_results"]), 2)
+
     def test_openclaw_group_user_forwarding_promotes_management_user_as_admin(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
