@@ -50,6 +50,7 @@ def info1(any):
              info_openclaw_nodes,
              info_openclaw_node,
              info_openclaw_session_mapping_list,
+             info_openclaw_session_mapping_detail_list,
              info_openclaw_session_mapping,
              info_embedding_uuid_info,
              info_embedding_doc_id_list_by_embedding_name,
@@ -347,6 +348,20 @@ def info_openclaw_session_mapping_list(node_id):
                 'result': 'ok',
                 'data': {
                     'openclaw_session_mappings': summary
+                }
+            }
+
+def info_openclaw_session_mapping_detail_list(node_id):
+    app_id = cache.get('app_id')
+    if is_app_id(app_id) and is_node_id(node_id):
+        node_id_text = str(node_id)
+        mappings = lanying_openclaw.list_session_mapping_details_for_node(app_id, node_id_text)
+        if len(mappings) > 0:
+            set_cache('node_id', node_id_text)
+            return {
+                'result': 'ok',
+                'data': {
+                    'openclaw_session_mapping_details': mappings
                 }
             }
 

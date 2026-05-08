@@ -332,6 +332,163 @@ class RouterSessionIdentityTests(unittest.TestCase):
             redis.values,
         )
 
+    def test_list_session_mapping_details_for_node_skips_group_lookups_for_non_group_mapping(self):
+        m = lanying_openclaw
+        mapping = {
+            "session_key": "agent:main:clawchat:direct:user-1",
+            "group_id": "",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "origin_user_id": "origin-user",
+            "chatbot_user_id": "chatbot-user",
+        }
+
+        with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m, "get_group_member_list_for_group_admin") as mocked_member_list, \
+             mock.patch.object(m, "get_group_admin_list_for_group_admin") as mocked_admin_list:
+            details = m.list_session_mapping_details_for_node("app-id", "node-1")
+
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0]["session_key"], "agent:main:clawchat:direct:user-1")
+        self.assertEqual(details[0]["group_info"], {"group_id": "", "owner_id": ""})
+        self.assertEqual(details[0]["member_summary"]["members"], [])
+        self.assertEqual(details[0]["member_summary"]["member_count_loaded"], 0)
+        self.assertEqual(details[0]["key_user_status"]["openclaw_user_id"]["present_in_group"], False)
+        mocked_member_list.assert_not_called()
+        mocked_admin_list.assert_not_called()
+
+    def test_list_session_mapping_details_for_node_aggregates_group_summary_and_key_users(self):
+        m = lanying_openclaw
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "origin_user_id": "origin-user",
+            "chatbot_user_id": "chatbot-user",
+        }
+        member_pages = [
+            {
+                "code": 200,
+                "data": [
+                    {"user_id": "openclaw-user", "display_name": "OpenClaw", "join_time": 11, "expired_time": 0},
+                    {"user_id": "management-user", "display_name": "Manager", "join_time": 12, "expired_time": 0},
+                ],
+                "cursor": "page-2",
+            },
+            {
+                "code": 200,
+                "data": [
+                    {"user_id": "origin-user", "display_name": "Origin", "join_time": 13, "expired_time": 0},
+                ],
+                "cursor": "",
+            },
+        ]
+        admin_list = {
+            "code": 200,
+            "data": [
+                {"user_id": "management-user", "display_name": "Manager", "join_time": 12, "expired_time": 0},
+            ],
+        }
+
+        with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m, "get_group_member_list_for_group_admin", side_effect=member_pages) as mocked_member_list, \
+             mock.patch.object(m, "get_group_admin_list_for_group_admin", return_value=admin_list) as mocked_admin_list:
+            details = m.list_session_mapping_details_for_node("app-id", "node-1")
+
+        self.assertEqual(len(details), 1)
+        detail = details[0]
+        self.assertEqual(detail["group_info"]["group_id"], "group-9")
+        self.assertEqual(detail["member_summary"]["member_count_reported"], 3)
+        self.assertEqual(detail["member_summary"]["member_count_loaded"], 3)
+        self.assertTrue(detail["member_summary"]["members_loaded_complete"])
+        self.assertEqual(detail["member_summary"]["members"][0]["user_id"], "openclaw-user")
+        self.assertTrue(detail["key_user_status"]["openclaw_user_id"]["present_in_group"])
+        self.assertTrue(detail["key_user_status"]["management_user_id"]["is_group_owner"])
+        self.assertFalse(detail["key_user_status"]["chatbot_user_id"]["present_in_group"])
+        self.assertEqual(detail["key_user_status"]["management_user_id"]["admin_status"], "admin")
+        self.assertEqual(detail["key_user_status"]["origin_user_id"]["admin_status"], "not_admin")
+        self.assertEqual(detail["group_info_error"], "")
+        self.assertEqual(detail["member_list_error"], "")
+        self.assertEqual(detail["admin_list_error"], "")
+        self.assertEqual(detail["member_list_viewer_user_id"], "")
+        self.assertEqual(detail["admin_list_viewer_user_id"], "")
+        self.assertEqual(mocked_member_list.call_count, 2)
+        self.assertEqual(mocked_member_list.call_args_list[0].args, ("app-id", "group-9", "", 500))
+        mocked_admin_list.assert_called_once_with("app-id", "group-9")
+
+    def test_list_session_mapping_details_for_node_reuses_group_lookup_for_same_group(self):
+        m = lanying_openclaw
+        mappings = [
+            {
+                "session_key": "agent:main:clawchat:group:group-9",
+                "group_id": "group-9",
+                "openclaw_user_id": "openclaw-user",
+                "management_user_id": "management-user",
+            },
+            {
+                "session_key": "agent:main:subagent:group-child",
+                "group_id": "group-9",
+                "openclaw_user_id": "openclaw-user",
+                "management_user_id": "management-user",
+            },
+        ]
+
+        with mock.patch.object(m, "list_session_mappings_for_node", return_value=mappings), \
+             mock.patch.object(m, "get_group_member_list_for_group_admin", return_value={"code": 200, "data": [], "cursor": ""}) as mocked_member_list, \
+             mock.patch.object(m, "get_group_admin_list_for_group_admin", return_value={"code": 200, "data": []}) as mocked_admin_list:
+            details = m.list_session_mapping_details_for_node("app-id", "node-1")
+
+        self.assertEqual(len(details), 2)
+        mocked_member_list.assert_called_once_with("app-id", "group-9", "", 500)
+        mocked_admin_list.assert_called_once_with("app-id", "group-9")
+
+    def test_list_session_mapping_details_for_node_marks_member_list_incomplete_on_failure(self):
+        m = lanying_openclaw
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "openclaw_user_id": "",
+            "management_user_id": "management-user",
+        }
+
+        with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m, "get_group_member_list_for_group_admin", side_effect=[
+                 {"code": 200, "data": [{"user_id": "openclaw-user", "display_name": "OpenClaw", "join_time": 11, "expired_time": 0}], "cursor": "next"},
+                 {"code": 500, "message": "boom"},
+             ]), \
+             mock.patch.object(m, "get_group_admin_list_for_group_admin", return_value={"code": 200, "data": []}):
+            details = m.list_session_mapping_details_for_node("app-id", "node-1")
+
+        self.assertFalse(details[0]["member_summary"]["members_loaded_complete"])
+        self.assertEqual(details[0]["member_summary"]["member_count_loaded"], 1)
+        self.assertEqual(details[0]["member_list_error"], "boom")
+
+    def test_list_session_mapping_details_for_node_marks_admin_status_unknown_when_admin_list_fails(self):
+        m = lanying_openclaw
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+
+        with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m, "get_group_member_list_for_group_admin", return_value={
+                 "code": 200,
+                 "data": [{"user_id": "openclaw-user", "display_name": "OpenClaw", "join_time": 11, "expired_time": 0}],
+                 "cursor": "",
+             }), \
+             mock.patch.object(m, "get_group_admin_list_for_group_admin", return_value={"code": 402, "message": "Operation rejected"}):
+            details = m.list_session_mapping_details_for_node("app-id", "node-1")
+
+        self.assertEqual(details[0]["admin_list_error"], "Operation rejected")
+        self.assertEqual(details[0]["key_user_status"]["openclaw_user_id"]["admin_status"], "unknown")
+
     def test_set_session_mapping_accepts_group_bound_through_legacy_mapping(self):
         m = lanying_openclaw
         redis = FakeRedis()

@@ -1427,6 +1427,48 @@ def get_group_member_list(app_id, group_id, cursor = '', limit = 500):
         logging.exception("get_group_member_list failed")
         return None
 
+def get_group_member_list_for_group_admin(app_id, group_id, cursor = '', limit = 500):
+    normalized_group_id = str(group_id).strip()
+    if normalized_group_id == '':
+        return None
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    try:
+        response = requests.get(
+            api_endpoint + '/group/member_list',
+            headers={'app_id': app_id, 'access-token': admin_token, 'group_id': normalized_group_id},
+            params={'group_id': group_id, 'cursor': cursor, 'limit': limit}
+        )
+        logging.info(
+            f"get_group_member_list_for_group_admin | app_id:{app_id}, group_id:{group_id}, "
+            f"cursor:{cursor}, limit:{limit}, response:{response.content}"
+        )
+        return json.loads(response.content)
+    except Exception:
+        logging.exception("get_group_member_list_for_group_admin failed")
+        return None
+
+def get_group_admin_list_for_group_admin(app_id, group_id):
+    normalized_group_id = str(group_id).strip()
+    if normalized_group_id == '':
+        return None
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    try:
+        response = requests.get(
+            api_endpoint + '/group/admin_list',
+            headers={'app_id': app_id, 'access-token': admin_token, 'group_id': normalized_group_id},
+            params={'group_id': group_id}
+        )
+        logging.info(
+            f"get_group_admin_list_for_group_admin | app_id:{app_id}, group_id:{group_id}, "
+            f"response:{response.content}"
+        )
+        return json.loads(response.content)
+    except Exception:
+        logging.exception("get_group_admin_list_for_group_admin failed")
+        return None
+
 def is_user_joined_group(app_id, user_id, group_id):
     target_user_id = str(user_id).strip()
     cursor = ''
@@ -1697,6 +1739,243 @@ def list_session_mappings_for_node(app_id, node_id):
         except Exception:
             logging.exception("list_session_mappings_for_node parse failed")
     return mappings
+
+def summarize_group_member(member):
+    if not isinstance(member, dict):
+        return None
+    user_id = str(member.get('user_id', '')).strip()
+    if user_id == '':
+        return None
+    return {
+        'user_id': user_id,
+        'display_name': str(member.get('display_name', '')).strip(),
+        'join_time': int(member.get('join_time', 0) or 0),
+        'expired_time': int(member.get('expired_time', 0) or 0),
+    }
+
+def list_group_admin_user_ids(app_id, group_id):
+    normalized_group_id = str(group_id).strip()
+    if normalized_group_id == '':
+        return {
+            'admin_user_ids': set(),
+            'admin_list_error': '',
+        }
+    response_json = get_group_admin_list_for_group_admin(app_id, normalized_group_id)
+    if not isinstance(response_json, dict):
+        return {
+            'admin_user_ids': set(),
+            'admin_list_error': 'group admin list unavailable',
+        }
+    if response_json.get('code') != 200:
+        return {
+            'admin_user_ids': set(),
+            'admin_list_error': str(response_json.get('message', '') or 'group admin list request failed').strip(),
+        }
+    admin_user_ids = set()
+    raw_admins = response_json.get('data')
+    if not isinstance(raw_admins, list):
+        return {
+            'admin_user_ids': set(),
+            'admin_list_error': 'group admin list data is invalid',
+        }
+    for raw_admin in raw_admins:
+        admin_member = summarize_group_member(raw_admin)
+        if not isinstance(admin_member, dict):
+            continue
+        user_id = str(admin_member.get('user_id', '')).strip()
+        if user_id != '':
+            admin_user_ids.add(user_id)
+    return {
+        'admin_user_ids': admin_user_ids,
+        'admin_list_error': '',
+    }
+
+def list_group_member_summaries(app_id, group_id, limit = 500, max_pages = 20):
+    members = []
+    seen_user_ids = set()
+    complete = True
+    error_message = ''
+    normalized_group_id = str(group_id).strip()
+    if normalized_group_id == '':
+        return {
+            'members': members,
+            'members_loaded_complete': True,
+            'member_list_error': '',
+        }
+    cursor = ''
+    for _ in range(max_pages):
+        response_json = get_group_member_list_for_group_admin(app_id, normalized_group_id, cursor, limit)
+        if not isinstance(response_json, dict):
+            complete = False
+            error_message = 'group member list unavailable'
+            break
+        if response_json.get('code') != 200:
+            complete = False
+            error_message = str(response_json.get('message', '') or 'group member list request failed').strip()
+            break
+        raw_members = response_json.get('data')
+        if not isinstance(raw_members, list):
+            complete = False
+            error_message = 'group member list data is invalid'
+            break
+        for raw_member in raw_members:
+            member = summarize_group_member(raw_member)
+            if not isinstance(member, dict):
+                continue
+            user_id = member.get('user_id', '')
+            if user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id)
+            members.append(member)
+        next_cursor = str(response_json.get('cursor', '')).strip()
+        if next_cursor == '':
+            break
+        if next_cursor == cursor:
+            complete = False
+            error_message = 'group member list cursor did not advance'
+            break
+        cursor = next_cursor
+    else:
+        complete = False
+        error_message = 'group member list exceeded page limit'
+    return {
+        'members': members,
+        'members_loaded_complete': complete,
+        'member_list_error': error_message,
+    }
+
+def build_session_mapping_key_user_group_status(user_id, owner_user_id, member_user_ids, admin_user_ids, admin_list_error=''):
+    normalized_user_id = str(user_id).strip()
+    normalized_owner_user_id = str(owner_user_id).strip()
+    admin_status = 'unknown'
+    if normalized_user_id != '' and str(admin_list_error).strip() == '':
+        admin_status = 'admin' if normalized_user_id in admin_user_ids else 'not_admin'
+    return {
+        'user_id': normalized_user_id,
+        'present_in_group': normalized_user_id != '' and normalized_user_id in member_user_ids,
+        'is_group_owner': normalized_user_id != '' and normalized_user_id == normalized_owner_user_id,
+        'admin_status': admin_status,
+    }
+
+def get_session_mapping_group_detail(app_id, group_id, mapping=None):
+    normalized_group_id = str(group_id).strip()
+    empty_detail = {
+        'group_info': {
+            'group_id': normalized_group_id,
+            'owner_id': '',
+        },
+        'member_summary': {
+            'member_count_reported': 0,
+            'member_count_loaded': 0,
+            'members_loaded_complete': True,
+            'members': [],
+        },
+        'group_info_error': '',
+        'member_list_error': '',
+        'admin_list_error': '',
+        'member_list_viewer_user_id': '',
+        'admin_list_viewer_user_id': '',
+    }
+    if normalized_group_id == '':
+        return empty_detail
+    member_list_result = list_group_member_summaries(
+        app_id,
+        normalized_group_id,
+    )
+    members = list(member_list_result.get('members', []))
+    admin_list_result = list_group_admin_user_ids(
+        app_id,
+        normalized_group_id,
+    )
+    owner_user_id = ''
+    if len(admin_list_result.get('admin_user_ids', set())) == 1:
+        owner_user_id = next(iter(admin_list_result.get('admin_user_ids', set())), '')
+    return {
+        'group_info': {
+            'group_id': normalized_group_id,
+            'owner_id': str(owner_user_id).strip(),
+        },
+        'member_summary': {
+            'member_count_reported': len(members),
+            'member_count_loaded': len(members),
+            'members_loaded_complete': bool(member_list_result.get('members_loaded_complete', False)),
+            'members': members,
+        },
+        'group_info_error': '',
+        'member_list_error': str(member_list_result.get('member_list_error', '')).strip(),
+        'admin_list_error': str(admin_list_result.get('admin_list_error', '')).strip(),
+        'member_list_viewer_user_id': '',
+        'admin_list_viewer_user_id': '',
+        'admin_user_ids': set(admin_list_result.get('admin_user_ids', set())),
+    }
+
+def list_session_mapping_details_for_node(app_id, node_id):
+    mappings = list_session_mappings_for_node(app_id, node_id)
+    details = []
+    group_detail_cache = {}
+    for mapping in mappings:
+        normalized_mapping = normalize_session_mapping_record(mapping)
+        if not isinstance(normalized_mapping, dict):
+            continue
+        group_id = str(normalized_mapping.get('group_id', '')).strip()
+        if group_id != '':
+            if group_id not in group_detail_cache:
+                group_detail_cache[group_id] = get_session_mapping_group_detail(app_id, group_id, normalized_mapping)
+            group_detail = group_detail_cache[group_id]
+        else:
+            group_detail = get_session_mapping_group_detail(app_id, '', normalized_mapping)
+        group_info = dict(group_detail.get('group_info', {}))
+        member_summary = dict(group_detail.get('member_summary', {}))
+        members = list(member_summary.get('members', []))
+        member_user_ids = set()
+        for member in members:
+            if isinstance(member, dict):
+                user_id = str(member.get('user_id', '')).strip()
+                if user_id != '':
+                    member_user_ids.add(user_id)
+        admin_user_ids = set(group_detail.get('admin_user_ids', set()))
+        owner_user_id = str(group_info.get('owner_id', '')).strip()
+        admin_list_error = str(group_detail.get('admin_list_error', '')).strip()
+        detail = dict(normalized_mapping)
+        detail['group_info'] = group_info
+        detail['member_summary'] = member_summary
+        detail['key_user_status'] = {
+            'openclaw_user_id': build_session_mapping_key_user_group_status(
+                normalized_mapping.get('openclaw_user_id', ''),
+                owner_user_id,
+                member_user_ids,
+                admin_user_ids,
+                admin_list_error,
+            ),
+            'management_user_id': build_session_mapping_key_user_group_status(
+                normalized_mapping.get('management_user_id', ''),
+                owner_user_id,
+                member_user_ids,
+                admin_user_ids,
+                admin_list_error,
+            ),
+            'origin_user_id': build_session_mapping_key_user_group_status(
+                normalized_mapping.get('origin_user_id', ''),
+                owner_user_id,
+                member_user_ids,
+                admin_user_ids,
+                admin_list_error,
+            ),
+            'chatbot_user_id': build_session_mapping_key_user_group_status(
+                normalized_mapping.get('chatbot_user_id', ''),
+                owner_user_id,
+                member_user_ids,
+                admin_user_ids,
+                admin_list_error,
+            ),
+        }
+        detail['group_info_error'] = str(group_detail.get('group_info_error', '')).strip()
+        detail['member_list_error'] = str(group_detail.get('member_list_error', '')).strip()
+        detail['admin_list_error'] = admin_list_error
+        detail['member_list_viewer_user_id'] = str(group_detail.get('member_list_viewer_user_id', '')).strip()
+        detail['admin_list_viewer_user_id'] = str(group_detail.get('admin_list_viewer_user_id', '')).strip()
+        details.append(detail)
+    return details
 
 def list_openclaw_node_list_app_ids():
     redis = lanying_redis.get_redis_connection()
