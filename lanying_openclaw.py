@@ -366,14 +366,17 @@ def delete_node(app_id, node_id):
         }
     }
 
-def normalize_session_key(session_key):
+def normalize_session_key_text(session_key):
     if isinstance(session_key, bytes):
         try:
             session_key = session_key.decode('utf-8')
         except Exception:
-            logging.exception("normalize_session_key decode failed")
+            logging.exception("normalize_session_key_text decode failed")
             session_key = ''
-    normalized = str(session_key or '').strip().lower()
+    return str(session_key or '').strip().lower()
+
+def normalize_session_key(session_key):
+    normalized = normalize_session_key_text(session_key)
     if normalized.startswith('agent:main:router:'):
         return f'agent:main:clawchat-router:{normalized[len("agent:main:router:"):]}'
     if normalized.startswith('agent:main:group:') and normalized[len('agent:main:group:'):].strip() != '':
@@ -381,6 +384,72 @@ def normalize_session_key(session_key):
     if normalized.startswith('agent:main:') and normalized[len('agent:main:'):].isdigit():
         return f'agent:main:clawchat:direct:{normalized[len("agent:main:"):]}'
     return normalized
+
+def get_session_key_facts(session_key):
+    raw_session_key = normalize_session_key_text(session_key)
+    canonical_session_key = normalize_session_key(raw_session_key)
+    facts = {
+        'raw_session_key': raw_session_key,
+        'canonical_session_key': canonical_session_key,
+        'channel': '',
+        'chat_type': '',
+        'target_id': '',
+        'is_legacy_alias': raw_session_key != '' and raw_session_key != canonical_session_key,
+        'is_clawchat_session': False,
+        'is_router': False,
+        'is_group': False,
+        'is_direct': False,
+        'is_subagent': ':subagent:' in canonical_session_key,
+    }
+    if canonical_session_key == '':
+        return facts
+    parts = [part.strip() for part in canonical_session_key.split(':') if str(part).strip() != '']
+    if len(parts) < 5 or parts[0] != 'agent':
+        return facts
+    if parts[2] not in ['clawchat', 'clawchat-router']:
+        return facts
+    channel = parts[2]
+    cursor = 3
+    if len(parts) >= 6 and parts[3] not in ['group', 'direct']:
+        cursor = 4
+    if cursor >= len(parts) or parts[cursor] not in ['group', 'direct']:
+        return facts
+    if cursor + 1 >= len(parts):
+        return facts
+    target_id = ':'.join(parts[cursor + 1:]).strip()
+    if target_id == '':
+        return facts
+    facts['channel'] = channel
+    facts['chat_type'] = parts[cursor]
+    facts['target_id'] = target_id
+    facts['is_clawchat_session'] = True
+    facts['is_router'] = channel == 'clawchat-router'
+    facts['is_group'] = parts[cursor] == 'group'
+    facts['is_direct'] = parts[cursor] == 'direct'
+    return facts
+
+def get_legacy_session_key_aliases(session_key):
+    facts = get_session_key_facts(session_key)
+    canonical_session_key = facts.get('canonical_session_key', '')
+    aliases = []
+    if facts.get('channel') == 'clawchat-router' and facts.get('chat_type') in ['group', 'direct'] and facts.get('target_id') != '':
+        aliases.append(f"agent:main:router:{facts.get('chat_type')}:{facts.get('target_id')}")
+    if facts.get('channel') == 'clawchat' and facts.get('chat_type') == 'group' and facts.get('target_id') != '':
+        aliases.append(f"agent:main:group:{facts.get('target_id')}")
+    if (
+        facts.get('channel') == 'clawchat' and
+        facts.get('chat_type') == 'direct' and
+        facts.get('target_id') != '' and
+        str(facts.get('target_id')).isdigit()
+    ):
+        aliases.append(f"agent:main:{facts.get('target_id')}")
+    result = []
+    for alias in aliases:
+        normalized_alias = normalize_session_key_text(alias)
+        if normalized_alias == '' or normalized_alias == canonical_session_key or normalized_alias in result:
+            continue
+        result.append(normalized_alias)
+    return result
 
 def get_openclaw_session_group_name(node_name, node_id, session_key):
     node_name_text = str(node_name or '').strip()
@@ -406,27 +475,26 @@ def get_openclaw_session_group_name(node_name, node_id, session_key):
     return 'openclaw-session'
 
 def parse_clawchat_session_identity(session_key):
-    normalized = normalize_session_key(session_key)
-    if normalized == '':
-        return None
-    parts = [part.strip() for part in normalized.split(':') if str(part).strip() != '']
-    if len(parts) < 5 or parts[0] != 'agent':
-        return None
-    if parts[2] not in ['clawchat', 'clawchat-router']:
-        return None
-    channel = parts[2]
-    cursor = 3
-    if len(parts) >= 6 and parts[3] not in ['group', 'direct']:
-        cursor = 4
-    if cursor >= len(parts) or parts[cursor] not in ['group', 'direct']:
-        return None
-    if cursor + 1 >= len(parts):
+    facts = get_session_key_facts(session_key)
+    if not facts.get('is_clawchat_session'):
         return None
     return {
-        'channel': channel,
-        'chat_type': parts[cursor],
-        'target_id': ':'.join(parts[cursor + 1:]).strip()
+        'channel': facts.get('channel'),
+        'chat_type': facts.get('chat_type'),
+        'target_id': facts.get('target_id')
     }
+
+def is_clawchat_session_identity(identity):
+    return isinstance(identity, dict) and str(identity.get('channel', '')).strip() in ['clawchat', 'clawchat-router']
+
+def is_group_session_identity(identity):
+    return is_clawchat_session_identity(identity) and str(identity.get('chat_type', '')).strip() == 'group'
+
+def is_direct_session_identity(identity):
+    return is_clawchat_session_identity(identity) and str(identity.get('chat_type', '')).strip() == 'direct'
+
+def is_clawchat_router_session_identity(identity):
+    return is_clawchat_session_identity(identity) and str(identity.get('channel', '')).strip() == 'clawchat-router'
 
 def normalize_optional_session_key(value):
     normalized = normalize_session_key(value)
@@ -454,6 +522,8 @@ def parse_json_object(value):
 def is_session_map_sync_enabled(node_info):
     if not isinstance(node_info, dict):
         return False
+    if 'session_map_sync' not in node_info:
+        return True
     return parse_bool_flag(node_info.get('session_map_sync'))
 
 def is_merge_sub_sessions_enabled(node_info):
@@ -517,9 +587,7 @@ def resolve_effective_target_session_key(session_key, lineage, merge_sub_session
 
 def resolve_ancestor_prewarm_kind(session_key):
     identity = parse_clawchat_session_identity(session_key)
-    if not isinstance(identity, dict):
-        return None
-    if identity.get('chat_type') != 'group':
+    if not is_group_session_identity(identity):
         return None
     channel = str(identity.get('channel', '')).strip()
     if channel not in ['clawchat', 'clawchat-router']:
@@ -591,10 +659,7 @@ def prewarm_ancestor_session_mappings(app_id, node_info, lineage):
         )
 
 def is_router_root_session(root_clawchat_session):
-    return (
-        isinstance(root_clawchat_session, dict) and
-        str(root_clawchat_session.get('channel', '')).strip() == 'clawchat-router'
-    )
+    return is_clawchat_router_session_identity(root_clawchat_session)
 
 def resolve_bound_chatbot_user_id(app_id, node_id):
     chatbot_id = str(get_node_chatbot_id(app_id, node_id) or '').strip()
@@ -677,10 +742,9 @@ def resolve_observed_origin_kind(observed_facts, root_clawchat_session):
         return 'im_user'
     if observed_chat_type == 'direct':
         return 'direct_user'
-    if isinstance(root_clawchat_session, dict):
-        if root_clawchat_session.get('chat_type') == 'group':
+    if is_group_session_identity(root_clawchat_session):
             return 'im_user'
-        if root_clawchat_session.get('chat_type') == 'direct':
+    if is_direct_session_identity(root_clawchat_session):
             return 'direct_user'
     return ''
 
@@ -697,14 +761,13 @@ def apply_control_ui_user_sender_override(mapping):
 
 def resolve_root_session_sync_mode(root_clawchat_session):
     if is_router_root_session(root_clawchat_session):
-        if isinstance(root_clawchat_session, dict) and root_clawchat_session.get('chat_type') == 'direct':
+        if is_direct_session_identity(root_clawchat_session):
             return 'router_direct'
         return 'router_group'
-    if isinstance(root_clawchat_session, dict):
-        if root_clawchat_session.get('channel') == 'clawchat' and root_clawchat_session.get('chat_type') == 'direct':
-            return 'clawchat_direct'
-        if root_clawchat_session.get('channel') == 'clawchat' and root_clawchat_session.get('chat_type') == 'group':
-            return 'clawchat_group'
+    if is_direct_session_identity(root_clawchat_session) and str(root_clawchat_session.get('channel', '')).strip() == 'clawchat':
+        return 'clawchat_direct'
+    if is_group_session_identity(root_clawchat_session) and str(root_clawchat_session.get('channel', '')).strip() == 'clawchat':
+        return 'clawchat_group'
     return 'generic'
 
 def is_group_root_session_sync_mode(root_mode):
@@ -832,7 +895,7 @@ def resolve_inherited_origin_identity(app_id, node_info, lineage, management_use
     if is_control_ui_active_user_observation(observed_facts):
         if root_mode in ['clawchat_direct', 'router_direct']:
             direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
-            if isinstance(direct_identity, dict) and direct_identity.get('chat_type') == 'direct':
+            if is_direct_session_identity(direct_identity):
                 resolved_user_id = str(direct_identity.get('target_id', '')).strip()
                 if resolved_user_id != '':
                     logging.info(
@@ -880,7 +943,7 @@ def resolve_inherited_origin_identity(app_id, node_info, lineage, management_use
             # When ancestor mapping is not materialized yet (common for direct roots),
             # recover sender identity from the direct root session key.
             direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
-            if is_direct_root_session_sync_mode(root_mode) and isinstance(direct_identity, dict) and direct_identity.get('chat_type') == 'direct':
+            if is_direct_root_session_sync_mode(root_mode) and is_direct_session_identity(direct_identity):
                 resolved_user_id = str(direct_identity.get('target_id', '')).strip()
                 if resolved_user_id != '':
                     logging.info(
@@ -963,7 +1026,7 @@ def resolve_inherited_origin_identity(app_id, node_info, lineage, management_use
             )
             return root_identity
     identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
-    if isinstance(identity, dict) and identity.get('chat_type') == 'direct':
+    if is_direct_session_identity(identity):
         resolved_user_id = str(identity.get('target_id', '')).strip()
         logging.info(
             f"resolve_inherited_identity resolved from direct identity | "
@@ -1037,7 +1100,7 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
             'origin_user_id': origin_user_id,
             'chatbot_user_id': chatbot_user_id,
         }
-    if clawchat_session is not None and clawchat_session.get('chat_type') == 'direct':
+    if is_direct_session_identity(clawchat_session):
         return {
             'mode': 'metadata_only',
             'group_id': '',
@@ -1049,7 +1112,7 @@ def resolve_session_mapping_decision(session_key, lineage, merge_sub_sessions, i
             'origin_user_id': origin_user_id,
             'chatbot_user_id': chatbot_user_id,
         }
-    if clawchat_session is not None:
+    if is_clawchat_session_identity(clawchat_session):
         return {
             'mode': 'reuse_clawchat_group',
             'group_id': str(clawchat_session.get('target_id', '')).strip(),
@@ -1096,7 +1159,7 @@ def maybe_materialize_existing_clawchat_group_mapping(app_id, mapping, managemen
         }
     session_key = normalize_session_key(mapping.get('session_key', ''))
     session_identity = parse_clawchat_session_identity(session_key)
-    if not isinstance(session_identity, dict) or session_identity.get('chat_type') != 'group':
+    if not is_group_session_identity(session_identity):
         return {
             'result': 'ok',
             'mapping': mapping,
@@ -1464,14 +1527,136 @@ def ensure_user_group_admin(app_id, user_id, group_id):
         logging.exception("ensure_user_group_admin async schedule failed")
         return False
 
-def get_session_mapping_by_session(app_id, node_id, session_key):
-    redis = lanying_redis.get_redis_connection()
-    key = get_openclaw_session_mapping_by_session_key(app_id, node_id, normalize_session_key(session_key))
-    raw = lanying_redis.redis_get(redis, key)
+def session_mapping_signature(mapping):
+    normalized = normalize_session_mapping_record(mapping or {})
+    signature = {}
+    for key in [
+        'session_key',
+        'group_id',
+        'app_id',
+        'node_id',
+        'openclaw_user_id',
+        'management_user_id',
+        'origin_kind',
+        'origin_user_id',
+        'chatbot_user_id',
+        'parent_session_key',
+        'root_session_key',
+        'effective_target_session_key',
+    ]:
+        signature[key] = str(normalized.get(key, '')).strip()
+    return signature
+
+def session_mapping_conflicts(existing_mapping, incoming_mapping):
+    return session_mapping_signature(existing_mapping) != session_mapping_signature(incoming_mapping)
+
+def get_existing_canonical_session_mapping(redis, app_id, node_id, session_key):
+    canonical_session_key = normalize_optional_session_key(session_key)
+    if canonical_session_key == '':
+        return None
+    raw = lanying_redis.redis_get(
+        redis,
+        get_openclaw_session_mapping_by_session_key(app_id, node_id, canonical_session_key),
+    )
     if not raw:
         return None
+    return normalize_session_mapping_record(json.loads(raw))
+
+def remove_session_mapping_index_entry(redis, app_id, node_id, session_key):
+    normalized_session_key = normalize_session_key_text(session_key)
+    if normalized_session_key == '':
+        return
+    index_key = get_openclaw_session_mapping_index_key(app_id, node_id)
     try:
-        return normalize_session_mapping_record(json.loads(raw))
+        redis.srem(index_key, normalized_session_key)
+    except Exception:
+        logging.exception("remove_session_mapping_index_entry failed")
+
+def converge_session_mapping_record(redis, app_id, node_id, mapping, legacy_session_keys=None):
+    normalized_mapping = normalize_session_mapping_record(mapping)
+    session_key = normalize_optional_session_key(normalized_mapping.get('session_key', ''))
+    openclaw_user_id = str(normalized_mapping.get('openclaw_user_id', '')).strip()
+    group_id = str(normalized_mapping.get('group_id', '')).strip()
+    if session_key == '' or openclaw_user_id == '':
+        return normalized_mapping
+    body = dict(normalized_mapping)
+    body['session_key'] = session_key
+    body['openclaw_user_id'] = openclaw_user_id
+    body['group_id'] = group_id
+    body_json = json.dumps(body, ensure_ascii=False)
+    redis.set(get_openclaw_session_mapping_by_session_key(app_id, node_id, session_key), body_json)
+    redis.sadd(get_openclaw_session_mapping_index_key(app_id, node_id), session_key)
+    if group_id != '':
+        redis.set(get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id), body_json)
+    for legacy_session_key in legacy_session_keys or []:
+        normalized_legacy_session_key = normalize_session_key_text(legacy_session_key)
+        if normalized_legacy_session_key == '' or normalized_legacy_session_key == session_key:
+            continue
+        redis.delete(get_openclaw_session_mapping_by_session_storage_key(app_id, node_id, normalized_legacy_session_key))
+        remove_session_mapping_index_entry(redis, app_id, node_id, normalized_legacy_session_key)
+    return body
+
+def resolve_read_time_session_mapping(redis, app_id, node_id, mapping, legacy_session_keys=None):
+    normalized_mapping = normalize_session_mapping_record(mapping)
+    canonical_session_key = normalize_optional_session_key(normalized_mapping.get('session_key', ''))
+    if canonical_session_key == '':
+        return normalized_mapping
+    existing_canonical_mapping = get_existing_canonical_session_mapping(
+        redis,
+        app_id,
+        node_id,
+        canonical_session_key,
+    )
+    if (
+        isinstance(existing_canonical_mapping, dict) and
+        session_mapping_conflicts(existing_canonical_mapping, normalized_mapping)
+    ):
+        logging.warning(
+            f"resolve_read_time_session_mapping conflict | app_id:{app_id}, node_id:{node_id}, "
+            f"canonical_session_key:{canonical_session_key}, "
+            f"incoming_signature:{session_mapping_signature(normalized_mapping)}, "
+            f"existing_signature:{session_mapping_signature(existing_canonical_mapping)}"
+        )
+        return existing_canonical_mapping
+    return converge_session_mapping_record(
+        redis,
+        app_id,
+        node_id,
+        normalized_mapping,
+        legacy_session_keys=legacy_session_keys,
+    )
+
+def load_session_mapping_by_session(redis, app_id, node_id, session_key):
+    canonical_session_key = normalize_session_key(session_key)
+    candidates = []
+    for candidate in [canonical_session_key] + get_legacy_session_key_aliases(session_key):
+        normalized_candidate = normalize_session_key_text(candidate)
+        if normalized_candidate == '' or normalized_candidate in candidates:
+            continue
+        candidates.append(normalized_candidate)
+    for candidate in candidates:
+        raw = lanying_redis.redis_get(
+            redis,
+            get_openclaw_session_mapping_by_session_storage_key(app_id, node_id, candidate),
+        )
+        if not raw:
+            continue
+        mapping = normalize_session_mapping_record(json.loads(raw))
+        if candidate != canonical_session_key or normalize_optional_session_key(mapping.get('session_key', '')) != canonical_session_key:
+            mapping = resolve_read_time_session_mapping(
+                redis,
+                app_id,
+                node_id,
+                mapping,
+                legacy_session_keys=[candidate],
+            )
+        return normalize_session_mapping_record(mapping)
+    return None
+
+def get_session_mapping_by_session(app_id, node_id, session_key):
+    redis = lanying_redis.get_redis_connection()
+    try:
+        return load_session_mapping_by_session(redis, app_id, node_id, session_key)
     except Exception:
         logging.exception("get_session_mapping_by_session parse failed")
         return None
@@ -1483,7 +1668,11 @@ def get_session_mapping_by_group(app_id, node_id, openclaw_user_id, group_id):
     if not raw:
         return None
     try:
-        return normalize_session_mapping_record(json.loads(raw))
+        mapping = normalize_session_mapping_record(json.loads(raw))
+        canonical_session_key = normalize_optional_session_key(mapping.get('session_key', ''))
+        if canonical_session_key != '':
+            mapping = resolve_read_time_session_mapping(redis, app_id, node_id, mapping)
+        return normalize_session_mapping_record(mapping)
     except Exception:
         logging.exception("get_session_mapping_by_group parse failed")
         return None
@@ -1497,14 +1686,117 @@ def list_session_mappings_for_node(app_id, node_id):
     except Exception:
         logging.exception("list_session_mappings_for_node read index failed")
         return mappings
+    seen_session_keys = set()
     for indexed_session_key in session_keys:
         try:
             mapping = get_session_mapping_by_session(app_id, node_id, indexed_session_key)
-            if isinstance(mapping, dict):
+            normalized_session_key = normalize_optional_session_key((mapping or {}).get('session_key', ''))
+            if isinstance(mapping, dict) and normalized_session_key != '' and normalized_session_key not in seen_session_keys:
+                seen_session_keys.add(normalized_session_key)
                 mappings.append(mapping)
         except Exception:
             logging.exception("list_session_mappings_for_node parse failed")
     return mappings
+
+def migrate_legacy_session_mappings_for_node(app_id, node_info, dry_run=False):
+    if not isinstance(node_info, dict):
+        return {'result': 'ignored', 'message': 'bad node info'}
+    node_id = str(node_info.get('node_id', '')).strip()
+    if node_id == '':
+        return {'result': 'ignored', 'message': 'bad node id'}
+    redis = lanying_redis.get_redis_connection()
+    index_key = get_openclaw_session_mapping_index_key(app_id, node_id)
+    try:
+        indexed_session_keys = list(redis.smembers(index_key))
+    except Exception:
+        logging.exception("migrate_legacy_session_mappings_for_node read index failed")
+        return {'result': 'error', 'message': 'read index failed'}
+    total = 0
+    migrated = 0
+    conflicts = 0
+    skipped = 0
+    logging.info(
+        f"migrate_legacy_session_mappings_for_node start | app_id:{app_id}, node_id:{node_id}, "
+        f"indexed_count:{len(indexed_session_keys)}, dry_run:{dry_run}"
+    )
+    for indexed_session_key in indexed_session_keys:
+        raw_session_key = normalize_session_key_text(indexed_session_key)
+        facts = get_session_key_facts(raw_session_key)
+        if raw_session_key == '' or not facts.get('is_legacy_alias'):
+            continue
+        total += 1
+        raw = lanying_redis.redis_get(
+            redis,
+            get_openclaw_session_mapping_by_session_storage_key(app_id, node_id, raw_session_key),
+        )
+        if not raw:
+            skipped += 1
+            logging.info(
+                f"migrate_legacy_session_mappings_for_node skip missing record | app_id:{app_id}, "
+                f"node_id:{node_id}, legacy_session_key:{raw_session_key}"
+            )
+            continue
+        try:
+            legacy_mapping = normalize_session_mapping_record(json.loads(raw))
+        except Exception:
+            logging.exception("migrate_legacy_session_mappings_for_node parse failed")
+            skipped += 1
+            continue
+        canonical_session_key = normalize_optional_session_key(legacy_mapping.get('session_key', ''))
+        if canonical_session_key == '':
+            skipped += 1
+            logging.info(
+                f"migrate_legacy_session_mappings_for_node skip empty canonical session | app_id:{app_id}, "
+                f"node_id:{node_id}, legacy_session_key:{raw_session_key}"
+            )
+            continue
+        existing_canonical_mapping = None
+        existing_canonical_raw = lanying_redis.redis_get(
+            redis,
+            get_openclaw_session_mapping_by_session_key(app_id, node_id, canonical_session_key),
+        )
+        if existing_canonical_raw:
+            try:
+                existing_canonical_mapping = normalize_session_mapping_record(json.loads(existing_canonical_raw))
+            except Exception:
+                logging.exception("migrate_legacy_session_mappings_for_node canonical parse failed")
+                existing_canonical_mapping = None
+        if (
+            isinstance(existing_canonical_mapping, dict) and
+            session_mapping_conflicts(existing_canonical_mapping, legacy_mapping)
+        ):
+            conflicts += 1
+            logging.warning(
+                f"migrate_legacy_session_mappings_for_node conflict | app_id:{app_id}, node_id:{node_id}, "
+                f"legacy_session_key:{raw_session_key}, canonical_session_key:{canonical_session_key}, "
+                f"legacy_signature:{session_mapping_signature(legacy_mapping)}, "
+                f"canonical_signature:{session_mapping_signature(existing_canonical_mapping)}"
+            )
+            continue
+        logging.info(
+            f"migrate_legacy_session_mappings_for_node {'dry_run ' if dry_run else ''}migrate | "
+            f"app_id:{app_id}, node_id:{node_id}, legacy_session_key:{raw_session_key}, "
+            f"canonical_session_key:{canonical_session_key}"
+        )
+        if not dry_run:
+            converge_session_mapping_record(
+                redis,
+                app_id,
+                node_id,
+                legacy_mapping,
+                legacy_session_keys=[raw_session_key],
+            )
+        migrated += 1
+    return {
+        'result': 'ok',
+        'data': {
+            'total': total,
+            'migrated': migrated,
+            'conflicts': conflicts,
+            'skipped': skipped,
+            'dry_run': dry_run,
+        }
+    }
 
 def migrate_session_mapping_group_admins_for_node(app_id, node_info, dry_run=False):
     if not isinstance(node_info, dict):
@@ -2386,11 +2678,7 @@ def forward_session_sync_to_direct(app_id, node_info, target_user_id, origin_use
     normalized_chatbot_user_id = str(chatbot_user_id).strip()
     normalized_route_session_key = normalize_session_key(route_session_key)
     route_identity = parse_clawchat_session_identity(normalized_route_session_key)
-    is_router_direct_session = (
-        isinstance(route_identity, dict) and
-        route_identity.get('channel') == 'clawchat-router' and
-        route_identity.get('chat_type') == 'direct'
-    )
+    is_router_direct_session = is_clawchat_router_session_identity(route_identity) and is_direct_session_identity(route_identity)
     if role == 'user' and is_router_direct_session and normalized_chatbot_user_id == '':
         normalized_chatbot_user_id = resolve_bound_chatbot_user_id(app_id, str(node_info.get('node_id', '')).strip())
     if node_user_id == '' or normalized_target_user_id == '':
@@ -2443,7 +2731,7 @@ def resolve_effective_session_sync_target(app_id, node_info, mapping):
     root_session_key = normalize_optional_session_key(mapping.get('root_session_key', ''))
     target_session_key = effective_target_session_key or root_session_key or session_key
     target_identity = parse_clawchat_session_identity(target_session_key)
-    if isinstance(target_identity, dict) and target_identity.get('chat_type') == 'direct':
+    if is_direct_session_identity(target_identity):
         inherited_identity = resolve_inherited_origin_identity(
             app_id,
             node_info,
@@ -2512,7 +2800,7 @@ def forward_session_sync_router_group_reply(app_id, node_info, mapping, text, de
     session_identity = parse_clawchat_session_identity(mapping.get('session_key', ''))
     if session_identity is None:
         return 0
-    if session_identity.get('channel') != 'clawchat-router' or session_identity.get('chat_type') != 'group':
+    if not (is_clawchat_router_session_identity(session_identity) and is_group_session_identity(session_identity)):
         return 0
     group_id = str(session_identity.get('target_id', '')).strip()
     if group_id == '':
@@ -2541,11 +2829,7 @@ def resolve_router_group_reply_mapping(mapping):
         if session_key == '':
             continue
         session_identity = parse_clawchat_session_identity(session_key)
-        if (
-            isinstance(session_identity, dict) and
-            session_identity.get('channel') == 'clawchat-router' and
-            session_identity.get('chat_type') == 'group'
-        ):
+        if is_clawchat_router_session_identity(session_identity) and is_group_session_identity(session_identity):
             router_mapping = dict(mapping)
             router_mapping['session_key'] = session_key
             return router_mapping
@@ -2556,11 +2840,7 @@ def should_forward_group_sync_via_router_reply(target_mapping):
         return None
     target_session_key = normalize_optional_session_key(target_mapping.get('session_key', ''))
     target_identity = parse_clawchat_session_identity(target_session_key)
-    if (
-        isinstance(target_identity, dict) and
-        target_identity.get('channel') == 'clawchat-router' and
-        target_identity.get('chat_type') == 'group'
-    ):
+    if is_clawchat_router_session_identity(target_identity) and is_group_session_identity(target_identity):
         return target_mapping
     group_id = str(target_mapping.get('group_id', '')).strip()
     if group_id != '':
@@ -2698,7 +2978,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         if (
             target_session_key != '' and
             target_session_key != session_key and
-            not (isinstance(target_identity, dict) and target_identity.get('chat_type') == 'direct') and
+            not is_direct_session_identity(target_identity) and
             get_session_mapping_by_session(app_id, node_info['node_id'], target_session_key) is None
         ):
             ensure_root_result = ensure_session_mapping(app_id, node_info, target_session_key)
@@ -3497,6 +3777,9 @@ def get_openclaw_app_manager_user_key(app_id):
 
 def get_openclaw_session_mapping_by_session_prefix(app_id, node_id):
     return f"lanying_connector:openclaw:session_map:by_session:{app_id}:{node_id}:"
+
+def get_openclaw_session_mapping_by_session_storage_key(app_id, node_id, session_key):
+    return f"{get_openclaw_session_mapping_by_session_prefix(app_id, node_id)}{normalize_session_key_text(session_key)}"
 
 def get_openclaw_session_mapping_by_session_key(app_id, node_id, session_key):
     return f"{get_openclaw_session_mapping_by_session_prefix(app_id, node_id)}{normalize_session_key(session_key)}"

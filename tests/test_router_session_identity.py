@@ -54,6 +54,30 @@ def _load_lanying_openclaw():
 
 lanying_openclaw = _load_lanying_openclaw()
 
+class FakeRedis:
+    def __init__(self):
+        self.values = {}
+        self.sets = {}
+
+    def set(self, key, value):
+        self.values[key] = value
+
+    def delete(self, key):
+        self.values.pop(key, None)
+
+    def sadd(self, key, *values):
+        bucket = self.sets.setdefault(key, set())
+        for value in values:
+            bucket.add(value)
+
+    def srem(self, key, *values):
+        bucket = self.sets.setdefault(key, set())
+        for value in values:
+            bucket.discard(value)
+
+    def smembers(self, key):
+        return set(self.sets.get(key, set()))
+
 
 class RouterSessionIdentityTests(unittest.TestCase):
     def test_legacy_router_session_key_is_normalized_to_clawchat_router(self):
@@ -148,6 +172,223 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(
             normalized["effective_target_session_key"],
             "agent:main:clawchat:direct:6597711675232",
+        )
+
+    def test_session_key_facts_expose_canonical_and_legacy_flags(self):
+        m = lanying_openclaw
+
+        legacy_facts = m.get_session_key_facts("agent:main:router:group:group-1")
+        canonical_facts = m.get_session_key_facts("agent:main:clawchat:direct:12345")
+        subagent_facts = m.get_session_key_facts("agent:main:subagent:test-child")
+
+        self.assertEqual(legacy_facts["canonical_session_key"], "agent:main:clawchat-router:group:group-1")
+        self.assertTrue(legacy_facts["is_legacy_alias"])
+        self.assertTrue(legacy_facts["is_router"])
+        self.assertTrue(legacy_facts["is_group"])
+        self.assertEqual(canonical_facts["channel"], "clawchat")
+        self.assertTrue(canonical_facts["is_direct"])
+        self.assertFalse(canonical_facts["is_legacy_alias"])
+        self.assertTrue(subagent_facts["is_subagent"])
+        self.assertFalse(subagent_facts["is_clawchat_session"])
+
+    def test_get_session_mapping_by_session_reads_legacy_storage_and_converges_to_canonical(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        old_session_key = "agent:main:router:group:group-1"
+        canonical_session_key = "agent:main:clawchat-router:group:group-1"
+        raw_mapping = {
+            "session_key": old_session_key,
+            "group_id": "group-1",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+        redis.set(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            json.dumps(raw_mapping),
+        )
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), old_session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda r, key: r.values.get(key)):
+            mapping = m.get_session_mapping_by_session("app-id", "node-1", canonical_session_key)
+
+        self.assertEqual(mapping["session_key"], canonical_session_key)
+        self.assertNotIn(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            redis.values,
+        )
+        self.assertIn(
+            m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
+            redis.values,
+        )
+        self.assertIn(canonical_session_key, redis.smembers(m.get_openclaw_session_mapping_index_key("app-id", "node-1")))
+        self.assertNotIn(old_session_key, redis.smembers(m.get_openclaw_session_mapping_index_key("app-id", "node-1")))
+
+    def test_get_session_mapping_by_session_does_not_overwrite_conflicting_canonical_mapping(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        old_session_key = "agent:main:router:group:group-1"
+        canonical_session_key = "agent:main:clawchat-router:group:group-1"
+        legacy_mapping = {
+            "session_key": old_session_key,
+            "group_id": "group-1",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+        canonical_mapping = {
+            "session_key": canonical_session_key,
+            "group_id": "group-2",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+        redis.set(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            json.dumps(legacy_mapping),
+        )
+        redis.set(
+            m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
+            json.dumps(canonical_mapping),
+        )
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), old_session_key, canonical_session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda r, key: r.values.get(key)):
+            mapping = m.get_session_mapping_by_session("app-id", "node-1", canonical_session_key)
+
+        self.assertEqual(mapping["group_id"], "group-2")
+        self.assertIn(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            redis.values,
+        )
+        self.assertEqual(
+            json.loads(redis.values[m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key)])["group_id"],
+            "group-2",
+        )
+
+    def test_list_session_mappings_for_node_converges_legacy_index_entries_without_duplicates(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        old_session_key = "agent:main:group:group-9"
+        canonical_session_key = "agent:main:clawchat:group:group-9"
+        raw_mapping = {
+            "session_key": old_session_key,
+            "group_id": "group-9",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+        redis.set(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            json.dumps(raw_mapping),
+        )
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), old_session_key, canonical_session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda r, key: r.values.get(key)):
+            mappings = m.list_session_mappings_for_node("app-id", "node-1")
+
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual(mappings[0]["session_key"], canonical_session_key)
+        self.assertIn(
+            m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
+            redis.values,
+        )
+
+    def test_set_session_mapping_accepts_group_bound_through_legacy_mapping(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        old_session_key = "agent:main:group:group-11"
+        canonical_session_key = "agent:main:clawchat:group:group-11"
+        legacy_body = {
+            "session_key": old_session_key,
+            "group_id": "group-11",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+        redis.set(
+            m.get_openclaw_session_mapping_by_group_key("app-id", "node-1", "openclaw-user", "group-11"),
+            json.dumps(legacy_body),
+        )
+        redis.set(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            json.dumps(legacy_body),
+        )
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), old_session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda r, key: r.values.get(key)):
+            result = m.set_session_mapping(
+                "app-id",
+                "node-1",
+                {
+                    "session_key": canonical_session_key,
+                    "group_id": "group-11",
+                    "app_id": "app-id",
+                    "node_id": "node-1",
+                    "openclaw_user_id": "openclaw-user",
+                    "management_user_id": "management-user",
+                },
+            )
+
+        self.assertEqual(result["result"], "ok")
+        self.assertIn(
+            m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
+            redis.values,
+        )
+
+    def test_migrate_legacy_session_mappings_for_node_reports_conflict(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        old_session_key = "agent:main:router:group:group-1"
+        canonical_session_key = "agent:main:clawchat-router:group:group-1"
+        legacy_mapping = {
+            "session_key": old_session_key,
+            "group_id": "group-1",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+        conflicting_canonical_mapping = {
+            "session_key": canonical_session_key,
+            "group_id": "another-group",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+        redis.set(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            json.dumps(legacy_mapping),
+        )
+        redis.set(
+            m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
+            json.dumps(conflicting_canonical_mapping),
+        )
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), old_session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda r, key: r.values.get(key)):
+            result = m.migrate_legacy_session_mappings_for_node(
+                "app-id",
+                {"node_id": "node-1"},
+                dry_run=False,
+            )
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["conflicts"], 1)
+        self.assertIn(
+            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
+            redis.values,
         )
 
     def test_router_child_mapping_uses_sender_and_bound_chatbot(self):
