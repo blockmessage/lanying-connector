@@ -1759,6 +1759,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "control_ui_user",
             "user",
             "msg-1",
+            "agent:main:session-parent",
+            "agent:main:session-root",
         )
 
         with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
@@ -1781,6 +1783,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(extra["ext"]["openclaw"]["source"], "control_ui_user")
         self.assertEqual(extra["ext"]["openclaw"]["role"], "user")
         self.assertEqual(extra["ext"]["openclaw"]["message_id"], "msg-1")
+        self.assertEqual(extra["ext"]["openclaw"]["parent_session"], "agent:main:session-parent")
+        self.assertEqual(extra["ext"]["openclaw"]["root_session"], "agent:main:session-root")
         self.assertEqual(extra["ext"]["ai"]["ai_generate"], False)
         self.assertEqual(extra["skip_antispam_prompt"], True)
 
@@ -1934,11 +1938,18 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "control_ui_reply",
             "assistant",
             "msg-2",
+            "",
+            "agent:main:clawchat:direct:sender-user",
         )
         self.assertEqual(delivery_ext["openclaw"]["type"], "session_sync_delivery")
         self.assertEqual(delivery_ext["openclaw"]["source"], "control_ui_reply")
         self.assertEqual(delivery_ext["openclaw"]["role"], "assistant")
         self.assertEqual(delivery_ext["openclaw"]["message_id"], "msg-2")
+        self.assertNotIn("parent_session", delivery_ext["openclaw"])
+        self.assertEqual(
+            delivery_ext["openclaw"]["root_session"],
+            "agent:main:clawchat:direct:sender-user",
+        )
         self.assertEqual(delivery_ext["ai"]["ai_generate"], False)
 
     def test_router_mapping_signal_carries_origin_and_chatbot_user_id(self):
@@ -2288,6 +2299,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                  "openclaw": {
                      "type": "session_sync_delivery",
                      "session": "agent:main:clawchat-router:direct:sender-user",
+                     "parent_session": "agent:main:session-parent",
+                     "root_session": "agent:main:session-root",
                      "source": "control_ui_user",
                      "role": "user",
                      "message_id": "oc-req-1",
@@ -2313,6 +2326,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["session"], "agent:main:clawchat-router:direct:sender-user")
         self.assertEqual(ext["openclaw"]["source"], "control_ui_reply")
         self.assertEqual(ext["openclaw"]["role"], "assistant")
+        self.assertEqual(ext["openclaw"]["parent_session"], "agent:main:session-parent")
+        self.assertEqual(ext["openclaw"]["root_session"], "agent:main:session-root")
         self.assertEqual(ext["openclaw"]["request_source"], "control_ui_user")
         self.assertEqual(ext["openclaw"]["request_role"], "user")
         self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-1")
@@ -2456,6 +2471,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                     "session": "agent:main:subagent:test-grandchild",
                     "source": "control_ui_reply",
                     "role": "assistant",
+                    "parent_session": "agent:main:subagent:test-parent",
+                    "root_session": "agent:main:clawchat-router:direct:sender-user",
                 },
                 "ai": {
                     "ai_generate": False,

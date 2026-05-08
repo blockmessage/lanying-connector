@@ -2572,7 +2572,14 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
     sync_session_mapping_to_node(node_info, mapping_result['data'])
     return mapping_result
 
-def build_session_sync_delivery_ext(session_key, source, role, message_id=''):
+def build_session_sync_delivery_ext(
+    session_key,
+    source,
+    role,
+    message_id='',
+    parent_session_key='',
+    root_session_key='',
+):
     normalized_source = str(source or '').strip()
     normalized_role = str(role or '').strip().lower()
     openclaw = {
@@ -2584,6 +2591,12 @@ def build_session_sync_delivery_ext(session_key, source, role, message_id=''):
     normalized_message_id = str(message_id or '').strip()
     if normalized_message_id != '':
         openclaw['message_id'] = normalized_message_id
+    normalized_parent_session_key = normalize_optional_session_key(parent_session_key)
+    if normalized_parent_session_key != '':
+        openclaw['parent_session'] = normalized_parent_session_key
+    normalized_root_session_key = normalize_optional_session_key(root_session_key)
+    if normalized_root_session_key != '':
+        openclaw['root_session'] = normalized_root_session_key
     ext = {'openclaw': openclaw}
     # Session visible-delivery events from OpenClaw are display-only in IM.
     if normalized_source in ['control_ui_user', 'control_ui_reply']:
@@ -2613,6 +2626,12 @@ def build_router_reply_delivery_ext(message):
         'source': 'control_ui_reply',
         'role': 'assistant',
     }
+    parent_session_key = normalize_optional_session_key(openclaw_in.get('parent_session', ''))
+    if parent_session_key != '':
+        reply_openclaw['parent_session'] = parent_session_key
+    root_session_key = normalize_optional_session_key(openclaw_in.get('root_session', ''))
+    if root_session_key != '':
+        reply_openclaw['root_session'] = root_session_key
     request_source = str(openclaw_in.get('source', '')).strip()
     if request_source != '':
         reply_openclaw['request_source'] = request_source
@@ -2940,7 +2959,6 @@ def handle_session_message_sync_event(app_id, node_info, event):
     if session_key == '' or source not in ['control_ui_user', 'control_ui_reply']:
         return
     message_id = str(event.get('message_id', '')).strip()
-    delivery_ext = build_session_sync_delivery_ext(session_key, source, role, message_id)
     should_materialize_clawchat_group = not (
         source == 'control_ui_user' and
         role == 'user' and
@@ -2970,6 +2988,21 @@ def handle_session_message_sync_event(app_id, node_info, event):
             return
     if mapping is None:
         return
+    delivery_lineage = resolve_session_lineage(
+        app_id,
+        node_info['node_id'],
+        normalize_session_key(mapping.get('session_key', '')) or session_key,
+        normalize_optional_session_key(mapping.get('parent_session_key', '')) or parent_session_key,
+        normalize_optional_session_key(mapping.get('root_session_key', '')) or root_session_key,
+    )
+    delivery_ext = build_session_sync_delivery_ext(
+        delivery_lineage.get('session_key', '') or session_key,
+        source,
+        role,
+        message_id,
+        delivery_lineage.get('parent_session_key', ''),
+        delivery_lineage.get('root_session_key', ''),
+    )
     if text.strip() != '' and role in ['user', 'assistant']:
         target_session_key = normalize_optional_session_key(
             mapping.get('effective_target_session_key', '') or mapping.get('root_session_key', '')
