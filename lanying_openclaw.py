@@ -776,6 +776,9 @@ def is_group_root_session_sync_mode(root_mode):
 def is_direct_root_session_sync_mode(root_mode):
     return root_mode in ['clawchat_direct', 'router_direct']
 
+def requires_management_user_group_admin(root_clawchat_session):
+    return resolve_root_session_sync_mode(root_clawchat_session) == 'generic'
+
 def should_send_control_ui_user_as_management(observed_facts, mapping):
     if not is_control_ui_active_user_observation(observed_facts):
         return False
@@ -1525,6 +1528,28 @@ def ensure_user_joined_group(app_id, user_id, group_id):
         time.sleep(1)
     return False
 
+def is_user_group_admin_or_owner(app_id, user_id, group_id):
+    normalized_user_id = str(user_id).strip()
+    normalized_group_id = str(group_id).strip()
+    if normalized_user_id == '' or normalized_group_id == '':
+        return False
+    try:
+        group_info_result = lanying_im_api.get_group_info(app_id, normalized_group_id)
+        if isinstance(group_info_result, dict) and group_info_result.get('code') == 200:
+            owner_user_id = str(group_info_result.get('data', {}).get('owner_id', '')).strip()
+            if owner_user_id != '' and owner_user_id == normalized_user_id:
+                return True
+    except Exception:
+        logging.exception("is_user_group_admin_or_owner get_group_info failed")
+    try:
+        admin_list_result = list_group_admin_user_ids(app_id, normalized_group_id)
+        admin_user_ids = set(admin_list_result.get('admin_user_ids', set()))
+        if normalized_user_id in admin_user_ids:
+            return True
+    except Exception:
+        logging.exception("is_user_group_admin_or_owner list_group_admin_user_ids failed")
+    return False
+
 def ensure_user_group_admin_sync(app_id, user_id, group_id):
     normalized_user_id = str(user_id).strip()
     normalized_group_id = str(group_id).strip()
@@ -1536,16 +1561,52 @@ def ensure_user_group_admin_sync(app_id, user_id, group_id):
             f"group_id:{normalized_group_id}"
         )
         return False
+    if is_user_group_admin_or_owner(app_id, normalized_user_id, normalized_group_id):
+        logging.info(
+            f"ensure_user_group_admin skip existing admin | app_id:{app_id}, user_id:{normalized_user_id}, "
+            f"group_id:{normalized_group_id}"
+        )
+        return True
     try:
         response_json = lanying_im_api.admin_add_group_admin(app_id, normalized_group_id, [int(normalized_user_id)])
         logging.info(
             f"ensure_user_group_admin add_admin | app_id:{app_id}, user_id:{normalized_user_id}, "
             f"group_id:{normalized_group_id}, response:{response_json}"
         )
-        return isinstance(response_json, dict) and response_json.get('code') == 200
+        if not (isinstance(response_json, dict) and response_json.get('code') == 200):
+            return False
+        return is_user_group_admin_or_owner(app_id, normalized_user_id, normalized_group_id)
     except Exception:
         logging.exception("ensure_user_group_admin add_admin failed")
         return False
+
+def ensure_required_management_user_group_admin(app_id, node_id, session_key, management_user_id, group_id, root_clawchat_session):
+    normalized_group_id = str(group_id).strip()
+    normalized_management_user_id = str(management_user_id).strip()
+    if not requires_management_user_group_admin(root_clawchat_session):
+        return {
+            'result': 'ignored',
+            'message': 'management group admin not required',
+        }
+    if normalized_group_id == '' or normalized_management_user_id == '':
+        return {
+            'result': 'error',
+            'message': 'management user group admin target missing',
+        }
+    ready = ensure_user_group_admin_sync(app_id, normalized_management_user_id, normalized_group_id)
+    logging.info(
+        f"ensure_required_management_user_group_admin | app_id:{app_id}, node_id:{node_id}, "
+        f"session_key:{session_key}, group_id:{normalized_group_id}, "
+        f"management_user_id:{normalized_management_user_id}, ready:{ready}"
+    )
+    if ready:
+        return {
+            'result': 'ok'
+        }
+    return {
+        'result': 'error',
+        'message': 'management user must join group and become group admin',
+    }
 
 def ensure_user_group_admin(app_id, user_id, group_id):
     normalized_user_id = str(user_id).strip()
@@ -2278,6 +2339,19 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
             )
             if materialize_result['result'] == 'error':
                 return materialize_result
+            existing_root_clawchat_session = parse_clawchat_session_identity(
+                normalize_optional_session_key(merged_existing.get('root_session_key', ''))
+            )
+            required_admin_result = ensure_required_management_user_group_admin(
+                app_id,
+                node_id,
+                normalized_session_key,
+                management_user_id,
+                existing.get('group_id', ''),
+                existing_root_clawchat_session,
+            )
+            if required_admin_result['result'] == 'error':
+                return required_admin_result
             logging.info(
                 f"ensure_session_mapping reuse existing mapping | app_id:{app_id}, node_id:{node_id}, "
                 f"session_key:{normalized_session_key}, group_id:{existing.get('group_id', '')}, "
@@ -2368,7 +2442,17 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
             'result': 'error',
             'message': 'create session group failed'
         }
-    if mapping_decision['mode'] != 'reuse_clawchat_group':
+    required_admin_result = ensure_required_management_user_group_admin(
+        app_id,
+        node_id,
+        normalized_session_key,
+        management_user_id,
+        group_id,
+        root_clawchat_session,
+    )
+    if required_admin_result['result'] == 'error':
+        return required_admin_result
+    if mapping_decision['mode'] != 'reuse_clawchat_group' and required_admin_result['result'] != 'ok':
         management_admin_ok = ensure_user_group_admin(app_id, management_user_id, group_id)
         if not management_admin_ok:
             logging.info(

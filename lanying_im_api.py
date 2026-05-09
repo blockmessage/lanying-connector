@@ -332,6 +332,52 @@ def admin_add_group_admin(app_id, group_id, user_ids):
         logging.info(f"admin_add_group_admin, app_id={app_id} group_id={group_id}, body={body}, result:{result}")
         return result
 
+def group_owner_transfer(app_id, group_id, current_owner_user_id, new_owner_user_id):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'group_id': str(group_id), 'user_id': str(current_owner_user_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        body = {
+            'group_id': group_id,
+            'new_owner': int(new_owner_user_id),
+        }
+        response = requests.post(apiEndpoint + '/group/transfer',
+                                    headers=headers,
+                                    json=body)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"group_owner_transfer, app_id={app_id} group_id={group_id}, current_owner_user_id={current_owner_user_id}, new_owner_user_id={new_owner_user_id}, body={body}, result:{result}")
+        return result
+
+def admin_kick_group_member(app_id, group_id, user_ids):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'group_id': str(group_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        body = {
+            'group_id': group_id,
+            'user_list': user_ids
+        }
+        response = requests.post(apiEndpoint + '/group/kick',
+                                    headers=headers,
+                                    json=body)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"admin_kick_group_member, app_id={app_id} group_id={group_id}, body={body}, result:{result}")
+        return result
+
 def get_user_file_upload_url(app_id, user_id, file_type, to_type, to_id):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
