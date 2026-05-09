@@ -1878,6 +1878,24 @@ def get_session_mapping_group_detail(app_id, group_id, mapping=None):
     }
     if normalized_group_id == '':
         return empty_detail
+    group_info = {
+        'group_id': normalized_group_id,
+        'owner_id': '',
+    }
+    group_info_error = ''
+    raw_group_info_result = lanying_im_api.get_group_info(app_id, normalized_group_id)
+    if not isinstance(raw_group_info_result, dict):
+        group_info_error = 'group info unavailable'
+    elif raw_group_info_result.get('code') != 200:
+        group_info_error = str(raw_group_info_result.get('message', '') or 'group info request failed').strip()
+    else:
+        raw_group_info = raw_group_info_result.get('data')
+        if not isinstance(raw_group_info, dict):
+            group_info_error = 'group info data is invalid'
+        else:
+            group_info = dict(raw_group_info)
+            group_info['group_id'] = str(raw_group_info.get('group_id', normalized_group_id)).strip() or normalized_group_id
+            group_info['owner_id'] = str(raw_group_info.get('owner_id', '')).strip()
     member_list_result = list_group_member_summaries(
         app_id,
         normalized_group_id,
@@ -1887,21 +1905,15 @@ def get_session_mapping_group_detail(app_id, group_id, mapping=None):
         app_id,
         normalized_group_id,
     )
-    owner_user_id = ''
-    if len(admin_list_result.get('admin_user_ids', set())) == 1:
-        owner_user_id = next(iter(admin_list_result.get('admin_user_ids', set())), '')
     return {
-        'group_info': {
-            'group_id': normalized_group_id,
-            'owner_id': str(owner_user_id).strip(),
-        },
+        'group_info': group_info,
         'member_summary': {
             'member_count_reported': len(members),
             'member_count_loaded': len(members),
             'members_loaded_complete': bool(member_list_result.get('members_loaded_complete', False)),
             'members': members,
         },
-        'group_info_error': '',
+        'group_info_error': group_info_error,
         'member_list_error': str(member_list_result.get('member_list_error', '')).strip(),
         'admin_list_error': str(admin_list_result.get('admin_list_error', '')).strip(),
         'member_list_viewer_user_id': '',

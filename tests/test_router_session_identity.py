@@ -32,6 +32,7 @@ def _load_lanying_openclaw():
         ),
         "lanying_im_api": types.SimpleNamespace(
             send_message_sync=lambda *args, **kwargs: 1,
+            get_group_info=lambda *args, **kwargs: {"code": 200, "data": {}},
         ),
         "lanying_utils": types.SimpleNamespace(
             safe_json_loads=lambda raw, default=None: default if default is not None else {},
@@ -51,30 +52,13 @@ def _load_lanying_openclaw():
         spec.loader.exec_module(module)
     return module
 
-def _load_lanying_migration(openclaw_module):
-    module_path = pathlib.Path(__file__).resolve().parents[1] / "lanying_migration.py"
-    module_name = "lanying_migration_router_identity_test"
+def _load_lanying_openclaw_migration(openclaw_module):
+    module_path = pathlib.Path(__file__).resolve().parents[1] / "lanying_openclaw_migration.py"
+    module_name = "lanying_openclaw_migration_router_identity_test"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     module = importlib.util.module_from_spec(spec)
     stub_modules = {
         "lanying_openclaw": openclaw_module,
-        "lanying_chatbot": types.SimpleNamespace(
-            get_chatbot=lambda app_id, chatbot_id: {"user_id": "chatbot-user"},
-        ),
-        "lanying_redis": types.SimpleNamespace(
-            get_redis_connection=lambda: object(),
-            redis_keys=lambda *args, **kwargs: [],
-            redis_get=lambda *args, **kwargs: None,
-        ),
-        "lanying_ai_capsule": types.SimpleNamespace(),
-        "lanying_grow_ai": types.SimpleNamespace(
-            GitBookSummary=lambda summary_text: types.SimpleNamespace(summary_list=[], to_markdown=lambda: summary_text),
-        ),
-        "requests": types.SimpleNamespace(
-            post=_fake_requests_call,
-            get=_fake_requests_call,
-            request=_fake_requests_call,
-        ),
     }
     with mock.patch.dict(sys.modules, stub_modules):
         assert spec.loader is not None
@@ -83,7 +67,7 @@ def _load_lanying_migration(openclaw_module):
 
 
 lanying_openclaw = _load_lanying_openclaw()
-lanying_migration = _load_lanying_migration(lanying_openclaw)
+lanying_openclaw_migration = _load_lanying_openclaw_migration(lanying_openclaw)
 
 class FakeRedis:
     def __init__(self):
@@ -346,6 +330,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         }
 
         with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m.lanying_im_api, "get_group_info") as mocked_group_info, \
              mock.patch.object(m, "get_group_member_list_for_group_admin") as mocked_member_list, \
              mock.patch.object(m, "get_group_admin_list_for_group_admin") as mocked_admin_list:
             details = m.list_session_mapping_details_for_node("app-id", "node-1")
@@ -356,6 +341,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(details[0]["member_summary"]["members"], [])
         self.assertEqual(details[0]["member_summary"]["member_count_loaded"], 0)
         self.assertEqual(details[0]["key_user_status"]["openclaw_user_id"]["present_in_group"], False)
+        mocked_group_info.assert_not_called()
         mocked_member_list.assert_not_called()
         mocked_admin_list.assert_not_called()
 
@@ -394,8 +380,18 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 {"user_id": "management-user", "display_name": "Manager", "join_time": 12, "expired_time": 0},
             ],
         }
+        group_info = {
+            "code": 200,
+            "data": {
+                "group_id": "group-9",
+                "name": "Group Nine",
+                "owner_id": "management-user",
+                "count": 3,
+            },
+        }
 
         with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m.lanying_im_api, "get_group_info", return_value=group_info) as mocked_group_info, \
              mock.patch.object(m, "get_group_member_list_for_group_admin", side_effect=member_pages) as mocked_member_list, \
              mock.patch.object(m, "get_group_admin_list_for_group_admin", return_value=admin_list) as mocked_admin_list:
             details = m.list_session_mapping_details_for_node("app-id", "node-1")
@@ -403,6 +399,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(len(details), 1)
         detail = details[0]
         self.assertEqual(detail["group_info"]["group_id"], "group-9")
+        self.assertEqual(detail["group_info"]["name"], "Group Nine")
         self.assertEqual(detail["member_summary"]["member_count_reported"], 3)
         self.assertEqual(detail["member_summary"]["member_count_loaded"], 3)
         self.assertTrue(detail["member_summary"]["members_loaded_complete"])
@@ -417,6 +414,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(detail["admin_list_error"], "")
         self.assertEqual(detail["member_list_viewer_user_id"], "")
         self.assertEqual(detail["admin_list_viewer_user_id"], "")
+        mocked_group_info.assert_called_once_with("app-id", "group-9")
         self.assertEqual(mocked_member_list.call_count, 2)
         self.assertEqual(mocked_member_list.call_args_list[0].args, ("app-id", "group-9", "", 500))
         mocked_admin_list.assert_called_once_with("app-id", "group-9")
@@ -439,11 +437,13 @@ class RouterSessionIdentityTests(unittest.TestCase):
         ]
 
         with mock.patch.object(m, "list_session_mappings_for_node", return_value=mappings), \
+             mock.patch.object(m.lanying_im_api, "get_group_info", return_value={"code": 200, "data": {"group_id": "group-9", "owner_id": "management-user"}}) as mocked_group_info, \
              mock.patch.object(m, "get_group_member_list_for_group_admin", return_value={"code": 200, "data": [], "cursor": ""}) as mocked_member_list, \
              mock.patch.object(m, "get_group_admin_list_for_group_admin", return_value={"code": 200, "data": []}) as mocked_admin_list:
             details = m.list_session_mapping_details_for_node("app-id", "node-1")
 
         self.assertEqual(len(details), 2)
+        mocked_group_info.assert_called_once_with("app-id", "group-9")
         mocked_member_list.assert_called_once_with("app-id", "group-9", "", 500)
         mocked_admin_list.assert_called_once_with("app-id", "group-9")
 
@@ -457,6 +457,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         }
 
         with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m.lanying_im_api, "get_group_info", return_value={"code": 200, "data": {"group_id": "group-9", "owner_id": ""}}), \
              mock.patch.object(m, "get_group_member_list_for_group_admin", side_effect=[
                  {"code": 200, "data": [{"user_id": "openclaw-user", "display_name": "OpenClaw", "join_time": 11, "expired_time": 0}], "cursor": "next"},
                  {"code": 500, "message": "boom"},
@@ -478,6 +479,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         }
 
         with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m.lanying_im_api, "get_group_info", return_value={"code": 200, "data": {"group_id": "group-9", "owner_id": "someone-else"}}), \
              mock.patch.object(m, "get_group_member_list_for_group_admin", return_value={
                  "code": 200,
                  "data": [{"user_id": "openclaw-user", "display_name": "OpenClaw", "join_time": 11, "expired_time": 0}],
@@ -488,6 +490,125 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(details[0]["admin_list_error"], "Operation rejected")
         self.assertEqual(details[0]["key_user_status"]["openclaw_user_id"]["admin_status"], "unknown")
+
+    def test_list_session_mapping_details_for_node_marks_group_info_error_when_group_info_fails(self):
+        m = lanying_openclaw
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+
+        with mock.patch.object(m, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m.lanying_im_api, "get_group_info", return_value={"code": 404, "message": "group not found"}), \
+             mock.patch.object(m, "get_group_member_list_for_group_admin", return_value={
+                 "code": 200,
+                 "data": [{"user_id": "openclaw-user", "display_name": "OpenClaw", "join_time": 11, "expired_time": 0}],
+                 "cursor": "",
+             }), \
+             mock.patch.object(m, "get_group_admin_list_for_group_admin", return_value={"code": 200, "data": []}):
+            details = m.list_session_mapping_details_for_node("app-id", "node-1")
+
+        self.assertEqual(details[0]["group_info"], {"group_id": "group-9", "owner_id": ""})
+        self.assertEqual(details[0]["group_info_error"], "group not found")
+
+    def test_render_inspect_session_mapping_group_states_html_for_node_renders_nested_tables(self):
+        m = lanying_openclaw_migration
+        details = [{
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "origin_user_id": "origin-<user>",
+            "chatbot_user_id": "chatbot-user",
+            "parent_session_key": "parent-session",
+            "root_session_key": "root-session",
+            "effective_target_session_key": "target-session",
+            "updated_at": 123,
+            "group_info": {
+                "group_id": "group-9",
+                "name": "Group <Nine>",
+                "owner_id": "management-user",
+                "count": 3,
+            },
+            "member_summary": {
+                "member_count_reported": 3,
+                "member_count_loaded": 2,
+                "members_loaded_complete": False,
+                "members": [
+                    {
+                        "user_id": "openclaw-user",
+                        "display_name": "OpenClaw <Admin>",
+                        "join_time": 11,
+                        "expired_time": 0,
+                    }
+                ],
+            },
+            "key_user_status": {
+                "openclaw_user_id": {
+                    "user_id": "openclaw-user",
+                    "present_in_group": True,
+                    "is_group_owner": False,
+                    "admin_status": "admin",
+                }
+            },
+            "group_info_error": "",
+            "member_list_error": "partial <error>",
+            "admin_list_error": "",
+            "member_list_viewer_user_id": "",
+            "admin_list_viewer_user_id": "",
+        }]
+
+        with mock.patch.object(m.lanying_openclaw, "list_session_mapping_details_for_node", return_value=details):
+            html_text = m.render_inspect_session_mapping_group_states_html_for_node("app-id", "node-1")
+
+        self.assertIn("<table", html_text)
+        self.assertIn("session_key", html_text)
+        self.assertIn("member_summary", html_text)
+        self.assertIn("key_user_status", html_text)
+        self.assertIn("Group &lt;Nine&gt;", html_text)
+        self.assertIn("OpenClaw &lt;Admin&gt;", html_text)
+        self.assertIn("partial &lt;error&gt;", html_text)
+        self.assertGreaterEqual(html_text.count("<table"), 5)
+
+    def test_inspect_session_mapping_group_states_for_node_reports_repairs(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        details = [{
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "origin_user_id": "origin-user",
+            "chatbot_user_id": "",
+            "root_session_key": "agent:main:clawchat:group:source-group",
+            "group_info": {"group_id": "group-9", "owner_id": "someone-else"},
+            "key_user_status": {
+                "openclaw_user_id": {"user_id": "openclaw-user", "present_in_group": False, "is_group_owner": False, "admin_status": "not_admin"},
+                "management_user_id": {"user_id": "management-user", "present_in_group": True, "is_group_owner": False, "admin_status": "not_admin"},
+                "origin_user_id": {"user_id": "origin-user", "present_in_group": False, "is_group_owner": False, "admin_status": "not_admin"},
+                "chatbot_user_id": {"user_id": "", "present_in_group": False, "is_group_owner": False, "admin_status": "unknown"},
+            },
+            "group_info_error": "",
+            "member_list_error": "",
+            "admin_list_error": "",
+        }]
+
+        with mock.patch.object(m.lanying_openclaw, "ensure_openclaw_app_manager_user", return_value={"result": "ok", "data": {"user_id": "management-user"}}), \
+             mock.patch.object(m.lanying_openclaw, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_openclaw, "list_session_mapping_details_for_node", return_value=details):
+            result = m.inspect_session_mapping_group_states_for_node("app-id", node_info)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["dirty_mapping_count"], 1)
+        report = result["data"]["mapping_reports"][0]
+        self.assertEqual(report["status"], "dirty")
+        self.assertEqual(report["expected_owner_user_id"], "openclaw-user")
+        self.assertTrue(any(change["action"] == "group_member_add" and change["user_id"] == "openclaw-user" for change in report["proposed_changes"]))
+        self.assertTrue(any(change["action"] == "group_member_add" and change["user_id"] == "origin-user" for change in report["proposed_changes"]))
+        self.assertTrue(any(change["action"] == "group_admin_add" and change["user_id"] == "management-user" for change in report["proposed_changes"]))
+        self.assertTrue(any(change["action"] == "group_owner_transfer_review" for change in report["proposed_changes"]))
 
     def test_set_session_mapping_accepts_group_bound_through_legacy_mapping(self):
         m = lanying_openclaw
@@ -530,53 +651,6 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(result["result"], "ok")
         self.assertIn(
             m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
-            redis.values,
-        )
-
-    def test_migrate_legacy_session_mappings_for_node_reports_conflict(self):
-        m = lanying_openclaw
-        mm = lanying_migration
-        redis = FakeRedis()
-        old_session_key = "agent:main:router:group:group-1"
-        canonical_session_key = "agent:main:clawchat-router:group:group-1"
-        legacy_mapping = {
-            "session_key": old_session_key,
-            "group_id": "group-1",
-            "app_id": "app-id",
-            "node_id": "node-1",
-            "openclaw_user_id": "openclaw-user",
-            "management_user_id": "management-user",
-        }
-        conflicting_canonical_mapping = {
-            "session_key": canonical_session_key,
-            "group_id": "another-group",
-            "app_id": "app-id",
-            "node_id": "node-1",
-            "openclaw_user_id": "openclaw-user",
-            "management_user_id": "management-user",
-        }
-        redis.set(
-            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
-            json.dumps(legacy_mapping),
-        )
-        redis.set(
-            m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
-            json.dumps(conflicting_canonical_mapping),
-        )
-        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), old_session_key)
-
-        with mock.patch.object(mm.lanying_redis, "get_redis_connection", return_value=redis), \
-             mock.patch.object(mm.lanying_redis, "redis_get", side_effect=lambda r, key: r.values.get(key)):
-            result = mm.migrate_legacy_session_mappings_for_node(
-                "app-id",
-                {"node_id": "node-1"},
-                dry_run=False,
-            )
-
-        self.assertEqual(result["result"], "ok")
-        self.assertEqual(result["data"]["conflicts"], 1)
-        self.assertIn(
-            m.get_openclaw_session_mapping_by_session_storage_key("app-id", "node-1", old_session_key),
             redis.values,
         )
 
@@ -1274,101 +1348,6 @@ class RouterSessionIdentityTests(unittest.TestCase):
         mocked_join.assert_called_once_with("app-id", "management-user", "group-9")
         mocked_submit.assert_called_once_with(m.ensure_user_group_admin_sync, "app-id", "management-user", "group-9")
 
-    def test_migrate_session_mapping_group_admins_for_node_uses_sync_repair(self):
-        m = lanying_migration
-        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
-
-        with mock.patch.object(m.lanying_openclaw, "ensure_openclaw_app_manager_user", return_value={
-            "result": "ok",
-            "data": {"user_id": "management-user"},
-        }), \
-             mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=[
-                 {"group_id": "group-9"},
-                 {"group_id": "group-9"},
-                 {"group_id": "group-10"},
-             ]), \
-             mock.patch.object(m.lanying_openclaw, "ensure_user_group_admin_sync", side_effect=[True, False]) as mocked_repair:
-            result = m.migrate_session_mapping_group_admins_for_node("app-id", node_info, dry_run=False)
-
-        self.assertEqual(result["result"], "ok")
-        self.assertEqual(result["data"]["total_groups"], 2)
-        self.assertEqual(result["data"]["success_groups"], 1)
-        self.assertEqual(mocked_repair.call_args_list[0].args, ("app-id", "management-user", "group-9"))
-        self.assertEqual(mocked_repair.call_args_list[1].args, ("app-id", "management-user", "group-10"))
-
-    def test_list_openclaw_node_list_app_ids_scans_node_list_keys(self):
-        m = lanying_migration
-        fake_redis = types.SimpleNamespace(
-            scan_iter=lambda match, count=100: iter([
-                b"lanying_connector:openclaw:node_list:app-b",
-                b"lanying_connector:openclaw:node_list:app-a",
-                b"lanying_connector:openclaw:node_list:app-b",
-            ])
-        )
-        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis):
-            app_ids = m.list_openclaw_node_list_app_ids()
-        self.assertEqual(app_ids, ["app-a", "app-b"])
-
-    def test_migrate_session_mapping_group_admins_scans_all_apps_when_app_id_empty(self):
-        m = lanying_migration
-        with mock.patch.object(m, "list_openclaw_node_list_app_ids", return_value=["app-a", "app-b"]), \
-             mock.patch.object(m.lanying_openclaw, "get_node_list", side_effect=[
-                 {"result": "ok", "data": {"list": [{"node_id": "1"}, {"node_id": "2"}]}},
-                 {"result": "ok", "data": {"list": [{"node_id": "3"}]}},
-             ]), \
-             mock.patch.object(m, "migrate_session_mapping_group_admins_for_node", side_effect=[
-                 {"result": "ok", "data": {"total_groups": 2, "success_groups": 2}},
-                 {"result": "ok", "data": {"total_groups": 3, "success_groups": 2}},
-                 {"result": "ok", "data": {"total_groups": 5, "success_groups": 4}},
-             ]):
-            result = m.migrate_session_mapping_group_admins("", dry_run=True)
-
-        self.assertEqual(result["result"], "ok")
-        self.assertEqual(result["data"]["app_count"], 2)
-        self.assertEqual(result["data"]["node_count"], 3)
-        self.assertEqual(result["data"]["total_groups"], 10)
-        self.assertEqual(result["data"]["success_groups"], 8)
-        self.assertEqual(len(result["data"]["app_results"]), 2)
-
-    def test_migrate_session_mapping_management_users_for_node_uses_mapping_management_user(self):
-        m = lanying_migration
-        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
-
-        with mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=[
-            {"group_id": "group-9", "management_user_id": "manager-a"},
-            {"group_id": "group-9", "management_user_id": "manager-a"},
-            {"group_id": "group-9", "management_user_id": "manager-b"},
-            {"group_id": "group-10", "management_user_id": ""},
-        ]), \
-             mock.patch.object(m.lanying_openclaw, "ensure_user_group_admin_sync", side_effect=[True, False]) as mocked_repair:
-            result = m.migrate_session_mapping_management_users_for_node("app-id", node_info, dry_run=False)
-
-        self.assertEqual(result["result"], "ok")
-        self.assertEqual(result["data"]["total_groups"], 2)
-        self.assertEqual(result["data"]["success_groups"], 1)
-        self.assertEqual(mocked_repair.call_args_list[0].args, ("app-id", "manager-a", "group-9"))
-        self.assertEqual(mocked_repair.call_args_list[1].args, ("app-id", "manager-b", "group-9"))
-
-    def test_migrate_session_mapping_management_users_scans_all_apps_when_app_id_empty(self):
-        m = lanying_migration
-        with mock.patch.object(m, "list_openclaw_node_list_app_ids", return_value=["app-a", "app-b"]), \
-             mock.patch.object(m.lanying_openclaw, "get_node_list", side_effect=[
-                 {"result": "ok", "data": {"list": [{"node_id": "1"}, {"node_id": "2"}]}},
-                 {"result": "ok", "data": {"list": [{"node_id": "3"}]}},
-             ]), \
-             mock.patch.object(m, "migrate_session_mapping_management_users_for_node", side_effect=[
-                 {"result": "ok", "data": {"total_groups": 1, "success_groups": 1}},
-                 {"result": "ok", "data": {"total_groups": 2, "success_groups": 1}},
-                 {"result": "ok", "data": {"total_groups": 4, "success_groups": 4}},
-             ]):
-            result = m.migrate_session_mapping_management_users("", dry_run=True)
-
-        self.assertEqual(result["result"], "ok")
-        self.assertEqual(result["data"]["app_count"], 2)
-        self.assertEqual(result["data"]["node_count"], 3)
-        self.assertEqual(result["data"]["total_groups"], 7)
-        self.assertEqual(result["data"]["success_groups"], 6)
-        self.assertEqual(len(result["data"]["app_results"]), 2)
 
     def test_openclaw_group_user_forwarding_promotes_management_user_as_admin(self):
         m = lanying_openclaw
