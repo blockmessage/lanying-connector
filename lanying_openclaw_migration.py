@@ -251,6 +251,169 @@ def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
     return _build_session_mapping_html_table(rows)
 
 
+def render_inspect_session_mapping_group_state_html_for_session(app_id, node_id, session_key, inspect_result=None, detail=None):
+    normalized_node_id = str(node_id).strip()
+    normalized_session_key = str(session_key).strip()
+    if normalized_node_id == '' or normalized_session_key == '':
+        return _build_session_mapping_html_table(['<tr><td colspan="12"></td></tr>'])
+    if not isinstance(detail, dict):
+        detail = lanying_openclaw.get_session_mapping_detail_by_session(
+            app_id,
+            normalized_node_id,
+            normalized_session_key,
+        )
+    if not isinstance(detail, dict):
+        return _build_session_mapping_html_table(['<tr><td colspan="12"></td></tr>'])
+    report = _find_mapping_report_by_session_key(inspect_result or {}, normalized_session_key) or {}
+    session_facts = lanying_openclaw.get_session_key_facts(normalized_session_key)
+    mapping_summary = {
+        'group_id': detail.get('group_id', ''),
+        'openclaw_user_id': detail.get('openclaw_user_id', ''),
+        'management_user_id': detail.get('management_user_id', ''),
+        'origin_user_id': detail.get('origin_user_id', ''),
+        'chatbot_user_id': detail.get('chatbot_user_id', ''),
+        'parent_session_key': detail.get('parent_session_key', ''),
+        'root_session_key': detail.get('root_session_key', ''),
+        'effective_target_session_key': detail.get('effective_target_session_key', ''),
+        'updated_at': detail.get('updated_at', ''),
+    }
+    session_facts_html = _build_session_mapping_html_table(
+        _build_session_mapping_html_key_value_rows(
+            session_facts,
+            ['canonical_session_key', 'channel', 'chat_type', 'target_id', 'is_legacy_alias', 'is_router', 'is_group', 'is_direct', 'is_subagent'],
+        )
+    )
+    group_info_html = _build_session_mapping_html_table(
+        _build_session_mapping_html_key_value_rows(
+            detail.get('group_info', {}),
+            ['group_id', 'name', 'owner_id', 'count', 'type', 'status', 'created_at', 'updated_at'],
+        )
+    )
+    member_summary = dict(detail.get('member_summary', {}))
+    member_rows = _build_session_mapping_html_key_value_rows(
+        {
+            'member_count_reported': member_summary.get('member_count_reported', ''),
+            'member_count_loaded': member_summary.get('member_count_loaded', ''),
+            'members_loaded_complete': member_summary.get('members_loaded_complete', ''),
+        }
+    )
+    for member in member_summary.get('members', []):
+        if not isinstance(member, dict):
+            continue
+        member_rows.append(
+            '<tr><td colspan="2">'
+            + _build_session_mapping_html_table(
+                _build_session_mapping_html_key_value_rows(
+                    member,
+                    ['user_id', 'display_name', 'join_time', 'expired_time'],
+                )
+            )
+            + '</td></tr>'
+        )
+    member_summary_html = _build_session_mapping_html_table(member_rows)
+    key_user_rows = []
+    for role_key, status in detail.get('key_user_status', {}).items():
+        key_user_rows.append(
+            '<tr><td valign="top">'
+            f'{_escape_session_mapping_html(role_key)}'
+            '</td><td>'
+            + _build_session_mapping_html_table(
+                _build_session_mapping_html_key_value_rows(
+                    status,
+                    ['user_id', 'present_in_group', 'is_group_owner', 'admin_status'],
+                )
+            )
+            + '</td></tr>'
+        )
+    key_user_status_html = _build_session_mapping_html_table(key_user_rows or ['<tr><td colspan="2"></td></tr>'])
+    error_html = _build_session_mapping_html_table(
+        _build_session_mapping_html_key_value_rows(
+            {
+                'group_info_error': detail.get('group_info_error', ''),
+                'member_list_error': detail.get('member_list_error', ''),
+                'admin_list_error': detail.get('admin_list_error', ''),
+                'member_list_viewer_user_id': detail.get('member_list_viewer_user_id', ''),
+                'admin_list_viewer_user_id': detail.get('admin_list_viewer_user_id', ''),
+            }
+        )
+    )
+    group_html = _build_session_mapping_html_table(
+        _build_session_mapping_html_key_value_rows(
+            {
+                'group_id': report.get('group_id', ''),
+                'root_mode': report.get('root_mode', ''),
+            }
+        )
+    )
+    owner_html = _build_session_mapping_html_table(
+        _build_session_mapping_html_key_value_rows(
+            {
+                'current_owner_user_id': report.get('current_owner_user_id', ''),
+                'expected_owner_user_id': report.get('expected_owner_user_id', ''),
+            }
+        )
+    )
+    issue_rows = []
+    for issue in report.get('issues', []):
+        issue_rows.append(
+            '<tr><td colspan="2">'
+            + _build_session_mapping_html_table(
+                _build_session_mapping_html_key_value_rows(
+                    issue,
+                    ['severity', 'code', 'summary', 'current', 'expected'],
+                )
+            )
+            + '</td></tr>'
+        )
+    issues_html = _build_session_mapping_html_table(issue_rows or ['<tr><td colspan="2"></td></tr>'])
+    change_rows = []
+    for change in report.get('proposed_changes', []):
+        change_rows.append(
+            '<tr><td colspan="2">'
+            + _build_session_mapping_html_table(
+                _build_session_mapping_html_key_value_rows(
+                    change,
+                    ['action', 'target_type', 'group_id', 'session_key', 'field', 'user_id', 'from', 'to', 'reason', 'risk'],
+                )
+            )
+            + '</td></tr>'
+        )
+    changes_html = _build_session_mapping_html_table(change_rows or ['<tr><td colspan="2"></td></tr>'])
+    header = (
+        '<tr>'
+        '<th>session_key</th>'
+        '<th>session_facts</th>'
+        '<th>mapping</th>'
+        '<th>group_info</th>'
+        '<th>member_summary</th>'
+        '<th>key_user_status</th>'
+        '<th>errors</th>'
+        '<th>group</th>'
+        '<th>status</th>'
+        '<th>owner</th>'
+        '<th>issues</th>'
+        '<th>proposed_changes</th>'
+        '</tr>'
+    )
+    row = (
+        '<tr>'
+        f'<td valign="top">{_escape_session_mapping_html(normalized_session_key)}</td>'
+        f'<td valign="top">{session_facts_html}</td>'
+        f'<td valign="top">{_build_session_mapping_html_table(_build_session_mapping_html_key_value_rows(mapping_summary))}</td>'
+        f'<td valign="top">{group_info_html}</td>'
+        f'<td valign="top">{member_summary_html}</td>'
+        f'<td valign="top">{key_user_status_html}</td>'
+        f'<td valign="top">{error_html}</td>'
+        f'<td valign="top">{group_html}</td>'
+        f'<td valign="top">{_escape_session_mapping_html(report.get("status", ""))}</td>'
+        f'<td valign="top">{owner_html}</td>'
+        f'<td valign="top">{issues_html}</td>'
+        f'<td valign="top">{changes_html}</td>'
+        '</tr>'
+    )
+    return _build_session_mapping_html_table([header, row])
+
+
 def _append_group_state_issue(issues, proposed_changes, severity, code, summary, current=None, expected=None, proposal=None):
     issues.append({
         'severity': severity,
@@ -683,7 +846,12 @@ def migrate_inspected_session_mapping_group_state(app_id, node_info, session_key
     before_report = _find_mapping_report_by_session_key(before_inspect, normalized_session_key)
     if not isinstance(before_report, dict):
         return {'result': 'error', 'message': 'session mapping inspect report not found'}
-    before_html = render_inspect_session_mapping_group_states_html_for_node(app_id, node_id)
+    before_html = render_inspect_session_mapping_group_state_html_for_session(
+        app_id,
+        node_id,
+        normalized_session_key,
+        inspect_result=before_inspect,
+    )
     logging.info(f"migrate_inspected_session_mapping_group_state before | app_id:{app_id}, node_id:{node_id}, session_key:{normalized_session_key}, report:{before_report}")
     applied_changes = []
     if dry_run:
@@ -717,7 +885,12 @@ def migrate_inspected_session_mapping_group_state(app_id, node_info, session_key
             }
     after_inspect = inspect_session_mapping_group_states_for_node(app_id, normalized_node_info)
     after_report = _find_mapping_report_by_session_key(after_inspect, normalized_session_key)
-    after_html = render_inspect_session_mapping_group_states_html_for_node(app_id, node_id)
+    after_html = render_inspect_session_mapping_group_state_html_for_session(
+        app_id,
+        node_id,
+        normalized_session_key,
+        inspect_result=after_inspect,
+    )
     logging.info(f"migrate_inspected_session_mapping_group_state after | app_id:{app_id}, node_id:{node_id}, session_key:{normalized_session_key}, report:{after_report}")
     return {
         'result': 'ok',

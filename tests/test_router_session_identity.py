@@ -849,7 +849,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         }
 
         with mock.patch.object(m, "inspect_session_mapping_group_states_for_node", side_effect=[before_inspect, after_inspect]), \
-             mock.patch.object(m, "render_inspect_session_mapping_group_states_html_for_node", side_effect=["before-html", "after-html"]), \
+             mock.patch.object(m, "render_inspect_session_mapping_group_state_html_for_session", side_effect=["before-html", "after-html"]), \
              mock.patch.object(m, "_apply_group_state_change", side_effect=[{"result": "ok"}, {"result": "ok"}]) as mocked_apply:
             result = m.migrate_inspected_session_mapping_group_state("app-id", node_info, "agent:main:subagent:test-child")
 
@@ -879,7 +879,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         with mock.patch.object(m.lanying_openclaw, "get_node", return_value={"node_id": "15", "user_id": "openclaw-user"}), \
              mock.patch.object(m, "inspect_session_mapping_group_states_for_node", return_value=before_inspect), \
-             mock.patch.object(m, "render_inspect_session_mapping_group_states_html_for_node", return_value="before-html"), \
+             mock.patch.object(m, "render_inspect_session_mapping_group_state_html_for_session", return_value="before-html"), \
              mock.patch.object(m, "_apply_group_state_change") as mocked_apply:
             result = m.migrate_inspected_session_mapping_group_state("app-id", "15", "agent:main:subagent:test-child", dry_run=True)
 

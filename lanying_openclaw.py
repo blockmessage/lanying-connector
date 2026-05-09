@@ -2076,72 +2076,92 @@ def get_session_mapping_group_detail(app_id, group_id, mapping=None):
         'admin_user_ids': set(admin_list_result.get('admin_user_ids', set())),
     }
 
+def build_session_mapping_detail_from_mapping(app_id, mapping, group_detail_cache=None):
+    normalized_mapping = normalize_session_mapping_record(mapping)
+    if not isinstance(normalized_mapping, dict):
+        return None
+    group_id = str(normalized_mapping.get('group_id', '')).strip()
+    cache = group_detail_cache if isinstance(group_detail_cache, dict) else {}
+    if group_id != '':
+        if group_id not in cache:
+            cache[group_id] = get_session_mapping_group_detail(app_id, group_id, normalized_mapping)
+        group_detail = cache[group_id]
+    else:
+        group_detail = get_session_mapping_group_detail(app_id, '', normalized_mapping)
+    group_info = dict(group_detail.get('group_info', {}))
+    member_summary = dict(group_detail.get('member_summary', {}))
+    members = list(member_summary.get('members', []))
+    member_user_ids = set()
+    for member in members:
+        if isinstance(member, dict):
+            user_id = str(member.get('user_id', '')).strip()
+            if user_id != '':
+                member_user_ids.add(user_id)
+    admin_user_ids = set(group_detail.get('admin_user_ids', set()))
+    owner_user_id = str(group_info.get('owner_id', '')).strip()
+    admin_list_error = str(group_detail.get('admin_list_error', '')).strip()
+    detail = dict(normalized_mapping)
+    detail['group_info'] = group_info
+    detail['member_summary'] = member_summary
+    detail['key_user_status'] = {
+        'openclaw_user_id': build_session_mapping_key_user_group_status(
+            normalized_mapping.get('openclaw_user_id', ''),
+            owner_user_id,
+            member_user_ids,
+            admin_user_ids,
+            admin_list_error,
+        ),
+        'management_user_id': build_session_mapping_key_user_group_status(
+            normalized_mapping.get('management_user_id', ''),
+            owner_user_id,
+            member_user_ids,
+            admin_user_ids,
+            admin_list_error,
+        ),
+        'origin_user_id': build_session_mapping_key_user_group_status(
+            normalized_mapping.get('origin_user_id', ''),
+            owner_user_id,
+            member_user_ids,
+            admin_user_ids,
+            admin_list_error,
+        ),
+        'chatbot_user_id': build_session_mapping_key_user_group_status(
+            normalized_mapping.get('chatbot_user_id', ''),
+            owner_user_id,
+            member_user_ids,
+            admin_user_ids,
+            admin_list_error,
+        ),
+    }
+    detail['group_info_error'] = str(group_detail.get('group_info_error', '')).strip()
+    detail['member_list_error'] = str(group_detail.get('member_list_error', '')).strip()
+    detail['admin_list_error'] = admin_list_error
+    detail['member_list_viewer_user_id'] = str(group_detail.get('member_list_viewer_user_id', '')).strip()
+    detail['admin_list_viewer_user_id'] = str(group_detail.get('admin_list_viewer_user_id', '')).strip()
+    return detail
+
+def get_session_mapping_detail_by_session(app_id, node_id, session_key, group_detail_cache=None):
+    mapping = get_session_mapping_by_session(app_id, node_id, session_key)
+    if not isinstance(mapping, dict):
+        return None
+    return build_session_mapping_detail_from_mapping(
+        app_id,
+        mapping,
+        group_detail_cache=group_detail_cache,
+    )
+
 def list_session_mapping_details_for_node(app_id, node_id):
     mappings = list_session_mappings_for_node(app_id, node_id)
     details = []
     group_detail_cache = {}
     for mapping in mappings:
-        normalized_mapping = normalize_session_mapping_record(mapping)
-        if not isinstance(normalized_mapping, dict):
-            continue
-        group_id = str(normalized_mapping.get('group_id', '')).strip()
-        if group_id != '':
-            if group_id not in group_detail_cache:
-                group_detail_cache[group_id] = get_session_mapping_group_detail(app_id, group_id, normalized_mapping)
-            group_detail = group_detail_cache[group_id]
-        else:
-            group_detail = get_session_mapping_group_detail(app_id, '', normalized_mapping)
-        group_info = dict(group_detail.get('group_info', {}))
-        member_summary = dict(group_detail.get('member_summary', {}))
-        members = list(member_summary.get('members', []))
-        member_user_ids = set()
-        for member in members:
-            if isinstance(member, dict):
-                user_id = str(member.get('user_id', '')).strip()
-                if user_id != '':
-                    member_user_ids.add(user_id)
-        admin_user_ids = set(group_detail.get('admin_user_ids', set()))
-        owner_user_id = str(group_info.get('owner_id', '')).strip()
-        admin_list_error = str(group_detail.get('admin_list_error', '')).strip()
-        detail = dict(normalized_mapping)
-        detail['group_info'] = group_info
-        detail['member_summary'] = member_summary
-        detail['key_user_status'] = {
-            'openclaw_user_id': build_session_mapping_key_user_group_status(
-                normalized_mapping.get('openclaw_user_id', ''),
-                owner_user_id,
-                member_user_ids,
-                admin_user_ids,
-                admin_list_error,
-            ),
-            'management_user_id': build_session_mapping_key_user_group_status(
-                normalized_mapping.get('management_user_id', ''),
-                owner_user_id,
-                member_user_ids,
-                admin_user_ids,
-                admin_list_error,
-            ),
-            'origin_user_id': build_session_mapping_key_user_group_status(
-                normalized_mapping.get('origin_user_id', ''),
-                owner_user_id,
-                member_user_ids,
-                admin_user_ids,
-                admin_list_error,
-            ),
-            'chatbot_user_id': build_session_mapping_key_user_group_status(
-                normalized_mapping.get('chatbot_user_id', ''),
-                owner_user_id,
-                member_user_ids,
-                admin_user_ids,
-                admin_list_error,
-            ),
-        }
-        detail['group_info_error'] = str(group_detail.get('group_info_error', '')).strip()
-        detail['member_list_error'] = str(group_detail.get('member_list_error', '')).strip()
-        detail['admin_list_error'] = admin_list_error
-        detail['member_list_viewer_user_id'] = str(group_detail.get('member_list_viewer_user_id', '')).strip()
-        detail['admin_list_viewer_user_id'] = str(group_detail.get('admin_list_viewer_user_id', '')).strip()
-        details.append(detail)
+        detail = build_session_mapping_detail_from_mapping(
+            app_id,
+            mapping,
+            group_detail_cache=group_detail_cache,
+        )
+        if isinstance(detail, dict):
+            details.append(detail)
     return details
 
 def list_openclaw_node_list_app_ids():
