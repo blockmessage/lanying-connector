@@ -788,6 +788,11 @@ def should_send_control_ui_user_as_management(observed_facts, mapping):
         is_subagent_bootstrap_observed_text(observed_facts)
     ):
         return False
+    session_identity = parse_clawchat_session_identity(
+        normalize_optional_session_key((mapping or {}).get('session_key', ''))
+    )
+    if not is_group_session_identity(session_identity):
+        return False
     root_mode = resolve_root_session_sync_mode(parse_clawchat_session_identity(
         normalize_optional_session_key((mapping or {}).get('root_session_key', ''))
     ))
@@ -2553,13 +2558,6 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
     )
     if required_admin_result['result'] == 'error':
         return required_admin_result
-    if mapping_decision['mode'] != 'reuse_clawchat_group' and required_admin_result['result'] != 'ok':
-        management_admin_ok = ensure_user_group_admin(app_id, management_user_id, group_id)
-        if not management_admin_ok:
-            logging.info(
-                f"ensure_session_mapping add management admin failed (non-blocking) | app_id:{app_id}, node_id:{node_id}, "
-                f"session_key:{normalized_session_key}, group_id:{group_id}, management_user_id:{management_user_id}"
-            )
     if clawchat_session is None:
         membership_result = ensure_session_mapping_group_members(
             app_id,
