@@ -9,6 +9,7 @@ import lanying_im_api
 import lanying_utils
 import json
 import lanying_vendor
+import lanying_pgvector
 import requests
 from lanying_async import executor
 
@@ -1653,6 +1654,83 @@ def session_mapping_signature(mapping):
 def session_mapping_conflicts(existing_mapping, incoming_mapping):
     return session_mapping_signature(existing_mapping) != session_mapping_signature(incoming_mapping)
 
+def build_session_mapping_change_log_entry(
+    app_id,
+    node_id,
+    previous_mapping,
+    new_mapping,
+    change_source,
+    legacy_session_keys=None,
+    extra_metadata=None,
+):
+    previous_normalized = normalize_session_mapping_record(previous_mapping or {})
+    new_normalized = normalize_session_mapping_record(new_mapping or {})
+    session_key = normalize_optional_session_key(
+        new_normalized.get('session_key', '') or previous_normalized.get('session_key', '')
+    )
+    group_id = str(new_normalized.get('group_id', '') or previous_normalized.get('group_id', '')).strip()
+    openclaw_user_id = str(
+        new_normalized.get('openclaw_user_id', '') or previous_normalized.get('openclaw_user_id', '')
+    ).strip()
+    return {
+        'app_id': str(app_id).strip(),
+        'node_id': str(node_id).strip(),
+        'session_key': session_key,
+        'group_id': group_id,
+        'openclaw_user_id': openclaw_user_id,
+        'change_source': str(change_source or '').strip(),
+        'previous_signature': session_mapping_signature(previous_normalized),
+        'new_signature': session_mapping_signature(new_normalized),
+        'previous_mapping': previous_normalized,
+        'new_mapping': new_normalized,
+        'legacy_session_keys': list(legacy_session_keys or []),
+        'extra_metadata': dict(extra_metadata or {}),
+    }
+
+def write_session_mapping_change_log(log_entry):
+    try:
+        append_result = lanying_pgvector.append_openclaw_session_map_log(log_entry)
+        if append_result.get('result') not in ['ok', 'ignored']:
+            logging.info(
+                f"write_session_mapping_change_log unexpected result | "
+                f"session_key:{log_entry.get('session_key', '')}, result:{append_result}"
+            )
+    except Exception:
+        logging.exception(
+            f"write_session_mapping_change_log failed | "
+            f"session_key:{log_entry.get('session_key', '')}, change_source:{log_entry.get('change_source', '')}"
+        )
+
+def record_session_mapping_change_async(
+    app_id,
+    node_id,
+    previous_mapping,
+    new_mapping,
+    change_source,
+    legacy_session_keys=None,
+    extra_metadata=None,
+):
+    previous_normalized = normalize_session_mapping_record(previous_mapping or {})
+    new_normalized = normalize_session_mapping_record(new_mapping or {})
+    if session_mapping_signature(previous_normalized) == session_mapping_signature(new_normalized):
+        return
+    log_entry = build_session_mapping_change_log_entry(
+        app_id,
+        node_id,
+        previous_normalized,
+        new_normalized,
+        change_source,
+        legacy_session_keys=legacy_session_keys,
+        extra_metadata=extra_metadata,
+    )
+    try:
+        executor.submit(write_session_mapping_change_log, log_entry)
+    except Exception:
+        logging.exception(
+            f"record_session_mapping_change_async submit failed | "
+            f"session_key:{log_entry.get('session_key', '')}, change_source:{log_entry.get('change_source', '')}"
+        )
+
 def get_existing_canonical_session_mapping(redis, app_id, node_id, session_key):
     canonical_session_key = normalize_optional_session_key(session_key)
     if canonical_session_key == '':
@@ -1697,6 +1775,17 @@ def converge_session_mapping_record(redis, app_id, node_id, mapping, legacy_sess
             continue
         redis.delete(get_openclaw_session_mapping_by_session_storage_key(app_id, node_id, normalized_legacy_session_key))
         remove_session_mapping_index_entry(redis, app_id, node_id, normalized_legacy_session_key)
+    record_session_mapping_change_async(
+        app_id,
+        node_id,
+        normalized_mapping,
+        body,
+        'read_time_converge',
+        legacy_session_keys=legacy_session_keys,
+        extra_metadata={
+            'group_lookup_key_written': group_id != '',
+        },
+    )
     return body
 
 def resolve_read_time_session_mapping(redis, app_id, node_id, mapping, legacy_session_keys=None):
@@ -2112,6 +2201,18 @@ def set_session_mapping(app_id, node_id, mapping):
     elif previous_session_group_id != '':
         redis.delete(get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, previous_session_group_id))
     redis.sadd(get_openclaw_session_mapping_index_key(app_id, node_id), session_key)
+    record_session_mapping_change_async(
+        app_id,
+        node_id,
+        previous_session_mapping,
+        body,
+        'set_session_mapping',
+        extra_metadata={
+            'previous_session_group_id': previous_session_group_id,
+            'group_lookup_key_written': group_id != '',
+            'group_lookup_key_deleted': previous_session_group_id != '' and group_id == '',
+        },
+    )
     return {
         'result': 'ok',
         'data': body

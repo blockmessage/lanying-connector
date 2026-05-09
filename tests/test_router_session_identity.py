@@ -38,6 +38,9 @@ def _load_lanying_openclaw():
             safe_json_loads=lambda raw, default=None: default if default is not None else {},
         ),
         "lanying_vendor": types.SimpleNamespace(),
+        "lanying_pgvector": types.SimpleNamespace(
+            append_openclaw_session_map_log=lambda entry: {"result": "ignored", "message": "test stub"},
+        ),
         "requests": types.SimpleNamespace(
             post=_fake_requests_call,
             get=_fake_requests_call,
@@ -247,6 +250,31 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertIn(canonical_session_key, redis.smembers(m.get_openclaw_session_mapping_index_key("app-id", "node-1")))
         self.assertNotIn(old_session_key, redis.smembers(m.get_openclaw_session_mapping_index_key("app-id", "node-1")))
 
+    def test_converge_session_mapping_record_logs_async_change(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        legacy_mapping = {
+            "session_key": "agent:main:router:group:group-1",
+            "group_id": "group-1",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+
+        with mock.patch.object(m, "record_session_mapping_change_async") as mocked_log:
+            result = m.converge_session_mapping_record(
+                redis,
+                "app-id",
+                "node-1",
+                legacy_mapping,
+                legacy_session_keys=["agent:main:router:group:group-1"],
+            )
+
+        self.assertEqual(result["session_key"], "agent:main:clawchat-router:group:group-1")
+        mocked_log.assert_called_once()
+        self.assertEqual(mocked_log.call_args.args[4], "read_time_converge")
+
     def test_get_session_mapping_by_session_does_not_overwrite_conflicting_canonical_mapping(self):
         m = lanying_openclaw
         redis = FakeRedis()
@@ -321,6 +349,62 @@ class RouterSessionIdentityTests(unittest.TestCase):
             m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", canonical_session_key),
             redis.values,
         )
+
+    def test_set_session_mapping_logs_async_only_for_material_change(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        mapping = {
+            "session_key": "agent:main:router:group:group-1",
+            "group_id": "group-1",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+        }
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=None), \
+             mock.patch.object(m, "get_session_mapping_by_group", return_value=None), \
+             mock.patch.object(m, "record_session_mapping_change_async") as mocked_log:
+            result = m.set_session_mapping("app-id", "node-1", mapping)
+
+        self.assertEqual(result["result"], "ok")
+        mocked_log.assert_called_once()
+        self.assertEqual(mocked_log.call_args.args[4], "set_session_mapping")
+
+        existing_body = dict(result["data"])
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=existing_body), \
+             mock.patch.object(m, "get_session_mapping_by_group", return_value=existing_body), \
+             mock.patch.object(m, "record_session_mapping_change_async") as mocked_same_log:
+            same_result = m.set_session_mapping("app-id", "node-1", existing_body)
+
+        self.assertEqual(same_result["result"], "ok")
+        mocked_same_log.assert_called_once()
+
+    def test_record_session_mapping_change_async_skips_executor_for_same_signature(self):
+        m = lanying_openclaw
+        mapping = {
+            "session_key": "agent:main:clawchat-router:group:group-1",
+            "group_id": "group-1",
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "updated_at": 1,
+            "created_at": 1,
+        }
+
+        with mock.patch.object(m.executor, "submit") as mocked_submit:
+            m.record_session_mapping_change_async(
+                "app-id",
+                "node-1",
+                dict(mapping),
+                dict(mapping),
+                "set_session_mapping",
+            )
+
+        mocked_submit.assert_not_called()
 
     def test_list_session_mapping_details_for_node_skips_group_lookups_for_non_group_mapping(self):
         m = lanying_openclaw

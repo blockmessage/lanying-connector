@@ -51,6 +51,7 @@ def info1(any):
              info_openclaw_node,
              info_openclaw_session_mapping_list,
              info_openclaw_session_mapping_detail_list,
+             info_openclaw_session_map_log_list,
              info_openclaw_session_mapping,
              info_embedding_uuid_info,
              info_embedding_doc_id_list_by_embedding_name,
@@ -387,6 +388,20 @@ def info_openclaw_session_mapping(session_key):
                         'parsed_session_identity': lanying_openclaw.parse_clawchat_session_identity(mapping.get('session_key', '')),
                         'parsed_root_identity': lanying_openclaw.parse_clawchat_session_identity(mapping.get('root_session_key', ''))
                     }
+                }
+            }
+
+def info_openclaw_session_map_log_list(node_id):
+    app_id = cache.get('app_id')
+    if is_app_id(app_id) and is_node_id(node_id):
+        node_id_text = str(node_id)
+        logs = lanying_pgvector.list_openclaw_session_map_logs(app_id, node_id_text)
+        if len(logs) > 0:
+            set_cache('node_id', node_id_text)
+            return {
+                'result': 'ok',
+                'data': {
+                    'openclaw_session_map_logs': logs
                 }
             }
 
