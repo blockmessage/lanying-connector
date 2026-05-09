@@ -817,6 +817,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             result = m.inspect_session_mapping_group_states_for_node("app-id", node_info)
 
         report = result["data"]["mapping_reports"][0]
+        self.assertEqual(report["current_owner_user_id"], "openclaw-user")
         self.assertEqual(report["expected_owner_user_id"], "chatbot-user")
         self.assertTrue(any(change["action"] == "group_owner_transfer" and change["to"] == "chatbot-user" for change in report["proposed_changes"]))
         self.assertTrue(any(change["action"] == "group_member_remove" and change["user_id"] == "openclaw-user" for change in report["proposed_changes"]))
@@ -850,9 +851,52 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         report = result["data"]["mapping_reports"][0]
         self.assertEqual(report["root_mode"], "router_group")
-        self.assertEqual(report["expected_owner_user_id"], "chatbot-user")
+        self.assertEqual(report["current_owner_user_id"], "chatbot-user")
+        self.assertEqual(report["expected_owner_user_id"], "")
         self.assertFalse(any(issue["code"] == "missing_required_member" and issue["current"].get("user_id") == "openclaw-user" for issue in report["issues"]))
         self.assertFalse(any(change["action"] == "group_member_add" and change["user_id"] == "openclaw-user" for change in report["proposed_changes"]))
+
+    def test_inspect_session_mapping_group_states_for_node_router_group_bound_chatbot_in_group_does_not_require_member_add(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        details = [{
+            "session_key": "agent:main:clawchat-router:group:group-9",
+            "group_id": "group-9",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "origin_user_id": "",
+            "chatbot_user_id": "",
+            "root_session_key": "agent:main:clawchat-router:group:group-9",
+            "group_info": {"group_id": "group-9", "owner_id": "owner-user", "type": 0},
+            "member_summary": {
+                "member_count_reported": 3,
+                "member_count_loaded": 3,
+                "members_loaded_complete": True,
+                "members": [
+                    {"user_id": "owner-user"},
+                    {"user_id": "chatbot-user"},
+                    {"user_id": "management-user"},
+                ],
+            },
+            "key_user_status": {
+                "openclaw_user_id": {"user_id": "openclaw-user", "present_in_group": False, "is_group_owner": False, "admin_status": "not_admin"},
+                "management_user_id": {"user_id": "management-user", "present_in_group": True, "is_group_owner": False, "admin_status": "not_admin"},
+                "chatbot_user_id": {"user_id": "", "present_in_group": False, "is_group_owner": False, "admin_status": "unknown"},
+            },
+            "group_info_error": "",
+            "member_list_error": "",
+            "admin_list_error": "",
+        }]
+
+        with mock.patch.object(m.lanying_openclaw, "ensure_openclaw_app_manager_user", return_value={"result": "ok", "data": {"user_id": "management-user"}}), \
+             mock.patch.object(m.lanying_openclaw, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_openclaw, "list_session_mapping_details_for_node", return_value=details):
+            result = m.inspect_session_mapping_group_states_for_node("app-id", node_info)
+
+        report = result["data"]["mapping_reports"][0]
+        self.assertTrue(any(change["action"] == "mapping_field_update" and change["field"] == "chatbot_user_id" and change["to"] == "chatbot-user" for change in report["proposed_changes"]))
+        self.assertFalse(any(issue["code"] == "missing_required_member" and issue["current"].get("user_id") == "chatbot-user" for issue in report["issues"]))
+        self.assertFalse(any(change["action"] == "group_member_add" and change["user_id"] == "chatbot-user" for change in report["proposed_changes"]))
 
     def test_migrate_inspected_session_mapping_group_state_applies_changes_and_returns_before_after(self):
         m = lanying_openclaw_migration

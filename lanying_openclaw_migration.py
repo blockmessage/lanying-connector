@@ -456,6 +456,36 @@ def _build_mapping_field_change(session_key, field, current, target, reason, ris
     }
 
 
+def _resolve_effective_key_user_status(detail, role_key, effective_user_id):
+    normalized_user_id = str(effective_user_id).strip()
+    key_user_status = dict((detail or {}).get('key_user_status', {}))
+    direct_status = dict(key_user_status.get(role_key, {}))
+    if str(direct_status.get('user_id', '')).strip() == normalized_user_id:
+        return direct_status
+
+    for status in key_user_status.values():
+        if not isinstance(status, dict):
+            continue
+        if str(status.get('user_id', '')).strip() == normalized_user_id:
+            return dict(status)
+
+    owner_user_id = str(dict((detail or {}).get('group_info', {})).get('owner_id', '')).strip()
+    member_user_ids = set()
+    member_summary = dict((detail or {}).get('member_summary', {}))
+    for member in list(member_summary.get('members', []) or []):
+        if isinstance(member, dict):
+            user_id = str(member.get('user_id', '')).strip()
+            if user_id != '':
+                member_user_ids.add(user_id)
+    admin_list_error = str((detail or {}).get('admin_list_error', '')).strip()
+    return {
+        'user_id': normalized_user_id,
+        'present_in_group': normalized_user_id != '' and normalized_user_id in member_user_ids,
+        'is_group_owner': normalized_user_id != '' and normalized_user_id == owner_user_id,
+        'admin_status': 'unknown' if normalized_user_id == '' or admin_list_error != '' else 'not_admin',
+    }
+
+
 def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_management_user_id='', bound_chatbot_user_id=''):
     openclaw = lanying_openclaw
     normalized_detail = openclaw.normalize_session_mapping_record(detail)
@@ -539,8 +569,9 @@ def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_man
         )
         management_user_id = str(default_management_user_id).strip()
 
+    expected_owner_user_id = ''
     if openclaw.is_router_root_session(root_identity):
-        expected_owner_user_id = chatbot_user_id or str(bound_chatbot_user_id).strip()
+        router_expected_owner_user_id = chatbot_user_id or str(bound_chatbot_user_id).strip()
         if chatbot_user_id == '' and str(bound_chatbot_user_id).strip() != '':
             _append_group_state_issue(
                 issues,
@@ -559,8 +590,11 @@ def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_man
                 ),
             )
             chatbot_user_id = str(bound_chatbot_user_id).strip()
+        if is_temporary_group:
+            expected_owner_user_id = router_expected_owner_user_id
     else:
-        expected_owner_user_id = openclaw_user_id or management_user_id
+        if is_temporary_group:
+            expected_owner_user_id = openclaw_user_id or management_user_id
 
     required_members = []
     if openclaw.is_router_root_session(root_identity):
@@ -579,9 +613,8 @@ def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_man
         ):
             required_members.append(('origin_user_id', origin_user_id))
 
-    key_user_status = dict(normalized_detail.get('key_user_status', {}))
     for role_key, user_id in required_members:
-        status = dict(key_user_status.get(role_key, {}))
+        status = _resolve_effective_key_user_status(normalized_detail, role_key, user_id)
         if not bool(status.get('present_in_group', False)):
             _append_group_state_issue(
                 issues,
@@ -601,6 +634,7 @@ def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_man
                 ),
             )
 
+    key_user_status = dict(normalized_detail.get('key_user_status', {}))
     management_status = dict(key_user_status.get('management_user_id', {}))
     management_present_in_group = bool(management_status.get('present_in_group', False))
     management_admin_status = str(management_status.get('admin_status', '')).strip()
