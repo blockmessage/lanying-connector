@@ -955,6 +955,23 @@ def _apply_group_state_change(app_id, node_id, session_key, change):
     return {'result': 'ignored', 'message': f'unsupported action: {action}'}
 
 
+def _proposed_changes_signature(report):
+    signature_parts = []
+    for change in list((report or {}).get('proposed_changes', []) or []):
+        normalized_change = dict(change or {})
+        signature_parts.append((
+            str(normalized_change.get('action', '')).strip(),
+            str(normalized_change.get('target_type', '')).strip(),
+            str(normalized_change.get('group_id', '')).strip(),
+            str(normalized_change.get('session_key', '')).strip(),
+            str(normalized_change.get('field', '')).strip(),
+            str(normalized_change.get('user_id', '')).strip(),
+            str(normalized_change.get('from', '')),
+            str(normalized_change.get('to', '')),
+        ))
+    return tuple(signature_parts)
+
+
 def migrate_inspected_session_mapping_group_state(app_id, node_info, session_key, dry_run=False):
     normalized_node_info = _resolve_node_info(app_id, node_info)
     node_id = str((normalized_node_info or {}).get('node_id', '')).strip()
@@ -991,34 +1008,76 @@ def migrate_inspected_session_mapping_group_state(app_id, node_info, session_key
                 'after_html': before_html,
             }
         }
-    for change in list(before_report.get('proposed_changes', []) or []):
-        apply_result = _apply_group_state_change(app_id, node_id, normalized_session_key, change)
-        applied_changes.append({
-            'change': change,
-            'apply_result': apply_result,
-        })
-        if apply_result.get('result') not in ['ok', 'ignored']:
-            return {
-                'result': 'error',
-                'message': 'apply proposed change failed',
-                'data': {
-                    'before_report': before_report,
-                    'applied_changes': applied_changes,
+    max_rounds = 5
+    seen_signatures = set()
+    current_report = before_report
+    after_report = before_report
+    stop_reason = 'max_rounds_reached'
+    for round_index in range(max_rounds):
+        if not isinstance(current_report, dict):
+            stop_reason = 'report_missing'
+            break
+        if str(current_report.get('status', '')).strip() != 'dirty':
+            after_report = current_report
+            stop_reason = 'clean'
+            break
+        proposed_changes = list(current_report.get('proposed_changes', []) or [])
+        if len(proposed_changes) == 0:
+            after_report = current_report
+            stop_reason = 'no_proposed_changes'
+            break
+        report_signature = _proposed_changes_signature(current_report)
+        if report_signature in seen_signatures:
+            after_report = current_report
+            stop_reason = 'repeated_proposed_changes'
+            break
+        seen_signatures.add(report_signature)
+        for change in proposed_changes:
+            apply_result = _apply_group_state_change(app_id, node_id, normalized_session_key, change)
+            applied_changes.append({
+                'round': round_index + 1,
+                'change': change,
+                'apply_result': apply_result,
+            })
+            if apply_result.get('result') not in ['ok', 'ignored']:
+                return {
+                    'result': 'error',
+                    'message': 'apply proposed change failed',
+                    'data': {
+                        'before_report': before_report,
+                        'applied_changes': applied_changes,
+                    }
                 }
+        after_inspect = inspect_session_mapping_group_state_for_session(
+            app_id,
+            normalized_node_info,
+            normalized_session_key,
+        )
+        current_report = _find_mapping_report_by_session_key(after_inspect, normalized_session_key)
+        if not isinstance(current_report, dict):
+            stop_reason = 'report_missing_after_apply'
+            after_report = None
+            break
+        after_report = current_report
+    if not isinstance(after_report, dict):
+        return {
+            'result': 'error',
+            'message': 'session mapping inspect report not found after apply',
+            'data': {
+                'before_report': before_report,
+                'applied_changes': applied_changes,
             }
-    after_inspect = inspect_session_mapping_group_state_for_session(
-        app_id,
-        normalized_node_info,
-        normalized_session_key,
-    )
-    after_report = _find_mapping_report_by_session_key(after_inspect, normalized_session_key)
+        }
     after_html = render_inspect_session_mapping_group_state_html_for_session(
         app_id,
         node_id,
         normalized_session_key,
-        inspect_result=after_inspect,
+        inspect_result={'result': 'ok', 'data': {'mapping_reports': [after_report]}},
     )
-    logging.info(f"migrate_inspected_session_mapping_group_state after | app_id:{app_id}, node_id:{node_id}, session_key:{normalized_session_key}, report:{after_report}")
+    logging.info(
+        f"migrate_inspected_session_mapping_group_state after | app_id:{app_id}, node_id:{node_id}, "
+        f"session_key:{normalized_session_key}, stop_reason:{stop_reason}, report:{after_report}"
+    )
     return {
         'result': 'ok',
         'data': {
@@ -1027,6 +1086,7 @@ def migrate_inspected_session_mapping_group_state(app_id, node_info, session_key
             'before_report': before_report,
             'after_report': after_report,
             'applied_changes': applied_changes,
+            'stop_reason': stop_reason,
             'before_html': before_html,
             'after_html': after_html,
         }

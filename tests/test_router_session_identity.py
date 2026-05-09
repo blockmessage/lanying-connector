@@ -940,9 +940,100 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(result["result"], "ok")
         self.assertEqual(result["data"]["before_report"]["status"], "dirty")
         self.assertEqual(result["data"]["after_report"]["status"], "clean")
+        self.assertEqual(result["data"]["stop_reason"], "clean")
         self.assertEqual(result["data"]["before_html"], "before-html")
         self.assertEqual(result["data"]["after_html"], "after-html")
         self.assertEqual(mocked_apply.call_count, 2)
+
+    def test_migrate_inspected_session_mapping_group_state_converges_multiple_rounds(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        before_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:main",
+                    "status": "dirty",
+                    "proposed_changes": [
+                        {"action": "group_owner_transfer", "group_id": "group-9", "from": "old-owner", "to": "new-owner"},
+                    ],
+                }]
+            }
+        }
+        second_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:main",
+                    "status": "dirty",
+                    "proposed_changes": [
+                        {"action": "group_admin_add", "group_id": "group-9", "user_id": "management-user", "from": "not_admin", "to": "admin"},
+                    ],
+                }]
+            }
+        }
+        clean_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:main",
+                    "status": "clean",
+                    "proposed_changes": [],
+                }]
+            }
+        }
+
+        with mock.patch.object(m, "inspect_session_mapping_group_state_for_session", side_effect=[before_inspect, second_inspect, clean_inspect]), \
+             mock.patch.object(m, "render_inspect_session_mapping_group_state_html_for_session", side_effect=["before-html", "after-html"]), \
+             mock.patch.object(m, "_apply_group_state_change", side_effect=[{"result": "ok"}, {"result": "ok"}]) as mocked_apply:
+            result = m.migrate_inspected_session_mapping_group_state("app-id", node_info, "agent:main:main")
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["after_report"]["status"], "clean")
+        self.assertEqual(result["data"]["stop_reason"], "clean")
+        self.assertEqual(mocked_apply.call_count, 2)
+        self.assertEqual(
+            [entry["round"] for entry in result["data"]["applied_changes"]],
+            [1, 2],
+        )
+
+    def test_migrate_inspected_session_mapping_group_state_stops_on_repeated_proposed_changes(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        before_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:loop",
+                    "status": "dirty",
+                    "proposed_changes": [
+                        {"action": "group_admin_add", "group_id": "group-9", "user_id": "management-user", "from": "not_admin", "to": "admin"},
+                    ],
+                }]
+            }
+        }
+        repeated_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:loop",
+                    "status": "dirty",
+                    "proposed_changes": [
+                        {"action": "group_admin_add", "group_id": "group-9", "user_id": "management-user", "from": "not_admin", "to": "admin"},
+                    ],
+                }]
+            }
+        }
+
+        with mock.patch.object(m, "inspect_session_mapping_group_state_for_session", side_effect=[before_inspect, repeated_inspect]), \
+             mock.patch.object(m, "render_inspect_session_mapping_group_state_html_for_session", side_effect=["before-html", "after-html"]), \
+             mock.patch.object(m, "_apply_group_state_change", return_value={"result": "ok"}) as mocked_apply:
+            result = m.migrate_inspected_session_mapping_group_state("app-id", node_info, "agent:main:loop")
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["stop_reason"], "repeated_proposed_changes")
+        self.assertEqual(result["data"]["after_report"]["status"], "dirty")
+        self.assertEqual(mocked_apply.call_count, 1)
 
     def test_migrate_inspected_session_mapping_group_state_supports_node_id_and_dry_run(self):
         m = lanying_openclaw_migration
