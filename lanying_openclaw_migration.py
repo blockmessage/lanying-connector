@@ -761,6 +761,48 @@ def inspect_session_mapping_group_states_for_node(app_id, node_info):
     }
 
 
+def inspect_session_mapping_group_state_for_session(app_id, node_info, session_key):
+    openclaw = lanying_openclaw
+    if not isinstance(node_info, dict):
+        return {'result': 'ignored', 'message': 'bad node info'}
+    node_id = str(node_info.get('node_id', '')).strip()
+    normalized_session_key = str(session_key).strip()
+    if node_id == '' or normalized_session_key == '':
+        return {'result': 'ignored', 'message': 'bad node id or session key'}
+    default_management_user_id = ''
+    app_user_result = openclaw.ensure_openclaw_app_manager_user(app_id)
+    if isinstance(app_user_result, dict) and app_user_result.get('result') == 'ok':
+        default_management_user_id = str(app_user_result.get('data', {}).get('user_id', '')).strip()
+    bound_chatbot_user_id = openclaw.resolve_bound_chatbot_user_id(app_id, node_id)
+    detail = openclaw.get_session_mapping_detail_by_session(app_id, node_id, normalized_session_key)
+    if not isinstance(detail, dict):
+        return {'result': 'error', 'message': 'session mapping detail not found'}
+    report = _analyze_session_mapping_group_detail(
+        app_id,
+        node_info,
+        detail,
+        default_management_user_id=default_management_user_id,
+        bound_chatbot_user_id=bound_chatbot_user_id,
+    )
+    mapping_reports = []
+    dirty_count = 0
+    if report.get('group_id', '') != '':
+        mapping_reports.append(report)
+        if report.get('status') == 'dirty':
+            dirty_count = 1
+    return {
+        'result': 'ok',
+        'data': {
+            'node_id': node_id,
+            'default_management_user_id': default_management_user_id,
+            'bound_chatbot_user_id': bound_chatbot_user_id,
+            'checked_mapping_count': len(mapping_reports),
+            'dirty_mapping_count': dirty_count,
+            'mapping_reports': mapping_reports,
+        }
+    }
+
+
 def _find_mapping_report_by_session_key(inspect_result, session_key):
     normalized_session_key = str(session_key).strip()
     if not isinstance(inspect_result, dict):
@@ -842,7 +884,11 @@ def migrate_inspected_session_mapping_group_state(app_id, node_info, session_key
     normalized_session_key = str(session_key).strip()
     if node_id == '' or normalized_session_key == '':
         return {'result': 'error', 'message': 'bad node_id or session_key'}
-    before_inspect = inspect_session_mapping_group_states_for_node(app_id, normalized_node_info)
+    before_inspect = inspect_session_mapping_group_state_for_session(
+        app_id,
+        normalized_node_info,
+        normalized_session_key,
+    )
     before_report = _find_mapping_report_by_session_key(before_inspect, normalized_session_key)
     if not isinstance(before_report, dict):
         return {'result': 'error', 'message': 'session mapping inspect report not found'}
@@ -883,7 +929,11 @@ def migrate_inspected_session_mapping_group_state(app_id, node_info, session_key
                     'applied_changes': applied_changes,
                 }
             }
-    after_inspect = inspect_session_mapping_group_states_for_node(app_id, normalized_node_info)
+    after_inspect = inspect_session_mapping_group_state_for_session(
+        app_id,
+        normalized_node_info,
+        normalized_session_key,
+    )
     after_report = _find_mapping_report_by_session_key(after_inspect, normalized_session_key)
     after_html = render_inspect_session_mapping_group_state_html_for_session(
         app_id,
