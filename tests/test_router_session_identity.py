@@ -615,12 +615,15 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "parent_session_key": "parent-session",
             "root_session_key": "root-session",
             "effective_target_session_key": "target-session",
+            "created_at": 122,
             "updated_at": 123,
             "group_info": {
                 "group_id": "group-9",
                 "name": "Group <Nine>",
                 "owner_id": "management-user",
                 "count": 3,
+                "created_at": 456000,
+                "updated_at": 789000,
             },
             "member_summary": {
                 "member_count_reported": 3,
@@ -685,6 +688,10 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertIn("member_summary", html_text)
         self.assertIn("key_user_status", html_text)
         self.assertIn("proposed_changes", html_text)
+        self.assertIn("created_at", html_text)
+        self.assertIn("updated_at", html_text)
+        self.assertIn("122 (1970-01-01 08:02:02)", html_text)
+        self.assertIn("456000 (1970-01-01 08:07:36)", html_text)
         self.assertIn("unexpected_group_owner", html_text)
         self.assertIn("Group &lt;Nine&gt; owner mismatch", html_text)
         self.assertIn("OpenClaw &lt;Admin&gt;", html_text)

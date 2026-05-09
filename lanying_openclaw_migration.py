@@ -37,6 +37,7 @@ Notes:
 
 import html
 import logging
+from datetime import datetime
 import lanying_im_api
 import lanying_openclaw
 
@@ -80,6 +81,37 @@ def _build_session_mapping_html_key_value_rows(data, ordered_keys=None):
     return rows
 
 
+def _format_unix_timestamp(value, scale='seconds'):
+    try:
+        numeric_value = int(value)
+    except Exception:
+        return value
+    if numeric_value <= 0:
+        return value
+    try:
+        timestamp = numeric_value / 1000.0 if scale == 'milliseconds' else numeric_value
+        formatted = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        return f'{numeric_value} ({formatted})'
+    except Exception:
+        return value
+
+
+def _annotate_time_fields(data, second_keys=None, millisecond_keys=None):
+    if not isinstance(data, dict):
+        return {}
+    annotated = {}
+    second_key_set = set(second_keys or [])
+    millisecond_key_set = set(millisecond_keys or [])
+    for key, value in data.items():
+        if key in second_key_set:
+            annotated[key] = _format_unix_timestamp(value, scale='seconds')
+        elif key in millisecond_key_set:
+            annotated[key] = _format_unix_timestamp(value, scale='milliseconds')
+        else:
+            annotated[key] = value
+    return annotated
+
+
 def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
     details = sorted(
         lanying_openclaw.list_session_mapping_details_for_node(app_id, node_id),
@@ -119,7 +151,7 @@ def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
         session_key = str(detail.get('session_key', '')).strip()
         report = reports_by_session_key.get(session_key, {})
         session_facts = lanying_openclaw.get_session_key_facts(session_key)
-        mapping_summary = {
+        mapping_summary = _annotate_time_fields({
             'group_id': detail.get('group_id', ''),
             'openclaw_user_id': detail.get('openclaw_user_id', ''),
             'management_user_id': detail.get('management_user_id', ''),
@@ -128,8 +160,9 @@ def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
             'parent_session_key': detail.get('parent_session_key', ''),
             'root_session_key': detail.get('root_session_key', ''),
             'effective_target_session_key': detail.get('effective_target_session_key', ''),
+            'created_at': detail.get('created_at', ''),
             'updated_at': detail.get('updated_at', ''),
-        }
+        }, second_keys=['created_at', 'updated_at'])
         session_facts_html = _build_session_mapping_html_table(
             _build_session_mapping_html_key_value_rows(
                 session_facts,
@@ -138,7 +171,10 @@ def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
         )
         group_info_html = _build_session_mapping_html_table(
             _build_session_mapping_html_key_value_rows(
-                detail.get('group_info', {}),
+                _annotate_time_fields(
+                    detail.get('group_info', {}),
+                    millisecond_keys=['created_at', 'updated_at'],
+                ),
                 ['group_id', 'name', 'owner_id', 'count', 'type', 'status', 'created_at', 'updated_at'],
             )
         )
@@ -266,7 +302,7 @@ def render_inspect_session_mapping_group_state_html_for_session(app_id, node_id,
         return _build_session_mapping_html_table(['<tr><td colspan="12"></td></tr>'])
     report = _find_mapping_report_by_session_key(inspect_result or {}, normalized_session_key) or {}
     session_facts = lanying_openclaw.get_session_key_facts(normalized_session_key)
-    mapping_summary = {
+    mapping_summary = _annotate_time_fields({
         'group_id': detail.get('group_id', ''),
         'openclaw_user_id': detail.get('openclaw_user_id', ''),
         'management_user_id': detail.get('management_user_id', ''),
@@ -275,8 +311,9 @@ def render_inspect_session_mapping_group_state_html_for_session(app_id, node_id,
         'parent_session_key': detail.get('parent_session_key', ''),
         'root_session_key': detail.get('root_session_key', ''),
         'effective_target_session_key': detail.get('effective_target_session_key', ''),
+        'created_at': detail.get('created_at', ''),
         'updated_at': detail.get('updated_at', ''),
-    }
+    }, second_keys=['created_at', 'updated_at'])
     session_facts_html = _build_session_mapping_html_table(
         _build_session_mapping_html_key_value_rows(
             session_facts,
@@ -285,7 +322,10 @@ def render_inspect_session_mapping_group_state_html_for_session(app_id, node_id,
     )
     group_info_html = _build_session_mapping_html_table(
         _build_session_mapping_html_key_value_rows(
-            detail.get('group_info', {}),
+            _annotate_time_fields(
+                detail.get('group_info', {}),
+                millisecond_keys=['created_at', 'updated_at'],
+            ),
             ['group_id', 'name', 'owner_id', 'count', 'type', 'status', 'created_at', 'updated_at'],
         )
     )
