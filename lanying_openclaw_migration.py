@@ -507,7 +507,10 @@ def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_man
 
     group_info = dict(normalized_detail.get('group_info', {}))
     owner_user_id = str(group_info.get('owner_id', '')).strip()
-    root_identity = openclaw.parse_clawchat_session_identity(normalized_detail.get('root_session_key', ''))
+    root_session_key = str(normalized_detail.get('root_session_key', '')).strip()
+    if root_session_key == '':
+        root_session_key = session_key
+    root_identity = openclaw.parse_clawchat_session_identity(root_session_key)
     root_mode = openclaw.resolve_root_session_sync_mode(root_identity)
     openclaw_user_id = str(normalized_detail.get('openclaw_user_id', '')).strip()
     management_user_id = str(normalized_detail.get('management_user_id', '')).strip()
