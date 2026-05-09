@@ -783,19 +783,19 @@ def requires_management_user_group_admin(root_clawchat_session):
 def should_send_control_ui_user_as_management(observed_facts, mapping):
     if not is_control_ui_active_user_observation(observed_facts):
         return False
-    if (
-        str((observed_facts or {}).get('observed_message_type_source', '')).strip() == 'fallback' and
-        is_subagent_bootstrap_observed_text(observed_facts)
-    ):
+    if is_subagent_bootstrap_observed_text(observed_facts):
         return False
     session_identity = parse_clawchat_session_identity(
         normalize_optional_session_key((mapping or {}).get('session_key', ''))
     )
-    if not is_group_session_identity(session_identity):
-        return False
     root_mode = resolve_root_session_sync_mode(parse_clawchat_session_identity(
         normalize_optional_session_key((mapping or {}).get('root_session_key', ''))
     ))
+    if is_group_session_identity(session_identity):
+        return is_group_root_session_sync_mode(root_mode)
+    session_key = normalize_optional_session_key((mapping or {}).get('session_key', ''))
+    if ':subagent:' in session_key and is_group_root_session_sync_mode(root_mode):
+        return True
     return is_group_root_session_sync_mode(root_mode)
 
 def resolve_group_session_sync_user_sender(mapping, node_info, role):

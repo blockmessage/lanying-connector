@@ -1745,7 +1745,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
-    def test_router_group_child_control_ui_user_turn_keeps_sender_mapping(self):
+    def test_router_group_child_control_ui_user_turn_uses_management_for_non_bootstrap_text(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
         mapping = {
@@ -1763,7 +1763,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
              mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": mapping}), \
              mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
              mock.patch.object(m, "ensure_user_joined_group", return_value=True) as mocked_join, \
-             mock.patch.object(m, "ensure_user_group_admin") as mocked_admin_join, \
+             mock.patch.object(m, "ensure_user_group_admin", return_value=True) as mocked_admin_join, \
              mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=224) as mocked_send:
             m.handle_session_message_sync_event(
                 "app-id",
@@ -1775,14 +1775,14 @@ class RouterSessionIdentityTests(unittest.TestCase):
                     "observed_message_type": "control_ui_user",
                     "message": {
                         "role": "user",
-                        "content": "[Subagent Task]: question from control ui",
+                        "content": "哈哈",
                     },
                 },
             )
 
-        mocked_admin_join.assert_not_called()
-        mocked_join.assert_called_once_with("app-id", "sender-user", "group-9")
-        self.assertEqual(mocked_send.call_args.args[2], "sender-user")
+        mocked_admin_join.assert_called_once_with("app-id", "management-user", "group-9")
+        mocked_join.assert_not_called()
+        self.assertEqual(mocked_send.call_args.args[2], "management-user")
         self.assertEqual(mocked_send.call_args.args[3], "group-9")
 
     def test_control_ui_user_turn_uses_management_without_rewriting_im_mapping(self):
@@ -1899,13 +1899,13 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[2], "sender-user")
         self.assertEqual(mocked_send.call_args.args[3], "openclaw-user")
 
-    def test_should_send_control_ui_user_as_management_skips_router_group_child_mapping(self):
+    def test_should_send_control_ui_user_as_management_skips_router_group_child_bootstrap(self):
         m = lanying_openclaw
 
         should_override = m.should_send_control_ui_user_as_management(
             {
                 "observed_message_type": "control_ui_user",
-                "observed_message_text": "[Subagent Task]: question from control ui",
+                "observed_message_text": "[Subagent Context]\n\n[Subagent Task]: question from control ui",
             },
             {
                 "session_key": "agent:main:subagent:test-child",
@@ -1917,6 +1917,25 @@ class RouterSessionIdentityTests(unittest.TestCase):
         )
 
         self.assertFalse(should_override)
+
+    def test_should_send_control_ui_user_as_management_uses_management_for_router_group_child_non_bootstrap(self):
+        m = lanying_openclaw
+
+        should_override = m.should_send_control_ui_user_as_management(
+            {
+                "observed_message_type": "control_ui_user",
+                "observed_message_text": "哈哈",
+            },
+            {
+                "session_key": "agent:main:subagent:test-child",
+                "root_session_key": "agent:main:clawchat-router:group:group-9",
+                "origin_kind": "im_user",
+                "origin_user_id": "sender-user",
+                "management_user_id": "management-user",
+            },
+        )
+
+        self.assertTrue(should_override)
 
     def test_openclaw_group_subsession_sync_sender_sequence(self):
         m = lanying_openclaw
