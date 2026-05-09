@@ -729,7 +729,37 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertTrue(any(change["action"] == "group_admin_add" and change["user_id"] == "management-user" for change in report["proposed_changes"]))
         self.assertTrue(any(change["action"] == "group_owner_transfer" for change in report["proposed_changes"]))
 
-    def test_inspect_session_mapping_group_states_for_node_skips_management_admin_fix_for_clawchat(self):
+    def test_inspect_session_mapping_group_states_for_node_requires_management_admin_fix_for_clawchat_regular_group(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        details = [{
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "origin_user_id": "",
+            "chatbot_user_id": "",
+            "root_session_key": "agent:main:clawchat:group:source-group",
+            "group_info": {"group_id": "group-9", "owner_id": "openclaw-user", "type": 0},
+            "key_user_status": {
+                "openclaw_user_id": {"user_id": "openclaw-user", "present_in_group": True, "is_group_owner": True, "admin_status": "admin"},
+                "management_user_id": {"user_id": "management-user", "present_in_group": True, "is_group_owner": False, "admin_status": "not_admin"},
+            },
+            "group_info_error": "",
+            "member_list_error": "",
+            "admin_list_error": "",
+        }]
+
+        with mock.patch.object(m.lanying_openclaw, "ensure_openclaw_app_manager_user", return_value={"result": "ok", "data": {"user_id": "management-user"}}), \
+             mock.patch.object(m.lanying_openclaw, "resolve_bound_chatbot_user_id", return_value=""), \
+             mock.patch.object(m.lanying_openclaw, "list_session_mapping_details_for_node", return_value=details):
+            result = m.inspect_session_mapping_group_states_for_node("app-id", node_info)
+
+        report = result["data"]["mapping_reports"][0]
+        self.assertEqual(report["status"], "dirty")
+        self.assertTrue(any(change["action"] == "group_admin_add" and change["user_id"] == "management-user" for change in report["proposed_changes"]))
+
+    def test_inspect_session_mapping_group_states_for_node_does_not_prejoin_management_user_for_clawchat_regular_group(self):
         m = lanying_openclaw_migration
         node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
         details = [{
@@ -757,7 +787,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         report = result["data"]["mapping_reports"][0]
         self.assertEqual(report["status"], "clean")
-        self.assertFalse(any(change["action"] == "group_admin_add" for change in report["proposed_changes"]))
+        self.assertFalse(any(change["action"] == "group_member_add" and change["user_id"] == "management-user" for change in report["proposed_changes"]))
+        self.assertFalse(any(change["action"] == "group_admin_add" and change["user_id"] == "management-user" for change in report["proposed_changes"]))
 
     def test_inspect_session_mapping_group_states_for_node_requires_owner_transfer_and_old_owner_leave_for_router_temporary_group(self):
         m = lanying_openclaw_migration

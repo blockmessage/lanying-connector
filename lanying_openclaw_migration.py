@@ -435,8 +435,12 @@ def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_man
                 ),
             )
 
+    management_status = dict(key_user_status.get('management_user_id', {}))
+    management_present_in_group = bool(management_status.get('present_in_group', False))
+    management_admin_status = str(management_status.get('admin_status', '')).strip()
+    is_regular_group = not is_temporary_group
+
     if not is_clawchat_session and management_user_id != '':
-        management_status = dict(key_user_status.get('management_user_id', {}))
         if not bool(management_status.get('present_in_group', False)):
             _append_group_state_issue(
                 issues,
@@ -468,9 +472,32 @@ def _analyze_session_mapping_group_detail(app_id, node_info, detail, default_man
                     'group_admin_add',
                     group_id,
                     management_user_id,
-                    str(management_status.get('admin_status', '')).strip() or 'unknown',
+                    management_admin_status or 'unknown',
                     'admin',
                     '补齐 management_user_id 的群管理员关系',
+                ),
+            )
+    elif is_clawchat_session and is_regular_group and management_user_id != '':
+        if (
+            management_present_in_group and
+            str(admin_list_error).strip() == '' and
+            management_admin_status != 'admin'
+        ):
+            _append_group_state_issue(
+                issues,
+                proposed_changes,
+                'error',
+                'missing_management_group_admin',
+                '普通群中的 ClawChat session，management_user_id 已在群里时也必须成为群管理员',
+                current={'role': 'management_user_id', 'user_id': management_user_id, 'admin_status': management_status.get('admin_status', '')},
+                expected={'role': 'management_user_id', 'user_id': management_user_id, 'admin_status': 'admin'},
+                proposal=_build_group_relation_change(
+                    'group_admin_add',
+                    group_id,
+                    management_user_id,
+                    management_admin_status or 'unknown',
+                    'admin',
+                    '补齐普通群中 management_user_id 的群管理员关系',
                 ),
             )
 
