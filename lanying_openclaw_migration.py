@@ -43,6 +43,16 @@ def _build_session_mapping_html_key_value_rows(data, ordered_keys=None):
 
 def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
     details = lanying_openclaw.list_session_mapping_details_for_node(app_id, node_id)
+    node_info = {
+        'node_id': str(node_id).strip(),
+    }
+    inspect_result = inspect_session_mapping_group_states_for_node(app_id, node_info)
+    reports_by_session_key = {}
+    if isinstance(inspect_result, dict):
+        for report in list(inspect_result.get('data', {}).get('mapping_reports', []) or []):
+            session_key = str(report.get('session_key', '')).strip()
+            if session_key != '':
+                reports_by_session_key[session_key] = report
     header = (
         '<tr>'
         '<th>session_key</th>'
@@ -51,10 +61,17 @@ def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
         '<th>member_summary</th>'
         '<th>key_user_status</th>'
         '<th>errors</th>'
+        '<th>group</th>'
+        '<th>status</th>'
+        '<th>owner</th>'
+        '<th>issues</th>'
+        '<th>proposed_changes</th>'
         '</tr>'
     )
     rows = [header]
     for detail in details:
+        session_key = str(detail.get('session_key', '')).strip()
+        report = reports_by_session_key.get(session_key, {})
         mapping_summary = {
             'group_id': detail.get('group_id', ''),
             'openclaw_user_id': detail.get('openclaw_user_id', ''),
@@ -120,14 +137,61 @@ def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
                 }
             )
         )
+        group_html = _build_session_mapping_html_table(
+            _build_session_mapping_html_key_value_rows(
+                {
+                    'group_id': report.get('group_id', ''),
+                    'root_mode': report.get('root_mode', ''),
+                }
+            )
+        )
+        owner_html = _build_session_mapping_html_table(
+            _build_session_mapping_html_key_value_rows(
+                {
+                    'current_owner_user_id': report.get('current_owner_user_id', ''),
+                    'expected_owner_user_id': report.get('expected_owner_user_id', ''),
+                }
+            )
+        )
+        issue_rows = []
+        for issue in report.get('issues', []):
+            issue_rows.append(
+                '<tr><td colspan="2">'
+                + _build_session_mapping_html_table(
+                    _build_session_mapping_html_key_value_rows(
+                        issue,
+                        ['severity', 'code', 'summary', 'current', 'expected'],
+                    )
+                )
+                + '</td></tr>'
+            )
+        issues_html = _build_session_mapping_html_table(issue_rows or ['<tr><td colspan="2"></td></tr>'])
+        change_rows = []
+        for change in report.get('proposed_changes', []):
+            change_rows.append(
+                '<tr><td colspan="2">'
+                + _build_session_mapping_html_table(
+                    _build_session_mapping_html_key_value_rows(
+                        change,
+                        ['action', 'target_type', 'group_id', 'session_key', 'field', 'user_id', 'from', 'to', 'reason', 'risk'],
+                    )
+                )
+                + '</td></tr>'
+            )
+        changes_html = _build_session_mapping_html_table(change_rows or ['<tr><td colspan="2"></td></tr>'])
         rows.append(
             '<tr>'
-            f'<td valign="top">{_escape_session_mapping_html(detail.get("session_key", ""))}</td>'
+            f'<td valign="top">{_escape_session_mapping_html(session_key)}</td>'
             f'<td valign="top">{_build_session_mapping_html_table(_build_session_mapping_html_key_value_rows(mapping_summary))}</td>'
             f'<td valign="top">{group_info_html}</td>'
             f'<td valign="top">{member_summary_html}</td>'
             f'<td valign="top">{key_user_status_html}</td>'
             f'<td valign="top">{error_html}</td>'
+            f'<td valign="top">{group_html}</td>'
+            f'<td valign="top">{_escape_session_mapping_html(report.get("status", ""))}</td>'
+            f'<td valign="top">{owner_html}</td>'
+            f'<td valign="top">{issues_html}</td>'
+            f'<td valign="top">{changes_html}</td>'
             '</tr>'
         )
     return _build_session_mapping_html_table(rows)

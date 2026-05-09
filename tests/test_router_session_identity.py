@@ -559,17 +559,44 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "member_list_viewer_user_id": "",
             "admin_list_viewer_user_id": "",
         }]
+        inspect_result = {"result": "ok", "data": {"mapping_reports": [{
+            "session_key": "agent:main:clawchat:group:group-9",
+            "group_id": "group-9",
+            "root_mode": "clawchat_group",
+            "status": "dirty",
+            "current_owner_user_id": "management-user",
+            "expected_owner_user_id": "openclaw-user",
+            "issues": [{
+                "severity": "warning",
+                "code": "unexpected_group_owner",
+                "summary": "Group <Nine> owner mismatch",
+                "current": "management-user",
+                "expected": "openclaw-user",
+            }],
+            "proposed_changes": [{
+                "action": "group_owner_transfer_review",
+                "target_type": "group_relation",
+                "group_id": "group-9",
+                "from": "management-user",
+                "to": "openclaw-user",
+                "reason": "OpenClaw <Admin> should be reviewed",
+                "risk": "high",
+            }],
+        }]}}
 
-        with mock.patch.object(m.lanying_openclaw, "list_session_mapping_details_for_node", return_value=details):
+        with mock.patch.object(m.lanying_openclaw, "list_session_mapping_details_for_node", return_value=details), \
+             mock.patch.object(m, "inspect_session_mapping_group_states_for_node", return_value=inspect_result):
             html_text = m.render_inspect_session_mapping_group_states_html_for_node("app-id", "node-1")
 
         self.assertIn("<table", html_text)
         self.assertIn("session_key", html_text)
         self.assertIn("member_summary", html_text)
         self.assertIn("key_user_status", html_text)
-        self.assertIn("Group &lt;Nine&gt;", html_text)
+        self.assertIn("proposed_changes", html_text)
+        self.assertIn("unexpected_group_owner", html_text)
+        self.assertIn("Group &lt;Nine&gt; owner mismatch", html_text)
         self.assertIn("OpenClaw &lt;Admin&gt;", html_text)
-        self.assertIn("partial &lt;error&gt;", html_text)
+        self.assertIn("group_owner_transfer_review", html_text)
         self.assertGreaterEqual(html_text.count("<table"), 5)
 
     def test_inspect_session_mapping_group_states_for_node_reports_repairs(self):
