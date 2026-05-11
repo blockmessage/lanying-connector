@@ -719,6 +719,7 @@ def normalize_observed_origin_facts(observed_origin=''):
     observed_channel = str(facts.get('observed_channel', '')).strip()
     observed_message_type = str(facts.get('observed_message_type', '')).strip()
     observed_message_type_source = str(facts.get('observed_message_type_source', '')).strip()
+    sync_variant = str(facts.get('sync_variant', '')).strip()
     observed_message_text = str(facts.get('observed_message_text', '')).strip()
     return {
         'observed_sender_user_id': observed_sender_user_id,
@@ -728,6 +729,7 @@ def normalize_observed_origin_facts(observed_origin=''):
         'observed_channel': observed_channel,
         'observed_message_type': observed_message_type,
         'observed_message_type_source': observed_message_type_source,
+        'sync_variant': sync_variant,
         'observed_message_text': observed_message_text,
     }
 
@@ -751,6 +753,9 @@ def resolve_observed_origin_kind(observed_facts, root_clawchat_session):
 
 def is_control_ui_active_user_observation(observed_facts):
     return str((observed_facts or {}).get('observed_message_type', '')).strip() == 'control_ui_user'
+
+def is_im_subagent_bootstrap_observation(observed_facts):
+    return str((observed_facts or {}).get('sync_variant', '')).strip() == 'im_subagent_bootstrap'
 
 def apply_control_ui_user_sender_override(mapping):
     if not isinstance(mapping, dict):
@@ -901,6 +906,46 @@ def resolve_inherited_origin_identity(app_id, node_info, lineage, management_use
                     f"observed_message_type_source:{observed_facts.get('observed_message_type_source', '')}"
                 )
                 return inherited_identity
+    if is_im_subagent_bootstrap_observation(observed_facts):
+        for inherited_source, inherited_session_key in [('parent', parent_session_key), ('root', root_session_key)]:
+            if inherited_session_key == '':
+                continue
+            inherited_identity = resolve_existing_mapping_origin_identity(
+                get_session_mapping_by_session(app_id, node_id, inherited_session_key),
+                inherited_source,
+                management_user_id,
+                openclaw_user_id,
+                chatbot_user_id,
+            )
+            if (
+                isinstance(inherited_identity, dict) and
+                str(inherited_identity.get('origin_kind', '')).strip() in ['im_user', 'direct_user'] and
+                str(inherited_identity.get('origin_user_id', '')).strip() != ''
+            ):
+                logging.info(
+                    f"resolve_inherited_identity resolved im subagent bootstrap from {inherited_source} mapping | "
+                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                    f"root_session_key:{root_session_key}, origin_kind:{inherited_identity.get('origin_kind', '')}, "
+                    f"origin_user_id:{inherited_identity.get('origin_user_id', '')}"
+                )
+                return inherited_identity
+        direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
+        if is_direct_session_identity(direct_identity):
+            resolved_user_id = str(direct_identity.get('target_id', '')).strip()
+            if resolved_user_id != '':
+                logging.info(
+                    f"resolve_inherited_identity resolved im subagent bootstrap from direct identity | "
+                    f"app_id:{app_id}, node_id:{node_id}, parent_session_key:{parent_session_key}, "
+                    f"root_session_key:{root_session_key}, origin_user_id:{resolved_user_id}"
+                )
+                return {
+                    'origin_kind': 'direct_user',
+                    'origin_user_id': resolved_user_id,
+                    'source': 'direct',
+                    'management_user_id': str(management_user_id).strip(),
+                    'openclaw_user_id': openclaw_user_id,
+                    'chatbot_user_id': chatbot_user_id,
+                }
     if is_control_ui_active_user_observation(observed_facts):
         if root_mode in ['clawchat_direct', 'router_direct']:
             direct_identity = parse_clawchat_session_identity(root_session_key or parent_session_key)
@@ -2627,9 +2672,11 @@ def build_session_sync_delivery_ext(
     message_id='',
     parent_session_key='',
     root_session_key='',
+    sync_variant='',
 ):
     normalized_source = str(source or '').strip()
     normalized_role = str(role or '').strip().lower()
+    normalized_sync_variant = str(sync_variant or '').strip()
     openclaw = {
         'type': 'session_sync_delivery',
         'session': normalize_session_key(session_key),
@@ -2645,10 +2692,11 @@ def build_session_sync_delivery_ext(
     normalized_root_session_key = normalize_optional_session_key(root_session_key)
     if normalized_root_session_key != '':
         openclaw['root_session'] = normalized_root_session_key
+    if normalized_sync_variant != '':
+        openclaw['sync_variant'] = normalized_sync_variant
     ext = {'openclaw': openclaw}
     # Session visible-delivery events from OpenClaw are display-only in IM.
-    if normalized_source in ['control_ui_user', 'control_ui_reply']:
-        ext['ai'] = {'ai_generate': False}
+    ext['ai'] = {'ai_generate': False}
     return ext
 
 def build_router_reply_delivery_ext(message):
@@ -2680,6 +2728,9 @@ def build_router_reply_delivery_ext(message):
     root_session_key = normalize_optional_session_key(openclaw_in.get('root_session', ''))
     if root_session_key != '':
         reply_openclaw['root_session'] = root_session_key
+    sync_variant = str(openclaw_in.get('sync_variant', '')).strip()
+    if sync_variant != '':
+        reply_openclaw['sync_variant'] = sync_variant
     request_source = str(openclaw_in.get('source', '')).strip()
     if request_source != '':
         reply_openclaw['request_source'] = request_source
@@ -2997,6 +3048,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         'observed_channel': event.get('observed_channel', ''),
         'observed_message_type': event.get('observed_message_type', ''),
         'observed_message_type_source': event.get('observed_message_type_source', ''),
+        'sync_variant': event.get('sync_variant', ''),
     })
     message = event.get('message', {})
     role = ''
@@ -3020,7 +3072,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         f"has_existing_mapping:{mapping is not None}, "
         f"materialize_clawchat_group:{should_materialize_clawchat_group}"
     )
-    if source == 'control_ui_user':
+    if source in ['control_ui_user', 'control_ui_reply'] and mapping is None:
         ensure_result = ensure_session_mapping(
             app_id,
             node_info,
@@ -3050,6 +3102,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         message_id,
         delivery_lineage.get('parent_session_key', ''),
         delivery_lineage.get('root_session_key', ''),
+        observed_origin_facts.get('sync_variant', ''),
     )
     if text.strip() != '' and role in ['user', 'assistant']:
         target_session_key = normalize_optional_session_key(
