@@ -1413,6 +1413,14 @@ def extract_session_sync_text(message):
             return extract_session_sync_text(message.get('content'))
     return ''
 
+def is_session_sync_silent_reply_text(text):
+    if not isinstance(text, str):
+        return False
+    normalized_text = text.strip()
+    if normalized_text == '':
+        return False
+    return normalized_text.upper() == 'NO_REPLY'
+
 def create_openclaw_session_group(app_id, owner_user_id, node_name, node_id, session_name):
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     admin_token = lanying_config.get_lanying_admin_token(app_id)
@@ -3057,6 +3065,12 @@ def handle_session_message_sync_event(app_id, node_info, event):
     text = extract_session_sync_text(message.get('content') if isinstance(message, dict) else message)
     observed_origin_facts['observed_message_text'] = text
     if session_key == '' or source not in ['control_ui_user', 'control_ui_reply']:
+        return
+    if source == 'control_ui_reply' and role == 'assistant' and is_session_sync_silent_reply_text(text):
+        logging.info(
+            f"handle_session_message_sync_event skip silent NO_REPLY delivery | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}"
+        )
         return
     message_id = str(event.get('message_id', '')).strip()
     should_materialize_clawchat_group = not (
