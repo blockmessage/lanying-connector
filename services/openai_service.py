@@ -3349,6 +3349,9 @@ def check_deduct_message_quota(app_id, config, quota):
     if redis:
         key = get_message_statistic_keys(config, app_id)[0]
         message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
+        daily_limit_res = check_daily_quota_fuse_limit(app_id, config, redis, quota)
+        if daily_limit_res['result'] == 'error':
+            return daily_limit_res
         if message_count_quota + quota <= message_per_month:
             return {'result':'ok', 'api_key_type':'share'}
         else:
@@ -3396,6 +3399,12 @@ def check_message_limit(app_id, config, model_config, is_chat):
         key = get_message_statistic_keys(config, app_id)[0]
         message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
         quota_pre_check = config.get('quota_pre_check', 0)
+        daily_quota_pre_check = quota_pre_check
+        if not daily_quota_pre_check:
+            daily_quota_pre_check = model_config.get('quota', 0)
+        daily_limit_res = check_daily_quota_fuse_limit(app_id, config, redis, daily_quota_pre_check)
+        if daily_limit_res['result'] == 'error':
+            return daily_limit_res
         api_key_type = model_config['api_key_type']
         if message_count_quota + quota_pre_check < message_per_month:
             return {'result':'ok', 'api_key_type': api_key_type}
@@ -3427,6 +3436,61 @@ def check_message_limit(app_id, config, model_config, is_chat):
                     return {'result':'error', 'code':'no_quota', 'msg': lanying_config.get_message_no_quota(app_id)}
     else:
         return {'result':'error', 'code':'internal_error','msg':lanying_config.get_message_404(app_id)}
+
+def calc_daily_quota_fuse_limit(app_id, config):
+    message_per_month = config.get('message_per_month', 0)
+    try:
+        message_per_month = float(message_per_month)
+    except Exception:
+        message_per_month = 0
+    percent = lanying_config.get_lanying_connector_daily_quota_fuse_percent(app_id)
+    return max(30, message_per_month * percent / 100), percent
+
+def get_message_daily_statistic_key(config, app_id):
+    return get_message_statistic_keys(config, app_id)[-1]
+
+def check_daily_quota_fuse_limit(app_id, config, redis, quota_pre_check=0):
+    daily_quota_limit, percent = calc_daily_quota_fuse_limit(app_id, config)
+    key = get_message_daily_statistic_key(config, app_id)
+    message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
+    try:
+        quota_pre_check = float(quota_pre_check)
+    except Exception:
+        quota_pre_check = 0
+    projected_quota = message_count_quota + max(quota_pre_check, 0)
+    if (quota_pre_check > 0 and projected_quota > daily_quota_limit) or (quota_pre_check <= 0 and message_count_quota >= daily_quota_limit):
+        msg = lanying_config.get_message_quota_not_enough(app_id)
+        notify_daily_quota_fuse_limit_once(app_id, redis, config, percent, daily_quota_limit, message_count_quota, quota_pre_check)
+        logging.warning(
+            "daily quota fuse limit reached | app_id=%s, percent=%s, message_per_month=%s, daily_limit=%s, used=%s, quota_pre_check=%s",
+            app_id, percent, config.get('message_per_month', 0), daily_quota_limit, message_count_quota, quota_pre_check
+        )
+        return {
+            'result': 'error',
+            'code': 'daily_quota_fuse_limit_reached',
+            'msg': msg,
+            'message': msg,
+            'daily_quota_fuse_percent': percent,
+            'daily_quota_limit': daily_quota_limit,
+            'daily_quota_used': message_count_quota,
+            'quota_pre_check': quota_pre_check,
+        }
+    return {'result':'ok'}
+
+def notify_daily_quota_fuse_limit_once(app_id, redis, config, percent, daily_quota_limit, message_count_quota, quota_pre_check):
+    try:
+        key = f"lanying_connector:daily_quota_fuse_limit_notify_silence:{app_id}"
+        count = redis.incr(key)
+        if count == 1:
+            redis.expire(key, 3600)
+            lanying_slack.async_send_grafana_message_with_filter(
+                f"[智能消息]每日Quota熔断触发: app_id:{app_id}, percent:{percent}%, "
+                f"message_per_month:{config.get('message_per_month', 0)}, daily_limit:{daily_quota_limit}, "
+                f"used:{message_count_quota}, quota_pre_check:{quota_pre_check}",
+                f"daily_quota_fuse_limit_{app_id}"
+            )
+    except Exception:
+        logging.exception("notify_daily_quota_fuse_limit_once failed")
 
 def check_message_per_month_per_user(msg, config):
     app_id = msg['appId']

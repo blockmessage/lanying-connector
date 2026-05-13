@@ -174,6 +174,33 @@ def _install_fake_anthropic_if_needed():
     sys.modules['anthropic'] = anthropic_mod
     sys.modules['anthropic.types'] = types_mod
 
+def _install_fake_dateutil_if_needed():
+    if 'dateutil.relativedelta' in sys.modules:
+        return
+    try:
+        import dateutil.relativedelta  # noqa: F401
+        return
+    except Exception:
+        pass
+
+    dateutil_mod = types.ModuleType('dateutil')
+    relativedelta_mod = types.ModuleType('dateutil.relativedelta')
+
+    class relativedelta:
+        def __init__(self, months=0):
+            self.months = months
+
+        def __radd__(self, value):
+            month = value.month + self.months
+            year = value.year + (month - 1) // 12
+            month = (month - 1) % 12 + 1
+            return value.replace(year=year, month=month)
+
+    relativedelta_mod.relativedelta = relativedelta
+    dateutil_mod.relativedelta = relativedelta_mod
+    sys.modules['dateutil'] = dateutil_mod
+    sys.modules['dateutil.relativedelta'] = relativedelta_mod
+
 
 def _install_fake_openai_service_local_modules_if_needed():
     module_names = [
@@ -215,6 +242,7 @@ def _install_fake_openai_service_local_modules_if_needed():
     sys.modules['lanying_utils'].is_valid_public_url = lambda *args, **kwargs: False
 
     sys.modules['lanying_openai_compat'].get_tools_as_functions = lambda preset: []
+    sys.modules['lanying_slack'].async_send_grafana_message_with_filter = lambda *args, **kwargs: None
 
     if 'lanying_tasks' not in sys.modules:
         tasks_mod = types.ModuleType('lanying_tasks')
@@ -278,6 +306,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         _install_fake_openai_if_needed()
         _install_fake_redis_if_needed()
         _install_fake_anthropic_if_needed()
+        _install_fake_dateutil_if_needed()
         _install_fake_openai_service_local_modules_if_needed()
         service_dir = str(Path(__file__).resolve().parents[1] / 'services')
         if service_dir not in sys.path:
@@ -314,6 +343,127 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertFalse(m.is_openclaw_delivery_no_reentry_msg({
             'ext': '{"openclaw":{"type":"session_message_sync","session":"agent:main"}}'
         }))
+
+    def test_daily_quota_fuse_defaults_to_ten_percent_with_minimum_thirty(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 10
+        daily_limit, percent = m.calc_daily_quota_fuse_limit('app-daily', {'message_per_month': 30})
+
+        self.assertEqual(10, percent)
+        self.assertEqual(30, daily_limit)
+
+    def test_daily_quota_fuse_allows_high_percent(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 10000
+        daily_limit, percent = m.calc_daily_quota_fuse_limit('app-daily', {'message_per_month': 10000})
+
+        self.assertEqual(10000, percent)
+        self.assertEqual(1000000, daily_limit)
+
+    def test_check_message_limit_rejects_when_daily_quota_fuse_is_reached(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        class FakeRedis:
+            def hincrby(self, key, field, amount):
+                if ':everyday:' in key and field == 'message_count_quota':
+                    return 30
+                return 0
+
+            def incr(self, key):
+                return 1
+
+            def expire(self, key, seconds):
+                pass
+
+        m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
+        m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
+        res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30}, FakeRedis(), 0)
+
+        self.assertEqual('error', res['result'])
+        self.assertEqual('daily_quota_fuse_limit_reached', res['code'])
+        self.assertEqual(30, res['daily_quota_limit'])
+
+    def test_chat_and_api_quota_checks_share_daily_quota_fuse(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        class FakeRedis:
+            def hincrby(self, key, field, amount):
+                if ':everyday:' in key and field == 'message_count_quota':
+                    return 30
+                return 0
+
+            def incr(self, key):
+                return 1
+
+            def expire(self, key, seconds):
+                pass
+
+        fake_redis = FakeRedis()
+        m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
+        m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
+        config = {'message_per_month': 30, 'product_id': 7001}
+        model_config = {'api_key_type': 'share', 'quota': 1}
+
+        with mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=fake_redis, create=True):
+            chat_res = m.check_message_limit('app-daily', config, model_config, True)
+            api_res = m.check_deduct_message_quota('app-daily', config, 1)
+
+        self.assertEqual('daily_quota_fuse_limit_reached', chat_res['code'])
+        self.assertEqual('daily_quota_fuse_limit_reached', api_res['code'])
+
+    def test_daily_quota_fuse_grafana_notice_is_silenced_for_one_hour_per_app(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        class FakeRedis:
+            def __init__(self):
+                self.values = {}
+                self.expired_keys = []
+
+            def hincrby(self, key, field, amount):
+                if ':everyday:' in key and field == 'message_count_quota':
+                    return 30
+                return 0
+
+            def incr(self, key):
+                self.values[key] = self.values.get(key, 0) + 1
+                return self.values[key]
+
+            def expire(self, key, seconds):
+                self.expired_keys.append((key, seconds))
+
+        fake_redis = FakeRedis()
+        notices = []
+        m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
+        m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
+        m.lanying_slack.async_send_grafana_message_with_filter = lambda text, filter_name: notices.append((text, filter_name))
+
+        first_res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30}, fake_redis, 0)
+        second_res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30}, fake_redis, 0)
+
+        self.assertEqual('daily_quota_fuse_limit_reached', first_res['code'])
+        self.assertEqual('daily_quota_fuse_limit_reached', second_res['code'])
+        self.assertEqual(1, len(notices))
+        self.assertIn('app_id:app-daily', notices[0][0])
+        self.assertEqual('daily_quota_fuse_limit_app-daily', notices[0][1])
+        self.assertEqual(1, len(fake_redis.expired_keys))
+        self.assertEqual(3600, fake_redis.expired_keys[0][1])
 
     def test_maybe_sync_to_openclaw_skips_delivery_no_reentry_messages(self):
         try:

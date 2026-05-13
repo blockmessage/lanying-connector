@@ -52,7 +52,7 @@ def to_openai_error_response(res):
     error_type = "invalid_request_error"
     error_code = internal_code
 
-    if internal_code in ['deduct_failed', 'message_per_month_per_user_limit_reached', 'service_is_expired']:
+    if internal_code in ['deduct_failed', 'message_per_month_per_user_limit_reached', 'service_is_expired', 'daily_quota_fuse_limit_reached']:
         # Map quota/billing errors to OpenAI-compatible code for better client compatibility.
         status_code = 429
         error_type = "insufficient_quota"

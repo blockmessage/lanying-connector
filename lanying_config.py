@@ -142,6 +142,22 @@ def get_lanying_connector_deduct_failed(appId):
         return get_config(appId, 'lanying_connector.deduct_failed', False) or get_config(appId, 'lanying_connector.new_deduct_failed', False)
     return False
 
+def get_lanying_connector_daily_quota_fuse_percent(appId):
+    default_percent = 10
+    if mode == 'etcd':
+        percent = get_config_field(appId, 'lanying_connector', 'daily_quota_fuse_percent', default_percent)
+    else:
+        percent = os.getenv('LANYING_CONNECTOR_DAILY_QUOTA_FUSE_PERCENT', default_percent)
+    try:
+        percent = int(percent)
+    except Exception:
+        return default_percent
+    if percent < 1:
+        return default_percent
+    if percent > 10000:
+        return 10000
+    return percent
+
 def get_lanying_connector(appId):
     if mode == 'etcd':
         return get_config(appId, 'lanying_connector', None)
