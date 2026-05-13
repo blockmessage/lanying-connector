@@ -244,6 +244,7 @@ def _install_fake_openai_service_local_modules_if_needed():
 
     sys.modules['lanying_openai_compat'].get_tools_as_functions = lambda preset: []
     sys.modules['lanying_slack'].async_send_grafana_message_with_filter = lambda *args, **kwargs: None
+    sys.modules['lanying_config'].get_message_daily_quota_limit_reached = lambda _app_id: 'daily quota limit reached'
 
     if 'lanying_tasks' not in sys.modules:
         tasks_mod = types.ModuleType('lanying_tasks')
@@ -345,7 +346,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'ext': '{"openclaw":{"type":"session_message_sync","session":"agent:main"}}'
         }))
 
-    def test_daily_quota_fuse_defaults_to_ten_percent_with_minimum_thirty(self):
+    def test_daily_quota_fuse_defaults_to_ten_percent_with_minimum_one(self):
         try:
             m = importlib.import_module('openai_service')
         except ModuleNotFoundError as exc:
@@ -355,7 +356,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         daily_limit, percent = m.calc_daily_quota_fuse_limit('app-daily', {'message_per_month': 30, 'product_id': 7002})
 
         self.assertEqual(10, percent)
-        self.assertEqual(30, daily_limit)
+        self.assertEqual(3.0, daily_limit)
 
     def test_daily_quota_fuse_allows_high_percent(self):
         try:
@@ -388,12 +389,12 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
                 pass
 
         m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
-        m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
+        m.lanying_config.get_message_daily_quota_limit_reached = lambda _app_id: 'daily quota limit reached'
         res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30, 'product_id': 7002}, FakeRedis(), 0)
 
         self.assertEqual('error', res['result'])
         self.assertEqual('daily_quota_fuse_limit_reached', res['code'])
-        self.assertEqual(30, res['daily_quota_limit'])
+        self.assertEqual(1, res['daily_quota_limit'])
 
     def test_chat_and_api_quota_checks_share_daily_quota_fuse(self):
         try:
@@ -415,7 +416,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
 
         fake_redis = FakeRedis()
         m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
-        m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
+        m.lanying_config.get_message_daily_quota_limit_reached = lambda _app_id: 'daily quota limit reached'
         config = {'message_per_month': 30, 'product_id': 7002}
         model_config = {'api_key_type': 'share', 'quota': 1}
 
@@ -452,7 +453,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         fake_redis = FakeRedis()
         notices = []
         m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
-        m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
+        m.lanying_config.get_message_daily_quota_limit_reached = lambda _app_id: 'daily quota limit reached'
         m.lanying_slack.async_send_grafana_message_with_filter = lambda text, filter_name: notices.append((text, filter_name))
 
         first_res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30, 'product_id': 7002}, fake_redis, 0)

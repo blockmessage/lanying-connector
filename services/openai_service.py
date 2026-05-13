@@ -3545,7 +3545,7 @@ def check_daily_quota_fuse_limit(app_id, config, redis, quota_pre_check=0):
         message_count_quota, quota_pre_check, projected_quota, key
     )
     if (quota_pre_check > 0 and projected_quota > daily_quota_limit) or (quota_pre_check <= 0 and message_count_quota >= daily_quota_limit):
-        msg = lanying_config.get_message_quota_not_enough(app_id)
+        msg = lanying_config.get_message_daily_quota_limit_reached(app_id)
         notify_daily_quota_fuse_limit_once(app_id, redis, config, percent, daily_quota_limit, message_count_quota, quota_pre_check)
         logging.warning(
             "daily quota fuse limit reached | app_id=%s, percent=%s, message_per_month=%s, daily_limit=%s, used=%s, quota_pre_check=%s",
@@ -3574,7 +3574,7 @@ def notify_daily_quota_fuse_limit_once(app_id, redis, config, percent, daily_quo
         if count == 1:
             redis.expire(key, 3600)
             lanying_slack.async_send_grafana_message_with_filter(
-                f"[智能消息]每日Quota熔断触发: app_id:{app_id}, percent:{percent}%, "
+                f"[智能消息]每日限额触发: app_id:{app_id}, percent:{percent}%, "
                 f"message_per_month:{config.get('message_per_month', 0)}, daily_limit:{daily_quota_limit}, "
                 f"used:{message_count_quota}, quota_pre_check:{quota_pre_check}",
                 f"daily_quota_fuse_limit_{app_id}"
