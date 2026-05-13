@@ -3508,19 +3508,29 @@ def check_message_limit(app_id, config, model_config, is_chat):
         return {'result':'error', 'code':'internal_error','msg':lanying_config.get_message_404(app_id)}
 
 def calc_daily_quota_fuse_limit(app_id, config):
+    product_id = int(config.get('product_id', 0) or 0)
+    # Free AI Message package (7001) is excluded from daily fuse limits.
+    if product_id == 7001:
+        return None, None
     message_per_month = config.get('message_per_month', 0)
     try:
         message_per_month = float(message_per_month)
     except Exception:
         message_per_month = 0
     percent = lanying_config.get_lanying_connector_daily_quota_fuse_percent(app_id)
-    return max(30, message_per_month * percent / 100), percent
+    return max(1, message_per_month * percent / 100), percent
 
 def get_message_daily_statistic_key(config, app_id):
     return get_message_statistic_keys(config, app_id)[-1]
 
 def check_daily_quota_fuse_limit(app_id, config, redis, quota_pre_check=0):
     daily_quota_limit, percent = calc_daily_quota_fuse_limit(app_id, config)
+    if daily_quota_limit is None:
+        logging.info(
+            "daily quota fuse skipped for free package | app_id=%s, product_id=%s",
+            app_id, config.get('product_id', 0)
+        )
+        return {'result':'ok'}
     key = get_message_daily_statistic_key(config, app_id)
     message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
     try:
@@ -3528,6 +3538,12 @@ def check_daily_quota_fuse_limit(app_id, config, redis, quota_pre_check=0):
     except Exception:
         quota_pre_check = 0
     projected_quota = message_count_quota + max(quota_pre_check, 0)
+    logging.info(
+        "daily quota fuse check | app_id=%s, product_id=%s, percent=%s, message_per_month=%s, daily_quota_limit=%s, "
+        "daily_quota_used=%s, quota_pre_check=%s, projected_quota=%s, daily_key=%s",
+        app_id, config.get('product_id', 0), percent, config.get('message_per_month', 0), daily_quota_limit,
+        message_count_quota, quota_pre_check, projected_quota, key
+    )
     if (quota_pre_check > 0 and projected_quota > daily_quota_limit) or (quota_pre_check <= 0 and message_count_quota >= daily_quota_limit):
         msg = lanying_config.get_message_quota_not_enough(app_id)
         notify_daily_quota_fuse_limit_once(app_id, redis, config, percent, daily_quota_limit, message_count_quota, quota_pre_check)
@@ -3545,6 +3561,10 @@ def check_daily_quota_fuse_limit(app_id, config, redis, quota_pre_check=0):
             'daily_quota_used': message_count_quota,
             'quota_pre_check': quota_pre_check,
         }
+    logging.info(
+        "daily quota fuse pass | app_id=%s, daily_quota_limit=%s, daily_quota_used=%s, projected_quota=%s",
+        app_id, daily_quota_limit, message_count_quota, projected_quota
+    )
     return {'result':'ok'}
 
 def notify_daily_quota_fuse_limit_once(app_id, redis, config, percent, daily_quota_limit, message_count_quota, quota_pre_check):

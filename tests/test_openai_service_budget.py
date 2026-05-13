@@ -352,7 +352,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
 
         m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 10
-        daily_limit, percent = m.calc_daily_quota_fuse_limit('app-daily', {'message_per_month': 30})
+        daily_limit, percent = m.calc_daily_quota_fuse_limit('app-daily', {'message_per_month': 30, 'product_id': 7002})
 
         self.assertEqual(10, percent)
         self.assertEqual(30, daily_limit)
@@ -364,7 +364,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
 
         m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 10000
-        daily_limit, percent = m.calc_daily_quota_fuse_limit('app-daily', {'message_per_month': 10000})
+        daily_limit, percent = m.calc_daily_quota_fuse_limit('app-daily', {'message_per_month': 10000, 'product_id': 7002})
 
         self.assertEqual(10000, percent)
         self.assertEqual(1000000, daily_limit)
@@ -389,7 +389,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
 
         m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
         m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
-        res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30}, FakeRedis(), 0)
+        res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30, 'product_id': 7002}, FakeRedis(), 0)
 
         self.assertEqual('error', res['result'])
         self.assertEqual('daily_quota_fuse_limit_reached', res['code'])
@@ -416,7 +416,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         fake_redis = FakeRedis()
         m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
         m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
-        config = {'message_per_month': 30, 'product_id': 7001}
+        config = {'message_per_month': 30, 'product_id': 7002}
         model_config = {'api_key_type': 'share', 'quota': 1}
 
         with mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=fake_redis, create=True):
@@ -455,8 +455,8 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         m.lanying_config.get_message_quota_not_enough = lambda _app_id: 'quota not enough'
         m.lanying_slack.async_send_grafana_message_with_filter = lambda text, filter_name: notices.append((text, filter_name))
 
-        first_res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30}, fake_redis, 0)
-        second_res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30}, fake_redis, 0)
+        first_res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30, 'product_id': 7002}, fake_redis, 0)
+        second_res = m.check_daily_quota_fuse_limit('app-daily', {'message_per_month': 30, 'product_id': 7002}, fake_redis, 0)
 
         self.assertEqual('daily_quota_fuse_limit_reached', first_res['code'])
         self.assertEqual('daily_quota_fuse_limit_reached', second_res['code'])
@@ -465,6 +465,26 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual('daily_quota_fuse_limit_app-daily', notices[0][1])
         self.assertEqual(1, len(fake_redis.expired_keys))
         self.assertEqual(3600, fake_redis.expired_keys[0][1])
+
+    def test_daily_quota_fuse_skips_free_package(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        class FakeRedis:
+            def hincrby(self, key, field, amount):
+                return 999999
+
+            def incr(self, key):
+                raise AssertionError("free package should not notify")
+
+            def expire(self, key, seconds):
+                raise AssertionError("free package should not notify")
+
+        m.lanying_config.get_lanying_connector_daily_quota_fuse_percent = lambda _app_id: 1
+        res = m.check_daily_quota_fuse_limit('app-free', {'message_per_month': 30, 'product_id': 7001}, FakeRedis(), 1000)
+        self.assertEqual('ok', res['result'])
 
     def test_maybe_sync_to_openclaw_skips_delivery_no_reentry_messages(self):
         try:
