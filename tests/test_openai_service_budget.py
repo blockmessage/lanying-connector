@@ -223,6 +223,7 @@ def _install_fake_openai_service_local_modules_if_needed():
         'lanying_slack',
         'lanying_openclaw',
         'lanying_openai_compat',
+        'lanying_pgvector',
     ]
     for name in module_names:
         if name not in sys.modules:
@@ -575,6 +576,41 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
 
         self.assertEqual(out['messages'][0]['role'], 'user')
         self.assertNotIn('developer', [item['role'] for item in out['messages']])
+
+    def test_add_message_statistic_writes_quota_usage_to_pgvector(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        class FakeRedis:
+            def hincrby(self, key, field, amount):
+                return 0
+
+        captured = []
+        config = {'product_id': 7001}
+        preset = {'model': 'gpt-4o-mini'}
+        response = {'usage': {'completion_tokens': 10, 'prompt_tokens': 30, 'total_tokens': 40}}
+        model_config = {'api_key_type': 'share', 'type': 'chat', 'vendor': 'openai', 'quota': 1}
+
+        with (
+            mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=FakeRedis(), create=True),
+            mock.patch.object(m, 'get_message_statistic_keys', return_value=['stat-key']),
+            mock.patch.object(m, 'add_quota', return_value=0),
+            mock.patch.object(m, 'calc_used_text_size', return_value=12),
+            mock.patch.object(m, 'calc_message_quota', return_value=1.5),
+            mock.patch.object(m, 'add_quota_used_statistic'),
+            mock.patch.object(m, 'maybe_trace_message_quota_usage'),
+            mock.patch.object(m, 'maybe_statistic_ai_capsule'),
+            mock.patch.object(m.lanying_pgvector, 'append_message_quota_usage_log', side_effect=lambda entry: captured.append(entry) or {'result': 'ok'}, create=True),
+        ):
+            m.add_message_statistic('app-quota', config, preset, response, model_config)
+
+        self.assertEqual(1, len(captured))
+        self.assertEqual('app-quota', captured[0]['app_id'])
+        self.assertEqual(1.5, captured[0]['quota'])
+        self.assertEqual('chat', captured[0]['model_type'])
+        self.assertEqual('openai', captured[0]['vendor'])
 
     def test_list_models_openai_api_returns_vendor_prefixed_ids(self):
         try:

@@ -9,6 +9,8 @@ import threading
 connection_pool = None
 openclaw_session_map_log_table_ready = False
 openclaw_session_map_log_table_lock = threading.Lock()
+message_quota_usage_log_table_ready = False
+message_quota_usage_log_table_lock = threading.Lock()
 
 def get_connection():
     if connection_pool:
@@ -195,6 +197,196 @@ def list_openclaw_session_map_logs(app_id, node_id, limit=100):
             'new_mapping': row[11] or {},
             'legacy_session_keys': row[12] or [],
             'extra_metadata': row[13] or {},
+        })
+    return results
+
+def ensure_message_quota_usage_log_table():
+    global message_quota_usage_log_table_ready
+    if not is_enabled():
+        return False
+    if message_quota_usage_log_table_ready:
+        return True
+    with message_quota_usage_log_table_lock:
+        if message_quota_usage_log_table_ready:
+            return True
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS message_quota_usage_log (
+                    id bigserial PRIMARY KEY,
+                    created_at timestamptz NOT NULL DEFAULT NOW(),
+                    app_id varchar(100) NOT NULL DEFAULT '',
+                    quota numeric(20, 6) NOT NULL DEFAULT 0,
+                    model_type varchar(100) NOT NULL DEFAULT '',
+                    vendor varchar(100) NOT NULL DEFAULT '',
+                    model varchar(255) NOT NULL DEFAULT '',
+                    api_key_type varchar(100) NOT NULL DEFAULT '',
+                    message_count integer NOT NULL DEFAULT 1,
+                    total_tokens integer NOT NULL DEFAULT 0,
+                    prompt_tokens integer NOT NULL DEFAULT 0,
+                    completion_tokens integer NOT NULL DEFAULT 0,
+                    text_size integer NOT NULL DEFAULT 0,
+                    content_security varchar(100) NOT NULL DEFAULT '',
+                    product_id bigint NOT NULL DEFAULT 0,
+                    extra_metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS message_quota_usage_log_idx_app_created_at
+                ON message_quota_usage_log (app_id, created_at DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS message_quota_usage_log_idx_created_at
+                ON message_quota_usage_log (created_at DESC);
+            """)
+            conn.commit()
+            cursor.close()
+            put_connection(conn)
+        message_quota_usage_log_table_ready = True
+        return True
+
+def append_message_quota_usage_log(entry):
+    if not isinstance(entry, dict):
+        return {
+            'result': 'ignored',
+            'message': 'bad log entry'
+        }
+    if not is_enabled():
+        return {
+            'result': 'ignored',
+            'message': 'pgvector disabled'
+        }
+    ensure_message_quota_usage_log_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO message_quota_usage_log (
+                app_id,
+                quota,
+                model_type,
+                vendor,
+                model,
+                api_key_type,
+                message_count,
+                total_tokens,
+                prompt_tokens,
+                completion_tokens,
+                text_size,
+                content_security,
+                product_id,
+                extra_metadata
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """,
+            [
+                str(entry.get('app_id', '')).strip(),
+                float(entry.get('quota', 0)),
+                str(entry.get('model_type', '')).strip(),
+                str(entry.get('vendor', '')).strip(),
+                str(entry.get('model', '')).strip(),
+                str(entry.get('api_key_type', '')).strip(),
+                int(entry.get('message_count', 1)),
+                int(entry.get('total_tokens', 0)),
+                int(entry.get('prompt_tokens', 0)),
+                int(entry.get('completion_tokens', 0)),
+                int(entry.get('text_size', 0)),
+                str(entry.get('content_security', '')).strip(),
+                int(entry.get('product_id', 0)),
+                Json(entry.get('extra_metadata', {})),
+            ]
+        )
+        conn.commit()
+        cursor.close()
+        put_connection(conn)
+    return {
+        'result': 'ok'
+    }
+
+def list_message_quota_usage_logs(app_id='', limit=100):
+    if not is_enabled():
+        return []
+    normalized_limit = int(limit or 100)
+    if normalized_limit <= 0:
+        return []
+    normalized_app_id = str(app_id or '').strip()
+    ensure_message_quota_usage_log_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if normalized_app_id == '':
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    created_at,
+                    app_id,
+                    quota,
+                    model_type,
+                    vendor,
+                    model,
+                    api_key_type,
+                    message_count,
+                    total_tokens,
+                    prompt_tokens,
+                    completion_tokens,
+                    text_size,
+                    content_security,
+                    product_id,
+                    extra_metadata
+                FROM message_quota_usage_log
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s;
+                """,
+                [normalized_limit]
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    created_at,
+                    app_id,
+                    quota,
+                    model_type,
+                    vendor,
+                    model,
+                    api_key_type,
+                    message_count,
+                    total_tokens,
+                    prompt_tokens,
+                    completion_tokens,
+                    text_size,
+                    content_security,
+                    product_id,
+                    extra_metadata
+                FROM message_quota_usage_log
+                WHERE app_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s;
+                """,
+                [normalized_app_id, normalized_limit]
+            )
+        rows = cursor.fetchall()
+        cursor.close()
+        put_connection(conn)
+    results = []
+    for row in rows:
+        results.append({
+            'id': row[0],
+            'created_at': row[1].isoformat() if row[1] is not None else '',
+            'app_id': row[2],
+            'quota': float(row[3] or 0),
+            'model_type': row[4],
+            'vendor': row[5],
+            'model': row[6],
+            'api_key_type': row[7],
+            'message_count': row[8] or 0,
+            'total_tokens': row[9] or 0,
+            'prompt_tokens': row[10] or 0,
+            'completion_tokens': row[11] or 0,
+            'text_size': row[12] or 0,
+            'content_security': row[13],
+            'product_id': row[14] or 0,
+            'extra_metadata': row[15] or {},
         })
     return results
 

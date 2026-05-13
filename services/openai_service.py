@@ -42,6 +42,7 @@ import lanying_grow_ai
 import lanying_slack
 import lanying_openclaw
 import lanying_openai_compat
+import lanying_pgvector
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -3139,6 +3140,25 @@ def maybe_trace_message_quota_usage(config, message_count_quota):
     except Exception as e:
         logging.exception(e)
 
+def add_message_quota_usage_pgvector_log(entry):
+    try:
+        if executor and hasattr(executor, 'submit'):
+            executor.submit(add_message_quota_usage_pgvector_log_internal, entry)
+        else:
+            add_message_quota_usage_pgvector_log_internal(entry)
+    except Exception as e:
+        logging.exception(e)
+
+def add_message_quota_usage_pgvector_log_internal(entry):
+    try:
+        if not isinstance(entry, dict):
+            return
+        append_result = lanying_pgvector.append_message_quota_usage_log(entry)
+        if isinstance(append_result, dict) and append_result.get('result') not in ['ok', 'ignored']:
+            logging.info(f"add_message_quota_usage_pgvector_log_internal got unexpected result: {append_result}")
+    except Exception as e:
+        logging.exception(e)
+
 def build_fallback_usage_for_stat(app_id, preset, response, model_config):
     model_type = model_config.get('type', '')
     if model_type == 'chat':
@@ -3195,6 +3215,22 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
                 key_count = 0
                 add_quota_used_statistic(app_id, message_count_quota)
+                add_message_quota_usage_pgvector_log({
+                    'app_id': app_id,
+                    'quota': message_count_quota,
+                    'model_type': model_type,
+                    'vendor': vendor,
+                    'model': model,
+                    'api_key_type': api_key_type,
+                    'message_count': 1,
+                    'total_tokens': 0,
+                    'prompt_tokens': 0,
+                    'completion_tokens': 0,
+                    'text_size': 0,
+                    'content_security': '',
+                    'product_id': int(config.get('product_id', 0) or 0),
+                    'extra_metadata': {},
+                })
                 for key in get_message_statistic_keys(config, app_id):
                     key_count += 1
                     redis.hincrby(key, 'image_message_count', 1)
@@ -3222,6 +3258,24 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
                 key_count = 0
                 add_quota_used_statistic(app_id, message_count_quota)
+                add_message_quota_usage_pgvector_log({
+                    'app_id': app_id,
+                    'quota': message_count_quota,
+                    'model_type': model_type,
+                    'vendor': vendor,
+                    'model': model,
+                    'api_key_type': api_key_type,
+                    'message_count': 1,
+                    'total_tokens': 0,
+                    'prompt_tokens': 0,
+                    'completion_tokens': 0,
+                    'text_size': 0,
+                    'content_security': '',
+                    'product_id': int(config.get('product_id', 0) or 0),
+                    'extra_metadata': {
+                        'speech_to_text_duration': int(config.get('speech_to_text_duration', 0) or 0) if model_type == 'speech_to_text' else 0
+                    },
+                })
                 for key in get_message_statistic_keys(config, app_id):
                     key_count += 1
                     redis.hincrby(key, f'{model_type}_message_count', 1)
@@ -3273,6 +3327,22 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
                 key_count = 0
                 add_quota_used_statistic(app_id, message_count_quota)
+                add_message_quota_usage_pgvector_log({
+                    'app_id': app_id,
+                    'quota': message_count_quota,
+                    'model_type': model_type,
+                    'vendor': vendor,
+                    'model': model,
+                    'api_key_type': api_key_type,
+                    'message_count': 1,
+                    'total_tokens': total_tokens,
+                    'prompt_tokens': prompt_tokens,
+                    'completion_tokens': completion_tokens,
+                    'text_size': text_size,
+                    'content_security': content_security,
+                    'product_id': int(product_id or 0),
+                    'extra_metadata': {},
+                })
                 for key in get_message_statistic_keys(config, app_id):
                     key_count += 1
                     redis.hincrby(key, 'total_tokens', total_tokens)
