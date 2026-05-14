@@ -54,10 +54,10 @@ presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
 maxUserHistoryLen = 20
 MaxTotalTokens = 4000
-openclaw_group_active_expire_seconds = 12 * 3600
+openclaw_group_active_expire_seconds = 7 * 24 * 3600
 openclaw_cold_start_history_max_messages = 12
 openclaw_cold_start_history_max_chars = 4096
-openclaw_group_active_key_expire_seconds = 3 * 24 * 3600
+openclaw_group_active_key_expire_seconds = 8 * 24 * 3600
 openclaw_min_api_version = int(os.getenv('OPENCLAW_MIN_API_VERSION', '2'))
 
 def openclaw_active_group_key(app_id, group_id):
