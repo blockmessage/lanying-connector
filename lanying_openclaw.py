@@ -1411,7 +1411,30 @@ def extract_session_sync_text(message):
             return message.get('text').strip()
         if 'content' in message:
             return extract_session_sync_text(message.get('content'))
+        if str(message.get('type', '')).strip() == 'toolCall' and str(message.get('name', '')).strip() == 'sessions_yield':
+            arguments = message.get('arguments')
+            if isinstance(arguments, str):
+                arguments = lanying_utils.safe_json_loads(arguments, {})
+            if isinstance(arguments, dict) and isinstance(arguments.get('message'), str):
+                return arguments.get('message').strip()
     return ''
+
+def has_sessions_yield_result(message):
+    if isinstance(message, list):
+        for item in message:
+            if has_sessions_yield_result(item):
+                return True
+        return False
+    if not isinstance(message, dict):
+        return False
+    if str(message.get('type', '')).strip() == 'toolCall' and str(message.get('name', '')).strip() == 'sessions_yield':
+        arguments = message.get('arguments')
+        if isinstance(arguments, str):
+            arguments = lanying_utils.safe_json_loads(arguments, {})
+        return isinstance(arguments, dict) and isinstance(arguments.get('message'), str) and arguments.get('message').strip() != ''
+    if 'content' in message:
+        return has_sessions_yield_result(message.get('content'))
+    return False
 
 def is_session_sync_silent_reply_text(text):
     if not isinstance(text, str):
@@ -2681,6 +2704,7 @@ def build_session_sync_delivery_ext(
     parent_session_key='',
     root_session_key='',
     sync_variant='',
+    display_kind='',
 ):
     normalized_source = str(source or '').strip()
     normalized_role = str(role or '').strip().lower()
@@ -2702,6 +2726,9 @@ def build_session_sync_delivery_ext(
         openclaw['root_session'] = normalized_root_session_key
     if normalized_sync_variant != '':
         openclaw['sync_variant'] = normalized_sync_variant
+    normalized_display_kind = str(display_kind or '').strip()
+    if normalized_display_kind != '':
+        openclaw['display_kind'] = normalized_display_kind
     ext = {'openclaw': openclaw}
     # Session visible-delivery events from OpenClaw are display-only in IM.
     ext['ai'] = {'ai_generate': False}
@@ -2739,6 +2766,9 @@ def build_router_reply_delivery_ext(message):
     sync_variant = str(openclaw_in.get('sync_variant', '')).strip()
     if sync_variant != '':
         reply_openclaw['sync_variant'] = sync_variant
+    display_kind = str(openclaw_in.get('display_kind', '')).strip()
+    if display_kind != '':
+        reply_openclaw['display_kind'] = display_kind
     request_source = str(openclaw_in.get('source', '')).strip()
     if request_source != '':
         reply_openclaw['request_source'] = request_source
@@ -3073,6 +3103,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         )
         return
     message_id = str(event.get('message_id', '')).strip()
+    display_kind = 'yield_result' if role == 'assistant' and has_sessions_yield_result(message.get('content') if isinstance(message, dict) else message) else ''
     should_materialize_clawchat_group = not (
         source == 'control_ui_user' and
         role == 'user' and
@@ -3117,6 +3148,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         delivery_lineage.get('parent_session_key', ''),
         delivery_lineage.get('root_session_key', ''),
         observed_origin_facts.get('sync_variant', ''),
+        display_kind,
     )
     if text.strip() != '' and role in ['user', 'assistant']:
         target_session_key = normalize_optional_session_key(

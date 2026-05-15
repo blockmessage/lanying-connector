@@ -2734,6 +2734,21 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(delivery_ext["openclaw"]["sync_variant"], "im_subagent_bootstrap")
 
+    def test_session_sync_forwarding_visible_delivery_carries_display_kind(self):
+        m = lanying_openclaw
+        delivery_ext = m.build_session_sync_delivery_ext(
+            "agent:main:subagent:test-child",
+            "control_ui_reply",
+            "assistant",
+            "msg-yield-1",
+            "agent:main:clawchat-router:group:group-9",
+            "agent:main:clawchat-router:group:group-9",
+            "",
+            "yield_result",
+        )
+
+        self.assertEqual(delivery_ext["openclaw"]["display_kind"], "yield_result")
+
     def test_session_sync_user_forwarding_targets_chatbot_in_direct(self):
         m = lanying_openclaw
         node_info = {"node_id": "15", "user_id": "openclaw-user"}
@@ -2913,8 +2928,81 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(delivery_ext["openclaw"]["role"], "assistant")
         self.assertEqual(delivery_ext["openclaw"]["message_id"], "msg-im-2")
         self.assertEqual(delivery_ext["openclaw"]["parent_session"], "agent:main:subagent:test-parent")
-        self.assertEqual(delivery_ext["openclaw"]["root_session"], "agent:main:clawchat:group:group-9")
+
+    def test_handle_session_message_sync_event_for_sessions_yield_marks_visible_delivery(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "group-9",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "parent_session_key": "agent:main:clawchat-router:group:group-9",
+            "root_session_key": "agent:main:clawchat-router:group:group-9",
+            "effective_target_session_key": "agent:main:subagent:test-child",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": mapping}), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={"kind": "group", "mapping": mapping}), \
+             mock.patch.object(m, "should_forward_group_sync_via_router_reply", return_value=None), \
+             mock.patch.object(m, "forward_session_sync_to_group", return_value=301) as mocked_group_forward:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "source": "control_ui_reply",
+                    "session": "agent:main:subagent:test-child",
+                    "message_id": "yield-msg-1",
+                    "parent_session": "agent:main:clawchat-router:group:group-9",
+                    "root_session": "agent:main:clawchat-router:group:group-9",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "toolCall",
+                                "id": "call-yield-1",
+                                "name": "sessions_yield",
+                                "arguments": {
+                                    "message": "我完成了：讲了一个关于数字3的笑话。",
+                                },
+                            }
+                        ],
+                    },
+                },
+            )
+
+        mocked_group_forward.assert_called_once()
+        self.assertEqual(mocked_group_forward.call_args.args[3], "assistant")
+        self.assertEqual(mocked_group_forward.call_args.args[4], "我完成了：讲了一个关于数字3的笑话。")
+        delivery_ext = mocked_group_forward.call_args.args[5]
+        self.assertEqual(delivery_ext["openclaw"]["type"], "session_sync_delivery")
+        self.assertEqual(delivery_ext["openclaw"]["display_kind"], "yield_result")
+        self.assertEqual(delivery_ext["openclaw"]["message_id"], "yield-msg-1")
+        self.assertEqual(delivery_ext["openclaw"]["root_session"], "agent:main:clawchat-router:group:group-9")
         self.assertEqual(delivery_ext["ai"]["ai_generate"], False)
+
+    def test_extract_session_sync_text_parses_sessions_yield_json_arguments(self):
+        m = lanying_openclaw
+
+        with mock.patch.object(
+            m.lanying_utils,
+            "safe_json_loads",
+            side_effect=lambda raw, default=None: json.loads(raw),
+        ):
+            text = m.extract_session_sync_text([
+                {
+                    "type": "toolCall",
+                    "name": "sessions_yield",
+                    "arguments": json.dumps({
+                        "message": "我完成了：讲了 JSON 参数里的笑话。",
+                    }, ensure_ascii=False),
+                }
+            ])
+
+        self.assertEqual(text, "我完成了：讲了 JSON 参数里的笑话。")
 
     def test_router_mapping_signal_carries_origin_and_chatbot_user_id(self):
         m = lanying_openclaw
