@@ -1056,18 +1056,22 @@ def build_openclaw_reply_ext(msg):
         'source': 'control_ui_reply',
         'role': 'assistant',
     }
-    request_source = str(openclaw_in.get('source', '')).strip()
-    if request_source != '':
-        reply_openclaw['request_source'] = request_source
+    visible_delivery_owner = str(openclaw_in.get('visible_delivery_owner', '')).strip()
+    if visible_delivery_owner != '':
+        reply_openclaw['visible_delivery_owner'] = visible_delivery_owner
     request_role = str(openclaw_in.get('role', '')).strip().lower()
     if request_role == '':
         message = openclaw_in.get('message', {})
         if isinstance(message, dict):
             request_role = str(message.get('role', '')).strip().lower()
-    if request_role != '':
+    request_source = str(openclaw_in.get('source', '')).strip()
+    is_reply_context = request_source == 'control_ui_reply' or request_role == 'assistant'
+    if request_source != '' and not is_reply_context:
+        reply_openclaw['request_source'] = request_source
+    if request_role != '' and not is_reply_context:
         reply_openclaw['request_role'] = request_role
     request_message_id = str(openclaw_in.get('message_id', '')).strip()
-    if request_message_id != '':
+    if request_message_id != '' and not is_reply_context:
         reply_openclaw['request_message_id'] = request_message_id
     request_msg_id = str(openclaw_in.get('request_msg_id', '')).strip()
     trigger_msg_id = str(openclaw_in.get('trigger_msg_id', '')).strip()
@@ -1075,13 +1079,15 @@ def build_openclaw_reply_ext(msg):
         reply_openclaw['trigger_msg_id'] = trigger_msg_id
     if request_msg_id == '':
         request_msg_id = trigger_msg_id
-    if request_msg_id == '':
-        request_msg_id = str(msg.get('msgId', '')).strip()
     if request_msg_id != '':
         reply_openclaw['request_msg_id'] = request_msg_id
-    return {
+    ext = {
         'openclaw': reply_openclaw
     }
+    ai_in = get_message_ai_ext(msg)
+    if ai_in.get('ai_generate') is False:
+        ext['ai'] = {'ai_generate': False}
+    return ext
 
 def is_ai_generate_disabled_msg(msg):
     return get_message_ai_ext(msg).get('ai_generate') == False

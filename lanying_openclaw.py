@@ -2802,18 +2802,22 @@ def build_router_reply_delivery_ext(message):
     display_kind = str(openclaw_in.get('display_kind', '')).strip()
     if display_kind != '':
         reply_openclaw['display_kind'] = display_kind
-    request_source = str(openclaw_in.get('source', '')).strip()
-    if request_source != '':
-        reply_openclaw['request_source'] = request_source
+    visible_delivery_owner = str(openclaw_in.get('visible_delivery_owner', '')).strip()
+    if visible_delivery_owner != '':
+        reply_openclaw['visible_delivery_owner'] = visible_delivery_owner
     request_role = str(openclaw_in.get('role', '')).strip().lower()
     if request_role == '':
         request_message = openclaw_in.get('message', {})
         if isinstance(request_message, dict):
             request_role = str(request_message.get('role', '')).strip().lower()
-    if request_role != '':
+    request_source = str(openclaw_in.get('source', '')).strip()
+    is_reply_context = request_source == 'control_ui_reply' or request_role == 'assistant'
+    if request_source != '' and not is_reply_context:
+        reply_openclaw['request_source'] = request_source
+    if request_role != '' and not is_reply_context:
         reply_openclaw['request_role'] = request_role
     request_message_id = str(openclaw_in.get('message_id', '')).strip()
-    if request_message_id != '':
+    if request_message_id != '' and not is_reply_context:
         reply_openclaw['request_message_id'] = request_message_id
     trigger_msg_id = str(openclaw_in.get('trigger_msg_id', '')).strip()
     if trigger_msg_id != '':
@@ -2822,10 +2826,13 @@ def build_router_reply_delivery_ext(message):
     if request_msg_id == '':
         request_msg_id = str(openclaw_in.get('router_request_sid', '')).strip()
     if request_msg_id == '':
-        request_msg_id = str(message.get('msgId', '')).strip()
+        request_msg_id = trigger_msg_id
     if request_msg_id != '':
         reply_openclaw['request_msg_id'] = request_msg_id
     ext['openclaw'] = reply_openclaw
+    ai_in = msg_ext.get('ai', {})
+    if isinstance(ai_in, dict) and ai_in.get('ai_generate') is False:
+        ext['ai']['ai_generate'] = False
     return ext
 
 def forward_session_sync_to_group(app_id, node_info, mapping, role, text, delivery_ext=None):

@@ -674,7 +674,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual(out['openclaw']['request_role'], 'user')
         self.assertEqual(out['openclaw']['request_message_id'], 'evt-1')
         self.assertNotIn('trigger_msg_id', out['openclaw'])
-        self.assertEqual(out['openclaw']['request_msg_id'], 'mid-1')
+        self.assertNotIn('request_msg_id', out['openclaw'])
 
     def test_build_openclaw_reply_ext_reads_nested_role_from_session_transcript_observed(self):
         try:
@@ -705,6 +705,38 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual(out['openclaw']['request_message_id'], 'evt-2')
         self.assertEqual(out['openclaw']['trigger_msg_id'], 'trigger-im-2')
         self.assertEqual(out['openclaw']['request_msg_id'], 'trigger-im-2')
+
+    def test_build_openclaw_reply_ext_does_not_treat_reply_as_request_context(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        msg = {
+            'msgId': 'mid-reply',
+            'ext': json.dumps({
+                'openclaw': {
+                    'type': 'session_sync_delivery',
+                    'session': 'agent:main:clawchat:direct:u1',
+                    'source': 'control_ui_reply',
+                    'role': 'assistant',
+                    'message_id': 'router_reply_123_1',
+                    'visible_delivery_owner': 'plugin',
+                },
+                'ai': {
+                    'ai_generate': False,
+                }
+            })
+        }
+        out = m.build_openclaw_reply_ext(msg)
+        self.assertEqual(out['openclaw']['source'], 'control_ui_reply')
+        self.assertEqual(out['openclaw']['role'], 'assistant')
+        self.assertEqual(out['openclaw']['visible_delivery_owner'], 'plugin')
+        self.assertNotIn('request_source', out['openclaw'])
+        self.assertNotIn('request_role', out['openclaw'])
+        self.assertNotIn('request_message_id', out['openclaw'])
+        self.assertNotIn('request_msg_id', out['openclaw'])
+        self.assertEqual(out['ai']['ai_generate'], False)
 
     def test_append_message_can_drop_developer_prompt_when_context_is_full(self):
         try:

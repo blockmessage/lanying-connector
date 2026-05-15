@@ -3539,7 +3539,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["request_role"], "user")
         self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-1")
         self.assertNotIn("trigger_msg_id", ext["openclaw"])
-        self.assertEqual(ext["openclaw"]["request_msg_id"], "im-req-1")
+        self.assertNotIn("request_msg_id", ext["openclaw"])
 
     def test_router_root_direct_assistant_sync_prefers_router_reply(self):
         m = lanying_openclaw
@@ -4112,7 +4112,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["request_role"], "user")
         self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-2")
         self.assertEqual(ext["openclaw"]["trigger_msg_id"], "trigger-im-2")
-        self.assertEqual(ext["openclaw"]["request_msg_id"], "im-req-2")
+        self.assertEqual(ext["openclaw"]["request_msg_id"], "trigger-im-2")
 
     def test_build_router_reply_delivery_ext_prefers_router_request_sid_for_request_msg_id(self):
         m = lanying_openclaw
@@ -4130,8 +4130,38 @@ class RouterSessionIdentityTests(unittest.TestCase):
             }),
         })
 
-        self.assertEqual(ext["openclaw"]["request_message_id"], "router-reply-oc-1")
+        self.assertNotIn("request_source", ext["openclaw"])
+        self.assertNotIn("request_role", ext["openclaw"])
+        self.assertNotIn("request_message_id", ext["openclaw"])
         self.assertEqual(ext["openclaw"]["request_msg_id"], "im-request-42")
+
+    def test_build_router_reply_delivery_ext_does_not_treat_reply_as_request_context(self):
+        m = lanying_openclaw
+        ext = m.build_router_reply_delivery_ext({
+            "msgId": "router-reply-visible-2",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "session_sync_delivery",
+                    "session": "agent:main:clawchat-router:group:group-42",
+                    "source": "control_ui_reply",
+                    "role": "assistant",
+                    "message_id": "router_reply_123_1",
+                    "visible_delivery_owner": "plugin",
+                },
+                "ai": {
+                    "ai_generate": False,
+                },
+            }),
+        })
+
+        self.assertEqual(ext["openclaw"]["source"], "control_ui_reply")
+        self.assertEqual(ext["openclaw"]["role"], "assistant")
+        self.assertEqual(ext["openclaw"]["visible_delivery_owner"], "plugin")
+        self.assertNotIn("request_source", ext["openclaw"])
+        self.assertNotIn("request_role", ext["openclaw"])
+        self.assertNotIn("request_message_id", ext["openclaw"])
+        self.assertNotIn("request_msg_id", ext["openclaw"])
+        self.assertEqual(ext["ai"]["ai_generate"], False)
 
     def test_control_ui_reply_delivery_ext_includes_trigger_msg_id_when_known(self):
         m = lanying_openclaw
@@ -4186,7 +4216,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             }),
         })
 
-        self.assertEqual(ext["openclaw"]["request_message_id"], "router-reply-oc-2")
+        self.assertNotIn("request_message_id", ext["openclaw"])
         self.assertEqual(ext["openclaw"]["request_msg_id"], "original-im-25")
 
     def test_router_group_root_assistant_sync_prefers_router_reply(self):
