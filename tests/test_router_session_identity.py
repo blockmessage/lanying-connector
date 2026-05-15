@@ -3030,6 +3030,27 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(text, "我完成了：讲了 JSON 参数里的笑话。")
 
+    def test_extract_session_sync_text_keeps_only_current_message_from_runtime_context(self):
+        m = lanying_openclaw
+
+        text = m.extract_session_sync_text(
+            "\n".join([
+                "[Retrieved knowledge context]",
+                "internal knowledge should not be displayed",
+                "[End knowledge context]",
+                "[Group context messages since last trigger]",
+                "[AI] previous internal context",
+                "",
+                "[Current message]",
+                "@chatbot_qkyimzwkzd git clone git@github.com:maxim-top/openclaw-channel-clawchat.git 到/tmp/目录",
+            ])
+        )
+
+        self.assertEqual(
+            text,
+            "@chatbot_qkyimzwkzd git clone git@github.com:maxim-top/openclaw-channel-clawchat.git 到/tmp/目录",
+        )
+
     def test_router_mapping_signal_carries_origin_and_chatbot_user_id(self):
         m = lanying_openclaw
         node_info = {

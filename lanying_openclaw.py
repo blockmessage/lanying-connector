@@ -1396,9 +1396,18 @@ def get_nodes_by_user_id(app_id, user_id):
     target_user_id = str(user_id)
     return [node for node in node_list if str(node.get('user_id', '')) == target_user_id]
 
+def strip_openclaw_runtime_context_from_visible_text(text):
+    if not isinstance(text, str):
+        return ''
+    stripped = text.strip()
+    current_marker = '[Current message]'
+    if current_marker in stripped:
+        return stripped.rsplit(current_marker, 1)[1].strip()
+    return stripped
+
 def extract_session_sync_text(message):
     if isinstance(message, str):
-        return message.strip()
+        return strip_openclaw_runtime_context_from_visible_text(message)
     if isinstance(message, list):
         parts = []
         for item in message:
