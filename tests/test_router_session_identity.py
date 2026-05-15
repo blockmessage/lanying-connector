@@ -4163,6 +4163,47 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertNotIn("request_msg_id", ext["openclaw"])
         self.assertEqual(ext["ai"]["ai_generate"], False)
 
+    def test_build_router_reply_delivery_ext_marks_router_delivery_ai_generate_false_without_openclaw(self):
+        m = lanying_openclaw
+        ext = m.build_router_reply_delivery_ext({
+            "msgId": "router-reply-visible-no-openclaw",
+            "ext": "",
+        })
+
+        self.assertEqual(ext["ai"]["role"], "ai")
+        self.assertEqual(ext["ai"]["ai_generate"], False)
+        self.assertNotIn("openclaw", ext)
+
+    def test_build_router_reply_delivery_ext_preserves_im_reply_delivery_without_session(self):
+        m = lanying_openclaw
+        ext = m.build_router_reply_delivery_ext({
+            "msgId": "router-reply-visible-im-delivery",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "im_reply_delivery",
+                    "source": "control_ui_reply",
+                    "role": "assistant",
+                    "message_id": "router_reply_456_1",
+                    "visible_delivery_owner": "plugin",
+                    "request_msg_id": "im-request-456",
+                },
+                "ai": {
+                    "role": "ai",
+                    "ai_generate": False,
+                },
+            }),
+        })
+
+        self.assertEqual(ext["ai"]["role"], "ai")
+        self.assertEqual(ext["ai"]["ai_generate"], False)
+        self.assertEqual(ext["openclaw"]["type"], "im_reply_delivery")
+        self.assertEqual(ext["openclaw"]["source"], "control_ui_reply")
+        self.assertEqual(ext["openclaw"]["role"], "assistant")
+        self.assertEqual(ext["openclaw"]["message_id"], "router_reply_456_1")
+        self.assertEqual(ext["openclaw"]["visible_delivery_owner"], "plugin")
+        self.assertEqual(ext["openclaw"]["request_msg_id"], "im-request-456")
+        self.assertNotIn("session", ext["openclaw"])
+
     def test_control_ui_reply_delivery_ext_includes_trigger_msg_id_when_known(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}

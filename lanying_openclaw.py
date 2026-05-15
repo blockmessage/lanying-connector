@@ -2770,7 +2770,8 @@ def build_session_sync_delivery_ext(
 def build_router_reply_delivery_ext(message):
     ext = {
         'ai': {
-            'role': 'ai'
+            'role': 'ai',
+            'ai_generate': False
         }
     }
     if not isinstance(message, dict):
@@ -2781,7 +2782,32 @@ def build_router_reply_delivery_ext(message):
     openclaw_in = msg_ext.get('openclaw', {})
     if not isinstance(openclaw_in, dict):
         return ext
+    openclaw_type = str(openclaw_in.get('type', '')).strip()
     session_key = normalize_session_key(openclaw_in.get('session', ''))
+    if session_key == '' and openclaw_type == 'im_reply_delivery':
+        reply_openclaw = {
+            'type': 'im_reply_delivery',
+            'source': 'control_ui_reply',
+            'role': 'assistant',
+        }
+        message_id = str(openclaw_in.get('message_id', '')).strip()
+        if message_id != '':
+            reply_openclaw['message_id'] = message_id
+        visible_delivery_owner = str(openclaw_in.get('visible_delivery_owner', '')).strip()
+        if visible_delivery_owner != '':
+            reply_openclaw['visible_delivery_owner'] = visible_delivery_owner
+        trigger_msg_id = str(openclaw_in.get('trigger_msg_id', '')).strip()
+        if trigger_msg_id != '':
+            reply_openclaw['trigger_msg_id'] = trigger_msg_id
+        request_msg_id = str(openclaw_in.get('request_msg_id', '')).strip()
+        if request_msg_id == '':
+            request_msg_id = str(openclaw_in.get('router_request_sid', '')).strip()
+        if request_msg_id == '':
+            request_msg_id = trigger_msg_id
+        if request_msg_id != '':
+            reply_openclaw['request_msg_id'] = request_msg_id
+        ext['openclaw'] = reply_openclaw
+        return ext
     if session_key == '':
         return ext
     reply_openclaw = {
