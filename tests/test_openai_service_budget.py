@@ -345,6 +345,25 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertFalse(m.is_openclaw_delivery_no_reentry_msg({
             'ext': '{"openclaw":{"type":"session_message_sync","session":"agent:main"}}'
         }))
+        self.assertFalse(m.is_openclaw_delivery_no_reentry_msg({
+            'ext': '{"openclaw":{"type":"session_transcript_observed","session":"agent:main"}}'
+        }))
+
+    def test_openclaw_internal_control_msg_covers_sync_events(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        self.assertTrue(m.is_openclaw_internal_control_msg({
+            'ext': '{"openclaw":{"type":"session_sync_delivery","session":"agent:main"}}'
+        }))
+        self.assertTrue(m.is_openclaw_internal_control_msg({
+            'ext': '{"openclaw":{"type":"session_message_sync","session":"agent:main"}}'
+        }))
+        self.assertTrue(m.is_openclaw_internal_control_msg({
+            'ext': '{"openclaw":{"type":"session_transcript_observed","session":"agent:main"}}'
+        }))
 
     def test_daily_quota_fuse_defaults_to_ten_percent_with_minimum_one(self):
         try:
@@ -515,6 +534,16 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             m.maybe_sync_to_openclaw(command_msg)
         executor.submit.assert_called_once()
 
+        transcript_msg = dict(base_msg)
+        transcript_msg['ext'] = '{"openclaw":{"type":"session_transcript_observed","session":"agent:main"}}'
+        executor = mock.Mock()
+        with (
+            mock.patch.object(m, 'executor', executor),
+            mock.patch.object(m.lanying_openclaw, 'handle_chat_message', create=True),
+        ):
+            m.maybe_sync_to_openclaw(transcript_msg)
+        executor.submit.assert_called_once()
+
     def test_handle_chat_message_skips_router_context_for_delivery_no_reentry_command_text(self):
         try:
             m = importlib.import_module('openai_service')
@@ -532,6 +561,80 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'from': {'uid': 'user-1'},
             'to': {'uid': 'group-1'},
             'ext': '{"openclaw":{"type":"session_sync_delivery","session":"agent:main"},"ai":{"ai_generate":false}}',
+        }
+        with (
+            mock.patch.object(m, 'maybe_sync_to_openclaw') as maybe_sync,
+            mock.patch.object(m, 'init_chatbot_config'),
+            mock.patch.object(m, 'maybe_reply_message_read_ack'),
+            mock.patch.object(m, 'maybe_transcription_audio_msg'),
+            mock.patch.object(m, 'maybe_save_image_msg'),
+            mock.patch.object(m, 'maybe_add_history'),
+            mock.patch.object(m, 'list_group_openclaw_router_context_targets') as list_targets,
+            mock.patch.object(m.lanying_openclaw, 'redirect_to_openclaw', create=True) as redirect,
+            mock.patch.object(m, 'handle_chat_message_try') as handle_try,
+        ):
+            result = m.handle_chat_message(config, msg)
+
+        self.assertEqual(result, '')
+        maybe_sync.assert_called_once_with(msg)
+        list_targets.assert_not_called()
+        redirect.assert_not_called()
+        handle_try.assert_not_called()
+
+    def test_handle_chat_message_skips_ai_processing_for_visible_session_message_sync(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'openclaw_node_info': {'node_id': 'node-1'},
+        }
+        msg = {
+            'msgId': 'mid-session-sync-visible',
+            'appId': 1,
+            'type': 'GROUPCHAT',
+            'content': 'visible sync payload',
+            'from': {'uid': 'chatbot-user'},
+            'to': {'uid': 'group-1'},
+            'ext': '{"openclaw":{"type":"session_message_sync","session":"agent:main:clawchat-router:group:group-1","source":"control_ui_reply","role":"assistant","message_id":"evt-1"},"ai":{"role":"ai"}}',
+        }
+        with (
+            mock.patch.object(m, 'maybe_sync_to_openclaw') as maybe_sync,
+            mock.patch.object(m, 'init_chatbot_config'),
+            mock.patch.object(m, 'maybe_reply_message_read_ack'),
+            mock.patch.object(m, 'maybe_transcription_audio_msg'),
+            mock.patch.object(m, 'maybe_save_image_msg'),
+            mock.patch.object(m, 'maybe_add_history'),
+            mock.patch.object(m, 'list_group_openclaw_router_context_targets') as list_targets,
+            mock.patch.object(m.lanying_openclaw, 'redirect_to_openclaw', create=True) as redirect,
+            mock.patch.object(m, 'handle_chat_message_try') as handle_try,
+        ):
+            result = m.handle_chat_message(config, msg)
+
+        self.assertEqual(result, '')
+        maybe_sync.assert_called_once_with(msg)
+        list_targets.assert_not_called()
+        redirect.assert_not_called()
+        handle_try.assert_not_called()
+
+    def test_handle_chat_message_skips_ai_processing_for_visible_session_transcript_observed(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'openclaw_node_info': {'node_id': 'node-1'},
+        }
+        msg = {
+            'msgId': 'mid-session-transcript-visible',
+            'appId': 1,
+            'type': 'GROUPCHAT',
+            'content': 'visible transcript payload',
+            'from': {'uid': 'chatbot-user'},
+            'to': {'uid': 'group-1'},
+            'ext': '{"openclaw":{"type":"session_transcript_observed","session":"agent:main:subagent:test-child","source":"control_ui_reply","message_id":"evt-2","message":{"role":"assistant","content":"hello"}},"ai":{"role":"ai"}}',
         }
         with (
             mock.patch.object(m, 'maybe_sync_to_openclaw') as maybe_sync,
@@ -570,7 +673,38 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual(out['openclaw']['request_source'], 'control_ui_user')
         self.assertEqual(out['openclaw']['request_role'], 'user')
         self.assertEqual(out['openclaw']['request_message_id'], 'evt-1')
+        self.assertNotIn('trigger_msg_id', out['openclaw'])
         self.assertEqual(out['openclaw']['request_msg_id'], 'mid-1')
+
+    def test_build_openclaw_reply_ext_reads_nested_role_from_session_transcript_observed(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        msg = {
+            'msgId': 'mid-2',
+            'ext': json.dumps({
+                'openclaw': {
+                    'type': 'session_transcript_observed',
+                    'session': 'agent:main:clawchat:direct:u1',
+                    'source': 'control_ui_user',
+                    'message_id': 'evt-2',
+                    'trigger_msg_id': 'trigger-im-2',
+                    'message': {
+                        'role': 'user',
+                        'content': 'hello',
+                    },
+                }
+            })
+        }
+        out = m.build_openclaw_reply_ext(msg)
+        self.assertEqual(out['openclaw']['type'], 'session_sync_delivery')
+        self.assertEqual(out['openclaw']['request_source'], 'control_ui_user')
+        self.assertEqual(out['openclaw']['request_role'], 'user')
+        self.assertEqual(out['openclaw']['request_message_id'], 'evt-2')
+        self.assertEqual(out['openclaw']['trigger_msg_id'], 'trigger-im-2')
+        self.assertEqual(out['openclaw']['request_msg_id'], 'trigger-im-2')
 
     def test_append_message_can_drop_developer_prompt_when_context_is_full(self):
         try:

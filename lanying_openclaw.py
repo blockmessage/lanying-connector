@@ -1419,6 +1419,25 @@ def extract_session_sync_text(message):
                 return arguments.get('message').strip()
     return ''
 
+def normalize_session_sync_text(value):
+    text = extract_session_sync_text(value)
+    if not isinstance(text, str):
+        text = str(text or '')
+    normalized = ''.join(text.split()).strip()
+    punctuation_map = str.maketrans('', '', """，。！？、；：“”"'`~!?,.;:""")
+    return normalized.translate(punctuation_map)
+
+def session_sync_texts_look_duplicated(left, right):
+    a = normalize_session_sync_text(left)
+    b = normalize_session_sync_text(right)
+    if a == '' or b == '':
+        return False
+    shorter = a if len(a) <= len(b) else b
+    longer = b if len(a) <= len(b) else a
+    if len(shorter) < 12:
+        return shorter == longer
+    return shorter in longer
+
 def has_sessions_yield_result(message):
     if isinstance(message, list):
         for item in message:
@@ -2701,6 +2720,7 @@ def build_session_sync_delivery_ext(
     source,
     role,
     message_id='',
+    trigger_msg_id='',
     parent_session_key='',
     root_session_key='',
     sync_variant='',
@@ -2718,6 +2738,10 @@ def build_session_sync_delivery_ext(
     normalized_message_id = str(message_id or '').strip()
     if normalized_message_id != '':
         openclaw['message_id'] = normalized_message_id
+    normalized_trigger_msg_id = str(trigger_msg_id or '').strip()
+    if normalized_trigger_msg_id != '':
+        openclaw['trigger_msg_id'] = normalized_trigger_msg_id
+        openclaw['request_msg_id'] = normalized_trigger_msg_id
     normalized_parent_session_key = normalize_optional_session_key(parent_session_key)
     if normalized_parent_session_key != '':
         openclaw['parent_session'] = normalized_parent_session_key
@@ -2773,12 +2797,23 @@ def build_router_reply_delivery_ext(message):
     if request_source != '':
         reply_openclaw['request_source'] = request_source
     request_role = str(openclaw_in.get('role', '')).strip().lower()
+    if request_role == '':
+        request_message = openclaw_in.get('message', {})
+        if isinstance(request_message, dict):
+            request_role = str(request_message.get('role', '')).strip().lower()
     if request_role != '':
         reply_openclaw['request_role'] = request_role
     request_message_id = str(openclaw_in.get('message_id', '')).strip()
     if request_message_id != '':
         reply_openclaw['request_message_id'] = request_message_id
-    request_msg_id = str(message.get('msgId', '')).strip()
+    trigger_msg_id = str(openclaw_in.get('trigger_msg_id', '')).strip()
+    if trigger_msg_id != '':
+        reply_openclaw['trigger_msg_id'] = trigger_msg_id
+    request_msg_id = str(openclaw_in.get('request_msg_id', '')).strip()
+    if request_msg_id == '':
+        request_msg_id = str(openclaw_in.get('router_request_sid', '')).strip()
+    if request_msg_id == '':
+        request_msg_id = str(message.get('msgId', '')).strip()
     if request_msg_id != '':
         reply_openclaw['request_msg_id'] = request_msg_id
     ext['openclaw'] = reply_openclaw
@@ -3064,7 +3099,125 @@ def forward_session_sync_router_direct_reply(app_id, node_info, target_user_id, 
     )
     return msg_id
 
+def resolve_inherited_observed_origin_facts_for_transcript_event(app_id, node_info, session_key, parent_session_key, root_session_key, source, role, observed_origin_facts, text):
+    normalized_session_key = normalize_session_key(session_key)
+    normalized_parent_session_key = normalize_optional_session_key(parent_session_key)
+    normalized_root_session_key = normalize_optional_session_key(root_session_key)
+    normalized_source = str(source or '').strip()
+    normalized_role = str(role or '').strip().lower()
+    if (
+        normalized_session_key == '' or
+        ':subagent:' not in normalized_session_key or
+        normalized_source != 'control_ui_user' or
+        normalized_role != 'user'
+    ):
+        return {}
+    if (
+        str(observed_origin_facts.get('sender_user_id', '')).strip() != '' or
+        str(observed_origin_facts.get('observed_sender_user_id', '')).strip() != ''
+    ):
+        return {}
+    if str(observed_origin_facts.get('observed_message_type_source', '')).strip() != 'fallback':
+        return {}
+    if str(observed_origin_facts.get('observed_message_type', '')).strip() != 'control_ui_user':
+        return {}
+    candidate_session_keys = [normalized_parent_session_key, normalized_root_session_key]
+    for candidate_session_key in candidate_session_keys:
+        if candidate_session_key == '':
+            continue
+        mapping = get_session_mapping_by_session(app_id, node_info['node_id'], candidate_session_key)
+        if not isinstance(mapping, dict):
+            continue
+        inherited = normalize_observed_origin_facts({
+            'sender_user_id': mapping.get('origin_user_id', ''),
+            'observed_sender_user_id': mapping.get('origin_user_id', ''),
+            'observed_from_user_id': mapping.get('origin_user_id', ''),
+            'observed_to_id': mapping.get('chatbot_user_id', ''),
+            'observed_chat_type': 'GROUPCHAT' if str(mapping.get('group_id', '')).strip() != '' else 'CHAT',
+            'observed_channel': 'clawchat',
+            'observed_message_type': 'im_inbound_user',
+            'observed_message_type_source': 'inherited_mapping',
+            'sync_variant': '',
+        })
+        if str(text or '').strip().find('[Subagent Context]') >= 0 and str(inherited.get('sync_variant', '')).strip() == '':
+            inherited['sync_variant'] = 'im_subagent_bootstrap'
+        return inherited
+    return {}
+
+def normalize_session_transcript_event(app_id, node_info, event):
+    if not isinstance(event, dict):
+        return None
+    event_type = str(event.get('type', '')).strip()
+    if event_type == '' or event_type == 'session_message_sync':
+        return event
+    if event_type != 'session_transcript_observed':
+        return None
+    message = event.get('message', {})
+    role = ''
+    if isinstance(message, dict):
+        role = str(message.get('role', '')).strip().lower()
+    text = extract_session_sync_text(message.get('content') if isinstance(message, dict) else message)
+    normalized_event = dict(event)
+    normalized_event['type'] = 'session_message_sync'
+    observed_origin_facts = normalize_observed_origin_facts({
+        'sender_user_id': event.get('sender_user_id', ''),
+        'observed_sender_user_id': event.get('observed_sender_user_id', ''),
+        'observed_from_user_id': event.get('observed_from_user_id', ''),
+        'observed_to_id': event.get('observed_to_id', ''),
+        'observed_chat_type': event.get('observed_chat_type', ''),
+        'observed_channel': event.get('observed_channel', ''),
+        'observed_message_type': event.get('observed_message_type', ''),
+        'observed_message_type_source': event.get('observed_message_type_source', ''),
+        'sync_variant': event.get('sync_variant', ''),
+    })
+    inherited = resolve_inherited_observed_origin_facts_for_transcript_event(
+        app_id,
+        node_info,
+        event.get('session', ''),
+        event.get('parent_session', ''),
+        event.get('root_session', ''),
+        event.get('source', ''),
+        role,
+        observed_origin_facts,
+        text,
+    )
+    merged = dict(observed_origin_facts)
+    inherited_override_keys = [
+        'sender_user_id',
+        'observed_sender_user_id',
+        'observed_from_user_id',
+        'observed_to_id',
+        'observed_chat_type',
+        'observed_channel',
+        'observed_message_type',
+        'observed_message_type_source',
+    ]
+    for key in inherited_override_keys:
+        value = str(inherited.get(key, '')).strip()
+        if value != '':
+            merged[key] = value
+    inherited_sync_variant = str(inherited.get('sync_variant', '')).strip()
+    if inherited_sync_variant != '' and str(merged.get('sync_variant', '')).strip() == '':
+        merged['sync_variant'] = inherited_sync_variant
+    field_map = {
+        'sender_user_id': 'sender_user_id',
+        'observed_sender_user_id': 'observed_sender_user_id',
+        'observed_from_user_id': 'observed_from_user_id',
+        'observed_to_id': 'observed_to_id',
+        'observed_chat_type': 'observed_chat_type',
+        'observed_channel': 'observed_channel',
+        'observed_message_type': 'observed_message_type',
+        'observed_message_type_source': 'observed_message_type_source',
+        'sync_variant': 'sync_variant',
+    }
+    for source_key, target_key in field_map.items():
+        value = str(merged.get(source_key, '')).strip()
+        if value != '':
+            normalized_event[target_key] = value
+    return normalized_event
+
 def handle_session_message_sync_event(app_id, node_info, event):
+    event = normalize_session_transcript_event(app_id, node_info, event)
     if not isinstance(event, dict):
         return
     if not is_session_map_sync_enabled(node_info):
@@ -3102,7 +3255,28 @@ def handle_session_message_sync_event(app_id, node_info, event):
             f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}"
         )
         return
+    visible_delivery_owner = str(event.get('visible_delivery_owner', '')).strip()
+    visible_delivery_reason = str(event.get('visible_delivery_reason', '')).strip()
+    if visible_delivery_owner == 'plugin':
+        logging.info(
+            f"handle_session_message_sync_event skip plugin-owned visible delivery | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+            f"parent_session_key:{parent_session_key}, root_session_key:{root_session_key}, "
+            f"visible_delivery_reason:{visible_delivery_reason}"
+        )
+        return
+    suppression_reason = str(event.get('suppression_reason', '')).strip()
+    if suppression_reason == 'duplicate_parent_after_subagent':
+        logging.info(
+            f"handle_session_message_sync_event skip by plugin suppression hint | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+            f"suppression_reason:{suppression_reason}"
+        )
+        return
     message_id = str(event.get('message_id', '')).strip()
+    trigger_msg_id = str(event.get('trigger_msg_id', '')).strip()
+    message_seq = str(event.get('message_seq', '')).strip()
+    message_timestamp = str(event.get('message_timestamp', '')).strip()
     display_kind = 'yield_result' if role == 'assistant' and has_sessions_yield_result(message.get('content') if isinstance(message, dict) else message) else ''
     should_materialize_clawchat_group = not (
         source == 'control_ui_user' and
@@ -3113,7 +3287,9 @@ def handle_session_message_sync_event(app_id, node_info, event):
     logging.info(
         f"handle_session_message_sync_event | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
         f"source:{source}, session_key:{session_key}, parent_session_key:{parent_session_key}, "
-        f"root_session_key:{root_session_key}, role:{role}, text_len:{len(text.strip())}, "
+        f"root_session_key:{root_session_key}, role:{role}, message_id:{message_id}, "
+        f"trigger_msg_id:{trigger_msg_id}, "
+        f"message_seq:{message_seq}, message_timestamp:{message_timestamp}, text_len:{len(text.strip())}, "
         f"has_existing_mapping:{mapping is not None}, "
         f"materialize_clawchat_group:{should_materialize_clawchat_group}"
     )
@@ -3145,6 +3321,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         source,
         role,
         message_id,
+        trigger_msg_id,
         delivery_lineage.get('parent_session_key', ''),
         delivery_lineage.get('root_session_key', ''),
         observed_origin_facts.get('sync_variant', ''),
@@ -3283,6 +3460,13 @@ def handle_client_event(event, app_id, user_id, ctype):
         if ctype != 'COMMAND':
             logging.info(f"handle_client_event skip not command router_reply | ctype: {ctype}, event: {event}")
             return
+        suppression_reason = str(event.get('suppression_reason', '')).strip()
+        if suppression_reason == 'duplicate_parent_after_subagent':
+            logging.info(
+                f"handle_client_event skip router_reply by plugin suppression hint | "
+                f"app_id:{app_id}, user_id:{user_id}, suppression_reason:{suppression_reason}"
+            )
+            return
         node_list = get_nodes_by_user_id(app_id, user_id)
         for node in node_list:
             node_id = node['node_id']
@@ -3293,9 +3477,9 @@ def handle_client_event(event, app_id, user_id, ctype):
                 logging.info(f"convert_from_meta_message: meta_message{meta_message}, message: {message}")
                 router_reply_message(app_id, node, message)
             return
-    elif event['type'] == 'session_message_sync':
+    elif event['type'] in ['session_message_sync', 'session_transcript_observed']:
         if ctype != 'COMMAND':
-            logging.info(f"handle_client_event skip not command session_message_sync | ctype: {ctype}, event: {event}")
+            logging.info(f"handle_client_event skip not command transcript sync event | ctype: {ctype}, event: {event}")
             return
         node_list = get_nodes_by_user_id(app_id, user_id)
         for node in node_list:
@@ -3969,6 +4153,9 @@ def get_openclaw_session_mapping_index_key(app_id, node_id):
 
 def get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id):
     return f"lanying_connector:openclaw:session_map:by_group:{app_id}:{node_id}:{openclaw_user_id}:{group_id}"
+
+def get_openclaw_parent_reply_suppression_key(app_id, node_id, session_key):
+    return f"lanying_connector:openclaw:parent_reply_suppression:{app_id}:{node_id}:{normalize_session_key_text(session_key)}"
 
 def get_token_key(token):
     return f"lanying_connector:openclaw:token:{token}"

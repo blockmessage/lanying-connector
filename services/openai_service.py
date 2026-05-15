@@ -1032,10 +1032,20 @@ def is_openclaw_delivery_no_reentry_msg(msg):
     openclaw_type = str(openclaw_in.get('type', '')).strip()
     return openclaw_type in ['session_sync_delivery', 'im_reply_delivery']
 
+def is_openclaw_internal_control_msg(msg):
+    openclaw_in = get_message_openclaw_ext(msg)
+    openclaw_type = str(openclaw_in.get('type', '')).strip()
+    return openclaw_type in [
+        'session_sync_delivery',
+        'im_reply_delivery',
+        'session_message_sync',
+        'session_transcript_observed',
+    ]
+
 def build_openclaw_reply_ext(msg):
     openclaw_in = get_message_openclaw_ext(msg)
     openclaw_type = str(openclaw_in.get('type', '')).strip()
-    if openclaw_type not in ['session_message_sync', 'session_sync_delivery']:
+    if openclaw_type not in ['session_message_sync', 'session_transcript_observed', 'session_sync_delivery']:
         return {}
     session_key = str(openclaw_in.get('session', '')).strip()
     if session_key == '':
@@ -1050,12 +1060,23 @@ def build_openclaw_reply_ext(msg):
     if request_source != '':
         reply_openclaw['request_source'] = request_source
     request_role = str(openclaw_in.get('role', '')).strip().lower()
+    if request_role == '':
+        message = openclaw_in.get('message', {})
+        if isinstance(message, dict):
+            request_role = str(message.get('role', '')).strip().lower()
     if request_role != '':
         reply_openclaw['request_role'] = request_role
     request_message_id = str(openclaw_in.get('message_id', '')).strip()
     if request_message_id != '':
         reply_openclaw['request_message_id'] = request_message_id
-    request_msg_id = str(msg.get('msgId', '')).strip()
+    request_msg_id = str(openclaw_in.get('request_msg_id', '')).strip()
+    trigger_msg_id = str(openclaw_in.get('trigger_msg_id', '')).strip()
+    if trigger_msg_id != '':
+        reply_openclaw['trigger_msg_id'] = trigger_msg_id
+    if request_msg_id == '':
+        request_msg_id = trigger_msg_id
+    if request_msg_id == '':
+        request_msg_id = str(msg.get('msgId', '')).strip()
     if request_msg_id != '':
         reply_openclaw['request_msg_id'] = request_msg_id
     return {
@@ -1076,7 +1097,7 @@ def handle_chat_message(config, msg):
         logging.info(f"skip process for system message | msgId: {msg_id}")
         return ''
     try:
-        no_reentry = is_openclaw_delivery_no_reentry_msg(msg)
+        no_reentry = is_openclaw_internal_control_msg(msg)
         init_chatbot_config(config, msg)
         maybe_reply_message_read_ack(config, msg)
         maybe_transcription_audio_msg(config, msg)

@@ -10,6 +10,14 @@ from unittest import mock
 def _fake_requests_call(*args, **kwargs):
     raise RuntimeError("fake requests module: please mock requests.request/post in tests")
 
+def _safe_json_loads(raw, default=None):
+    if not isinstance(raw, str):
+        return default if default is not None else {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default if default is not None else {}
+
 
 def _load_lanying_openclaw():
     module_path = pathlib.Path(__file__).resolve().parents[1] / "lanying_openclaw.py"
@@ -35,7 +43,7 @@ def _load_lanying_openclaw():
             get_group_info=lambda *args, **kwargs: {"code": 200, "data": {}},
         ),
         "lanying_utils": types.SimpleNamespace(
-            safe_json_loads=lambda raw, default=None: default if default is not None else {},
+            safe_json_loads=_safe_json_loads,
         ),
         "lanying_vendor": types.SimpleNamespace(),
         "lanying_pgvector": types.SimpleNamespace(
@@ -82,12 +90,21 @@ class FakeRedis:
     def __init__(self):
         self.values = {}
         self.sets = {}
+        self.ttls = {}
 
     def set(self, key, value):
         self.values[key] = value
 
+    def get(self, key):
+        return self.values.get(key)
+
+    def setex(self, key, ttl, value):
+        self.values[key] = value
+        self.ttls[key] = ttl
+
     def delete(self, key):
         self.values.pop(key, None)
+        self.ttls.pop(key, None)
 
     def sadd(self, key, *values):
         bucket = self.sets.setdefault(key, set())
@@ -104,6 +121,9 @@ class FakeRedis:
 
 
 class RouterSessionIdentityTests(unittest.TestCase):
+    def tearDown(self):
+        pass
+
     def test_legacy_router_session_key_is_normalized_to_clawchat_router(self):
         m = lanying_openclaw
 
@@ -2691,6 +2711,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "control_ui_user",
             "user",
             "msg-1",
+            "",
             "agent:main:session-parent",
             "agent:main:session-root",
         )
@@ -2715,6 +2736,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(extra["ext"]["openclaw"]["source"], "control_ui_user")
         self.assertEqual(extra["ext"]["openclaw"]["role"], "user")
         self.assertEqual(extra["ext"]["openclaw"]["message_id"], "msg-1")
+        self.assertNotIn("trigger_msg_id", extra["ext"]["openclaw"])
         self.assertEqual(extra["ext"]["openclaw"]["parent_session"], "agent:main:session-parent")
         self.assertEqual(extra["ext"]["openclaw"]["root_session"], "agent:main:session-root")
         self.assertEqual(extra["ext"]["ai"]["ai_generate"], False)
@@ -2727,6 +2749,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "control_ui_user",
             "user",
             "msg-sync-variant-1",
+            "",
             "agent:main:clawchat-router:group:group-9",
             "agent:main:clawchat-router:group:group-9",
             "im_subagent_bootstrap",
@@ -2741,6 +2764,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "control_ui_reply",
             "assistant",
             "msg-yield-1",
+            "",
             "agent:main:clawchat-router:group:group-9",
             "agent:main:clawchat-router:group:group-9",
             "",
@@ -2900,6 +2924,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "assistant",
             "msg-2",
             "",
+            "",
             "agent:main:clawchat:direct:sender-user",
         )
         self.assertEqual(delivery_ext["openclaw"]["type"], "session_sync_delivery")
@@ -2920,6 +2945,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "im_inbound_reply",
             "assistant",
             "msg-im-2",
+            "",
             "agent:main:subagent:test-parent",
             "agent:main:clawchat:group:group-9",
         )
@@ -3491,6 +3517,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["request_source"], "control_ui_user")
         self.assertEqual(ext["openclaw"]["request_role"], "user")
         self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-1")
+        self.assertNotIn("trigger_msg_id", ext["openclaw"])
         self.assertEqual(ext["openclaw"]["request_msg_id"], "im-req-1")
 
     def test_router_root_direct_assistant_sync_prefers_router_reply(self):
@@ -3787,6 +3814,359 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 }
             },
         )
+
+    def test_session_transcript_observed_materializes_child_mapping_with_inherited_origin_facts(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "api_version": "3"}
+        parent_mapping = {
+            "session_key": "agent:main:clawchat-router:group:group-42",
+            "group_id": "group-42",
+            "origin_user_id": "real-user",
+            "chatbot_user_id": "chatbot-user",
+        }
+        child_mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "temporary-session-group",
+            "parent_session_key": "agent:main:clawchat-router:group:group-42",
+            "root_session_key": "agent:main:clawchat-router:group:group-42",
+            "effective_target_session_key": "agent:main:subagent:test-child",
+        }
+
+        def _mapping_lookup(app_id, node_id, session_key):
+            if session_key == "agent:main:clawchat-router:group:group-42":
+                return parent_mapping
+            return None
+
+        with mock.patch.object(m, "get_session_mapping_by_session", side_effect=_mapping_lookup), \
+             mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": child_mapping}) as mocked_ensure_mapping, \
+             mock.patch.object(m, "resolve_session_lineage", return_value={
+                 "session_key": "agent:main:subagent:test-child",
+                 "parent_session_key": "agent:main:clawchat-router:group:group-42",
+                 "root_session_key": "agent:main:clawchat-router:group:group-42",
+             }), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "group",
+                 "mapping": child_mapping,
+                 "session_key": "agent:main:subagent:test-child",
+             }), \
+             mock.patch.object(m, "forward_session_sync_to_group"):
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_user",
+                    "session": "agent:main:subagent:test-child",
+                    "parent_session": "agent:main:clawchat-router:group:group-42",
+                    "root_session": "agent:main:clawchat-router:group:group-42",
+                    "observed_message_type": "control_ui_user",
+                    "observed_message_type_source": "fallback",
+                    "message": {
+                        "role": "user",
+                        "content": "[Subagent Context] inherited question",
+                    },
+                },
+            )
+
+        mocked_ensure_mapping.assert_called_once_with(
+            "app-id",
+            node_info,
+            "agent:main:subagent:test-child",
+            "agent:main:clawchat-router:group:group-42",
+            "agent:main:clawchat-router:group:group-42",
+            {
+                "observed_sender_user_id": "real-user",
+                "observed_from_user_id": "real-user",
+                "observed_to_id": "chatbot-user",
+                "observed_chat_type": "groupchat",
+                "observed_channel": "clawchat",
+                "observed_message_type": "im_inbound_user",
+                "observed_message_type_source": "inherited_mapping",
+                "sync_variant": "im_subagent_bootstrap",
+                "observed_message_text": "[Subagent Context] inherited question",
+            },
+            True,
+        )
+
+    def test_handle_client_event_accepts_session_transcript_observed(self):
+        m = lanying_openclaw
+        event = {
+            "type": "session_transcript_observed",
+            "session": "agent:main:clawchat:direct:user-1",
+            "source": "control_ui_user",
+            "message": {
+                "role": "user",
+                "content": "hello",
+            },
+        }
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "api_version": "3"}
+
+        with mock.patch.object(m, "get_nodes_by_user_id", return_value=[node_info]), \
+             mock.patch.object(m, "handle_session_message_sync_event") as mocked_handler:
+            m.handle_client_event(event, "app-id", "openclaw-user", "COMMAND")
+
+        mocked_handler.assert_called_once_with("app-id", node_info, event)
+
+    def test_handle_session_message_sync_event_skips_plugin_suppression_hint(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        with mock.patch.object(m, "resolve_effective_session_sync_target") as mocked_target, \
+             mock.patch.object(m, "forward_session_sync_router_direct_reply") as mocked_router_reply, \
+             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct, \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat-router:group:group-42",
+                    "suppression_reason": "duplicate_parent_after_subagent",
+                    "message": {
+                        "role": "assistant",
+                        "content": "same parent answer",
+                    },
+                },
+            )
+
+        mocked_target.assert_not_called()
+        mocked_router_reply.assert_not_called()
+        mocked_direct.assert_not_called()
+        mocked_group.assert_not_called()
+
+    def test_handle_session_message_sync_event_skips_plugin_owned_visible_delivery(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        with mock.patch.object(m, "get_session_mapping_by_session") as mocked_mapping, \
+             mock.patch.object(m, "ensure_session_mapping") as mocked_ensure, \
+             mock.patch.object(m, "resolve_effective_session_sync_target") as mocked_target, \
+             mock.patch.object(m, "forward_session_sync_router_direct_reply") as mocked_router_reply, \
+             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct, \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat-router:group:group-42",
+                    "message_id": "root-reply-1",
+                    "visible_delivery_owner": "plugin",
+                    "visible_delivery_reason": "normal_channel_reply",
+                    "message": {
+                        "role": "assistant",
+                        "content": "root reply already sent by plugin",
+                    },
+                },
+            )
+
+        mocked_mapping.assert_not_called()
+        mocked_ensure.assert_not_called()
+        mocked_target.assert_not_called()
+        mocked_router_reply.assert_not_called()
+        mocked_direct.assert_not_called()
+        mocked_group.assert_not_called()
+
+    def test_handle_session_message_sync_event_keeps_legacy_root_reply_without_owner_hint(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat-router:direct:sender-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "openclaw-user",
+            "effective_target_session_key": "agent:main:clawchat-router:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "direct",
+                 "target_user_id": "sender-user",
+                 "origin_kind": "direct_user",
+                 "origin_user_id": "sender-user",
+                 "chatbot_user_id": "openclaw-user",
+             }), \
+             mock.patch.object(m, "forward_session_sync_router_direct_reply", return_value=0), \
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=301) as mocked_direct:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat-router:direct:sender-user",
+                    "message_id": "legacy-root-reply-1",
+                    "message": {
+                        "role": "assistant",
+                        "content": "legacy root reply keeps old connector behavior",
+                    },
+                },
+            )
+
+        mocked_direct.assert_called_once()
+
+    def test_handle_session_message_sync_event_keeps_subagent_assistant_reply_sync(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "group-42",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "parent_session_key": "agent:main:clawchat-router:group:group-42",
+            "root_session_key": "agent:main:clawchat-router:group:group-42",
+            "effective_target_session_key": "agent:main:subagent:test-child",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={"kind": "group", "mapping": mapping}), \
+             mock.patch.object(m, "should_forward_group_sync_via_router_reply", return_value=None), \
+             mock.patch.object(m, "forward_session_sync_to_group", return_value=301) as mocked_group:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:subagent:test-child",
+                    "parent_session": "agent:main:clawchat-router:group:group-42",
+                    "root_session": "agent:main:clawchat-router:group:group-42",
+                    "message_id": "child-reply-1",
+                    "message": {
+                        "role": "assistant",
+                        "content": "child result should still sync",
+                    },
+                },
+            )
+
+        mocked_group.assert_called_once()
+
+    def test_handle_client_event_skips_router_reply_plugin_suppression_hint(self):
+        m = lanying_openclaw
+        event = {
+            "type": "router_reply",
+            "suppression_reason": "duplicate_parent_after_subagent",
+            "message": {
+                "id": "router-reply-1",
+                "from": "openclaw-user",
+                "to": "sender-user",
+                "content": "suppressed reply",
+                "type": "text",
+                "toType": "roster",
+            },
+        }
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        with mock.patch.object(m, "get_nodes_by_user_id", return_value=[node_info]), \
+             mock.patch.object(m, "convert_from_meta_message") as mocked_convert, \
+             mock.patch.object(m, "router_reply_message") as mocked_router_reply:
+            m.handle_client_event(event, "app-id", "openclaw-user", "COMMAND")
+
+        mocked_convert.assert_not_called()
+        mocked_router_reply.assert_not_called()
+
+    def test_build_router_reply_delivery_ext_reads_nested_role_from_session_transcript_observed(self):
+        m = lanying_openclaw
+        ext = m.build_router_reply_delivery_ext({
+            "msgId": "im-req-2",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "session_transcript_observed",
+                    "session": "agent:main:clawchat-router:direct:sender-user",
+                    "source": "control_ui_user",
+                    "message_id": "oc-req-2",
+                    "trigger_msg_id": "trigger-im-2",
+                    "message": {
+                        "role": "user",
+                        "content": "hello",
+                    },
+                }
+            }),
+        })
+
+        self.assertEqual(ext["openclaw"]["type"], "session_sync_delivery")
+        self.assertEqual(ext["openclaw"]["session"], "agent:main:clawchat-router:direct:sender-user")
+        self.assertEqual(ext["openclaw"]["request_source"], "control_ui_user")
+        self.assertEqual(ext["openclaw"]["request_role"], "user")
+        self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-2")
+        self.assertEqual(ext["openclaw"]["trigger_msg_id"], "trigger-im-2")
+        self.assertEqual(ext["openclaw"]["request_msg_id"], "im-req-2")
+
+    def test_build_router_reply_delivery_ext_prefers_router_request_sid_for_request_msg_id(self):
+        m = lanying_openclaw
+        ext = m.build_router_reply_delivery_ext({
+            "msgId": "router-reply-visible-1",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "session_sync_delivery",
+                    "session": "agent:main:clawchat-router:group:group-42",
+                    "source": "control_ui_reply",
+                    "role": "assistant",
+                    "message_id": "router-reply-oc-1",
+                    "router_request_sid": "im-request-42",
+                }
+            }),
+        })
+
+        self.assertEqual(ext["openclaw"]["request_message_id"], "router-reply-oc-1")
+        self.assertEqual(ext["openclaw"]["request_msg_id"], "im-request-42")
+
+    def test_control_ui_reply_delivery_ext_includes_trigger_msg_id_when_known(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "root_session_key": "agent:main:clawchat:direct:sender-user",
+            "effective_target_session_key": "agent:main:clawchat:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "direct",
+                 "target_user_id": "sender-user",
+                 "origin_kind": "direct_user",
+                 "origin_user_id": "sender-user",
+             }), \
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=1) as mocked_direct:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:subagent:test-child",
+                    "trigger_msg_id": "trigger-im-3",
+                    "message": {
+                        "role": "assistant",
+                        "content": "child reply",
+                    },
+                },
+        )
+
+        mocked_direct.assert_called_once()
+        delivery_ext = mocked_direct.call_args.args[8]
+        self.assertEqual(delivery_ext["openclaw"]["trigger_msg_id"], "trigger-im-3")
+        self.assertEqual(delivery_ext["openclaw"]["request_msg_id"], "trigger-im-3")
+
+    def test_build_router_reply_delivery_ext_preserves_request_msg_id_from_inner_ext(self):
+        m = lanying_openclaw
+        ext = m.build_router_reply_delivery_ext({
+            "msgId": "router-visible-1",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "session_sync_delivery",
+                    "session": "agent:main:clawchat-router:group:group-42",
+                    "source": "control_ui_reply",
+                    "role": "assistant",
+                    "message_id": "router-reply-oc-2",
+                    "request_msg_id": "original-im-25",
+                }
+            }),
+        })
+
+        self.assertEqual(ext["openclaw"]["request_message_id"], "router-reply-oc-2")
+        self.assertEqual(ext["openclaw"]["request_msg_id"], "original-im-25")
 
     def test_router_group_root_assistant_sync_prefers_router_reply(self):
         m = lanying_openclaw
