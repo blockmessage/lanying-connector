@@ -3955,6 +3955,40 @@ class RouterSessionIdentityTests(unittest.TestCase):
         mocked_direct.assert_not_called()
         mocked_group.assert_not_called()
 
+    def test_handle_session_message_sync_event_skips_internal_runtime_suppression_marker(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        with mock.patch.object(m, "get_session_mapping_by_session") as mocked_mapping, \
+             mock.patch.object(m, "ensure_session_mapping") as mocked_ensure, \
+             mock.patch.object(m, "resolve_effective_session_sync_target") as mocked_target, \
+             mock.patch.object(m, "forward_session_sync_router_direct_reply") as mocked_router_reply, \
+             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct, \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:main",
+                    "message_id": "internal-reply-1",
+                    "suppression_reason": "internal_runtime_context_reply",
+                    "observed_message_type": "internal_runtime_context_reply",
+                    "observed_message_type_source": "plugin_suppression",
+                    "message": {
+                        "role": "assistant",
+                        "content": "reply already delivered through normal outbound",
+                    },
+                },
+            )
+
+        mocked_mapping.assert_not_called()
+        mocked_ensure.assert_not_called()
+        mocked_target.assert_not_called()
+        mocked_router_reply.assert_not_called()
+        mocked_direct.assert_not_called()
+        mocked_group.assert_not_called()
+
     def test_handle_session_message_sync_event_skips_plugin_owned_visible_delivery(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}

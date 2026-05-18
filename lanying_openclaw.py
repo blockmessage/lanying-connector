@@ -3308,9 +3308,14 @@ def handle_session_message_sync_event(app_id, node_info, event):
         )
         return
     suppression_reason = str(event.get('suppression_reason', '')).strip()
-    if suppression_reason == 'duplicate_parent_after_subagent':
+    connector_drop_suppression_reasons = {
+        'duplicate_parent_after_subagent',
+        'internal_runtime_context',
+        'internal_runtime_context_reply',
+    }
+    if suppression_reason in connector_drop_suppression_reasons:
         logging.info(
-            f"handle_session_message_sync_event skip by plugin suppression hint | "
+            f"handle_session_message_sync_event skip by connector suppression marker | "
             f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
             f"suppression_reason:{suppression_reason}"
         )
