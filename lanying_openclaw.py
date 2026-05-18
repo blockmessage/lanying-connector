@@ -3316,6 +3316,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
         'duplicate_parent_after_subagent',
         'internal_runtime_context',
         'internal_runtime_context_reply',
+        'prompt_context_envelope',
     }
     if suppression_reason in connector_drop_suppression_reasons:
         logging.info(
