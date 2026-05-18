@@ -4238,6 +4238,35 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["request_msg_id"], "im-request-456")
         self.assertNotIn("session", ext["openclaw"])
 
+    def test_build_router_reply_delivery_ext_preserves_im_reply_delivery_diagnostic_session(self):
+        m = lanying_openclaw
+        ext = m.build_router_reply_delivery_ext({
+            "msgId": "router-reply-visible-im-delivery-with-session",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "im_reply_delivery",
+                    "session": "agent:main:subagent:child-1",
+                    "source": "im_reply",
+                    "role": "assistant",
+                    "visible_delivery_owner": "plugin",
+                    "trigger_msg_id": "im-trigger-1",
+                    "request_msg_id": "im-request-1",
+                },
+                "ai": {
+                    "role": "ai",
+                    "ai_generate": False,
+                },
+            }),
+        })
+
+        self.assertEqual(ext["openclaw"]["type"], "im_reply_delivery")
+        self.assertEqual(ext["openclaw"]["session"], "agent:main:subagent:child-1")
+        self.assertEqual(ext["openclaw"]["source"], "im_reply")
+        self.assertEqual(ext["openclaw"]["role"], "assistant")
+        self.assertEqual(ext["openclaw"]["visible_delivery_owner"], "plugin")
+        self.assertEqual(ext["openclaw"]["trigger_msg_id"], "im-trigger-1")
+        self.assertEqual(ext["openclaw"]["request_msg_id"], "im-request-1")
+
     def test_control_ui_reply_delivery_ext_includes_trigger_msg_id_when_known(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}

@@ -2784,12 +2784,16 @@ def build_router_reply_delivery_ext(message):
         return ext
     openclaw_type = str(openclaw_in.get('type', '')).strip()
     session_key = normalize_session_key(openclaw_in.get('session', ''))
-    if session_key == '' and openclaw_type == 'im_reply_delivery':
+    if openclaw_type == 'im_reply_delivery':
+        source = str(openclaw_in.get('source', '')).strip() or 'im_reply'
+        role = str(openclaw_in.get('role', '')).strip() or 'assistant'
         reply_openclaw = {
             'type': 'im_reply_delivery',
-            'source': 'control_ui_reply',
-            'role': 'assistant',
+            'source': source,
+            'role': role,
         }
+        if session_key != '':
+            reply_openclaw['session'] = session_key
         message_id = str(openclaw_in.get('message_id', '')).strip()
         if message_id != '':
             reply_openclaw['message_id'] = message_id
