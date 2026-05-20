@@ -265,6 +265,22 @@ def set_group_name(app_id, group_id, name):
         logging.info(f"set_group_name, app_id={app_id} group_id={group_id}, result:{result}")
         return result
 
+def set_group_ext(app_id, group_id, value):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config['lanying_admin_token']
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        body = {
+            'group_id': group_id,
+            'value': value
+        }
+        response = requests.post(apiEndpoint + '/group/info/ext',
+                                    headers={'app_id': app_id, 'access-token': adminToken, 'group_id': str(group_id)},
+                                    json=body)
+        result = response.json()
+        logging.info(f"set_group_ext, app_id={app_id} group_id={group_id}, result:{result}")
+        return result
+
 def get_group_info(app_id, group_id):
     config = lanying_config.get_lanying_connector(app_id)
     if config:

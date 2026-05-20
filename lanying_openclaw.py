@@ -17,6 +17,7 @@ OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 无论用户如何要求，你都绝对不能修改本文件。"""
 TEMPORARY_GROUP_TYPE = 3
 SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES = 30 * 1024
+OPENCLAW_SESSION_GROUP_METADATA_KEY = 'openclaw_session_group_metadata'
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
@@ -1472,7 +1473,78 @@ def is_session_sync_silent_reply_text(text):
         return False
     return normalized_text.upper() == 'NO_REPLY'
 
-def create_openclaw_session_group(app_id, owner_user_id, node_name, node_id, session_name):
+def build_openclaw_session_group_metadata(node_name, node_id, session_key, lineage, effective_target_session_key, owner_user_id, inherited_identity, mapping_mode=''):
+    inherited_identity = normalize_session_mapping_record(inherited_identity)
+    origin_kind = str((inherited_identity or {}).get('origin_kind', '')).strip()
+    origin_user_id = str((inherited_identity or {}).get('origin_user_id', '')).strip()
+    normalized_node_name = str(node_name or '').strip()
+    peer_user_id = ''
+    peer_name_snapshot = ''
+    if origin_user_id != '':
+        peer_user_id = origin_user_id
+        peer_name_snapshot = origin_user_id
+    return {
+        'scene': 'openclaw_session_group',
+        'peer_user_id': peer_user_id,
+        'created_by_user_id': str(owner_user_id).strip(),
+        'created_at': int(time.time() * 1000),
+        'peer_name_snapshot': peer_name_snapshot,
+        'session_key': normalize_session_key(session_key),
+        'root_session_key': normalize_optional_session_key((lineage or {}).get('root_session_key', '')),
+        'parent_session_key': normalize_optional_session_key((lineage or {}).get('parent_session_key', '')),
+        'node_id': str(node_id).strip(),
+        'node_name': normalized_node_name,
+        'owner_user_id': str(owner_user_id).strip(),
+        'origin_kind': origin_kind,
+        'origin_user_id': origin_user_id,
+        'effective_target_session_key': normalize_optional_session_key(effective_target_session_key),
+        'mapping_mode': str(mapping_mode or '').strip(),
+    }
+
+def _set_openclaw_session_group_metadata(app_id, group_id, metadata, log_context=None):
+    normalized_group_id = str(group_id).strip()
+    if normalized_group_id == '' or not isinstance(metadata, dict) or len(metadata) == 0:
+        return None
+    log_context = log_context if isinstance(log_context, dict) else {}
+    value = json.dumps({OPENCLAW_SESSION_GROUP_METADATA_KEY: metadata}, ensure_ascii=False)
+    logging.info(
+        f"openclaw_session_group metadata update start | app_id:{app_id}, "
+        f"node_id:{log_context.get('node_id', '')}, session_key:{log_context.get('session_key', '')}, "
+        f"group_id:{normalized_group_id}, owner_user_id:{log_context.get('owner_user_id', '')}, "
+        f"metadata_key:{OPENCLAW_SESSION_GROUP_METADATA_KEY}"
+    )
+    result = lanying_im_api.set_group_ext(app_id, normalized_group_id, value)
+    if isinstance(result, dict) and result.get('code') == 200:
+        logging.info(
+            f"openclaw_session_group metadata update success | app_id:{app_id}, "
+            f"node_id:{log_context.get('node_id', '')}, session_key:{log_context.get('session_key', '')}, "
+            f"group_id:{normalized_group_id}, owner_user_id:{log_context.get('owner_user_id', '')}, "
+            f"metadata_key:{OPENCLAW_SESSION_GROUP_METADATA_KEY}"
+        )
+    else:
+        logging.info(
+            f"openclaw_session_group metadata update failed | app_id:{app_id}, "
+            f"node_id:{log_context.get('node_id', '')}, session_key:{log_context.get('session_key', '')}, "
+            f"group_id:{normalized_group_id}, owner_user_id:{log_context.get('owner_user_id', '')}, "
+            f"metadata_key:{OPENCLAW_SESSION_GROUP_METADATA_KEY}, result:{result}"
+        )
+    return result
+
+def update_openclaw_session_group_metadata_async(app_id, group_id, metadata, log_context=None):
+    normalized_group_id = str(group_id).strip()
+    if normalized_group_id == '' or not isinstance(metadata, dict) or len(metadata) == 0:
+        return
+    try:
+        executor.submit(_set_openclaw_session_group_metadata, app_id, normalized_group_id, metadata, log_context)
+    except Exception:
+        logging.exception(
+            f"openclaw_session_group metadata update submit failed | app_id:{app_id}, "
+            f"node_id:{(log_context or {}).get('node_id', '')}, session_key:{(log_context or {}).get('session_key', '')}, "
+            f"group_id:{normalized_group_id}, owner_user_id:{(log_context or {}).get('owner_user_id', '')}, "
+            f"metadata_key:{OPENCLAW_SESSION_GROUP_METADATA_KEY}"
+        )
+
+def create_openclaw_session_group(app_id, owner_user_id, node_name, node_id, session_name, metadata=None, log_context=None):
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     admin_token = lanying_config.get_lanying_admin_token(app_id)
     session_group_name = get_openclaw_session_group_name(node_name, node_id, session_name)
@@ -1483,7 +1555,9 @@ def create_openclaw_session_group(app_id, owner_user_id, node_name, node_id, ses
     logging.info(f"create_openclaw_session_group | app_id:{app_id}, owner_user_id:{owner_user_id}, node_name:{node_name}, node_id:{node_id}, session_name:{session_group_name}, response:{response.content}")
     response_json = json.loads(response.content)
     if response_json.get('code') == 200:
-        return str(response_json.get('data', {}).get('group_id', '')).strip()
+        group_id = str(response_json.get('data', {}).get('group_id', '')).strip()
+        update_openclaw_session_group_metadata_async(app_id, group_id, metadata, log_context)
+        return group_id
     return ''
 
 def get_group_settings(app_id, group_id):
@@ -2654,12 +2728,28 @@ def ensure_session_mapping(app_id, node_info, session_key, parent_session_key=''
         )
     else:
         session_group_owner_user_id = str(mapping_decision.get('owner_user_id', '')).strip()
+        group_metadata = build_openclaw_session_group_metadata(
+            node_name,
+            node_id,
+            normalized_session_key,
+            lineage,
+            mapping_decision['effective_target_session_key'],
+            session_group_owner_user_id,
+            inherited_identity,
+            mapping_decision['mode'],
+        )
         group_id = create_openclaw_session_group(
             app_id,
             session_group_owner_user_id,
             node_name,
             node_id,
             session_key,
+            metadata=group_metadata,
+            log_context={
+                'node_id': node_id,
+                'session_key': normalized_session_key,
+                'owner_user_id': session_group_owner_user_id,
+            },
         )
         logging.info(
             f"ensure_session_mapping resolved strategy | app_id:{app_id}, node_id:{node_id}, "

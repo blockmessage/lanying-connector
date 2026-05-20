@@ -68,6 +68,20 @@ class LanyingImApiTests(unittest.TestCase):
             json={"group_id": "9", "new_owner": 200},
         )
 
+    def test_set_group_ext_uses_group_header_and_value_body(self):
+        fake_response = mock.Mock()
+        fake_response.json.return_value = {"code": 200}
+
+        with mock.patch.object(lanying_im_api.requests, "post", return_value=fake_response) as mocked_post:
+            result = lanying_im_api.set_group_ext("app-id", "9", '{"k":"v"}')
+
+        self.assertEqual(result["code"], 200)
+        mocked_post.assert_called_once_with(
+            "https://api.example.com/group/info/ext",
+            headers={"app_id": "app-id", "access-token": "admin-token", "group_id": "9"},
+            json={"group_id": "9", "value": '{"k":"v"}'},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

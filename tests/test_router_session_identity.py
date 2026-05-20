@@ -41,6 +41,7 @@ def _load_lanying_openclaw():
         "lanying_im_api": types.SimpleNamespace(
             send_message_sync=lambda *args, **kwargs: 1,
             get_group_info=lambda *args, **kwargs: {"code": 200, "data": {}},
+            set_group_ext=lambda *args, **kwargs: {"code": 200},
         ),
         "lanying_utils": types.SimpleNamespace(
             safe_json_loads=_safe_json_loads,
@@ -123,6 +124,86 @@ class FakeRedis:
 class RouterSessionIdentityTests(unittest.TestCase):
     def tearDown(self):
         pass
+
+    def test_create_openclaw_session_group_updates_group_ext_async_after_success(self):
+        m = lanying_openclaw
+        fake_response = mock.Mock()
+        fake_response.content = json.dumps({"code": 200, "data": {"group_id": "group-9"}}).encode("utf-8")
+
+        with mock.patch.object(m.requests, "post", return_value=fake_response) as mocked_post, \
+             mock.patch.object(m.executor, "submit", side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)) as mocked_submit, \
+             mock.patch.object(m.lanying_im_api, "set_group_ext", return_value={"code": 200}) as mocked_set_group_ext:
+            group_id = m.create_openclaw_session_group(
+                "app-id",
+                "owner-user",
+                "OpenClaw-15",
+                "15",
+                "agent:main:subagent:test-child",
+                metadata={
+                    "scene": "openclaw_session_group",
+                    "session_key": "agent:main:subagent:test-child",
+                },
+                log_context={
+                    "node_id": "15",
+                    "session_key": "agent:main:subagent:test-child",
+                    "owner_user_id": "owner-user",
+                },
+            )
+
+        self.assertEqual(group_id, "group-9")
+        mocked_post.assert_called_once()
+        mocked_submit.assert_called_once()
+        mocked_set_group_ext.assert_called_once()
+        ext_value = mocked_set_group_ext.call_args.args[2]
+        self.assertEqual(
+            json.loads(ext_value),
+            {
+                m.OPENCLAW_SESSION_GROUP_METADATA_KEY: {
+                    "scene": "openclaw_session_group",
+                    "session_key": "agent:main:subagent:test-child",
+                }
+            },
+        )
+
+    def test_create_openclaw_session_group_does_not_call_set_group_ext_when_create_fails(self):
+        m = lanying_openclaw
+        fake_response = mock.Mock()
+        fake_response.content = json.dumps({"code": 500, "message": "failed"}).encode("utf-8")
+
+        with mock.patch.object(m.requests, "post", return_value=fake_response), \
+             mock.patch.object(m.executor, "submit") as mocked_submit, \
+             mock.patch.object(m.lanying_im_api, "set_group_ext") as mocked_set_group_ext:
+            group_id = m.create_openclaw_session_group(
+                "app-id",
+                "owner-user",
+                "OpenClaw-15",
+                "15",
+                "agent:main:subagent:test-child",
+                metadata={"scene": "openclaw_session_group"},
+            )
+
+        self.assertEqual(group_id, "")
+        mocked_submit.assert_not_called()
+        mocked_set_group_ext.assert_not_called()
+
+    def test_create_openclaw_session_group_metadata_failure_does_not_block_group_creation(self):
+        m = lanying_openclaw
+        fake_response = mock.Mock()
+        fake_response.content = json.dumps({"code": 200, "data": {"group_id": "group-9"}}).encode("utf-8")
+
+        with mock.patch.object(m.requests, "post", return_value=fake_response), \
+             mock.patch.object(m.executor, "submit", side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)), \
+             mock.patch.object(m.lanying_im_api, "set_group_ext", return_value={"code": 500, "message": "failed"}):
+            group_id = m.create_openclaw_session_group(
+                "app-id",
+                "owner-user",
+                "OpenClaw-15",
+                "15",
+                "agent:main:subagent:test-child",
+                metadata={"scene": "openclaw_session_group"},
+            )
+
+        self.assertEqual(group_id, "group-9")
 
     def test_legacy_router_session_key_is_normalized_to_clawchat_router(self):
         m = lanying_openclaw
@@ -3323,6 +3404,72 @@ class RouterSessionIdentityTests(unittest.TestCase):
             [call.args[1] for call in mocked_join.call_args_list],
             ["sender-user", "chatbot-user"],
         )
+
+    def test_ensure_session_mapping_passes_openclaw_session_group_metadata(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user", "name": "OpenClaw-15", "session_map_sync": "on"}
+
+        with mock.patch.object(m, "ensure_openclaw_app_manager_user", return_value={
+            "result": "ok",
+            "data": {"user_id": "management-user"},
+        }), \
+             mock.patch.object(m, "resolve_session_lineage", return_value={
+                 "session_key": "agent:main:subagent:test-child",
+                 "parent_session_key": "agent:main:clawchat-router:group:group-1",
+                 "root_session_key": "agent:main:clawchat-router:group:group-1",
+             }), \
+             mock.patch.object(m, "is_merge_sub_sessions_enabled", return_value=False), \
+             mock.patch.object(m, "prewarm_ancestor_session_mappings"), \
+             mock.patch.object(m, "resolve_inherited_origin_identity", return_value={
+                 "origin_kind": "im_user",
+                 "origin_user_id": "sender-user",
+                 "chatbot_user_id": "chatbot-user",
+                 "source": "explicit",
+             }), \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=None), \
+             mock.patch.object(m, "create_openclaw_session_group", return_value="group-9") as mocked_create_group, \
+             mock.patch.object(m, "ensure_user_group_admin_sync", return_value=True), \
+             mock.patch.object(m, "ensure_user_group_admin"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True), \
+             mock.patch.object(m, "set_session_mapping", side_effect=lambda app_id, node_id, mapping: {
+                 "result": "ok",
+                 "data": dict(mapping, updated_at=1),
+             }), \
+             mock.patch.object(m, "sync_session_mapping_to_node"):
+            result = m.ensure_session_mapping(
+                "app-id",
+                node_info,
+                "agent:main:subagent:test-child",
+                parent_session_key="agent:main:clawchat-router:group:group-1",
+                root_session_key="agent:main:clawchat-router:group:group-1",
+                observed_origin={
+                    "observed_sender_user_id": "sender-user",
+                    "observed_from_user_id": "sender-user",
+                    "observed_to_id": "group-1",
+                    "observed_chat_type": "group",
+                    "observed_channel": "clawchat-router",
+                    "observed_message_type": "im_inbound_user",
+                    "observed_message_text": "[Subagent Task]: hi",
+                },
+            )
+
+        self.assertEqual(result["result"], "ok")
+        metadata = mocked_create_group.call_args.kwargs["metadata"]
+        self.assertEqual(metadata["scene"], "openclaw_session_group")
+        self.assertEqual(metadata["peer_user_id"], "sender-user")
+        self.assertEqual(metadata["created_by_user_id"], "chatbot-user")
+        self.assertEqual(metadata["peer_name_snapshot"], "sender-user")
+        self.assertEqual(metadata["session_key"], "agent:main:subagent:test-child")
+        self.assertEqual(metadata["root_session_key"], "agent:main:clawchat-router:group:group-1")
+        self.assertEqual(metadata["parent_session_key"], "agent:main:clawchat-router:group:group-1")
+        self.assertEqual(metadata["node_id"], "15")
+        self.assertEqual(metadata["node_name"], "OpenClaw-15")
+        self.assertEqual(metadata["owner_user_id"], "chatbot-user")
+        self.assertEqual(metadata["origin_kind"], "im_user")
+        self.assertEqual(metadata["origin_user_id"], "sender-user")
+        self.assertEqual(metadata["effective_target_session_key"], "agent:main:subagent:test-child")
+        self.assertEqual(metadata["mapping_mode"], "create_temp_group")
+        self.assertEqual(mocked_create_group.call_args.kwargs["log_context"]["session_key"], "agent:main:subagent:test-child")
 
     def test_ensure_session_mapping_promotes_management_user_as_group_admin(self):
         m = lanying_openclaw
