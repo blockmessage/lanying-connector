@@ -3736,6 +3736,24 @@ def get_model_list(app_id):
         })
     return models
 
+def build_config_batch_entries_from_patch_config(patch_config, path_prefix=''):
+    if not isinstance(patch_config, dict):
+        return []
+    batch_entries = []
+    for key, value in patch_config.items():
+        key_str = str(key).strip()
+        if key_str == '':
+            continue
+        next_path = f"{path_prefix}.{key_str}" if path_prefix else key_str
+        if isinstance(value, dict):
+            batch_entries.extend(build_config_batch_entries_from_patch_config(value, next_path))
+            continue
+        batch_entries.append({
+            'path': next_path,
+            'value': value,
+        })
+    return batch_entries
+
 def update_node_config(app_id, node_id, patch_config):
     node_info = get_node(app_id, node_id)
     if node_info is None:
@@ -3746,6 +3764,7 @@ def update_node_config(app_id, node_id, patch_config):
     user_id = node_info['user_id']
     content = ''
     admin_token = lanying_config.get_lanying_admin_token(app_id)
+    batch_entries = build_config_batch_entries_from_patch_config(patch_config)
     config = {
         'lanying_admin_token': admin_token
     }
@@ -3753,9 +3772,13 @@ def update_node_config(app_id, node_id, patch_config):
     content_type = 6
     extra = {
         'ext': {
-            'openclaw': {
+                'openclaw': {
                     'type': 'config_patch',
-                    'raw': json.dumps(patch_config)
+                    'formatVersion': 2,
+                    'restart': True,
+                    'raw': json.dumps(patch_config),
+                    'batchEntries': batch_entries,
+                    'batch_entries': batch_entries
                 },
         },
         'skip_antispam_prompt': True

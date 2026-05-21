@@ -4603,6 +4603,120 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(result["message"], "router chatbot user not ready")
         mocked_create_group.assert_not_called()
 
+class ConfigBatchSyncTests(unittest.TestCase):
+    def test_build_config_batch_entries_from_patch_config_flattens_nested_scalars_and_arrays(self):
+        m = lanying_openclaw
+        patch_config = {
+            "models": {
+                "providers": {
+                    "lanying": {
+                        "baseUrl": "https://connector.lanyingim.com/v1",
+                        "apiKey": "token-1",
+                        "models": [
+                            {
+                                "id": "openai/gpt-5-mini",
+                                "name": "openai/gpt-5-mini",
+                            }
+                        ],
+                    }
+                }
+            },
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": "lanying/openai/gpt-5-mini",
+                        "fallbacks": ["lanying/volcengine/DeepSeek-R1"],
+                    }
+                }
+            }
+        }
+
+        batch_entries = m.build_config_batch_entries_from_patch_config(patch_config)
+
+        self.assertEqual(batch_entries, [
+            {
+                "path": "models.providers.lanying.baseUrl",
+                "value": "https://connector.lanyingim.com/v1",
+            },
+            {
+                "path": "models.providers.lanying.apiKey",
+                "value": "token-1",
+            },
+            {
+                "path": "models.providers.lanying.models",
+                "value": [
+                    {
+                        "id": "openai/gpt-5-mini",
+                        "name": "openai/gpt-5-mini",
+                    }
+                ],
+            },
+            {
+                "path": "agents.defaults.model.primary",
+                "value": "lanying/openai/gpt-5-mini",
+            },
+            {
+                "path": "agents.defaults.model.fallbacks",
+                "value": ["lanying/volcengine/DeepSeek-R1"],
+            },
+        ])
+
+    def test_build_config_batch_entries_from_patch_config_keeps_null_values_in_config_set_shape(self):
+        m = lanying_openclaw
+        patch_config = {
+            "models": {
+                "providers": {
+                    "lanying": {
+                        "apiKey": None,
+                    }
+                }
+            }
+        }
+
+        batch_entries = m.build_config_batch_entries_from_patch_config(patch_config)
+
+        self.assertEqual(batch_entries, [
+            {
+                "path": "models.providers.lanying.apiKey",
+                "value": None,
+            }
+        ])
+
+    def test_update_node_config_sends_batch_entries_and_legacy_raw_patch_together(self):
+        m = lanying_openclaw
+        patch_config = {
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": "lanying/openai/gpt-5-mini",
+                    }
+                }
+            }
+        }
+
+        with mock.patch.object(m, "get_node", return_value={"user_id": "node-user"}), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=9) as mocked_send:
+            result = m.update_node_config("app-id", "node-1", patch_config)
+
+        self.assertEqual(result["result"], "ok")
+        send_args = mocked_send.call_args.args
+        self.assertEqual(send_args[1], "app-id")
+        self.assertEqual(send_args[2], "node-user")
+        self.assertEqual(send_args[3], "node-user")
+        extra = send_args[7]
+        openclaw_ext = extra["ext"]["openclaw"]
+        self.assertEqual(openclaw_ext["type"], "config_patch")
+        self.assertEqual(openclaw_ext["formatVersion"], 2)
+        self.assertEqual(openclaw_ext["restart"], True)
+        self.assertEqual(json.loads(openclaw_ext["raw"]), patch_config)
+        self.assertEqual(openclaw_ext["batchEntries"], openclaw_ext["batch_entries"])
+        self.assertEqual(openclaw_ext["batchEntries"], [
+            {
+                "path": "agents.defaults.model.primary",
+                "value": "lanying/openai/gpt-5-mini",
+            }
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
