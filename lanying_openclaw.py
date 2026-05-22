@@ -8,6 +8,7 @@ import lanying_chatbot
 import lanying_im_api
 import lanying_utils
 import json
+import hashlib
 import lanying_vendor
 import lanying_pgvector
 import requests
@@ -18,6 +19,12 @@ OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 TEMPORARY_GROUP_TYPE = 3
 SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES = 30 * 1024
 OPENCLAW_SESSION_GROUP_METADATA_KEY = 'openclaw_session_group_metadata'
+OPENCLAW_PROBE_FORMAT_VERSION = 1
+OPENCLAW_MANAGED_AGENTS_PATH = 'clawchat/AGENTS.md'
+PROBE_POST_SYNC_DELAY_MS = 1500
+PROBE_AUTO_REPAIR_DELAY_MS = 1500
+PROBE_AUTO_REPAIR_MAX_ATTEMPTS = 2
+PROBE_REPAIR_COUNT_FIELD = 'probe_repair_counts'
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
@@ -96,6 +103,101 @@ def normalize_preset_prompt_for_agents_md(prompt):
         return OPENCLAW_PROTECTED_FILE_RULE
     return f"{normalized_prompt}\n\n{OPENCLAW_PROTECTED_FILE_RULE}"
 
+def build_managed_agents_content(chatbot_id, chatbot_name, prompt):
+    chatbot_id_str = str(chatbot_id or '')
+    chatbot_name_str = str(chatbot_name or '')
+    prompt_str = str(prompt or '')
+    title = chatbot_name_str if chatbot_name_str != '' else (chatbot_id_str if chatbot_id_str != '' else 'unknown-chatbot')
+    body = prompt_str if prompt_str.strip() != '' else 'No synced system preset prompt. Previous synced content has been cleared.'
+    return '\n'.join([
+        '# AGENTS.md',
+        '',
+        'This file is managed by the ClawChat plugin for OpenClaw prompt injection.',
+        '',
+        f'Chatbot ID: {chatbot_id_str or "unknown"}',
+        f'Chatbot Name: {title}',
+        '',
+        '## Synced System Preset Prompt',
+        '',
+        body,
+        '',
+    ])
+
+def _normalize_probe_value(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [_normalize_probe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_probe_value(item) for item in value]
+    if isinstance(value, dict):
+        normalized = {}
+        for key in sorted(value.keys(), key=lambda item: str(item)):
+            normalized[str(key)] = _normalize_probe_value(value[key])
+        return normalized
+    return str(value)
+
+def stable_probe_json(value):
+    return json.dumps(_normalize_probe_value(value), ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+def build_probe_value_hash(value, present=True):
+    payload = {'present': True, 'value': value} if present else {'present': False}
+    return hashlib.sha256(stable_probe_json(payload).encode('utf-8')).hexdigest()
+
+def split_probe_path(path):
+    normalized_path = str(path or '').strip()
+    if normalized_path == '':
+        return []
+    segments = []
+    current = ''
+    index = 0
+    while index < len(normalized_path):
+        char = normalized_path[index]
+        if char == '.':
+            if current.strip() != '':
+                segments.append(current.strip())
+            current = ''
+            index += 1
+            continue
+        if char == '[':
+            if current.strip() != '':
+                segments.append(current.strip())
+            current = ''
+            if index + 2 >= len(normalized_path):
+                return []
+            quote = normalized_path[index + 1]
+            if quote not in ['"', "'"]:
+                return []
+            closing_quote_index = normalized_path.find(quote, index + 2)
+            if closing_quote_index < 0 or closing_quote_index + 1 >= len(normalized_path) or normalized_path[closing_quote_index + 1] != ']':
+                return []
+            segments.append(normalized_path[index + 2:closing_quote_index])
+            index = closing_quote_index + 2
+            continue
+        current += char
+        index += 1
+    if current.strip() != '':
+        segments.append(current.strip())
+    return segments
+
+def get_probe_path_value(root, path):
+    cursor = root
+    segments = split_probe_path(path)
+    if len(segments) == 0:
+        return {
+            'found': False
+        }
+    for segment in segments:
+        if not isinstance(cursor, dict) or segment not in cursor:
+            return {
+                'found': False
+            }
+        cursor = cursor[segment]
+    return {
+        'found': True,
+        'value': cursor
+    }
+
 def sync_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
     try:
         node_info = get_node(app_id, node_id)
@@ -134,6 +236,10 @@ def maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id):
         logging.info(f"maybe_sync_node_bound_chatbot_preset_prompt skip for no bind | app_id:{app_id}, node_id:{node_id}")
         return
     executor.submit(sync_bound_chatbot_preset_prompt, app_id, node_id, chatbot_id)
+
+def has_node_bound_chatbot(app_id, node_id):
+    chatbot_id = get_node_chatbot_id(app_id, node_id)
+    return chatbot_id is not None and str(chatbot_id).strip() != ''
 
 def get_openclaw_app_manager_user(app_id):
     redis = lanying_redis.get_redis_connection()
@@ -3558,6 +3664,181 @@ def handle_chat_message(msg):
             event = ext['openclaw']
             handle_client_event(event, app_id, from_user_id, ctype)
 
+def normalize_probe_status(status, fallback='not_checked'):
+    normalized = str(status or '').strip().lower()
+    if normalized in ['ok', 'mismatch', 'degraded', 'failed']:
+        return normalized
+    return fallback
+
+def normalize_probe_result_details(value, default_value):
+    if isinstance(value, dict):
+        return value
+    return default_value
+
+def normalize_probe_result_key_list(value):
+    if not isinstance(value, list):
+        return []
+    items = []
+    for item in value:
+        item_str = str(item or '').strip()
+        if item_str != '':
+            items.append(item_str)
+    return items
+
+def normalize_probe_repair_counts(value):
+    if isinstance(value, dict):
+        raw = value
+    else:
+        raw = parse_json_object(value) or {}
+    counts = {}
+    for key in ['config_patch', 'preset_prompt', 'session_map_runtime']:
+        try:
+            counts[key] = max(0, int(raw.get(key, 0) or 0))
+        except Exception:
+            counts[key] = 0
+    return counts
+
+def build_pending_probe_state_updates(probe_id):
+    return {
+        'last_probe_id': str(probe_id).strip(),
+        'last_probe_at': int(time.time() * 1000),
+        'health_probe_status': 'not_checked',
+        'health_probe_details': '{}',
+        'account_config_status': 'not_checked',
+        'account_config_details': '{}',
+        'config_patch_status': 'not_checked',
+        'config_patch_mismatched_keys': '[]',
+        'config_patch_failed_keys': '[]',
+        'preset_prompt_content_status': 'not_checked',
+        'preset_prompt_hook_status': 'not_checked',
+        'preset_prompt_hook_missing_requirements': '[]',
+        'workspace_files_status': 'not_checked',
+        'workspace_files_details': '{}',
+        'session_map_runtime_status': 'not_checked',
+        'session_map_runtime_details': '{}',
+        'online_marker_status': 'not_checked',
+        'online_marker_details': '{}',
+    }
+
+def build_node_probe_state_updates(event):
+    now_ms = int(time.time() * 1000)
+    results = event.get('results', {}) if isinstance(event.get('results', {}), dict) else {}
+    health_result = results.get('health', {}) if isinstance(results.get('health', {}), dict) else {}
+    account_config_result = results.get('account_config', {}) if isinstance(results.get('account_config', {}), dict) else {}
+    config_patch_result = results.get('config_patch', {}) if isinstance(results.get('config_patch', {}), dict) else {}
+    preset_prompt_content_result = results.get('preset_prompt_content', {}) if isinstance(results.get('preset_prompt_content', {}), dict) else {}
+    preset_prompt_hook_result = results.get('preset_prompt_hook', {}) if isinstance(results.get('preset_prompt_hook', {}), dict) else {}
+    workspace_files_result = results.get('workspace_files', {}) if isinstance(results.get('workspace_files', {}), dict) else {}
+    session_map_runtime_result = results.get('session_map_runtime', {}) if isinstance(results.get('session_map_runtime', {}), dict) else {}
+    online_marker_result = results.get('online_marker', {}) if isinstance(results.get('online_marker', {}), dict) else {}
+    updates = {
+        'last_probe_id': str(event.get('probe_id', '')).strip(),
+        'last_probe_report_at': int(event.get('reported_at', 0) or 0) if str(event.get('reported_at', '')).strip() != '' else now_ms,
+        'plugin_version': str(event.get('plugin_version', '')).strip(),
+        'api_version': str(event.get('api_version', '')).strip(),
+        'health_probe_status': normalize_probe_status(health_result.get('status')),
+        'health_probe_details': json.dumps(normalize_probe_result_details(health_result.get('details'), {}), ensure_ascii=False, separators=(',', ':')),
+        'account_config_status': normalize_probe_status(account_config_result.get('status')),
+        'account_config_details': json.dumps(normalize_probe_result_details(account_config_result.get('details'), {}), ensure_ascii=False, separators=(',', ':')),
+        'config_patch_status': normalize_probe_status(config_patch_result.get('status')),
+        'config_patch_mismatched_keys': json.dumps(normalize_probe_result_key_list((config_patch_result.get('details') or {}).get('mismatched_keys', [])), ensure_ascii=False, separators=(',', ':')),
+        'config_patch_failed_keys': json.dumps(normalize_probe_result_key_list((config_patch_result.get('details') or {}).get('failed_keys', [])), ensure_ascii=False, separators=(',', ':')),
+        'preset_prompt_content_status': normalize_probe_status(preset_prompt_content_result.get('status')),
+        'preset_prompt_hook_status': normalize_probe_status(preset_prompt_hook_result.get('status')),
+        'preset_prompt_hook_missing_requirements': json.dumps(normalize_probe_result_key_list((preset_prompt_hook_result.get('details') or {}).get('missing_requirements', [])), ensure_ascii=False, separators=(',', ':')),
+        'workspace_files_status': normalize_probe_status(workspace_files_result.get('status')),
+        'workspace_files_details': json.dumps(normalize_probe_result_details(workspace_files_result.get('details'), {}), ensure_ascii=False, separators=(',', ':')),
+        'session_map_runtime_status': normalize_probe_status(session_map_runtime_result.get('status')),
+        'session_map_runtime_details': json.dumps(normalize_probe_result_details(session_map_runtime_result.get('details'), {}), ensure_ascii=False, separators=(',', ':')),
+        'online_marker_status': normalize_probe_status(online_marker_result.get('status')),
+        'online_marker_details': json.dumps(normalize_probe_result_details(online_marker_result.get('details'), {}), ensure_ascii=False, separators=(',', ':')),
+        'probe_repair_last_probe_id': str(event.get('probe_id', '')).strip(),
+    }
+    return updates
+
+def build_probe_issue_categories(node_info, event):
+    results = event.get('results', {}) if isinstance(event.get('results', {}), dict) else {}
+    categories = set()
+    config_patch_result = results.get('config_patch', {}) if isinstance(results.get('config_patch', {}), dict) else {}
+    preset_prompt_content_result = results.get('preset_prompt_content', {}) if isinstance(results.get('preset_prompt_content', {}), dict) else {}
+    preset_prompt_hook_result = results.get('preset_prompt_hook', {}) if isinstance(results.get('preset_prompt_hook', {}), dict) else {}
+    workspace_files_result = results.get('workspace_files', {}) if isinstance(results.get('workspace_files', {}), dict) else {}
+    session_map_runtime_result = results.get('session_map_runtime', {}) if isinstance(results.get('session_map_runtime', {}), dict) else {}
+    if normalize_probe_status(config_patch_result.get('status')) in ['mismatch', 'failed']:
+        categories.add('config_patch')
+    has_bound_chatbot = has_node_bound_chatbot(node_info.get('app_id', ''), node_info.get('node_id', ''))
+    if has_bound_chatbot:
+        if normalize_probe_status(preset_prompt_content_result.get('status')) in ['mismatch', 'failed']:
+            categories.add('preset_prompt')
+        if normalize_probe_status(preset_prompt_hook_result.get('status')) in ['mismatch', 'failed']:
+            categories.add('preset_prompt')
+        if normalize_probe_status(workspace_files_result.get('status')) in ['degraded', 'failed']:
+            categories.add('preset_prompt')
+    if normalize_probe_status(session_map_runtime_result.get('status')) == 'mismatch':
+        categories.add('session_map_runtime')
+    return categories
+
+def update_probe_repair_counts(app_id, node_id, counts):
+    update_node_field(
+        app_id,
+        node_id,
+        PROBE_REPAIR_COUNT_FIELD,
+        json.dumps(normalize_probe_repair_counts(counts), ensure_ascii=False, separators=(',', ':'))
+    )
+
+def maybe_auto_repair_probe_mismatch(node_info, event):
+    app_id = str(node_info.get('app_id', '')).strip()
+    node_id = str(node_info.get('node_id', '')).strip()
+    if app_id == '' or node_id == '':
+        return
+    counts = normalize_probe_repair_counts(node_info.get(PROBE_REPAIR_COUNT_FIELD, '{}'))
+    issue_categories = build_probe_issue_categories(node_info, event)
+    changed = False
+    for category in ['config_patch', 'preset_prompt', 'session_map_runtime']:
+        if category not in issue_categories and counts.get(category, 0) != 0:
+            counts[category] = 0
+            changed = True
+    actions_triggered = False
+    model_patch_config = None
+    if 'config_patch' in issue_categories and counts.get('config_patch', 0) < PROBE_AUTO_REPAIR_MAX_ATTEMPTS:
+        model_patch_config = get_model_patch_config(app_id, node_id)
+        update_node_config(app_id, node_id, model_patch_config)
+        counts['config_patch'] = counts.get('config_patch', 0) + 1
+        changed = True
+        actions_triggered = True
+        logging.info(
+            f"probe auto repair config_patch | app_id:{app_id}, node_id:{node_id}, attempt:{counts['config_patch']}"
+        )
+    if 'preset_prompt' in issue_categories and counts.get('preset_prompt', 0) < PROBE_AUTO_REPAIR_MAX_ATTEMPTS:
+        chatbot_id = str(get_node_chatbot_id(app_id, node_id) or '').strip()
+        if chatbot_id != '':
+            sync_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id)
+            counts['preset_prompt'] = counts.get('preset_prompt', 0) + 1
+            changed = True
+            actions_triggered = True
+            logging.info(
+                f"probe auto repair preset_prompt | app_id:{app_id}, node_id:{node_id}, attempt:{counts['preset_prompt']}, chatbot_id:{chatbot_id}"
+            )
+    if 'session_map_runtime' in issue_categories and counts.get('session_map_runtime', 0) < PROBE_AUTO_REPAIR_MAX_ATTEMPTS:
+        refreshed_node = get_node(app_id, node_id) or node_info
+        sync_session_map_settings_to_node(refreshed_node)
+        sync_session_mapping_snapshot_to_node(refreshed_node)
+        counts['session_map_runtime'] = counts.get('session_map_runtime', 0) + 1
+        changed = True
+        actions_triggered = True
+        logging.info(
+            f"probe auto repair session_map_runtime | app_id:{app_id}, node_id:{node_id}, attempt:{counts['session_map_runtime']}"
+        )
+    if changed:
+        update_probe_repair_counts(app_id, node_id, counts)
+    if actions_triggered:
+        refreshed_node = get_node(app_id, node_id) or node_info
+        schedule_probe_to_node(
+            refreshed_node,
+            build_default_probe_checks(refreshed_node, model_patch_config),
+            delay_ms=PROBE_AUTO_REPAIR_DELAY_MS,
+        )
+
 def handle_client_event(event, app_id, user_id, ctype):
     logging.info(f"handle client event | event: {event}, app_id: {app_id}, user_id: {user_id}, ctype: {ctype}")
     if event['type'] == 'online':
@@ -3576,13 +3857,50 @@ def handle_client_event(event, app_id, user_id, ctype):
                 model_patch_config = get_model_patch_config(app_id, node_id)
                 update_node_config(app_id, node_id, model_patch_config)
                 maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+                node = get_node(app_id, node_id) or node
+                sync_session_map_settings_to_node(node)
+                sync_session_mapping_snapshot_to_node(node)
+                schedule_probe_to_node(
+                    node,
+                    build_default_probe_checks(node, model_patch_config),
+                    delay_ms=PROBE_POST_SYNC_DELAY_MS,
+                )
+                continue
             elif 'provider_inited' in event and event['provider_inited'] == False:
                 logging.info(f"update node config for provider_inited is false | node_id: {node_id}")
                 model_patch_config = get_model_patch_config(app_id, node_id)
                 update_node_config(app_id, node_id, model_patch_config)
                 maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+                node = get_node(app_id, node_id) or node
+                sync_session_map_settings_to_node(node)
+                sync_session_mapping_snapshot_to_node(node)
+                schedule_probe_to_node(
+                    node,
+                    build_default_probe_checks(node, model_patch_config),
+                    delay_ms=PROBE_POST_SYNC_DELAY_MS,
+                )
+                continue
             sync_session_map_settings_to_node(node)
             sync_session_mapping_snapshot_to_node(node)
+            send_probe_to_node(node)
+    elif event['type'] == 'probe_report':
+        if ctype != 'COMMAND':
+            logging.info(f"handle_client_event skip not command probe_report | ctype: {ctype}, event: {event}")
+            return
+        node_list = get_nodes_by_user_id(app_id, user_id)
+        for node in node_list:
+            node_id = str(node.get('node_id', '')).strip()
+            current_probe_id = str(node.get('last_probe_id', '')).strip()
+            report_probe_id = str(event.get('probe_id', '')).strip()
+            if current_probe_id != '' and report_probe_id != '' and current_probe_id != report_probe_id:
+                logging.info(
+                    f"handle_client_event skip stale probe_report | app_id:{app_id}, node_id:{node_id}, "
+                    f"current_probe_id:{current_probe_id}, report_probe_id:{report_probe_id}"
+                )
+                continue
+            update_node_fields(app_id, node_id, build_node_probe_state_updates(event))
+            refreshed_node = get_node(app_id, node_id) or node
+            maybe_auto_repair_probe_mismatch(refreshed_node, event)
     elif event['type'] == 'session_map_settings_report':
         node_list = get_nodes_by_user_id(app_id, user_id)
         session_map_sync = 'on' if parse_bool_flag(event.get('session_map_sync')) else 'off'
@@ -3663,6 +3981,13 @@ def sync_model_config(app_id, node_id, sync_preset_prompt=True):
     update_node_config(app_id, node_id, model_patch_config)
     if sync_preset_prompt:
         maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
+    refreshed_node = get_node(app_id, node_id) or node_info
+    probe_delay_ms = PROBE_POST_SYNC_DELAY_MS if (sync_preset_prompt and has_node_bound_chatbot(app_id, node_id)) else 0
+    schedule_probe_to_node(
+        refreshed_node,
+        build_default_probe_checks(refreshed_node, model_patch_config),
+        delay_ms=probe_delay_ms,
+    )
     return {
         'result': 'ok',
         'data': {
@@ -3735,6 +4060,157 @@ def get_model_list(app_id):
             "maxTokens": model.get('max_output_tokens', 8192)
         })
     return models
+
+def resolve_probe_preset_prompt_payload(node_info):
+    if node_info is None:
+        return {
+            'chatbot_id': '',
+            'chatbot_name': '',
+            'prompt': ''
+        }
+    app_id = str(node_info.get('app_id', '')).strip()
+    node_id = str(node_info.get('node_id', '')).strip()
+    chatbot_id = get_node_chatbot_id(app_id, node_id)
+    if chatbot_id is None or str(chatbot_id).strip() == '':
+        return {
+            'chatbot_id': '',
+            'chatbot_name': '',
+            'prompt': ''
+        }
+    chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if chatbot_info is None:
+        return {
+            'chatbot_id': str(chatbot_id),
+            'chatbot_name': '',
+            'prompt': ''
+        }
+    prompt = normalize_preset_prompt_for_agents_md(
+        extract_system_prompt_text_from_preset(chatbot_info.get('preset', {}))
+    )
+    return {
+        'chatbot_id': str(chatbot_id),
+        'chatbot_name': str(chatbot_info.get('name', '')),
+        'prompt': prompt
+    }
+
+def build_default_probe_checks(node_info, patch_config=None):
+    if patch_config is None:
+        patch_config = get_model_patch_config(node_info.get('app_id', ''), node_info.get('node_id', ''))
+    config_items = []
+    for entry in build_config_batch_entries_from_patch_config(patch_config):
+        config_items.append({
+            'path': entry['path'],
+            'expected_hash': build_probe_value_hash(entry.get('value'), True)
+        })
+    prompt_payload = resolve_probe_preset_prompt_payload(node_info)
+    expected_prompt_content = build_managed_agents_content(
+        prompt_payload.get('chatbot_id', ''),
+        prompt_payload.get('chatbot_name', ''),
+        prompt_payload.get('prompt', '')
+    )
+    has_prompt_probe = str(prompt_payload.get('chatbot_id', '')).strip() != ''
+    checks = {
+        'health': {},
+        'account_config': {},
+        'config_patch': {
+            'items': config_items
+        },
+        'session_map_runtime': {
+            'expected_session_map_sync_enabled': is_session_map_sync_enabled(node_info),
+            'expected_merge_sub_sessions_enabled': is_merge_sub_sessions_enabled(node_info),
+            'expected_effective_enabled': is_session_map_sync_enabled(node_info)
+        },
+        'online_marker': {}
+    }
+    if has_prompt_probe:
+        checks['preset_prompt_content'] = {
+            'expected_hash': hashlib.sha256(expected_prompt_content.encode('utf-8')).hexdigest()
+        }
+        checks['preset_prompt_hook'] = {
+            'required_path': OPENCLAW_MANAGED_AGENTS_PATH
+        }
+        checks['workspace_files'] = {}
+    return checks
+
+def _delayed_send_probe_to_node(app_id, node_id, delay_ms):
+    try:
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
+        node_info = get_node(app_id, node_id)
+        if node_info is None:
+            logging.info(f"delayed probe skipped for missing node | app_id:{app_id}, node_id:{node_id}")
+            return
+        send_probe_to_node(node_info, build_default_probe_checks(node_info))
+    except Exception:
+        logging.exception(f"delayed probe failed | app_id:{app_id}, node_id:{node_id}")
+
+def schedule_probe_to_node(node_info, checks=None, delay_ms=0):
+    if delay_ms <= 0:
+        return send_probe_to_node(node_info, checks)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    app_id = str(node_info.get('app_id', '')).strip()
+    node_id = str(node_info.get('node_id', '')).strip()
+    if checks is None:
+        checks = build_default_probe_checks(node_info)
+    executor.submit(_delayed_send_probe_to_node, app_id, node_id, int(delay_ms))
+    return {
+        'result': 'ok',
+        'data': {
+            'scheduled': True,
+            'delay_ms': int(delay_ms)
+        }
+    }
+
+def send_probe_to_node(node_info, checks=None):
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    app_id = str(node_info.get('app_id', '')).strip()
+    user_id = str(node_info.get('user_id', '')).strip()
+    node_id = str(node_info.get('node_id', '')).strip()
+    if app_id == '' or user_id == '' or node_id == '':
+        return {
+            'result': 'error',
+            'message': 'bad node info'
+        }
+    if checks is None:
+        checks = build_default_probe_checks(node_info)
+    probe_id = secrets.token_hex(16)
+    admin_token = lanying_config.get_lanying_admin_token(app_id)
+    config = {
+        'lanying_admin_token': admin_token
+    }
+    extra = {
+        'ext': {
+            'openclaw': {
+                'type': 'probe',
+                'probe_id': probe_id,
+                'formatVersion': OPENCLAW_PROBE_FORMAT_VERSION,
+                'checks': checks
+            }
+        },
+        'skip_antispam_prompt': True
+    }
+    msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, 1, 6, '', extra)
+    if msg_id <= 0:
+        return {
+            'result': 'error',
+            'message': 'send message failed'
+        }
+    update_node_fields(app_id, node_id, build_pending_probe_state_updates(probe_id))
+    return {
+        'result': 'ok',
+        'data': {
+            'msg_id': msg_id,
+            'probe_id': probe_id
+        }
+    }
 
 def build_config_batch_entries_from_patch_config(patch_config, path_prefix=''):
     if not isinstance(patch_config, dict):
@@ -3925,6 +4401,19 @@ def update_node_field(app_id, node_id, field, value):
         'result': 'ok'
     }
 
+def update_node_fields(app_id, node_id, fields):
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    redis = lanying_redis.get_redis_connection()
+    redis.hmset(get_node_key(app_id, node_id), fields)
+    return {
+        'result': 'ok'
+    }
+
 def get_node(app_id, node_id):
     redis = lanying_redis.get_redis_connection()
     key = get_node_key(app_id, node_id)
@@ -3950,6 +4439,46 @@ def get_node(app_id, node_id):
             dto['session_map_sync'] = 'off'
         if 'merge_sub_sessions' not in dto or str(dto.get('merge_sub_sessions', '')).strip() == '':
             dto['merge_sub_sessions'] = 'off'
+        if 'last_probe_id' not in dto:
+            dto['last_probe_id'] = ''
+        if 'last_probe_at' not in dto or str(dto.get('last_probe_at', '')).strip() == '':
+            dto['last_probe_at'] = 0
+        else:
+            dto['last_probe_at'] = int(dto['last_probe_at'])
+        if 'last_probe_report_at' not in dto or str(dto.get('last_probe_report_at', '')).strip() == '':
+            dto['last_probe_report_at'] = 0
+        else:
+            dto['last_probe_report_at'] = int(dto['last_probe_report_at'])
+        if PROBE_REPAIR_COUNT_FIELD not in dto:
+            dto[PROBE_REPAIR_COUNT_FIELD] = {}
+        else:
+            dto[PROBE_REPAIR_COUNT_FIELD] = normalize_probe_repair_counts(dto.get(PROBE_REPAIR_COUNT_FIELD, '{}'))
+        if 'probe_repair_last_probe_id' not in dto:
+            dto['probe_repair_last_probe_id'] = ''
+        if 'health_probe_status' not in dto:
+            dto['health_probe_status'] = 'not_checked'
+        dto['health_probe_details'] = lanying_utils.safe_json_loads(dto.get('health_probe_details', '{}'), {})
+        if 'account_config_status' not in dto:
+            dto['account_config_status'] = 'not_checked'
+        dto['account_config_details'] = lanying_utils.safe_json_loads(dto.get('account_config_details', '{}'), {})
+        if 'config_patch_status' not in dto:
+            dto['config_patch_status'] = 'not_checked'
+        dto['config_patch_mismatched_keys'] = lanying_utils.safe_json_loads(dto.get('config_patch_mismatched_keys', '[]'), [])
+        dto['config_patch_failed_keys'] = lanying_utils.safe_json_loads(dto.get('config_patch_failed_keys', '[]'), [])
+        if 'preset_prompt_content_status' not in dto:
+            dto['preset_prompt_content_status'] = 'not_checked'
+        if 'preset_prompt_hook_status' not in dto:
+            dto['preset_prompt_hook_status'] = 'not_checked'
+        dto['preset_prompt_hook_missing_requirements'] = lanying_utils.safe_json_loads(dto.get('preset_prompt_hook_missing_requirements', '[]'), [])
+        if 'workspace_files_status' not in dto:
+            dto['workspace_files_status'] = 'not_checked'
+        dto['workspace_files_details'] = lanying_utils.safe_json_loads(dto.get('workspace_files_details', '{}'), {})
+        if 'session_map_runtime_status' not in dto:
+            dto['session_map_runtime_status'] = 'not_checked'
+        dto['session_map_runtime_details'] = lanying_utils.safe_json_loads(dto.get('session_map_runtime_details', '{}'), {})
+        if 'online_marker_status' not in dto:
+            dto['online_marker_status'] = 'not_checked'
+        dto['online_marker_details'] = lanying_utils.safe_json_loads(dto.get('online_marker_details', '{}'), {})
         dto['chatbot_id'] = ''
         chatbot_id = get_node_chatbot_id(app_id, node_id)
         if chatbot_id is not None:
