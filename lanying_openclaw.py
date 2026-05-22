@@ -25,11 +25,16 @@ PROBE_POST_SYNC_DELAY_MS = 1500
 PROBE_AUTO_REPAIR_DELAY_MS = 1500
 PROBE_AUTO_REPAIR_MAX_ATTEMPTS = 2
 PROBE_REPAIR_COUNT_FIELD = 'probe_repair_counts'
-PROBE_WAIT_TIMEOUT_MS = 8000
+PROBE_WAIT_TIMEOUT_MS = 10000
 PROBE_WAIT_POLL_INTERVAL_MS = 250
 PROBE_INFLIGHT_REUSE_WINDOW_MS = 15000
 PROBE_RESPONSE_REDACT_FIELDS = ['password']
 MIN_PROBE_API_VERSION = 4
+CONFIG_SYNC_WAIT_TIMEOUT_MS = 10000
+CONFIG_SYNC_WAIT_POLL_INTERVAL_MS = 250
+CONFIG_SYNC_STATUS_PENDING = 'pending'
+CONFIG_SYNC_STATUS_OK = 'ok'
+CONFIG_SYNC_STATUS_FAILED = 'failed'
 NODE_PRESENCE_ONLINE = 'online'
 NODE_PRESENCE_OFFLINE = 'offline'
 NODE_PRESENCE_UNKNOWN = 'unknown'
@@ -138,16 +143,6 @@ def build_managed_agents_content(chatbot_id, chatbot_name, prompt):
 def is_provider_models_probe_path(path):
     path_str = str(path or '').strip()
     return path_str.startswith('models.providers.') and path_str.endswith('.models')
-
-def summarize_probe_value_for_log(path, value):
-    normalized_value = _normalize_probe_value_for_path(path, value)
-    if is_provider_models_probe_path(path):
-        model_ids = normalized_value if isinstance(normalized_value, list) else []
-        return {
-            'model_ids': model_ids,
-            'count': len(model_ids),
-        }
-    return normalized_value
 
 def _normalize_probe_value_for_path(path, value):
     if is_provider_models_probe_path(path) and isinstance(value, list):
@@ -536,6 +531,75 @@ def resolve_probe_support_state(node_info):
     if str(node_info.get('probe_repair_last_probe_id', '')).strip() != '':
         return 'supported'
     return 'unknown'
+
+def is_config_sync_wait_supported(node_info):
+    if not isinstance(node_info, dict):
+        return False
+    return parse_api_version_number(node_info.get('api_version', '')) >= MIN_PROBE_API_VERSION
+
+def clamp_config_sync_wait_timeout_ms(value):
+    try:
+        timeout_ms = int(value or 0)
+    except Exception:
+        timeout_ms = 0
+    if timeout_ms <= 0:
+        timeout_ms = CONFIG_SYNC_WAIT_TIMEOUT_MS
+    return max(1000, min(timeout_ms, 10000))
+
+def build_pending_config_sync_state_updates(sync_id):
+    return {
+        'last_config_sync_id': str(sync_id or '').strip(),
+        'last_config_sync_at': int(time.time() * 1000),
+        'last_config_sync_report_at': 0,
+        'last_config_sync_status': CONFIG_SYNC_STATUS_PENDING,
+        'last_config_sync_error_code': '',
+        'last_config_sync_error_message': '',
+    }
+
+def build_config_sync_state_updates(event):
+    now_ms = int(time.time() * 1000)
+    status = str(event.get('status', '')).strip().lower()
+    if status not in [CONFIG_SYNC_STATUS_OK, CONFIG_SYNC_STATUS_FAILED]:
+        status = CONFIG_SYNC_STATUS_FAILED
+    return {
+        'last_config_sync_id': str(event.get('sync_id', '')).strip(),
+        'last_config_sync_report_at': int(event.get('reported_at', 0) or 0) if str(event.get('reported_at', '')).strip() != '' else now_ms,
+        'last_config_sync_status': status,
+        'last_config_sync_error_code': str(event.get('error_code', '') or ''),
+        'last_config_sync_error_message': str(event.get('error_message', '') or ''),
+        'plugin_version': str(event.get('plugin_version', '')).strip(),
+        'api_version': str(event.get('api_version', '')).strip(),
+    }
+
+def is_matching_config_sync_report(node_info, sync_id, started_report_at=0):
+    if not isinstance(node_info, dict):
+        return False
+    expected_sync_id = str(sync_id or '').strip()
+    if expected_sync_id == '':
+        return False
+    current_sync_id = str(node_info.get('last_config_sync_id', '')).strip()
+    try:
+        latest_report_at = int(node_info.get('last_config_sync_report_at', 0) or 0)
+    except Exception:
+        latest_report_at = 0
+    current_status = str(node_info.get('last_config_sync_status', '')).strip().lower()
+    return current_sync_id == expected_sync_id and current_status in [CONFIG_SYNC_STATUS_OK, CONFIG_SYNC_STATUS_FAILED] and latest_report_at >= int(started_report_at or 0)
+
+def build_config_sync_response_data(triggered, completed, timeout, legacy_fallback, sync_id, node_info):
+    latest_node = sanitize_probe_response_node(node_info)
+    status = str((latest_node or {}).get('last_config_sync_status', '')).strip().lower() if isinstance(latest_node, dict) else ''
+    success = bool(completed) and status == CONFIG_SYNC_STATUS_OK
+    return {
+        'triggered': bool(triggered),
+        'completed': bool(completed),
+        'timeout': bool(timeout),
+        'legacy_fallback': bool(legacy_fallback),
+        'success': bool(success),
+        'sync_id': str(sync_id or '').strip(),
+        'error_code': str((latest_node or {}).get('last_config_sync_error_code', '') or '') if isinstance(latest_node, dict) else '',
+        'error_message': str((latest_node or {}).get('last_config_sync_error_message', '') or '') if isinstance(latest_node, dict) else '',
+        'node': latest_node,
+    }
 
 def is_probe_supported(node_info):
     return resolve_probe_support_state(node_info) == 'supported'
@@ -4081,6 +4145,25 @@ def handle_client_event(event, app_id, user_id, ctype):
                 )
                 continue
             update_node_fields(app_id, node_id, build_node_probe_state_updates(event))
+    elif event['type'] == 'config_sync_report':
+        if ctype != 'COMMAND':
+            logging.info(f"handle_client_event skip not command config_sync_report | ctype: {ctype}, event: {event}")
+            return
+        if str(event.get('object_type', '')).strip() != 'config_patch':
+            logging.info(f"handle_client_event skip non config_patch config_sync_report | event: {event}")
+            return
+        node_list = get_nodes_by_user_id(app_id, user_id)
+        for node in node_list:
+            node_id = str(node.get('node_id', '')).strip()
+            current_sync_id = str(node.get('last_config_sync_id', '')).strip()
+            report_sync_id = str(event.get('sync_id', '')).strip()
+            if current_sync_id != '' and report_sync_id != '' and current_sync_id != report_sync_id:
+                logging.info(
+                    f"handle_client_event skip stale config_sync_report | app_id:{app_id}, node_id:{node_id}, "
+                    f"current_sync_id:{current_sync_id}, report_sync_id:{report_sync_id}"
+                )
+                continue
+            update_node_fields(app_id, node_id, build_config_sync_state_updates(event))
     elif event['type'] == 'session_map_settings_report':
         node_list = get_nodes_by_user_id(app_id, user_id)
         session_map_sync = 'on' if parse_bool_flag(event.get('session_map_sync')) else 'off'
@@ -4174,6 +4257,58 @@ def sync_model_config(app_id, node_id, sync_preset_prompt=True):
             'success': True
         }
     }    
+
+def sync_model_config_and_wait(app_id, node_id, wait_timeout_ms=CONFIG_SYNC_WAIT_TIMEOUT_MS):
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    if not is_config_sync_wait_supported(node_info):
+        legacy_result = sync_model_config(app_id, node_id, True)
+        if legacy_result.get('result') == 'error':
+            return legacy_result
+        latest_node = get_node(app_id, node_id) or node_info
+        return {
+            'result': 'ok',
+            'data': build_config_sync_response_data(True, False, False, True, '', latest_node)
+        }
+    timeout_ms = clamp_config_sync_wait_timeout_ms(wait_timeout_ms)
+    model_patch_config = get_model_patch_config(app_id, node_id)
+    sync_id = secrets.token_hex(16)
+    send_result = update_node_config(app_id, node_id, model_patch_config, sync_id=sync_id)
+    if send_result.get('result') == 'error':
+        return send_result
+    started_report_at = int(node_info.get('last_config_sync_report_at', 0) or 0)
+    deadline = int(time.time() * 1000) + timeout_ms
+    while int(time.time() * 1000) < deadline:
+        latest_node = get_node(app_id, node_id)
+        if latest_node is None:
+            return {
+                'result': 'error',
+                'message': 'node not exist'
+            }
+        if is_matching_config_sync_report(latest_node, sync_id, started_report_at):
+            success = str(latest_node.get('last_config_sync_status', '')).strip().lower() == CONFIG_SYNC_STATUS_OK
+            return {
+                'result': 'ok',
+                'data': build_config_sync_response_data(True, True, False, False, sync_id, latest_node)
+            } if success else {
+                'result': 'ok',
+                'data': build_config_sync_response_data(True, True, False, False, sync_id, latest_node)
+            }
+        time.sleep(CONFIG_SYNC_WAIT_POLL_INTERVAL_MS / 1000.0)
+    latest_node = get_node(app_id, node_id) or node_info
+    if is_matching_config_sync_report(latest_node, sync_id, started_report_at):
+        return {
+            'result': 'ok',
+            'data': build_config_sync_response_data(True, True, False, False, sync_id, latest_node)
+        }
+    return {
+        'result': 'ok',
+        'data': build_config_sync_response_data(True, False, True, False, sync_id, latest_node)
+    }
 
 def get_model_patch_config(app_id, node_id=None, primary="openai/gpt-5-mini", fallbacks=['volcengine/Doubao-1.5-pro-32k', 'volcengine/DeepSeek-R1']):
     config = lanying_config.get_lanying_connector(app_id)
@@ -4288,7 +4423,6 @@ def build_default_probe_checks(node_info, patch_config=None):
         config_items.append({
             'path': entry['path'],
             'expected_hash': build_probe_value_hash(entry.get('value'), True, entry['path']),
-            'expected_summary': summarize_probe_value_for_log(entry['path'], entry.get('value')),
         })
     prompt_payload = resolve_probe_preset_prompt_payload(node_info)
     expected_prompt_content = build_managed_agents_content(
@@ -4494,7 +4628,7 @@ def build_config_batch_entries_from_patch_config(patch_config, path_prefix=''):
         })
     return batch_entries
 
-def update_node_config(app_id, node_id, patch_config):
+def update_node_config(app_id, node_id, patch_config, sync_id=None):
     node_info = get_node(app_id, node_id)
     if node_info is None:
         return {
@@ -4510,21 +4644,32 @@ def update_node_config(app_id, node_id, patch_config):
     }
     send_msg_type = 1
     content_type = 6
+    sync_id_str = str(sync_id or '').strip()
+    if sync_id_str != '':
+        update_node_fields(app_id, node_id, build_pending_config_sync_state_updates(sync_id_str))
     extra = {
         'ext': {
-                'openclaw': {
-                    'type': 'config_patch',
-                    'formatVersion': 2,
-                    'restart': True,
-                    'raw': json.dumps(patch_config),
-                    'batchEntries': batch_entries,
-                    'batch_entries': batch_entries
-                },
+            'openclaw': {
+                'type': 'config_patch',
+                'formatVersion': 3,
+                'restart': True,
+                'sync_id': sync_id_str,
+                'raw': json.dumps(patch_config),
+                'batchEntries': batch_entries,
+                'batch_entries': batch_entries
+            },
         },
         'skip_antispam_prompt': True
     }
     msg_id = lanying_im_api.send_message_sync(config, app_id, user_id, user_id, send_msg_type, content_type, content, extra)
     if msg_id <= 0:
+        if sync_id_str != '':
+            update_node_fields(app_id, node_id, {
+                'last_config_sync_id': sync_id_str,
+                'last_config_sync_status': CONFIG_SYNC_STATUS_FAILED,
+                'last_config_sync_error_code': 'send_message_failed',
+                'last_config_sync_error_message': 'send message failed'
+            })
         return {
             'result': 'error',
             'message': 'send message failed'
@@ -4532,7 +4677,8 @@ def update_node_config(app_id, node_id, patch_config):
     return {
         'result': 'ok',
         'data': {
-            'msg_id': msg_id
+            'msg_id': msg_id,
+            'sync_id': sync_id_str,
         }
     }
 
@@ -4780,6 +4926,22 @@ def get_node(app_id, node_id):
             dto['merge_sub_sessions'] = 'off'
         if 'last_probe_id' not in dto:
             dto['last_probe_id'] = ''
+        if 'last_config_sync_id' not in dto:
+            dto['last_config_sync_id'] = ''
+        if 'last_config_sync_at' not in dto or str(dto.get('last_config_sync_at', '')).strip() == '':
+            dto['last_config_sync_at'] = 0
+        else:
+            dto['last_config_sync_at'] = int(dto['last_config_sync_at'])
+        if 'last_config_sync_report_at' not in dto or str(dto.get('last_config_sync_report_at', '')).strip() == '':
+            dto['last_config_sync_report_at'] = 0
+        else:
+            dto['last_config_sync_report_at'] = int(dto['last_config_sync_report_at'])
+        if 'last_config_sync_status' not in dto:
+            dto['last_config_sync_status'] = ''
+        if 'last_config_sync_error_code' not in dto:
+            dto['last_config_sync_error_code'] = ''
+        if 'last_config_sync_error_message' not in dto:
+            dto['last_config_sync_error_message'] = ''
         if 'last_probe_at' not in dto or str(dto.get('last_probe_at', '')).strip() == '':
             dto['last_probe_at'] = 0
         else:

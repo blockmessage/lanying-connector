@@ -113,7 +113,6 @@ class OpenClawProbeTests(unittest.TestCase):
                 {
                     "path": "agents.defaults.model.primary",
                     "expected_hash": m.build_probe_value_hash("lanying/openai/gpt-5-mini", True),
-                    "expected_summary": "lanying/openai/gpt-5-mini",
                 }
             ],
         )
@@ -325,6 +324,54 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(updates["presence_source"], "online_marker")
         mocked_auto_repair.assert_not_called()
 
+    def test_handle_client_event_config_sync_report_updates_latest_state(self):
+        m = lanying_openclaw
+        node_info = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "last_config_sync_id": "sync-1",
+        }
+        event = {
+            "type": "config_sync_report",
+            "sync_id": "sync-1",
+            "object_type": "config_patch",
+            "status": "ok",
+            "reported_at": 123456,
+            "plugin_version": "1.2.3",
+            "api_version": "4",
+        }
+
+        with mock.patch.object(m, "get_nodes_by_user_id", return_value=[node_info]), \
+             mock.patch.object(m, "update_node_fields") as mocked_update:
+            m.handle_client_event(event, "app-id", "openclaw-user", "COMMAND")
+
+        mocked_update.assert_called_once()
+        updates = mocked_update.call_args.args[2]
+        self.assertEqual(updates["last_config_sync_status"], "ok")
+        self.assertEqual(updates["last_config_sync_id"], "sync-1")
+
+    def test_handle_client_event_config_sync_report_skips_stale_sync_id(self):
+        m = lanying_openclaw
+        node_info = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "last_config_sync_id": "sync-new",
+        }
+        event = {
+            "type": "config_sync_report",
+            "sync_id": "sync-old",
+            "object_type": "config_patch",
+            "status": "failed",
+        }
+
+        with mock.patch.object(m, "get_nodes_by_user_id", return_value=[node_info]), \
+             mock.patch.object(m, "update_node_fields") as mocked_update:
+            m.handle_client_event(event, "app-id", "openclaw-user", "COMMAND")
+
+        mocked_update.assert_not_called()
+
     def test_handle_client_event_online_marks_presence_online_and_keeps_bootstrap(self):
         m = lanying_openclaw
         node_info = {
@@ -460,6 +507,80 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(result["result"], "ok")
         mocked_schedule.assert_called_once()
         self.assertEqual(mocked_schedule.call_args.kwargs["delay_ms"], m.PROBE_POST_SYNC_DELAY_MS)
+
+    def test_sync_model_config_and_wait_uses_legacy_fallback_for_old_plugin(self):
+        m = lanying_openclaw
+        node_info = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "api_version": 3,
+        }
+
+        with mock.patch.object(m, "get_node", side_effect=[node_info, node_info]), \
+             mock.patch.object(m, "sync_model_config", return_value={"result": "ok", "data": {"success": True}}) as mocked_sync:
+            result = m.sync_model_config_and_wait("app-id", "node-1", 1000)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertTrue(result["data"]["legacy_fallback"])
+        self.assertFalse(result["data"]["completed"])
+        mocked_sync.assert_called_once_with("app-id", "node-1", True)
+
+    def test_sync_model_config_and_wait_returns_success_on_matching_report(self):
+        m = lanying_openclaw
+        initial_node = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "api_version": 4,
+            "last_config_sync_report_at": 100,
+        }
+        updated_node = {
+            **initial_node,
+            "last_config_sync_id": "sync-1",
+            "last_config_sync_report_at": 200,
+            "last_config_sync_status": "ok",
+        }
+
+        with mock.patch.object(m, "get_node", side_effect=[initial_node, updated_node]), \
+             mock.patch.object(m, "get_model_patch_config", return_value={"agents": {"defaults": {"model": {"primary": "x"}}}}), \
+             mock.patch.object(m, "update_node_config", return_value={"result": "ok", "data": {"msg_id": 1, "sync_id": "sync-1"}}), \
+             mock.patch.object(m, "update_node_fields"), \
+             mock.patch.object(m, "is_matching_config_sync_report", side_effect=[True]), \
+             mock.patch.object(m.time, "time", return_value=0.0):
+            result = m.sync_model_config_and_wait("app-id", "node-1", 1000)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertTrue(result["data"]["completed"])
+        self.assertTrue(result["data"]["success"])
+
+    def test_sync_model_config_and_wait_returns_timeout_without_report(self):
+        m = lanying_openclaw
+        initial_node = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "api_version": 4,
+            "last_config_sync_report_at": 100,
+        }
+        pending_node = {
+            **initial_node,
+            "last_config_sync_id": "sync-1",
+            "last_config_sync_status": "pending",
+        }
+
+        with mock.patch.object(m, "get_node", side_effect=[initial_node, pending_node, pending_node]), \
+             mock.patch.object(m, "get_model_patch_config", return_value={"agents": {"defaults": {"model": {"primary": "x"}}}}), \
+             mock.patch.object(m, "update_node_config", return_value={"result": "ok", "data": {"msg_id": 1, "sync_id": "sync-1"}}), \
+             mock.patch.object(m, "update_node_fields"), \
+             mock.patch.object(m.time, "time", side_effect=[0.0, 0.0, 1.1]), \
+             mock.patch.object(m.time, "sleep"):
+            result = m.sync_model_config_and_wait("app-id", "node-1", 1000)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertFalse(result["data"]["completed"])
+        self.assertTrue(result["data"]["timeout"])
+        self.assertFalse(result["data"]["success"])
 
     def test_schedule_probe_to_node_delayed_rebuilds_checks_from_latest_node_state(self):
         m = lanying_openclaw

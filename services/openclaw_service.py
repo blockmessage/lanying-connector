@@ -140,6 +140,23 @@ def sync_model_config():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/openclaw/sync_model_config_and_wait", methods=["POST"])
+def sync_model_config_and_wait():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    node_id = str(data['node_id'])
+    wait_timeout_ms = data.get('wait_timeout_ms', lanying_openclaw.CONFIG_SYNC_WAIT_TIMEOUT_MS)
+    result = lanying_openclaw.sync_model_config_and_wait(app_id, node_id, wait_timeout_ms)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/openclaw/probe_node", methods=["POST"])
 def probe_node():
     if not check_access_token_valid():
