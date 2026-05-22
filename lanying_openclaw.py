@@ -25,6 +25,10 @@ PROBE_POST_SYNC_DELAY_MS = 1500
 PROBE_AUTO_REPAIR_DELAY_MS = 1500
 PROBE_AUTO_REPAIR_MAX_ATTEMPTS = 2
 PROBE_REPAIR_COUNT_FIELD = 'probe_repair_counts'
+PROBE_WAIT_TIMEOUT_MS = 8000
+PROBE_WAIT_POLL_INTERVAL_MS = 250
+PROBE_INFLIGHT_REUSE_WINDOW_MS = 15000
+PROBE_RESPONSE_REDACT_FIELDS = ['password']
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
@@ -452,6 +456,71 @@ def get_node_list(app_id):
             'list': node_info_list,
             'openclaw_app_manager_user': app_manager_user or {}
         }
+    }
+
+def clamp_probe_wait_timeout_ms(value):
+    try:
+        timeout_ms = int(value or 0)
+    except Exception:
+        timeout_ms = 0
+    if timeout_ms <= 0:
+        timeout_ms = PROBE_WAIT_TIMEOUT_MS
+    return max(1000, min(timeout_ms, 10000))
+
+def sanitize_probe_response_node(node_info):
+    if not isinstance(node_info, dict):
+        return node_info
+    sanitized = dict(node_info)
+    for field in PROBE_RESPONSE_REDACT_FIELDS:
+        if field in sanitized:
+            sanitized.pop(field, None)
+    return sanitized
+
+def is_probe_inflight(node_info, max_age_ms=PROBE_INFLIGHT_REUSE_WINDOW_MS):
+    if not isinstance(node_info, dict):
+        return False
+    probe_id = str(node_info.get('last_probe_id', '')).strip()
+    if probe_id == '':
+        return False
+    if parse_bool_flag(node_info.get('probe_completed')):
+        return False
+    if parse_bool_flag(node_info.get('probe_timeout')):
+        return False
+    try:
+        last_probe_at = int(node_info.get('last_probe_at', 0) or 0)
+    except Exception:
+        last_probe_at = 0
+    if last_probe_at <= 0:
+        return False
+    return int(time.time() * 1000) - last_probe_at <= max(1000, int(max_age_ms or 0))
+
+def is_matching_probe_report(node_info, probe_id, started_report_at=0):
+    if not isinstance(node_info, dict):
+        return False
+    expected_probe_id = str(probe_id or '').strip()
+    if expected_probe_id == '':
+        return False
+    current_probe_id = str(node_info.get('last_probe_id', '')).strip()
+    report_probe_id = str(node_info.get('probe_repair_last_probe_id', '')).strip()
+    try:
+        latest_report_at = int(node_info.get('last_probe_report_at', 0) or 0)
+    except Exception:
+        latest_report_at = 0
+    return (
+        current_probe_id == expected_probe_id and
+        report_probe_id == expected_probe_id and
+        latest_report_at >= int(started_report_at or 0)
+    )
+
+def build_probe_response_data(triggered, completed, timeout, probe_id, node_info):
+    latest_node = sanitize_probe_response_node(node_info)
+    return {
+        'triggered': bool(triggered),
+        'completed': bool(completed),
+        'timeout': bool(timeout),
+        'probe_id': str(probe_id or '').strip(),
+        'summary': latest_node.get('probe_summary_text', 'not_checked') if isinstance(latest_node, dict) else 'not_checked',
+        'node': latest_node
     }
 
 def delete_node(app_id, node_id):
@@ -3702,6 +3771,8 @@ def build_pending_probe_state_updates(probe_id):
     return {
         'last_probe_id': str(probe_id).strip(),
         'last_probe_at': int(time.time() * 1000),
+        'probe_completed': 'false',
+        'probe_timeout': 'false',
         'health_probe_status': 'not_checked',
         'health_probe_details': '{}',
         'account_config_status': 'not_checked',
@@ -3734,6 +3805,8 @@ def build_node_probe_state_updates(event):
     updates = {
         'last_probe_id': str(event.get('probe_id', '')).strip(),
         'last_probe_report_at': int(event.get('reported_at', 0) or 0) if str(event.get('reported_at', '')).strip() != '' else now_ms,
+        'probe_completed': 'true',
+        'probe_timeout': 'false',
         'plugin_version': str(event.get('plugin_version', '')).strip(),
         'api_version': str(event.get('api_version', '')).strip(),
         'health_probe_status': normalize_probe_status(health_result.get('status')),
@@ -4179,6 +4252,15 @@ def send_probe_to_node(node_info, checks=None):
             'result': 'error',
             'message': 'bad node info'
         }
+    latest_node = get_node(app_id, node_id) or node_info
+    if is_probe_inflight(latest_node):
+        return {
+            'result': 'ok',
+            'data': {
+                'probe_id': str(latest_node.get('last_probe_id', '')).strip(),
+                'reused': True
+            }
+        }
     if checks is None:
         checks = build_default_probe_checks(node_info)
     probe_id = secrets.token_hex(16)
@@ -4210,6 +4292,68 @@ def send_probe_to_node(node_info, checks=None):
             'msg_id': msg_id,
             'probe_id': probe_id
         }
+    }
+
+def probe_node(app_id, node_id, wait_timeout_ms=PROBE_WAIT_TIMEOUT_MS, wait_for_fresh_report=True):
+    node_info = get_node(app_id, node_id)
+    if node_info is None:
+        return {
+            'result': 'error',
+            'message': 'node not exist'
+        }
+    timeout_ms = clamp_probe_wait_timeout_ms(wait_timeout_ms)
+    triggered = False
+    reuse_window_ms = max(timeout_ms, PROBE_INFLIGHT_REUSE_WINDOW_MS)
+    if is_probe_inflight(node_info, reuse_window_ms):
+        probe_id = str(node_info.get('last_probe_id', '')).strip()
+    else:
+        send_result = send_probe_to_node(node_info, build_default_probe_checks(node_info))
+        if send_result.get('result') == 'error':
+            return send_result
+        probe_id = str((send_result.get('data') or {}).get('probe_id', '')).strip()
+        triggered = not parse_bool_flag((send_result.get('data') or {}).get('reused'))
+    if probe_id == '':
+        return {
+            'result': 'error',
+            'message': 'probe id is missing'
+        }
+    if not parse_bool_flag(wait_for_fresh_report):
+        latest_node = get_node(app_id, node_id) or node_info
+        return {
+            'result': 'ok',
+            'data': build_probe_response_data(triggered, False, False, probe_id, latest_node)
+        }
+    started_report_at = int(node_info.get('last_probe_report_at', 0) or 0)
+    deadline = int(time.time() * 1000) + timeout_ms
+    while int(time.time() * 1000) < deadline:
+        latest_node = get_node(app_id, node_id)
+        if latest_node is None:
+            return {
+                'result': 'error',
+                'message': 'node not exist'
+            }
+        if is_matching_probe_report(latest_node, probe_id, started_report_at):
+            return {
+                'result': 'ok',
+                'data': build_probe_response_data(triggered, True, False, probe_id, latest_node)
+            }
+        time.sleep(PROBE_WAIT_POLL_INTERVAL_MS / 1000.0)
+    latest_node = get_node(app_id, node_id) or node_info
+    if is_matching_probe_report(latest_node, probe_id, started_report_at):
+        return {
+            'result': 'ok',
+            'data': build_probe_response_data(triggered, True, False, probe_id, latest_node)
+        }
+    current_probe_id = str(latest_node.get('last_probe_id', '')).strip()
+    if current_probe_id == probe_id:
+        update_node_fields(app_id, node_id, {
+            'probe_completed': 'false',
+            'probe_timeout': 'true'
+        })
+        latest_node = get_node(app_id, node_id) or latest_node
+    return {
+        'result': 'ok',
+        'data': build_probe_response_data(triggered, False, True, probe_id, latest_node)
     }
 
 def build_config_batch_entries_from_patch_config(patch_config, path_prefix=''):
@@ -4414,6 +4558,54 @@ def update_node_fields(app_id, node_id, fields):
         'result': 'ok'
     }
 
+def get_probe_check_statuses(node_info):
+    if not isinstance(node_info, dict):
+        return []
+    statuses = []
+    for field_name in [
+        'health_probe_status',
+        'account_config_status',
+        'config_patch_status',
+        'preset_prompt_content_status',
+        'preset_prompt_hook_status',
+        'workspace_files_status',
+        'session_map_runtime_status',
+        'online_marker_status',
+    ]:
+        statuses.append(normalize_probe_status(node_info.get(field_name), 'not_checked'))
+    return statuses
+
+def resolve_probe_summary_text(node_info):
+    statuses = get_probe_check_statuses(node_info)
+    if len(statuses) == 0 or all(status == 'not_checked' for status in statuses):
+        return 'not_checked'
+    if 'failed' in statuses:
+        return 'failed'
+    if 'mismatch' in statuses or 'degraded' in statuses:
+        return 'partial_issue'
+    if 'ok' in statuses:
+        return 'ok'
+    return 'not_checked'
+
+def enrich_node_probe_snapshot(node_info):
+    if not isinstance(node_info, dict):
+        return node_info
+    snapshot = dict(node_info)
+    summary_text = resolve_probe_summary_text(snapshot)
+    snapshot['probe_summary_text'] = summary_text
+    snapshot['probe_in_sync'] = summary_text == 'ok'
+    cached_at = int(snapshot.get('last_probe_report_at', 0) or 0) if str(snapshot.get('last_probe_report_at', '')).strip() != '' else 0
+    snapshot['probe_cached_at'] = cached_at
+    if 'probe_completed' in snapshot:
+        snapshot['probe_completed'] = parse_bool_flag(snapshot.get('probe_completed'))
+    else:
+        snapshot['probe_completed'] = cached_at > 0 and summary_text != 'not_checked'
+    if 'probe_timeout' in snapshot:
+        snapshot['probe_timeout'] = parse_bool_flag(snapshot.get('probe_timeout'))
+    else:
+        snapshot['probe_timeout'] = False
+    return snapshot
+
 def get_node(app_id, node_id):
     redis = lanying_redis.get_redis_connection()
     key = get_node_key(app_id, node_id)
@@ -4449,6 +4641,14 @@ def get_node(app_id, node_id):
             dto['last_probe_report_at'] = 0
         else:
             dto['last_probe_report_at'] = int(dto['last_probe_report_at'])
+        if 'probe_completed' not in dto:
+            dto['probe_completed'] = dto['last_probe_report_at'] > 0
+        else:
+            dto['probe_completed'] = parse_bool_flag(dto.get('probe_completed'))
+        if 'probe_timeout' not in dto:
+            dto['probe_timeout'] = False
+        else:
+            dto['probe_timeout'] = parse_bool_flag(dto.get('probe_timeout'))
         if PROBE_REPAIR_COUNT_FIELD not in dto:
             dto[PROBE_REPAIR_COUNT_FIELD] = {}
         else:
@@ -4485,7 +4685,7 @@ def get_node(app_id, node_id):
             chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
             if chatbot_info is not None:
                 dto['chatbot_id'] = chatbot_id
-        return dto
+        return enrich_node_probe_snapshot(dto)
     return None
 
 def get_node_prepare(app_id, node_id):

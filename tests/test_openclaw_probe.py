@@ -126,6 +126,45 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertNotIn("preset_prompt_hook", checks)
         self.assertNotIn("workspace_files", checks)
 
+    def test_enrich_node_probe_snapshot_builds_summary_fields(self):
+        m = lanying_openclaw
+        node_info = {
+            "last_probe_report_at": 123,
+            "health_probe_status": "ok",
+            "account_config_status": "ok",
+            "config_patch_status": "mismatch",
+            "preset_prompt_content_status": "not_checked",
+            "preset_prompt_hook_status": "not_checked",
+            "workspace_files_status": "not_checked",
+            "session_map_runtime_status": "not_checked",
+            "online_marker_status": "not_checked",
+        }
+
+        out = m.enrich_node_probe_snapshot(node_info)
+        self.assertEqual(out["probe_summary_text"], "partial_issue")
+        self.assertEqual(out["probe_cached_at"], 123)
+        self.assertFalse(out["probe_in_sync"])
+
+        clean = dict(node_info)
+        clean["config_patch_status"] = "ok"
+        out = m.enrich_node_probe_snapshot(clean)
+        self.assertEqual(out["probe_summary_text"], "ok")
+        self.assertTrue(out["probe_in_sync"])
+
+    def test_sanitize_probe_response_node_removes_password(self):
+        m = lanying_openclaw
+        node_info = {
+            "node_id": "node-1",
+            "password": "secret-password",
+            "probe_summary_text": "ok",
+        }
+
+        out = m.sanitize_probe_response_node(node_info)
+
+        self.assertEqual(out["node_id"], "node-1")
+        self.assertEqual(out["probe_summary_text"], "ok")
+        self.assertNotIn("password", out)
+
     def test_handle_client_event_probe_report_updates_node_state(self):
         m = lanying_openclaw
         node_info = {
@@ -194,7 +233,8 @@ class OpenClawProbeTests(unittest.TestCase):
             "user_id": "openclaw-user",
         }
 
-        with mock.patch.object(m, "update_node_fields") as mocked_update:
+        with mock.patch.object(m, "get_node", return_value=node_info), \
+             mock.patch.object(m, "update_node_fields") as mocked_update:
             result = m.send_probe_to_node(node_info, {"health": {}})
 
         self.assertEqual(result["result"], "ok")
@@ -203,6 +243,33 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(updates["config_patch_status"], "not_checked")
         self.assertEqual(updates["online_marker_status"], "not_checked")
         self.assertNotEqual(updates["last_probe_id"], "")
+
+    def test_send_probe_to_node_reuses_recent_inflight_probe(self):
+        m = lanying_openclaw
+        node_info = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+        }
+        inflight_node = {
+            **node_info,
+            "last_probe_id": "probe-inflight",
+            "last_probe_at": 1000,
+            "probe_completed": False,
+            "probe_timeout": False,
+        }
+
+        with mock.patch.object(m, "get_node", return_value=inflight_node), \
+             mock.patch.object(m, "update_node_fields") as mocked_update, \
+             mock.patch.object(m, "secrets") as mocked_secrets, \
+             mock.patch.object(m.time, "time", return_value=1.001):
+            result = m.send_probe_to_node(node_info, {"health": {}})
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["probe_id"], "probe-inflight")
+        self.assertTrue(result["data"]["reused"])
+        mocked_update.assert_not_called()
+        mocked_secrets.token_hex.assert_not_called()
 
     def test_sync_model_config_schedules_delayed_probe_when_prompt_sync_enabled(self):
         m = lanying_openclaw
@@ -297,6 +364,137 @@ class OpenClawProbeTests(unittest.TestCase):
         mocked_update_config.assert_not_called()
         mocked_update_counts.assert_not_called()
         mocked_schedule.assert_not_called()
+
+    def test_probe_node_waits_for_matching_report(self):
+        m = lanying_openclaw
+        initial_node = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "last_probe_report_at": 100,
+            "last_probe_id": "probe-old",
+            "probe_repair_last_probe_id": "probe-old",
+        }
+        completed_node = {
+            **initial_node,
+            "last_probe_id": "probe-new",
+            "probe_repair_last_probe_id": "probe-new",
+            "last_probe_report_at": 200,
+            "probe_summary_text": "ok",
+        }
+
+        with mock.patch.object(m, "get_node", side_effect=[initial_node, completed_node]), \
+             mock.patch.object(m, "build_default_probe_checks", return_value={"health": {}}), \
+             mock.patch.object(m, "send_probe_to_node", return_value={"result": "ok", "data": {"probe_id": "probe-new"}}):
+            result = m.probe_node("app-id", "node-1", wait_timeout_ms=2000, wait_for_fresh_report=True)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertTrue(result["data"]["completed"])
+        self.assertFalse(result["data"]["timeout"])
+        self.assertEqual(result["data"]["probe_id"], "probe-new")
+        self.assertEqual(result["data"]["node"]["probe_summary_text"], "ok")
+
+    def test_probe_node_reuses_recent_inflight_probe_without_resending(self):
+        m = lanying_openclaw
+        inflight_node = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "last_probe_id": "probe-inflight",
+            "last_probe_at": 1000,
+            "last_probe_report_at": 100,
+            "probe_completed": False,
+            "probe_timeout": False,
+            "probe_repair_last_probe_id": "probe-old",
+            "probe_summary_text": "partial_issue",
+        }
+
+        with mock.patch.object(m, "get_node", side_effect=[inflight_node, inflight_node]), \
+             mock.patch.object(m, "send_probe_to_node") as mocked_send, \
+             mock.patch.object(m.time, "time", return_value=1.001):
+            result = m.probe_node("app-id", "node-1", wait_timeout_ms=2000, wait_for_fresh_report=False)
+
+        mocked_send.assert_not_called()
+        self.assertEqual(result["result"], "ok")
+        self.assertFalse(result["data"]["triggered"])
+        self.assertFalse(result["data"]["completed"])
+        self.assertEqual(result["data"]["probe_id"], "probe-inflight")
+
+    def test_probe_node_timeout_returns_latest_cached_snapshot(self):
+        m = lanying_openclaw
+        initial_node = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "last_probe_report_at": 100,
+            "last_probe_id": "probe-old",
+            "probe_repair_last_probe_id": "probe-old",
+            "probe_summary_text": "partial_issue",
+        }
+        pending_node = {
+            **initial_node,
+            "last_probe_id": "probe-new",
+            "probe_repair_last_probe_id": "probe-old",
+        }
+        timeout_node = {
+            **pending_node,
+            "probe_timeout": True,
+        }
+
+        with mock.patch.object(m, "get_node", side_effect=[initial_node, pending_node, pending_node, timeout_node, timeout_node, timeout_node]), \
+             mock.patch.object(m, "build_default_probe_checks", return_value={"health": {}}), \
+             mock.patch.object(m, "send_probe_to_node", return_value={"result": "ok", "data": {"probe_id": "probe-new"}}), \
+             mock.patch.object(m, "update_node_fields") as mocked_update, \
+             mock.patch.object(m.time, "time", side_effect=[0.0, 0.0, 0.1, 0.6, 1.1]), \
+             mock.patch.object(m.time, "sleep"):
+            result = m.probe_node("app-id", "node-1", wait_timeout_ms=1000, wait_for_fresh_report=True)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertFalse(result["data"]["completed"])
+        self.assertTrue(result["data"]["timeout"])
+        self.assertEqual(result["data"]["summary"], "partial_issue")
+        mocked_update.assert_called_once()
+
+    def test_probe_node_timeout_does_not_override_success_arriving_at_deadline(self):
+        m = lanying_openclaw
+        initial_node = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "last_probe_report_at": 100,
+            "last_probe_id": "probe-old",
+            "probe_repair_last_probe_id": "probe-old",
+            "probe_summary_text": "partial_issue",
+        }
+        pending_node = {
+            **initial_node,
+            "last_probe_id": "probe-new",
+            "probe_repair_last_probe_id": "probe-old",
+            "probe_completed": False,
+            "probe_timeout": False,
+        }
+        completed_node = {
+            **pending_node,
+            "probe_repair_last_probe_id": "probe-new",
+            "last_probe_report_at": 200,
+            "probe_summary_text": "ok",
+            "password": "node-password",
+        }
+
+        with mock.patch.object(m, "get_node", side_effect=[initial_node, pending_node, pending_node, completed_node]), \
+             mock.patch.object(m, "build_default_probe_checks", return_value={"health": {}}), \
+             mock.patch.object(m, "send_probe_to_node", return_value={"result": "ok", "data": {"probe_id": "probe-new"}}), \
+             mock.patch.object(m, "update_node_fields") as mocked_update, \
+             mock.patch.object(m.time, "time", side_effect=[0.0, 0.0, 0.2, 0.6, 1.1]), \
+             mock.patch.object(m.time, "sleep"):
+            result = m.probe_node("app-id", "node-1", wait_timeout_ms=1000, wait_for_fresh_report=True)
+
+        mocked_update.assert_not_called()
+        self.assertEqual(result["result"], "ok")
+        self.assertTrue(result["data"]["completed"])
+        self.assertFalse(result["data"]["timeout"])
+        self.assertEqual(result["data"]["summary"], "ok")
+        self.assertNotIn("password", result["data"]["node"])
 
 
 if __name__ == "__main__":
