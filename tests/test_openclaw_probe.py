@@ -130,6 +130,7 @@ class OpenClawProbeTests(unittest.TestCase):
         m = lanying_openclaw
         node_info = {
             "last_probe_report_at": 123,
+            "api_version": 4,
             "health_probe_status": "ok",
             "account_config_status": "ok",
             "config_patch_status": "mismatch",
@@ -150,6 +151,76 @@ class OpenClawProbeTests(unittest.TestCase):
         out = m.enrich_node_probe_snapshot(clean)
         self.assertEqual(out["probe_summary_text"], "ok")
         self.assertTrue(out["probe_in_sync"])
+        self.assertTrue(out["probe_supported"])
+
+    def test_enrich_node_probe_snapshot_marks_explicit_old_api_plugin_as_unsupported(self):
+        m = lanying_openclaw
+        node_info = {
+            "status": "normal",
+            "api_version": 3,
+            "probe_completed": False,
+            "probe_timeout": False,
+            "health_probe_status": "not_checked",
+            "account_config_status": "not_checked",
+            "config_patch_status": "not_checked",
+            "preset_prompt_content_status": "not_checked",
+            "preset_prompt_hook_status": "not_checked",
+            "workspace_files_status": "not_checked",
+            "session_map_runtime_status": "not_checked",
+            "online_marker_status": "not_checked",
+        }
+
+        out = m.enrich_node_probe_snapshot(node_info)
+
+        self.assertFalse(out["probe_supported"])
+        self.assertEqual(out["probe_support_state"], "unsupported")
+        self.assertEqual(out["probe_summary_text"], "unsupported")
+
+    def test_enrich_node_probe_snapshot_keeps_missing_api_version_as_unknown(self):
+        m = lanying_openclaw
+        node_info = {
+            "status": "normal",
+            "api_version": "",
+            "probe_completed": False,
+            "probe_timeout": False,
+            "health_probe_status": "not_checked",
+            "account_config_status": "not_checked",
+            "config_patch_status": "not_checked",
+            "preset_prompt_content_status": "not_checked",
+            "preset_prompt_hook_status": "not_checked",
+            "workspace_files_status": "not_checked",
+            "session_map_runtime_status": "not_checked",
+            "online_marker_status": "not_checked",
+        }
+
+        out = m.enrich_node_probe_snapshot(node_info)
+
+        self.assertFalse(out["probe_supported"])
+        self.assertEqual(out["probe_support_state"], "unknown")
+        self.assertEqual(out["probe_summary_text"], "not_checked")
+
+    def test_enrich_node_probe_snapshot_marks_probe_timeout_as_failed(self):
+        m = lanying_openclaw
+        node_info = {
+            "status": "normal",
+            "api_version": 4,
+            "probe_completed": False,
+            "probe_timeout": True,
+            "health_probe_status": "not_checked",
+            "account_config_status": "not_checked",
+            "config_patch_status": "not_checked",
+            "preset_prompt_content_status": "not_checked",
+            "preset_prompt_hook_status": "not_checked",
+            "workspace_files_status": "not_checked",
+            "session_map_runtime_status": "not_checked",
+            "online_marker_status": "not_checked",
+        }
+
+        out = m.enrich_node_probe_snapshot(node_info)
+
+        self.assertTrue(out["probe_supported"])
+        self.assertEqual(out["probe_support_state"], "supported")
+        self.assertEqual(out["probe_summary_text"], "failed")
 
     def test_sanitize_probe_response_node_removes_password(self):
         m = lanying_openclaw

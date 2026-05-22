@@ -29,6 +29,7 @@ PROBE_WAIT_TIMEOUT_MS = 8000
 PROBE_WAIT_POLL_INTERVAL_MS = 250
 PROBE_INFLIGHT_REUSE_WINDOW_MS = 15000
 PROBE_RESPONSE_REDACT_FIELDS = ['password']
+MIN_PROBE_API_VERSION = 4
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
@@ -475,6 +476,32 @@ def sanitize_probe_response_node(node_info):
         if field in sanitized:
             sanitized.pop(field, None)
     return sanitized
+
+def parse_api_version_number(value):
+    try:
+        return int(str(value or '').strip())
+    except Exception:
+        return 0
+
+def resolve_probe_support_state(node_info):
+    if not isinstance(node_info, dict):
+        return 'unknown'
+    api_version = parse_api_version_number(node_info.get('api_version', ''))
+    if api_version >= MIN_PROBE_API_VERSION:
+        return 'supported'
+    if api_version > 0:
+        return 'unsupported'
+    statuses = get_probe_check_statuses(node_info)
+    if any(status != 'not_checked' for status in statuses):
+        return 'supported'
+    if int(node_info.get('last_probe_report_at', 0) or 0) > 0:
+        return 'supported'
+    if str(node_info.get('probe_repair_last_probe_id', '')).strip() != '':
+        return 'supported'
+    return 'unknown'
+
+def is_probe_supported(node_info):
+    return resolve_probe_support_state(node_info) == 'supported'
 
 def is_probe_inflight(node_info, max_age_ms=PROBE_INFLIGHT_REUSE_WINDOW_MS):
     if not isinstance(node_info, dict):
@@ -4576,6 +4603,13 @@ def get_probe_check_statuses(node_info):
     return statuses
 
 def resolve_probe_summary_text(node_info):
+    if not isinstance(node_info, dict):
+        return 'not_checked'
+    support_state = resolve_probe_support_state(node_info)
+    if str(node_info.get('status', '')).strip() == 'normal' and support_state == 'unsupported':
+        return 'unsupported'
+    if parse_bool_flag(node_info.get('probe_timeout')) and not parse_bool_flag(node_info.get('probe_completed')):
+        return 'failed'
     statuses = get_probe_check_statuses(node_info)
     if len(statuses) == 0 or all(status == 'not_checked' for status in statuses):
         return 'not_checked'
@@ -4591,6 +4625,8 @@ def enrich_node_probe_snapshot(node_info):
     if not isinstance(node_info, dict):
         return node_info
     snapshot = dict(node_info)
+    snapshot['probe_support_state'] = resolve_probe_support_state(snapshot)
+    snapshot['probe_supported'] = snapshot['probe_support_state'] == 'supported'
     summary_text = resolve_probe_summary_text(snapshot)
     snapshot['probe_summary_text'] = summary_text
     snapshot['probe_in_sync'] = summary_text == 'ok'
