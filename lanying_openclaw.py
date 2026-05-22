@@ -641,7 +641,12 @@ def is_matching_probe_report(node_info, probe_id, started_report_at=0):
     )
 
 def build_probe_response_data(triggered, completed, timeout, probe_id, node_info):
-    latest_node = sanitize_probe_response_node(node_info)
+    raw_node = dict(node_info) if isinstance(node_info, dict) else node_info
+    latest_node = sanitize_probe_response_node(enrich_node_probe_snapshot(node_info))
+    if isinstance(raw_node, dict) and isinstance(latest_node, dict):
+        raw_summary = str(raw_node.get('probe_summary_text', '')).strip()
+        if raw_summary != '':
+            latest_node['probe_summary_text'] = raw_summary
     summary = latest_node.get('probe_summary_text', 'not_checked') if isinstance(latest_node, dict) else 'not_checked'
     if bool(timeout) and not bool(completed):
         summary = 'failed'
@@ -4549,6 +4554,12 @@ def probe_node(app_id, node_id, wait_timeout_ms=PROBE_WAIT_TIMEOUT_MS, wait_for_
         return {
             'result': 'error',
             'message': 'node not exist'
+        }
+    if resolve_probe_support_state(node_info) == 'unsupported':
+        latest_node = get_node(app_id, node_id) or node_info
+        return {
+            'result': 'ok',
+            'data': build_probe_response_data(False, True, False, '', latest_node)
         }
     timeout_ms = clamp_probe_wait_timeout_ms(wait_timeout_ms)
     triggered = False

@@ -730,6 +730,37 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertFalse(result["data"]["completed"])
         self.assertEqual(result["data"]["probe_id"], "probe-inflight")
 
+    def test_probe_node_returns_unsupported_snapshot_for_old_plugin(self):
+        m = lanying_openclaw
+        legacy_node = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "status": "normal",
+            "api_version": 3,
+            "probe_completed": False,
+            "probe_timeout": False,
+            "health_probe_status": "not_checked",
+            "account_config_status": "not_checked",
+            "config_patch_status": "not_checked",
+            "preset_prompt_content_status": "not_checked",
+            "preset_prompt_hook_status": "not_checked",
+            "workspace_files_status": "not_checked",
+            "session_map_runtime_status": "not_checked",
+            "online_marker_status": "not_checked",
+        }
+
+        with mock.patch.object(m, "get_node", return_value=legacy_node), \
+             mock.patch.object(m, "send_probe_to_node") as mocked_send:
+            result = m.probe_node("app-id", "node-1", wait_timeout_ms=1000, wait_for_fresh_report=True)
+
+        mocked_send.assert_not_called()
+        self.assertEqual(result["result"], "ok")
+        self.assertTrue(result["data"]["completed"])
+        self.assertFalse(result["data"]["timeout"])
+        self.assertEqual(result["data"]["summary"], "unsupported")
+        self.assertEqual(result["data"]["node"]["probe_summary_text"], "unsupported")
+
     def test_probe_node_timeout_returns_latest_cached_snapshot(self):
         m = lanying_openclaw
         initial_node = {
