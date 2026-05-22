@@ -4864,8 +4864,13 @@ def enrich_node_probe_snapshot(node_info):
     if not isinstance(node_info, dict):
         return node_info
     snapshot = dict(node_info)
-    snapshot['presence_status'] = normalize_presence_status(snapshot.get('presence_status'))
     snapshot['presence_source'] = normalize_presence_source(snapshot.get('presence_source'))
+    snapshot['presence_status'] = normalize_presence_status(snapshot.get('presence_status'))
+    if snapshot['presence_status'] == NODE_PRESENCE_UNKNOWN:
+        if snapshot['presence_source'] in [NODE_PRESENCE_SOURCE_OFFLINE_MARKER, NODE_PRESENCE_SOURCE_PROBE_TIMEOUT]:
+            snapshot['presence_status'] = NODE_PRESENCE_OFFLINE
+        elif snapshot['presence_source'] == NODE_PRESENCE_SOURCE_ONLINE_MARKER:
+            snapshot['presence_status'] = NODE_PRESENCE_ONLINE
     if 'presence_updated_at' not in snapshot or str(snapshot.get('presence_updated_at', '')).strip() == '':
         snapshot['presence_updated_at'] = 0
     else:

@@ -268,6 +268,27 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(out["probe_support_state"], "supported")
         self.assertEqual(out["probe_summary_text"], "failed")
 
+    def test_enrich_node_probe_snapshot_restores_offline_presence_from_source(self):
+        m = lanying_openclaw
+        node_info = {
+            "presence_status": "",
+            "presence_source": "offline_marker",
+            "last_probe_report_at": 123,
+            "health_probe_status": "not_checked",
+            "account_config_status": "not_checked",
+            "config_patch_status": "not_checked",
+            "preset_prompt_content_status": "not_checked",
+            "preset_prompt_hook_status": "not_checked",
+            "workspace_files_status": "not_checked",
+            "session_map_runtime_status": "not_checked",
+            "online_marker_status": "not_checked",
+        }
+
+        out = m.enrich_node_probe_snapshot(node_info)
+
+        self.assertEqual(out["presence_status"], "offline")
+        self.assertEqual(out["presence_source"], "offline_marker")
+
     def test_sanitize_probe_response_node_removes_password(self):
         m = lanying_openclaw
         node_info = {
