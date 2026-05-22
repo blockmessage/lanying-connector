@@ -69,6 +69,23 @@ class OpenClawProbeTests(unittest.TestCase):
             m.build_probe_value_hash(None, False),
         )
 
+    def test_build_probe_value_hash_normalizes_provider_model_lists_by_id(self):
+        m = lanying_openclaw
+        path = "models.providers.lanying.models"
+        left = [
+            {"id": "lanying/openai/gpt-5-mini", "name": "GPT 5 Mini", "maxTokens": 8192},
+            {"id": "lanying/volcengine/DeepSeek-R1", "reasoning": True},
+        ]
+        right = [
+            {"id": "lanying/volcengine/DeepSeek-R1", "name": "DeepSeek", "maxTokens": 32000},
+            {"id": "lanying/openai/gpt-5-mini", "reasoning": False},
+        ]
+
+        self.assertEqual(
+            m.build_probe_value_hash(left, True, path),
+            m.build_probe_value_hash(right, True, path),
+        )
+
     def test_build_default_probe_checks_uses_per_key_hash_and_prompt_hash(self):
         m = lanying_openclaw
         node_info = {
@@ -96,6 +113,7 @@ class OpenClawProbeTests(unittest.TestCase):
                 {
                     "path": "agents.defaults.model.primary",
                     "expected_hash": m.build_probe_value_hash("lanying/openai/gpt-5-mini", True),
+                    "expected_summary": "lanying/openai/gpt-5-mini",
                 }
             ],
         )
@@ -125,6 +143,35 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertNotIn("preset_prompt_content", checks)
         self.assertNotIn("preset_prompt_hook", checks)
         self.assertNotIn("workspace_files", checks)
+
+    def test_get_model_list_returns_stable_sorted_models(self):
+        m = lanying_openclaw
+        raw_models = [
+            {
+                "vendor": "zeta",
+                "model": "z-model",
+                "type": "chat",
+                "token_limit": 32000,
+                "max_output_tokens": 4096,
+                "reasoning": False,
+            },
+            {
+                "vendor": "alpha",
+                "model": "a-model",
+                "type": "chat",
+                "token_limit": 32000,
+                "max_output_tokens": 8192,
+                "reasoning": True,
+            },
+        ]
+
+        with mock.patch.object(m.lanying_vendor, "list_models", return_value=raw_models):
+            models = m.get_model_list("app-id")
+
+        self.assertEqual(
+            [item["id"] for item in models],
+            ["alpha/a-model", "zeta/z-model"],
+        )
 
     def test_enrich_node_probe_snapshot_builds_summary_fields(self):
         m = lanying_openclaw
@@ -274,7 +321,57 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(json.loads(updates["preset_prompt_hook_missing_requirements"]), ["injection_path_missing"])
         self.assertEqual(updates["workspace_files_status"], "failed")
         self.assertEqual(updates["plugin_version"], "1.2.3")
-        mocked_auto_repair.assert_called_once()
+        self.assertEqual(updates["presence_status"], "online")
+        self.assertEqual(updates["presence_source"], "online_marker")
+        mocked_auto_repair.assert_not_called()
+
+    def test_handle_client_event_online_marks_presence_online_and_keeps_bootstrap(self):
+        m = lanying_openclaw
+        node_info = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "status": "wait",
+        }
+
+        with mock.patch.object(m, "get_nodes_by_user_id", return_value=[node_info]), \
+             mock.patch.object(m, "update_node_field") as mocked_update_field, \
+             mock.patch.object(m, "update_node_fields") as mocked_update_fields, \
+             mock.patch.object(m, "get_node", return_value=node_info), \
+             mock.patch.object(m, "get_model_patch_config", return_value={}), \
+             mock.patch.object(m, "update_node_config"), \
+             mock.patch.object(m, "maybe_sync_node_bound_chatbot_preset_prompt"), \
+             mock.patch.object(m, "sync_session_map_settings_to_node"), \
+             mock.patch.object(m, "sync_session_mapping_snapshot_to_node"), \
+             mock.patch.object(m, "build_default_probe_checks", return_value={"health": {}}), \
+             mock.patch.object(m, "schedule_probe_to_node"):
+            m.handle_client_event({"type": "online", "plugin_version": "1.2.3", "api_version": "4"}, "app-id", "openclaw-user", "COMMAND")
+
+        mocked_update_fields.assert_called_once()
+        presence_updates = mocked_update_fields.call_args.args[2]
+        self.assertEqual(presence_updates["presence_status"], "online")
+        self.assertEqual(presence_updates["presence_source"], "online_marker")
+        mocked_update_field.assert_any_call("app-id", "node-1", "status", "normal")
+
+    def test_handle_client_event_offline_marks_presence_offline_only(self):
+        m = lanying_openclaw
+        node_info = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "user_id": "openclaw-user",
+            "status": "normal",
+        }
+
+        with mock.patch.object(m, "get_nodes_by_user_id", return_value=[node_info]), \
+             mock.patch.object(m, "update_node_fields") as mocked_update:
+            m.handle_client_event({"type": "offline"}, "app-id", "openclaw-user", "COMMAND")
+
+        mocked_update.assert_called_once()
+        updates = mocked_update.call_args.args[2]
+        self.assertEqual(updates["presence_status"], "offline")
+        self.assertEqual(updates["presence_source"], "offline_marker")
+        self.assertIn("presence_updated_at", updates)
+        self.assertNotIn("status", updates)
 
     def test_handle_client_event_probe_report_skips_stale_probe_id(self):
         m = lanying_openclaw
@@ -516,15 +613,18 @@ class OpenClawProbeTests(unittest.TestCase):
              mock.patch.object(m, "build_default_probe_checks", return_value={"health": {}}), \
              mock.patch.object(m, "send_probe_to_node", return_value={"result": "ok", "data": {"probe_id": "probe-new"}}), \
              mock.patch.object(m, "update_node_fields") as mocked_update, \
-             mock.patch.object(m.time, "time", side_effect=[0.0, 0.0, 0.1, 0.6, 1.1]), \
+             mock.patch.object(m.time, "time", side_effect=[0.0, 0.0, 0.1, 0.6, 1.1, 1.1]), \
              mock.patch.object(m.time, "sleep"):
             result = m.probe_node("app-id", "node-1", wait_timeout_ms=1000, wait_for_fresh_report=True)
 
         self.assertEqual(result["result"], "ok")
         self.assertFalse(result["data"]["completed"])
         self.assertTrue(result["data"]["timeout"])
-        self.assertEqual(result["data"]["summary"], "partial_issue")
+        self.assertEqual(result["data"]["summary"], "failed")
         mocked_update.assert_called_once()
+        updates = mocked_update.call_args.args[2]
+        self.assertEqual(updates["presence_status"], "offline")
+        self.assertEqual(updates["presence_source"], "probe_timeout")
 
     def test_probe_node_timeout_does_not_override_success_arriving_at_deadline(self):
         m = lanying_openclaw

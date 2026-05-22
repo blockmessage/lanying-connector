@@ -30,6 +30,13 @@ PROBE_WAIT_POLL_INTERVAL_MS = 250
 PROBE_INFLIGHT_REUSE_WINDOW_MS = 15000
 PROBE_RESPONSE_REDACT_FIELDS = ['password']
 MIN_PROBE_API_VERSION = 4
+NODE_PRESENCE_ONLINE = 'online'
+NODE_PRESENCE_OFFLINE = 'offline'
+NODE_PRESENCE_UNKNOWN = 'unknown'
+NODE_PRESENCE_SOURCE_ONLINE_MARKER = 'online_marker'
+NODE_PRESENCE_SOURCE_OFFLINE_MARKER = 'offline_marker'
+NODE_PRESENCE_SOURCE_PROBE_TIMEOUT = 'probe_timeout'
+NODE_PRESENCE_SOURCE_UNKNOWN = 'unknown'
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
@@ -128,6 +135,35 @@ def build_managed_agents_content(chatbot_id, chatbot_name, prompt):
         '',
     ])
 
+def is_provider_models_probe_path(path):
+    path_str = str(path or '').strip()
+    return path_str.startswith('models.providers.') and path_str.endswith('.models')
+
+def summarize_probe_value_for_log(path, value):
+    normalized_value = _normalize_probe_value_for_path(path, value)
+    if is_provider_models_probe_path(path):
+        model_ids = normalized_value if isinstance(normalized_value, list) else []
+        return {
+            'model_ids': model_ids,
+            'count': len(model_ids),
+        }
+    return normalized_value
+
+def _normalize_probe_value_for_path(path, value):
+    if is_provider_models_probe_path(path) and isinstance(value, list):
+        model_ids = []
+        for item in value:
+            if isinstance(item, dict):
+                model_id = str(item.get('id', '')).strip()
+                if model_id != '':
+                    model_ids.append(model_id)
+            elif isinstance(item, str):
+                model_id = item.strip()
+                if model_id != '':
+                    model_ids.append(model_id)
+        return sorted(set(model_ids))
+    return value
+
 def _normalize_probe_value(value):
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -145,8 +181,9 @@ def _normalize_probe_value(value):
 def stable_probe_json(value):
     return json.dumps(_normalize_probe_value(value), ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
-def build_probe_value_hash(value, present=True):
-    payload = {'present': True, 'value': value} if present else {'present': False}
+def build_probe_value_hash(value, present=True, path=None):
+    normalized_value = _normalize_probe_value_for_path(path, value)
+    payload = {'present': True, 'value': normalized_value} if present else {'present': False}
     return hashlib.sha256(stable_probe_json(payload).encode('utf-8')).hexdigest()
 
 def split_probe_path(path):
@@ -541,14 +578,34 @@ def is_matching_probe_report(node_info, probe_id, started_report_at=0):
 
 def build_probe_response_data(triggered, completed, timeout, probe_id, node_info):
     latest_node = sanitize_probe_response_node(node_info)
+    summary = latest_node.get('probe_summary_text', 'not_checked') if isinstance(latest_node, dict) else 'not_checked'
+    if bool(timeout) and not bool(completed):
+        summary = 'failed'
     return {
         'triggered': bool(triggered),
         'completed': bool(completed),
         'timeout': bool(timeout),
         'probe_id': str(probe_id or '').strip(),
-        'summary': latest_node.get('probe_summary_text', 'not_checked') if isinstance(latest_node, dict) else 'not_checked',
+        'summary': summary,
         'node': latest_node
     }
+
+def normalize_presence_status(value):
+    normalized = str(value or '').strip().lower()
+    if normalized in [NODE_PRESENCE_ONLINE, NODE_PRESENCE_OFFLINE, NODE_PRESENCE_UNKNOWN]:
+        return normalized
+    return NODE_PRESENCE_UNKNOWN
+
+def normalize_presence_source(value):
+    normalized = str(value or '').strip().lower()
+    if normalized in [
+        NODE_PRESENCE_SOURCE_ONLINE_MARKER,
+        NODE_PRESENCE_SOURCE_OFFLINE_MARKER,
+        NODE_PRESENCE_SOURCE_PROBE_TIMEOUT,
+        NODE_PRESENCE_SOURCE_UNKNOWN,
+    ]:
+        return normalized
+    return NODE_PRESENCE_SOURCE_UNKNOWN
 
 def delete_node(app_id, node_id):
     node_info = get_node(app_id, node_id)
@@ -3818,6 +3875,13 @@ def build_pending_probe_state_updates(probe_id):
         'online_marker_details': '{}',
     }
 
+def build_presence_state_updates(status, source, updated_at=None):
+    return {
+        'presence_status': str(status or NODE_PRESENCE_UNKNOWN).strip() or NODE_PRESENCE_UNKNOWN,
+        'presence_source': str(source or NODE_PRESENCE_SOURCE_UNKNOWN).strip() or NODE_PRESENCE_SOURCE_UNKNOWN,
+        'presence_updated_at': int(updated_at or int(time.time() * 1000)),
+    }
+
 def build_node_probe_state_updates(event):
     now_ms = int(time.time() * 1000)
     results = event.get('results', {}) if isinstance(event.get('results', {}), dict) else {}
@@ -3854,6 +3918,11 @@ def build_node_probe_state_updates(event):
         'online_marker_details': json.dumps(normalize_probe_result_details(online_marker_result.get('details'), {}), ensure_ascii=False, separators=(',', ':')),
         'probe_repair_last_probe_id': str(event.get('probe_id', '')).strip(),
     }
+    updates.update(build_presence_state_updates(
+        NODE_PRESENCE_ONLINE,
+        NODE_PRESENCE_SOURCE_ONLINE_MARKER,
+        updates['last_probe_report_at'],
+    ))
     return updates
 
 def build_probe_issue_categories(node_info, event):
@@ -3949,6 +4018,10 @@ def handle_client_event(event, app_id, user_id, ctype):
             node_id = node['node_id']
             update_node_field(app_id, node_id, 'plugin_version', plugin_version)
             update_node_field(app_id, node_id, 'api_version', api_version)
+            update_node_fields(app_id, node_id, build_presence_state_updates(
+                NODE_PRESENCE_ONLINE,
+                NODE_PRESENCE_SOURCE_ONLINE_MARKER,
+            ))
             node = get_node(app_id, node_id) or node
             logging.info(f"update node versions | node_id: {node_id}, plugin_version:{plugin_version}, api_version:{api_version}")
             if node['status'] == 'wait':
@@ -3983,6 +4056,15 @@ def handle_client_event(event, app_id, user_id, ctype):
             sync_session_map_settings_to_node(node)
             sync_session_mapping_snapshot_to_node(node)
             send_probe_to_node(node)
+    elif event['type'] == 'offline':
+        node_list = get_nodes_by_user_id(app_id, user_id)
+        for node in node_list:
+            node_id = node['node_id']
+            logging.info(f"mark node presence offline by offline marker | node_id: {node_id}")
+            update_node_fields(app_id, node_id, build_presence_state_updates(
+                NODE_PRESENCE_OFFLINE,
+                NODE_PRESENCE_SOURCE_OFFLINE_MARKER,
+            ))
     elif event['type'] == 'probe_report':
         if ctype != 'COMMAND':
             logging.info(f"handle_client_event skip not command probe_report | ctype: {ctype}, event: {event}")
@@ -3999,8 +4081,6 @@ def handle_client_event(event, app_id, user_id, ctype):
                 )
                 continue
             update_node_fields(app_id, node_id, build_node_probe_state_updates(event))
-            refreshed_node = get_node(app_id, node_id) or node
-            maybe_auto_repair_probe_mismatch(refreshed_node, event)
     elif event['type'] == 'session_map_settings_report':
         node_list = get_nodes_by_user_id(app_id, user_id)
         session_map_sync = 'on' if parse_bool_flag(event.get('session_map_sync')) else 'off'
@@ -4159,6 +4239,13 @@ def get_model_list(app_id):
             "contextWindow": model['token_limit'],
             "maxTokens": model.get('max_output_tokens', 8192)
         })
+    models.sort(key=lambda item: (
+        str(item.get('id', '')),
+        str(item.get('name', '')),
+        1 if item.get('reasoning') else 0,
+        int(item.get('contextWindow', 0) or 0),
+        int(item.get('maxTokens', 0) or 0),
+    ))
     return models
 
 def resolve_probe_preset_prompt_payload(node_info):
@@ -4200,7 +4287,8 @@ def build_default_probe_checks(node_info, patch_config=None):
     for entry in build_config_batch_entries_from_patch_config(patch_config):
         config_items.append({
             'path': entry['path'],
-            'expected_hash': build_probe_value_hash(entry.get('value'), True)
+            'expected_hash': build_probe_value_hash(entry.get('value'), True, entry['path']),
+            'expected_summary': summarize_probe_value_for_log(entry['path'], entry.get('value')),
         })
     prompt_payload = resolve_probe_preset_prompt_payload(node_info)
     expected_prompt_content = build_managed_agents_content(
@@ -4373,10 +4461,15 @@ def probe_node(app_id, node_id, wait_timeout_ms=PROBE_WAIT_TIMEOUT_MS, wait_for_
         }
     current_probe_id = str(latest_node.get('last_probe_id', '')).strip()
     if current_probe_id == probe_id:
-        update_node_fields(app_id, node_id, {
+        timeout_updates = {
             'probe_completed': 'false',
             'probe_timeout': 'true'
-        })
+        }
+        timeout_updates.update(build_presence_state_updates(
+            NODE_PRESENCE_OFFLINE,
+            NODE_PRESENCE_SOURCE_PROBE_TIMEOUT,
+        ))
+        update_node_fields(app_id, node_id, timeout_updates)
         latest_node = get_node(app_id, node_id) or latest_node
     return {
         'result': 'ok',
@@ -4625,6 +4718,12 @@ def enrich_node_probe_snapshot(node_info):
     if not isinstance(node_info, dict):
         return node_info
     snapshot = dict(node_info)
+    snapshot['presence_status'] = normalize_presence_status(snapshot.get('presence_status'))
+    snapshot['presence_source'] = normalize_presence_source(snapshot.get('presence_source'))
+    if 'presence_updated_at' not in snapshot or str(snapshot.get('presence_updated_at', '')).strip() == '':
+        snapshot['presence_updated_at'] = 0
+    else:
+        snapshot['presence_updated_at'] = int(snapshot.get('presence_updated_at') or 0)
     snapshot['probe_support_state'] = resolve_probe_support_state(snapshot)
     snapshot['probe_supported'] = snapshot['probe_support_state'] == 'supported'
     summary_text = resolve_probe_summary_text(snapshot)
@@ -4663,6 +4762,18 @@ def get_node(app_id, node_id):
             dto['plugin_version'] = ''
         if 'api_version' not in dto:
             dto['api_version'] = ''
+        if 'presence_status' not in dto or str(dto.get('presence_status', '')).strip() == '':
+            dto['presence_status'] = NODE_PRESENCE_UNKNOWN
+        else:
+            dto['presence_status'] = normalize_presence_status(dto.get('presence_status'))
+        if 'presence_source' not in dto or str(dto.get('presence_source', '')).strip() == '':
+            dto['presence_source'] = NODE_PRESENCE_SOURCE_UNKNOWN
+        else:
+            dto['presence_source'] = normalize_presence_source(dto.get('presence_source'))
+        if 'presence_updated_at' not in dto or str(dto.get('presence_updated_at', '')).strip() == '':
+            dto['presence_updated_at'] = 0
+        else:
+            dto['presence_updated_at'] = int(dto.get('presence_updated_at') or 0)
         if 'session_map_sync' not in dto or str(dto.get('session_map_sync', '')).strip() == '':
             dto['session_map_sync'] = 'off'
         if 'merge_sub_sessions' not in dto or str(dto.get('merge_sub_sessions', '')).strip() == '':
