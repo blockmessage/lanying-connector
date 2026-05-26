@@ -4607,13 +4607,17 @@ def probe_node(app_id, node_id, wait_timeout_ms=PROBE_WAIT_TIMEOUT_MS, wait_for_
         }
     current_probe_id = str(latest_node.get('last_probe_id', '')).strip()
     if current_probe_id == probe_id:
+        timeout_report_at = int(time.time() * 1000)
         timeout_updates = {
-            'probe_completed': 'false',
+            'last_probe_report_at': timeout_report_at,
+            'probe_repair_last_probe_id': probe_id,
+            'probe_completed': 'true',
             'probe_timeout': 'true'
         }
         timeout_updates.update(build_presence_state_updates(
             NODE_PRESENCE_OFFLINE,
             NODE_PRESENCE_SOURCE_PROBE_TIMEOUT,
+            timeout_report_at,
         ))
         update_node_fields(app_id, node_id, timeout_updates)
         latest_node = get_node(app_id, node_id) or latest_node
@@ -4859,7 +4863,7 @@ def resolve_probe_summary_text(node_info):
     support_state = resolve_probe_support_state(node_info)
     if str(node_info.get('status', '')).strip() == 'normal' and support_state == 'unsupported':
         return 'unsupported'
-    if parse_bool_flag(node_info.get('probe_timeout')) and not parse_bool_flag(node_info.get('probe_completed')):
+    if parse_bool_flag(node_info.get('probe_timeout')):
         return 'failed'
     statuses = get_probe_check_statuses(node_info)
     if len(statuses) == 0 or all(status == 'not_checked' for status in statuses):

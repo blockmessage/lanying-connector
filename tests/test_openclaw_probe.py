@@ -268,6 +268,29 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(out["probe_support_state"], "supported")
         self.assertEqual(out["probe_summary_text"], "failed")
 
+    def test_enrich_node_probe_snapshot_keeps_timeout_failed_after_completion(self):
+        m = lanying_openclaw
+        node_info = {
+            "status": "normal",
+            "api_version": 4,
+            "probe_completed": True,
+            "probe_timeout": True,
+            "health_probe_status": "not_checked",
+            "account_config_status": "not_checked",
+            "config_patch_status": "not_checked",
+            "preset_prompt_content_status": "not_checked",
+            "preset_prompt_hook_status": "not_checked",
+            "workspace_files_status": "not_checked",
+            "session_map_runtime_status": "not_checked",
+            "online_marker_status": "not_checked",
+        }
+
+        out = m.enrich_node_probe_snapshot(node_info)
+
+        self.assertTrue(out["probe_supported"])
+        self.assertEqual(out["probe_support_state"], "supported")
+        self.assertEqual(out["probe_summary_text"], "failed")
+
     def test_enrich_node_probe_snapshot_restores_offline_presence_from_source(self):
         m = lanying_openclaw
         node_info = {
@@ -800,8 +823,13 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(result["data"]["summary"], "failed")
         mocked_update.assert_called_once()
         updates = mocked_update.call_args.args[2]
+        self.assertEqual(updates["last_probe_report_at"], 1100)
+        self.assertEqual(updates["probe_repair_last_probe_id"], "probe-new")
+        self.assertEqual(updates["probe_completed"], "true")
+        self.assertEqual(updates["probe_timeout"], "true")
         self.assertEqual(updates["presence_status"], "offline")
         self.assertEqual(updates["presence_source"], "probe_timeout")
+        self.assertEqual(updates["presence_updated_at"], 1100)
 
     def test_probe_node_timeout_does_not_override_success_arriving_at_deadline(self):
         m = lanying_openclaw
