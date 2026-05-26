@@ -4285,6 +4285,7 @@ def sync_model_config_and_wait(app_id, node_id, wait_timeout_ms=CONFIG_SYNC_WAIT
     send_result = update_node_config(app_id, node_id, model_patch_config, sync_id=sync_id)
     if send_result.get('result') == 'error':
         return send_result
+    maybe_sync_node_bound_chatbot_preset_prompt(app_id, node_id)
     started_report_at = int(node_info.get('last_config_sync_report_at', 0) or 0)
     deadline = int(time.time() * 1000) + timeout_ms
     while int(time.time() * 1000) < deadline:

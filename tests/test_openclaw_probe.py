@@ -566,6 +566,7 @@ class OpenClawProbeTests(unittest.TestCase):
         with mock.patch.object(m, "get_node", side_effect=[initial_node, updated_node]), \
              mock.patch.object(m, "get_model_patch_config", return_value={"agents": {"defaults": {"model": {"primary": "x"}}}}), \
              mock.patch.object(m, "update_node_config", return_value={"result": "ok", "data": {"msg_id": 1, "sync_id": "sync-1"}}), \
+             mock.patch.object(m, "maybe_sync_node_bound_chatbot_preset_prompt") as mocked_sync_prompt, \
              mock.patch.object(m, "update_node_fields"), \
              mock.patch.object(m, "is_matching_config_sync_report", side_effect=[True]), \
              mock.patch.object(m.time, "time", return_value=0.0):
@@ -574,6 +575,7 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertEqual(result["result"], "ok")
         self.assertTrue(result["data"]["completed"])
         self.assertTrue(result["data"]["success"])
+        mocked_sync_prompt.assert_called_once_with("app-id", "node-1")
 
     def test_sync_model_config_and_wait_returns_timeout_without_report(self):
         m = lanying_openclaw
@@ -593,6 +595,7 @@ class OpenClawProbeTests(unittest.TestCase):
         with mock.patch.object(m, "get_node", side_effect=[initial_node, pending_node, pending_node]), \
              mock.patch.object(m, "get_model_patch_config", return_value={"agents": {"defaults": {"model": {"primary": "x"}}}}), \
              mock.patch.object(m, "update_node_config", return_value={"result": "ok", "data": {"msg_id": 1, "sync_id": "sync-1"}}), \
+             mock.patch.object(m, "maybe_sync_node_bound_chatbot_preset_prompt") as mocked_sync_prompt, \
              mock.patch.object(m, "update_node_fields"), \
              mock.patch.object(m.time, "time", side_effect=[0.0, 0.0, 1.1]), \
              mock.patch.object(m.time, "sleep"):
@@ -602,6 +605,7 @@ class OpenClawProbeTests(unittest.TestCase):
         self.assertFalse(result["data"]["completed"])
         self.assertTrue(result["data"]["timeout"])
         self.assertFalse(result["data"]["success"])
+        mocked_sync_prompt.assert_called_once_with("app-id", "node-1")
 
     def test_schedule_probe_to_node_delayed_rebuilds_checks_from_latest_node_state(self):
         m = lanying_openclaw
