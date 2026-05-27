@@ -264,13 +264,13 @@ class ChatbotAccessTests(unittest.TestCase):
         self.assertEqual(result["result"], "error")
         self.assertIn("set_user_stranger_chat failed", result["message"])
 
-    def test_create_chatbot_public_syncs_im_setting(self):
+    def test_create_chatbot_does_not_sync_im_setting(self):
         m = self.module
         with mock.patch.object(m.lanying_im_api, "set_user_stranger_chat", return_value={"code": 200}) as mocked_stranger, \
              mock.patch.object(m.lanying_im_api, "set_auth_mode", return_value={"code": 200}) as mocked_auth:
             result = self.create_chatbot(access_type="public")
         self.assertEqual(result["result"], "ok")
-        mocked_stranger.assert_called_once_with("app-id", 1001, 1)
+        mocked_stranger.assert_not_called()
         mocked_auth.assert_not_called()
         chatbot = m.get_chatbot("app-id", result["data"]["id"])
         self.assertEqual(chatbot["access_type"], "public")
@@ -332,12 +332,13 @@ class ChatbotAccessTests(unittest.TestCase):
         chatbot = m.get_chatbot("app-id", chatbot_id)
         self.assertEqual(chatbot["user_id"], 2002)
 
-    def test_create_chatbot_returns_error_when_im_setting_sync_fails(self):
+    def test_create_chatbot_ignores_im_setting_failures(self):
         m = self.module
         with mock.patch.object(m.lanying_im_api, "set_user_stranger_chat", return_value={"code": 500, "message": "bad request"}):
             result = self.create_chatbot(access_type="public")
-        self.assertEqual(result["result"], "error")
-        self.assertIn("set_user_stranger_chat failed", result["message"])
+        self.assertEqual(result["result"], "ok")
+        chatbot = m.get_chatbot("app-id", result["data"]["id"])
+        self.assertEqual(chatbot["access_type"], "public")
 
     def test_configure_chatbot_returns_error_when_im_setting_sync_fails(self):
         m = self.module

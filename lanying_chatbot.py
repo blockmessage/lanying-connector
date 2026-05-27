@@ -129,14 +129,6 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
     capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
     if nickname == '':
         nickname = name
-    setting_result = init_chatbot_im_user_setting(app_id, None, {
-        'chatbot_id': chatbot_id,
-        'user_id': user_id,
-        'access_type': access_type,
-        'access_list': access_list,
-    })
-    if setting_result['result'] == 'error':
-        return setting_result
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "chatbot_id": chatbot_id,
