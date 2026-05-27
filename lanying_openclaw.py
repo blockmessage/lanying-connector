@@ -237,6 +237,14 @@ def get_probe_path_value(root, path):
 
 def sync_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
     try:
+        current_chatbot_id = str(get_node_chatbot_id(app_id, node_id) or '').strip()
+        expected_chatbot_id = str(chatbot_id or '').strip()
+        if current_chatbot_id != expected_chatbot_id or expected_chatbot_id == '':
+            logging.info(
+                f"sync_bound_chatbot_preset_prompt skip for stale bind | "
+                f"app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}, current_chatbot_id:{current_chatbot_id}"
+            )
+            return
         node_info = get_node(app_id, node_id)
         if node_info is None:
             logging.info(f"sync_bound_chatbot_preset_prompt skip for missing node | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}")
@@ -254,6 +262,14 @@ def sync_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
 
 def clear_bound_chatbot_preset_prompt(app_id, node_id, chatbot_id):
     try:
+        current_chatbot_id = str(get_node_chatbot_id(app_id, node_id) or '').strip()
+        expected_chatbot_id = str(chatbot_id or '').strip()
+        if current_chatbot_id != '':
+            logging.info(
+                f"clear_bound_chatbot_preset_prompt skip for rebound node | "
+                f"app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}, current_chatbot_id:{current_chatbot_id}"
+            )
+            return
         node_info = get_node(app_id, node_id)
         if node_info is None:
             logging.info(f"clear_bound_chatbot_preset_prompt skip for missing node | app_id:{app_id}, node_id:{node_id}, chatbot_id:{chatbot_id}")
@@ -5104,6 +5120,55 @@ def bind_chatbot(app_id, node_id, chatbot_id):
     redis.hset(get_chatbot_node_bind_key(app_id), chatbot_id, node_id)
     executor.submit(sync_model_config, app_id, node_id, False)
     executor.submit(sync_bound_chatbot_preset_prompt, app_id, node_id, chatbot_id)
+    return {
+        'result': 'ok'
+    }
+
+def check_rebind_chatbot(app_id, chatbot_id, old_node_id, new_node_id):
+    old_node_id = str(old_node_id or '').strip()
+    new_node_id = str(new_node_id or '').strip()
+    chatbot_id = str(chatbot_id or '').strip()
+    if chatbot_id == '':
+        return {
+            'result': 'error',
+            'message': 'chatbot not exist'
+        }
+    if old_node_id == new_node_id:
+        return {
+            'result': 'ok'
+        }
+    if new_node_id != '':
+        target_node_info = get_node(app_id, new_node_id)
+        if target_node_info is None:
+            return {
+                'result': 'error',
+                'message': 'node not exist'
+            }
+        target_chatbot_id = str(get_node_chatbot_id(app_id, new_node_id) or '').strip()
+        if target_chatbot_id not in ['', chatbot_id]:
+            return {
+                'result': 'error',
+                'message': 'chatbot already bind to another node'
+            }
+    return {
+        'result': 'ok'
+    }
+
+def rebind_chatbot(app_id, chatbot_id, old_node_id, new_node_id):
+    old_node_id = str(old_node_id or '').strip()
+    new_node_id = str(new_node_id or '').strip()
+    chatbot_id = str(chatbot_id or '').strip()
+    check_result = check_rebind_chatbot(app_id, chatbot_id, old_node_id, new_node_id)
+    if check_result.get('result') == 'error':
+        return check_result
+    if old_node_id == new_node_id:
+        return {
+            'result': 'ok'
+        }
+    if old_node_id != '':
+        unbind_chatbot(app_id, old_node_id, chatbot_id, clear_prompt=True)
+    if new_node_id != '':
+        return bind_chatbot(app_id, new_node_id, chatbot_id)
     return {
         'result': 'ok'
     }

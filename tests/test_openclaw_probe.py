@@ -62,6 +62,66 @@ lanying_openclaw = _load_lanying_openclaw()
 
 
 class OpenClawProbeTests(unittest.TestCase):
+    def test_check_rebind_chatbot_rejects_missing_target_node(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "get_node", return_value=None):
+            result = m.check_rebind_chatbot("app-id", "chatbot-1", "node-1", "node-2")
+        self.assertEqual(result["result"], "error")
+        self.assertEqual(result["message"], "node not exist")
+
+    def test_check_rebind_chatbot_rejects_target_node_bound_to_other_chatbot(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "get_node", return_value={"node_id": "node-2"}), \
+             mock.patch.object(m, "get_node_chatbot_id", return_value="chatbot-2"):
+            result = m.check_rebind_chatbot("app-id", "chatbot-1", "node-1", "node-2")
+        self.assertEqual(result["result"], "error")
+        self.assertEqual(result["message"], "chatbot already bind to another node")
+
+    def test_sync_bound_chatbot_preset_prompt_skips_stale_binding(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "get_node_chatbot_id", return_value="chatbot-2"), \
+             mock.patch.object(m, "get_node") as mocked_get_node, \
+             mock.patch.object(m, "sync_chatbot_preset_prompt") as mocked_sync:
+            m.sync_bound_chatbot_preset_prompt("app-id", "node-1", "chatbot-1")
+        mocked_get_node.assert_not_called()
+        mocked_sync.assert_not_called()
+
+    def test_clear_bound_chatbot_preset_prompt_skips_rebound_node(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "get_node_chatbot_id", return_value="chatbot-2"), \
+             mock.patch.object(m, "get_node") as mocked_get_node, \
+             mock.patch.object(m, "sync_chatbot_preset_prompt") as mocked_sync:
+            m.clear_bound_chatbot_preset_prompt("app-id", "node-1", "chatbot-1")
+        mocked_get_node.assert_not_called()
+        mocked_sync.assert_not_called()
+
+    def test_rebind_chatbot_noop_when_node_unchanged(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "unbind_chatbot") as mocked_unbind, \
+             mock.patch.object(m, "bind_chatbot") as mocked_bind:
+            result = m.rebind_chatbot("app-id", "chatbot-1", "node-1", "node-1")
+        self.assertEqual(result["result"], "ok")
+        mocked_unbind.assert_not_called()
+        mocked_bind.assert_not_called()
+
+    def test_rebind_chatbot_rejects_missing_target_node(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "get_node", return_value=None):
+            result = m.rebind_chatbot("app-id", "chatbot-1", "node-1", "node-2")
+        self.assertEqual(result["result"], "error")
+        self.assertEqual(result["message"], "node not exist")
+
+    def test_rebind_chatbot_moves_binding_via_existing_openclaw_maps(self):
+        m = lanying_openclaw
+        with mock.patch.object(m, "get_node", return_value={"node_id": "node-2"}), \
+             mock.patch.object(m, "get_node_chatbot_id", return_value=""), \
+             mock.patch.object(m, "unbind_chatbot") as mocked_unbind, \
+             mock.patch.object(m, "bind_chatbot", return_value={"result": "ok"}) as mocked_bind:
+            result = m.rebind_chatbot("app-id", "chatbot-1", "node-1", "node-2")
+        self.assertEqual(result["result"], "ok")
+        mocked_unbind.assert_called_once_with("app-id", "node-1", "chatbot-1", clear_prompt=True)
+        mocked_bind.assert_called_once_with("app-id", "node-2", "chatbot-1")
+
     def test_build_probe_value_hash_distinguishes_missing_and_null(self):
         m = lanying_openclaw
         self.assertNotEqual(

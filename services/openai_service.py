@@ -4936,6 +4936,9 @@ def create_chatbot():
     audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     link_profile = dict(data.get('link_profile', {}))
+    access_type = str(data.get('access_type', 'public'))
+    if access_type not in ['public', 'friend']:
+        access_type = 'public'
     content_security = 'on'
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
@@ -4943,7 +4946,8 @@ def create_chatbot():
                                             preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                             message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                                             quota_exceed_reply_msg, group_history_use_mode,
-                                            audio_to_text, image_vision, audio_to_text_model, link_profile, content_security)
+                                            audio_to_text, image_vision, audio_to_text_model, link_profile, content_security,
+                                            access_type=access_type)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -4983,6 +4987,10 @@ def configure_chatbot():
     audio_to_text = str(data.get('audio_to_text', 'off'))
     audio_to_text_model = str(data.get('audio_to_text_model', 'whisper-1'))
     link_profile = dict(data.get('link_profile', {}))
+    openclaw_id = str(data.get('openclaw_id', '')).strip()
+    access_type = str(data.get('access_type', 'public'))
+    if access_type not in ['public', 'friend']:
+        access_type = 'public'
     content_security = str(data.get('content_security', 'on'))
     if content_security not in ['on', 'off']:
         content_security = 'on'
@@ -4995,14 +5003,28 @@ def configure_chatbot():
     if isinstance(old_chatbot_info, dict) and isinstance(old_chatbot_info.get('preset', {}), dict):
         old_model = str(old_chatbot_info['preset'].get('model', '')).strip()
     new_model = str(preset.get('model', '')).strip()
+    old_openclaw_id = ''
+    if isinstance(old_chatbot_info, dict):
+        old_openclaw_id = str(old_chatbot_info.get('openclaw_id', '')).strip()
+    if old_openclaw_id != openclaw_id:
+        bind_check_result = lanying_openclaw.check_rebind_chatbot(app_id, chatbot_id, old_openclaw_id, openclaw_id)
+        if bind_check_result.get('result') == 'error':
+            resp = make_response({'code':400, 'message':f"openclaw_error:{bind_check_result.get('message', '')}"})
+            return resp
     result = lanying_chatbot.configure_chatbot(app_id, account_status, account_type, verification_level, chatbot_id, name, nickname, desc, avatar, user_id, lanying_link,
                                                preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
                                                quota_exceed_reply_msg, group_history_use_mode,
-                                               audio_to_text, image_vision, audio_to_text_model, link_profile, content_security)
+                                               audio_to_text, image_vision, audio_to_text_model, link_profile, content_security,
+                                               access_type=access_type)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
+        if old_openclaw_id != openclaw_id:
+            bind_result = lanying_openclaw.rebind_chatbot(app_id, chatbot_id, old_openclaw_id, openclaw_id)
+            if bind_result.get('result') == 'error':
+                resp = make_response({'code':400, 'message':f"openclaw_error:{bind_result.get('message', '')}"})
+                return resp
         if old_model != new_model:
             maybe_sync_chatbot_model_config(app_id, chatbot_id)
         if old_system_message != new_system_message:

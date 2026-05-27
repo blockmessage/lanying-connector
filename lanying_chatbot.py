@@ -13,7 +13,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
-                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect = 'off'):
+                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect = 'off',
+                   access_type='public'):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -51,7 +52,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "audio_to_text_model": audio_to_text_model,
         "link_profile": json.dumps(link_profile, ensure_ascii=False),
         "content_security": content_security,
-        "preset_protect": preset_protect
+        "preset_protect": preset_protect,
+        "access_type": access_type
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -249,7 +251,7 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
                       preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                       message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                       quota_exceed_reply_msg, group_history_use_mode,
-                      audio_to_text, image_vision, audio_to_text_model, link_profile, content_security):
+                      audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, access_type='public'):
     logging.info(f"start configure chatbot: app_id={app_id}, account_status={account_status}, account_type={account_type}, verification_level={verification_level}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -293,7 +295,8 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         "image_vision": image_vision,
         "audio_to_text_model": audio_to_text_model,
         "link_profile": json.dumps(link_profile, ensure_ascii=False),
-        "content_security": content_security
+        "content_security": content_security,
+        "access_type": access_type
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -536,6 +539,13 @@ def get_chatbot(app_id, chatbot_id):
             dto['link_profile'] = get_default_link_profile()
         if 'content_security' not in dto:
             dto['content_security'] = 'on'
+        if 'access_type' not in dto:
+            dto['access_type'] = 'public'
+        try:
+            import lanying_openclaw
+            dto['openclaw_id'] = lanying_openclaw.get_chatbot_node_id(app_id, chatbot_id) or ''
+        except Exception:
+            dto['openclaw_id'] = ''
         return dto
     return None
 
