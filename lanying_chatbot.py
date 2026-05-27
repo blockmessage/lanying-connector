@@ -9,6 +9,59 @@ import lanying_utils
 import lanying_oss
 import os
 
+def _check_im_user_setting_result(action, result):
+    if isinstance(result, dict) and result.get('code') == 200:
+        return {'result': 'ok'}
+    message = ''
+    if isinstance(result, dict):
+        message = str(result.get('message') or result.get('msg') or result)
+    if message == '':
+        message = 'bad result'
+    return {'result': 'error', 'message': f'{action} failed: {message}'}
+
+def init_chatbot_im_user_setting(app_id, old_chatbot_info, chatbot_info):
+    chatbot_id = str(chatbot_info.get('chatbot_id', ''))
+    user_id = chatbot_info.get('user_id')
+    access_type = str(chatbot_info.get('access_type', 'public'))
+    old_user_id = ''
+    old_access_type = ''
+    if isinstance(old_chatbot_info, dict):
+        old_user_id = str(old_chatbot_info.get('user_id', ''))
+        old_access_type = str(old_chatbot_info.get('access_type', 'public'))
+    if old_chatbot_info is not None and str(user_id) == old_user_id and access_type == old_access_type:
+        return {'result': 'ok'}
+    logging.info(
+        f"init_chatbot_im_user_setting start | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+        f"user_id:{user_id}, access_type:{access_type}, old_user_id:{old_user_id}, old_access_type:{old_access_type}"
+    )
+    if access_type == 'friend':
+        stranger_chat_result = lanying_im_api.set_user_stranger_chat(app_id, user_id, 2)
+        check_result = _check_im_user_setting_result('set_user_stranger_chat', stranger_chat_result)
+        if check_result['result'] == 'error':
+            logging.info(
+                f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+                f"user_id:{user_id}, access_type:{access_type}, action:set_user_stranger_chat, result:{stranger_chat_result}"
+            )
+            return check_result
+        auth_mode_result = lanying_im_api.set_auth_mode(app_id, user_id, 1)
+        check_result = _check_im_user_setting_result('set_auth_mode', auth_mode_result)
+        if check_result['result'] == 'error':
+            logging.info(
+                f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+                f"user_id:{user_id}, access_type:{access_type}, action:set_auth_mode, result:{auth_mode_result}"
+            )
+            return check_result
+    else:
+        stranger_chat_result = lanying_im_api.set_user_stranger_chat(app_id, user_id, 1)
+        check_result = _check_im_user_setting_result('set_user_stranger_chat', stranger_chat_result)
+        if check_result['result'] == 'error':
+            logging.info(
+                f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+                f"user_id:{user_id}, access_type:{access_type}, action:set_user_stranger_chat, result:{stranger_chat_result}"
+            )
+            return check_result
+    return {'result': 'ok'}
+
 def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
@@ -25,6 +78,13 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
     capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
     if nickname == '':
         nickname = name
+    setting_result = init_chatbot_im_user_setting(app_id, None, {
+        'chatbot_id': chatbot_id,
+        'user_id': user_id,
+        'access_type': access_type,
+    })
+    if setting_result['result'] == 'error':
+        return setting_result
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "chatbot_id": chatbot_id,
@@ -273,6 +333,13 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         force_content_security_chatbot_ids = get_force_content_security_chatbot_ids(app_id)
         if chatbot_id in force_content_security_chatbot_ids:
             return {'result':'error', 'message': 'content_security closed need custom site'}
+    setting_result = init_chatbot_im_user_setting(app_id, chatbot_info, {
+        'chatbot_id': chatbot_id,
+        'user_id': user_id,
+        'access_type': access_type,
+    })
+    if setting_result['result'] == 'error':
+        return setting_result
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "name": name,
