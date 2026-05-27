@@ -82,6 +82,20 @@ class LanyingImApiTests(unittest.TestCase):
             json={"group_id": "9", "value": '{"k":"v"}'},
         )
 
+    def test_generate_secret_info_uses_user_context_and_body(self):
+        fake_response = mock.Mock()
+        fake_response.json.return_value = {"code": 200, "data": {"code": "secret-code"}}
+
+        with mock.patch.object(lanying_im_api.requests, "post", return_value=fake_response) as mocked_post:
+            result = lanying_im_api.generate_secret_info("app-id", "88", 300, '{"username":"u","password":"p"}')
+
+        self.assertEqual(result["code"], 200)
+        mocked_post.assert_called_once_with(
+            "https://api.example.com/app/secret_info",
+            headers={"app_id": "app-id", "user_id": "88", "access-token": "admin-token"},
+            json={"expire_seconds": 300, "secret_text": '{"username":"u","password":"p"}'},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

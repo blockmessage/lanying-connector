@@ -190,6 +190,22 @@ def get_node_list():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/openclaw/generate_app_manager_login_code", methods=["POST"])
+def generate_app_manager_login_code():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    expire_seconds = data.get('expire_seconds', 300)
+    result = lanying_openclaw.generate_openclaw_app_manager_login_code(app_id, expire_seconds)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route("/service/openclaw/delete_node", methods=["POST"])
 def delete_node():
     if not check_access_token_valid():

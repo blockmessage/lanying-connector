@@ -111,6 +111,29 @@ def set_auth_mode(app_id, user_id, value):
         logging.info(f"set_auth_mode, app_id={app_id} user_id={user_id}, value={value}, result:{result}")
         return result
 
+def generate_secret_info(app_id, user_id, expire_seconds, secret_text):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        headers = {'app_id': app_id, 'user_id': str(user_id)}
+        if adminToken:
+            headers['access-token'] = adminToken
+        body = {
+            'expire_seconds': expire_seconds,
+            'secret_text': secret_text,
+        }
+        response = requests.post(apiEndpoint + '/app/secret_info',
+                                    headers=headers,
+                                    json=body)
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"generate_secret_info, app_id={app_id} user_id={user_id}, expire_seconds={expire_seconds}, result:{result}")
+        return result
+
 def roster_apply(app_id, user_id, roster_user_id, reason=''):
     config = lanying_config.get_lanying_connector(app_id)
     if config:

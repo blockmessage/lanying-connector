@@ -324,6 +324,51 @@ def ensure_openclaw_app_manager_user(app_id):
         }
     return register_openclaw_app_manager_user(app_id)
 
+def generate_openclaw_app_manager_login_code(app_id, expire_seconds=300):
+    app_user_result = ensure_openclaw_app_manager_user(app_id)
+    if app_user_result['result'] == 'error':
+        return app_user_result
+    app_user = app_user_result['data']
+    username = str(app_user.get('username', '')).strip()
+    password = str(app_user.get('password', '')).strip()
+    user_id = str(app_user.get('user_id', '')).strip()
+    if username == '' or password == '' or user_id == '':
+        return {
+            'result': 'error',
+            'message': 'openclaw app manager user info invalid'
+        }
+    secret_text = json.dumps({
+        'app_id': app_id,
+        'username': username,
+        'password': password
+    }, ensure_ascii=False)
+    try:
+        expire_seconds = int(expire_seconds)
+    except Exception:
+        expire_seconds = 300
+    if expire_seconds <= 0:
+        expire_seconds = 300
+    result = lanying_im_api.generate_secret_info(app_id, user_id, expire_seconds, secret_text)
+    if result is None or result.get('code') != 200 or 'data' not in result:
+        logging.warning(f"generate_openclaw_app_manager_login_code failed | app_id:{app_id}, user_id:{user_id}, expire_seconds:{expire_seconds}, result:{result}")
+        return {
+            'result': 'error',
+            'message': 'generate openclaw app manager login code failed'
+        }
+    data = result.get('data') or {}
+    code = str(data.get('code', '')).strip()
+    if code == '':
+        return {
+            'result': 'error',
+            'message': 'generate openclaw app manager login code failed'
+        }
+    return {
+        'result': 'ok',
+        'data': {
+            'code': code
+        }
+    }
+
 def check_create_node(app_id):
     now = int(time.time())
     node_id = generate_node_id()
