@@ -80,6 +80,8 @@ def _load_lanying_chatbot():
             set_user_avatar=lambda *args, **kwargs: {"code": 200},
             set_user_stranger_chat=lambda *args, **kwargs: {"code": 200},
             set_auth_mode=lambda *args, **kwargs: {"code": 200},
+            admin_add_roster_direct=lambda *args, **kwargs: {"code": 200},
+            roster_delete=lambda *args, **kwargs: {"code": 200},
             get_user_profile=lambda *args, **kwargs: {"code": 200, "data": {"private_info": "{}", "public_info": "{}"}},
         ),
         "lanying_utils": types.SimpleNamespace(
@@ -100,7 +102,7 @@ class ChatbotAccessTests(unittest.TestCase):
     def setUp(self):
         self.module, self.fake_redis = _load_lanying_chatbot()
 
-    def create_chatbot(self, access_type="public", user_id=1001):
+    def create_chatbot(self, access_type="public", user_id=1001, access_list=""):
         m = self.module
         return m.create_chatbot(
             "app-id",
@@ -126,9 +128,10 @@ class ChatbotAccessTests(unittest.TestCase):
             self.module.get_default_link_profile(),
             "on",
             access_type=access_type,
+            access_list=access_list,
         )
 
-    def seed_chatbot(self, access_type="public", user_id=1001):
+    def seed_chatbot(self, access_type="public", user_id=1001, access_list=""):
         m = self.module
         chatbot_id = "chatbot-1"
         self.fake_redis.hmset(
@@ -160,6 +163,7 @@ class ChatbotAccessTests(unittest.TestCase):
                 "link_profile": json.dumps(self.module.get_default_link_profile(), ensure_ascii=False),
                 "content_security": "on",
                 "access_type": access_type,
+                "access_list": access_list,
             },
         )
         self.fake_redis.rpush(m.get_chatbot_ids_key("app-id"), chatbot_id)
@@ -167,7 +171,7 @@ class ChatbotAccessTests(unittest.TestCase):
         m.set_name_chatbot_id("app-id", "bot-name", chatbot_id)
         return chatbot_id
 
-    def configure_chatbot(self, chatbot_id, access_type="public", user_id=1001, history_msg_count_max=20):
+    def configure_chatbot(self, chatbot_id, access_type="public", user_id=1001, history_msg_count_max=20, access_list=""):
         m = self.module
         return m.configure_chatbot(
             "app-id",
@@ -197,6 +201,7 @@ class ChatbotAccessTests(unittest.TestCase):
             self.module.get_default_link_profile(),
             "on",
             access_type=access_type,
+            access_list=access_list,
         )
 
     def test_init_chatbot_im_user_setting_public_syncs_im_setting(self):
@@ -226,6 +231,26 @@ class ChatbotAccessTests(unittest.TestCase):
         self.assertEqual(result["result"], "ok")
         mocked_stranger.assert_called_once_with("app-id", 1001, 2)
         mocked_auth.assert_called_once_with("app-id", 1001, 1)
+
+    def test_init_chatbot_im_user_setting_friend_syncs_access_list(self):
+        m = self.module
+        self.seed_chatbot(access_type="friend", user_id=1001)
+        with mock.patch.object(m.lanying_im_api, "set_user_stranger_chat", return_value={"code": 200}), \
+             mock.patch.object(m.lanying_im_api, "set_auth_mode", return_value={"code": 200}), \
+             mock.patch.object(m.lanying_im_api, "admin_add_roster_direct", return_value={"code": 200}) as mocked_add_roster, \
+             mock.patch.object(m.lanying_im_api, "roster_delete", return_value={"code": 200}) as mocked_delete_roster:
+            result = m.init_chatbot_im_user_setting("app-id", None, {
+                "chatbot_id": "chatbot-1",
+                "user_id": 1001,
+                "access_type": "friend",
+                "access_list": "2001 2002",
+            })
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(mocked_add_roster.call_args_list, [
+            mock.call("app-id", 1001, [2001]),
+            mock.call("app-id", 1001, [2002]),
+        ])
+        mocked_delete_roster.assert_not_called()
 
     def test_init_chatbot_im_user_setting_returns_error_when_sync_fails(self):
         m = self.module
@@ -262,6 +287,22 @@ class ChatbotAccessTests(unittest.TestCase):
         chatbot = m.get_chatbot("app-id", chatbot_id)
         self.assertEqual(chatbot["access_type"], "friend")
 
+    def test_configure_chatbot_friend_access_list_updates_roster(self):
+        m = self.module
+        chatbot_id = self.seed_chatbot(access_type="friend", access_list="2001 2002")
+        with mock.patch.object(m.lanying_im_api, "set_user_stranger_chat") as mocked_stranger, \
+             mock.patch.object(m.lanying_im_api, "set_auth_mode") as mocked_auth, \
+             mock.patch.object(m.lanying_im_api, "admin_add_roster_direct", return_value={"code": 200}) as mocked_add_roster, \
+             mock.patch.object(m.lanying_im_api, "roster_delete", return_value={"code": 200}) as mocked_delete_roster:
+            result = self.configure_chatbot(chatbot_id, access_type="friend", access_list="2002 2003")
+        self.assertEqual(result["result"], "ok")
+        mocked_stranger.assert_not_called()
+        mocked_auth.assert_not_called()
+        mocked_add_roster.assert_called_once_with("app-id", 1001, [2003])
+        mocked_delete_roster.assert_called_once_with("app-id", 1001, 2001)
+        chatbot = m.get_chatbot("app-id", chatbot_id)
+        self.assertEqual(chatbot["access_list"], "2002 2003")
+
     def test_configure_chatbot_skips_im_setting_sync_when_access_unchanged(self):
         m = self.module
         chatbot_id = self.seed_chatbot(access_type="public")
@@ -276,13 +317,18 @@ class ChatbotAccessTests(unittest.TestCase):
 
     def test_configure_chatbot_resyncs_im_setting_for_new_user_id(self):
         m = self.module
-        chatbot_id = self.seed_chatbot(access_type="public", user_id=1001)
+        chatbot_id = self.seed_chatbot(access_type="friend", user_id=1001, access_list="2001 2002")
         with mock.patch.object(m.lanying_im_api, "set_user_stranger_chat", return_value={"code": 200}) as mocked_stranger, \
-             mock.patch.object(m.lanying_im_api, "set_auth_mode", return_value={"code": 200}) as mocked_auth:
-            result = self.configure_chatbot(chatbot_id, access_type="public", user_id=2002)
+             mock.patch.object(m.lanying_im_api, "set_auth_mode", return_value={"code": 200}) as mocked_auth, \
+             mock.patch.object(m.lanying_im_api, "admin_add_roster_direct", return_value={"code": 200}) as mocked_add_roster:
+            result = self.configure_chatbot(chatbot_id, access_type="friend", user_id=2002, access_list="2001 2002")
         self.assertEqual(result["result"], "ok")
-        mocked_stranger.assert_called_once_with("app-id", 2002, 1)
-        mocked_auth.assert_not_called()
+        mocked_stranger.assert_called_once_with("app-id", 2002, 2)
+        mocked_auth.assert_called_once_with("app-id", 2002, 1)
+        self.assertEqual(mocked_add_roster.call_args_list, [
+            mock.call("app-id", 2002, [2001]),
+            mock.call("app-id", 2002, [2002]),
+        ])
         chatbot = m.get_chatbot("app-id", chatbot_id)
         self.assertEqual(chatbot["user_id"], 2002)
 

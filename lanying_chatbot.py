@@ -19,47 +19,98 @@ def _check_im_user_setting_result(action, result):
         message = 'bad result'
     return {'result': 'error', 'message': f'{action} failed: {message}'}
 
+def parse_access_list(access_list_str):
+    if access_list_str is None:
+        return []
+    integer_access_list = []
+    access_items = str(access_list_str).replace(',', ' ').split()
+    for item in access_items:
+        item_str = str(item).strip()
+        if item_str == '':
+            continue
+        try:
+            integer_access_list.append(int(item_str))
+        except Exception:
+            logging.info(f"parse_access_list skip invalid user_id: {item}")
+    return integer_access_list
+
 def init_chatbot_im_user_setting(app_id, old_chatbot_info, chatbot_info):
     chatbot_id = str(chatbot_info.get('chatbot_id', ''))
     user_id = chatbot_info.get('user_id')
     access_type = str(chatbot_info.get('access_type', 'public'))
+    access_list = str(chatbot_info.get('access_list', ''))
     old_user_id = ''
     old_access_type = ''
+    old_access_list = ''
     if isinstance(old_chatbot_info, dict):
         old_user_id = str(old_chatbot_info.get('user_id', ''))
         old_access_type = str(old_chatbot_info.get('access_type', 'public'))
-    if old_chatbot_info is not None and str(user_id) == old_user_id and access_type == old_access_type:
+        old_access_list = str(old_chatbot_info.get('access_list', ''))
+    if old_chatbot_info is not None and str(user_id) == old_user_id and access_type == old_access_type and access_list == old_access_list:
         return {'result': 'ok'}
     logging.info(
         f"init_chatbot_im_user_setting start | app_id:{app_id}, chatbot_id:{chatbot_id}, "
-        f"user_id:{user_id}, access_type:{access_type}, old_user_id:{old_user_id}, old_access_type:{old_access_type}"
+        f"user_id:{user_id}, access_type:{access_type}, access_list:{access_list}, "
+        f"old_user_id:{old_user_id}, old_access_type:{old_access_type}, old_access_list:{old_access_list}"
     )
-    if access_type == 'friend':
-        stranger_chat_result = lanying_im_api.set_user_stranger_chat(app_id, user_id, 2)
-        check_result = _check_im_user_setting_result('set_user_stranger_chat', stranger_chat_result)
-        if check_result['result'] == 'error':
-            logging.info(
-                f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
-                f"user_id:{user_id}, access_type:{access_type}, action:set_user_stranger_chat, result:{stranger_chat_result}"
-            )
-            return check_result
-        auth_mode_result = lanying_im_api.set_auth_mode(app_id, user_id, 1)
-        check_result = _check_im_user_setting_result('set_auth_mode', auth_mode_result)
-        if check_result['result'] == 'error':
-            logging.info(
-                f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
-                f"user_id:{user_id}, access_type:{access_type}, action:set_auth_mode, result:{auth_mode_result}"
-            )
-            return check_result
-    else:
-        stranger_chat_result = lanying_im_api.set_user_stranger_chat(app_id, user_id, 1)
-        check_result = _check_im_user_setting_result('set_user_stranger_chat', stranger_chat_result)
-        if check_result['result'] == 'error':
-            logging.info(
-                f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
-                f"user_id:{user_id}, access_type:{access_type}, action:set_user_stranger_chat, result:{stranger_chat_result}"
-            )
-            return check_result
+    if old_chatbot_info is None or str(user_id) != old_user_id or access_type != old_access_type:
+        if access_type == 'friend':
+            stranger_chat_result = lanying_im_api.set_user_stranger_chat(app_id, user_id, 2)
+            check_result = _check_im_user_setting_result('set_user_stranger_chat', stranger_chat_result)
+            if check_result['result'] == 'error':
+                logging.info(
+                    f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+                    f"user_id:{user_id}, access_type:{access_type}, action:set_user_stranger_chat, result:{stranger_chat_result}"
+                )
+                return check_result
+            auth_mode_result = lanying_im_api.set_auth_mode(app_id, user_id, 1)
+            check_result = _check_im_user_setting_result('set_auth_mode', auth_mode_result)
+            if check_result['result'] == 'error':
+                logging.info(
+                    f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+                    f"user_id:{user_id}, access_type:{access_type}, action:set_auth_mode, result:{auth_mode_result}"
+                )
+                return check_result
+        else:
+            stranger_chat_result = lanying_im_api.set_user_stranger_chat(app_id, user_id, 1)
+            check_result = _check_im_user_setting_result('set_user_stranger_chat', stranger_chat_result)
+            if check_result['result'] == 'error':
+                logging.info(
+                    f"init_chatbot_im_user_setting failed | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+                    f"user_id:{user_id}, access_type:{access_type}, action:set_user_stranger_chat, result:{stranger_chat_result}"
+                )
+                return check_result
+    if access_type == 'friend' and (access_list != old_access_list or str(user_id) != old_user_id or access_type != old_access_type):
+        access_items = parse_access_list(access_list)
+        old_access_items = []
+        if str(user_id) == old_user_id and access_type == old_access_type:
+            old_access_items = parse_access_list(old_access_list)
+        access_set = set(access_items)
+        old_access_set = set(old_access_items)
+        add_access_list = [item for item in access_items if item not in old_access_set]
+        remove_access_list = [item for item in old_access_items if item not in access_set]
+        logging.info(
+            f"init_chatbot_im_user_setting access_list diff | app_id:{app_id}, chatbot_id:{chatbot_id}, "
+            f"add_access_list:{add_access_list}, remove_access_list:{remove_access_list}"
+        )
+        for add_user_id in add_access_list:
+            try:
+                result = lanying_im_api.admin_add_roster_direct(app_id, user_id, [int(add_user_id)])
+                logging.info(
+                    f"init_chatbot_im_user_setting admin_add_roster_direct | "
+                    f"app_id:{app_id}, user_id:{user_id}, add_user_id:{add_user_id}, result:{result}"
+                )
+            except Exception:
+                logging.exception("admin_add_roster_direct failed")
+        for remove_user_id in remove_access_list:
+            try:
+                result = lanying_im_api.roster_delete(app_id, user_id, remove_user_id)
+                logging.info(
+                    f"init_chatbot_im_user_setting roster_delete | "
+                    f"app_id:{app_id}, user_id:{user_id}, remove_user_id:{remove_user_id}, result:{result}"
+                )
+            except Exception:
+                logging.exception("roster_delete failed")
     return {'result': 'ok'}
 
 def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
@@ -67,7 +118,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
                    audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect = 'off',
-                   access_type='public'):
+                   access_type='public', access_list=''):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -82,6 +133,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         'chatbot_id': chatbot_id,
         'user_id': user_id,
         'access_type': access_type,
+        'access_list': access_list,
     })
     if setting_result['result'] == 'error':
         return setting_result
@@ -113,7 +165,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "link_profile": json.dumps(link_profile, ensure_ascii=False),
         "content_security": content_security,
         "preset_protect": preset_protect,
-        "access_type": access_type
+        "access_type": access_type,
+        "access_list": access_list
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -311,7 +364,7 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
                       preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                       message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                       quota_exceed_reply_msg, group_history_use_mode,
-                      audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, access_type='public'):
+                      audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, access_type='public', access_list=''):
     logging.info(f"start configure chatbot: app_id={app_id}, account_status={account_status}, account_type={account_type}, verification_level={verification_level}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -337,6 +390,7 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         'chatbot_id': chatbot_id,
         'user_id': user_id,
         'access_type': access_type,
+        'access_list': access_list,
     })
     if setting_result['result'] == 'error':
         return setting_result
@@ -363,7 +417,8 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         "audio_to_text_model": audio_to_text_model,
         "link_profile": json.dumps(link_profile, ensure_ascii=False),
         "content_security": content_security,
-        "access_type": access_type
+        "access_type": access_type,
+        "access_list": access_list
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -608,6 +663,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['content_security'] = 'on'
         if 'access_type' not in dto:
             dto['access_type'] = 'public'
+        if 'access_list' not in dto:
+            dto['access_list'] = ''
         try:
             import lanying_openclaw
             dto['openclaw_id'] = lanying_openclaw.get_chatbot_node_id(app_id, chatbot_id) or ''

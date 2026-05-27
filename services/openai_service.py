@@ -4939,6 +4939,7 @@ def create_chatbot():
     access_type = str(data.get('access_type', 'public'))
     if access_type not in ['public', 'friend']:
         access_type = 'public'
+    access_list = str(data.get('access_list', ''))
     content_security = 'on'
     if len(link_profile) == 0:
         link_profile = lanying_chatbot.get_default_link_profile()
@@ -4947,7 +4948,7 @@ def create_chatbot():
                                             message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                                             quota_exceed_reply_msg, group_history_use_mode,
                                             audio_to_text, image_vision, audio_to_text_model, link_profile, content_security,
-                                            access_type=access_type)
+                                            access_type=access_type, access_list=access_list)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -4991,6 +4992,7 @@ def configure_chatbot():
     access_type = str(data.get('access_type', 'public'))
     if access_type not in ['public', 'friend']:
         access_type = 'public'
+    access_list = str(data.get('access_list', ''))
     content_security = str(data.get('content_security', 'on'))
     if content_security not in ['on', 'off']:
         content_security = 'on'
@@ -5016,7 +5018,7 @@ def configure_chatbot():
                                                message_per_month_per_user, chatbot_ids,welcome_message, quota_exceed_reply_type,
                                                quota_exceed_reply_msg, group_history_use_mode,
                                                audio_to_text, image_vision, audio_to_text_model, link_profile, content_security,
-                                               access_type=access_type)
+                                               access_type=access_type, access_list=access_list)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
