@@ -2651,6 +2651,8 @@ def build_session_mapping_detail_from_mapping(app_id, mapping, group_detail_cach
     normalized_mapping = normalize_session_mapping_record(mapping)
     if not isinstance(normalized_mapping, dict):
         return None
+    node_id = str(normalized_mapping.get('node_id', '')).strip()
+    session_key = str(normalized_mapping.get('session_key', '')).strip()
     group_id = str(normalized_mapping.get('group_id', '')).strip()
     cache = group_detail_cache if isinstance(group_detail_cache, dict) else {}
     if group_id != '':
@@ -2709,6 +2711,7 @@ def build_session_mapping_detail_from_mapping(app_id, mapping, group_detail_cach
     detail['admin_list_error'] = admin_list_error
     detail['member_list_viewer_user_id'] = str(group_detail.get('member_list_viewer_user_id', '')).strip()
     detail['admin_list_viewer_user_id'] = str(group_detail.get('admin_list_viewer_user_id', '')).strip()
+    detail['last_message_time'] = get_session_last_message_time(app_id, node_id, session_key)
     return detail
 
 def get_session_mapping_detail_by_session(app_id, node_id, session_key, group_detail_cache=None):
@@ -3844,6 +3847,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
     observed_origin_facts['observed_message_text'] = text
     if session_key == '' or source not in ['control_ui_user', 'control_ui_reply']:
         return
+    update_session_last_message_time(app_id, node_info.get('node_id', ''), session_key)
     if source == 'control_ui_reply' and role == 'assistant' and is_session_sync_silent_reply_text(text):
         logging.info(
             f"handle_session_message_sync_event skip silent NO_REPLY delivery | "
@@ -5795,6 +5799,41 @@ def get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id,
 
 def get_openclaw_parent_reply_suppression_key(app_id, node_id, session_key):
     return f"lanying_connector:openclaw:parent_reply_suppression:{app_id}:{node_id}:{normalize_session_key_text(session_key)}"
+
+def get_openclaw_session_last_message_time_key(app_id, node_id):
+    return f"lanying_connector:openclaw:session_last_message_time:{app_id}:{node_id}"
+
+def get_openclaw_session_last_message_time_field(session_key):
+    return normalize_session_key_text(session_key)
+
+def update_session_last_message_time(app_id, node_id, session_key, now_ms=None):
+    normalized_node_id = str(node_id or '').strip()
+    normalized_session_key = normalize_session_key(session_key)
+    if normalized_node_id == '' or normalized_session_key == '':
+        return 0
+    timestamp_ms = int(now_ms if isinstance(now_ms, int) else time.time() * 1000)
+    redis = lanying_redis.get_redis_connection()
+    if redis is None or not hasattr(redis, 'hset'):
+        return 0
+    key = get_openclaw_session_last_message_time_key(app_id, normalized_node_id)
+    field = get_openclaw_session_last_message_time_field(normalized_session_key)
+    redis.hset(key, field, timestamp_ms)
+    return timestamp_ms
+
+def get_session_last_message_time(app_id, node_id, session_key):
+    normalized_node_id = str(node_id or '').strip()
+    normalized_session_key = normalize_session_key(session_key)
+    if normalized_node_id == '' or normalized_session_key == '':
+        return 0
+    redis = lanying_redis.get_redis_connection()
+    if redis is None or not hasattr(redis, 'hget'):
+        return 0
+    key = get_openclaw_session_last_message_time_key(app_id, normalized_node_id)
+    field = get_openclaw_session_last_message_time_field(normalized_session_key)
+    try:
+        return int(redis.hget(key, field) or 0)
+    except Exception:
+        return 0
 
 def get_token_key(token):
     return f"lanying_connector:openclaw:token:{token}"

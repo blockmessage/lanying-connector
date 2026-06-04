@@ -193,7 +193,8 @@ def render_inspect_session_mapping_group_states_html_for_node(app_id, node_id):
             'effective_target_session_key': detail.get('effective_target_session_key', ''),
             'created_at': detail.get('created_at', ''),
             'updated_at': detail.get('updated_at', ''),
-        }, second_keys=['created_at', 'updated_at'])
+            'last_message_time': detail.get('last_message_time', ''),
+        }, second_keys=['created_at', 'updated_at'], millisecond_keys=['last_message_time'])
         session_facts_html = _build_session_mapping_html_table(
             _build_session_mapping_html_key_value_rows(
                 session_facts,
@@ -344,7 +345,8 @@ def render_inspect_session_mapping_group_state_html_for_session(app_id, node_id,
         'effective_target_session_key': detail.get('effective_target_session_key', ''),
         'created_at': detail.get('created_at', ''),
         'updated_at': detail.get('updated_at', ''),
-    }, second_keys=['created_at', 'updated_at'])
+        'last_message_time': detail.get('last_message_time', ''),
+    }, second_keys=['created_at', 'updated_at'], millisecond_keys=['last_message_time'])
     session_facts_html = _build_session_mapping_html_table(
         _build_session_mapping_html_key_value_rows(
             session_facts,
@@ -1279,7 +1281,12 @@ def render_inspect_session_mapping_canonical_html_for_node(app_id, node_id):
             'effective_target_session_key': normalized_mapping.get('effective_target_session_key', ''),
             'updated_at': normalized_mapping.get('updated_at', ''),
             'created_at': normalized_mapping.get('created_at', ''),
-        }, second_keys=['created_at', 'updated_at'])
+            'last_message_time': openclaw.get_session_last_message_time(
+                app_id,
+                normalized_mapping.get('node_id', ''),
+                session_key,
+            ),
+        }, second_keys=['created_at', 'updated_at'], millisecond_keys=['last_message_time'])
         expected_summary = dict(report.get('expected_fields', {}))
         expected_summary['root_mode'] = report.get('root_mode', '')
         expected_summary['target_user_id'] = report.get('target_user_id', '')

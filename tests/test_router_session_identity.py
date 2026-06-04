@@ -90,6 +90,7 @@ lanying_openclaw_migration = _load_lanying_openclaw_migration(lanying_openclaw)
 class FakeRedis:
     def __init__(self):
         self.values = {}
+        self.hashes = {}
         self.sets = {}
         self.ttls = {}
 
@@ -98,6 +99,13 @@ class FakeRedis:
 
     def get(self, key):
         return self.values.get(key)
+
+    def hset(self, key, field, value):
+        bucket = self.hashes.setdefault(key, {})
+        bucket[field] = value
+
+    def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
 
     def setex(self, key, ttl, value):
         self.values[key] = value
@@ -220,6 +228,104 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "target_id": "6632092019520",
             },
         )
+
+    def test_update_session_last_message_time_overwrites_with_current_time(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        key = m.get_openclaw_session_last_message_time_key(
+            "app-id",
+            "15",
+        )
+        field = m.get_openclaw_session_last_message_time_field("agent:main:clawchat:direct:user-1")
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis):
+            first = m.update_session_last_message_time(
+                "app-id",
+                "15",
+                "agent:main:clawchat:direct:user-1",
+                now_ms=2000,
+            )
+            second = m.update_session_last_message_time(
+                "app-id",
+                "15",
+                "agent:main:clawchat:direct:user-1",
+                now_ms=1000,
+            )
+
+        self.assertEqual(first, 2000)
+        self.assertEqual(second, 1000)
+        self.assertEqual(redis.hget(key, field), 1000)
+
+    def test_handle_session_message_sync_event_updates_session_last_message_time(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m, "is_session_map_sync_enabled", return_value=True), \
+             mock.patch.object(m, "time") as mocked_time:
+            mocked_time.time.return_value = 1234.567
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:direct:user-1",
+                    "visible_delivery_owner": "plugin",
+                    "message": {
+                        "role": "assistant",
+                        "content": "already delivered by plugin",
+                    },
+                },
+            )
+
+        self.assertEqual(
+            redis.hget(
+                m.get_openclaw_session_last_message_time_key("app-id", "15"),
+                m.get_openclaw_session_last_message_time_field(
+                    "agent:main:clawchat:direct:user-1",
+                ),
+            ),
+            1234567,
+        )
+
+    def test_render_canonical_html_includes_session_last_message_time(self):
+        m = lanying_openclaw_migration
+        details = [{
+            "session_key": "agent:main:clawchat:direct:user-1",
+            "app_id": "app-id",
+            "node_id": "15",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "management-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "user-1",
+            "chatbot_user_id": "chatbot-user",
+            "group_id": "",
+            "parent_session_key": "",
+            "root_session_key": "agent:main:clawchat:direct:user-1",
+            "effective_target_session_key": "agent:main:clawchat:direct:user-1",
+        }]
+        inspect_result = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:clawchat:direct:user-1",
+                    "status": "clean",
+                    "root_mode": "direct",
+                    "target_user_id": "user-1",
+                    "expected_fields": {},
+                    "issues": [],
+                    "proposed_changes": [],
+                }]
+            },
+        }
+
+        with mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=details), \
+             mock.patch.object(m.lanying_openclaw, "get_session_last_message_time", return_value=1234567), \
+             mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", return_value=inspect_result):
+            html_text = m.render_inspect_session_mapping_canonical_html_for_node("app-id", "15")
+
+        self.assertIn("last_message_time", html_text)
+        self.assertIn("1234567 (1970-01-01 08:20:34)", html_text)
 
     def test_legacy_agent_main_clawchat_group_and_direct_session_keys_are_canonicalized(self):
         m = lanying_openclaw
@@ -5274,6 +5380,7 @@ class ConfigBatchSyncTests(unittest.TestCase):
         }
 
         with mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=details), \
+             mock.patch.object(m.lanying_openclaw, "get_session_last_message_time", return_value=1234567), \
              mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", return_value=inspect_result):
             html_text = m.render_inspect_session_mapping_canonical_html_for_node("app-id", "8")
 
@@ -5286,6 +5393,8 @@ class ConfigBatchSyncTests(unittest.TestCase):
         self.assertIn("6632092019520", html_text)
         self.assertIn("origin_repair_reason", html_text)
         self.assertIn("direct root lineage inferred from root_session_key", html_text)
+        self.assertIn("last_message_time", html_text)
+        self.assertIn("1234567 (1970-01-01 08:20:34)", html_text)
 
     def test_migrate_inspected_session_mapping_canonical_state_applies_all_mapping_field_updates(self):
         m = lanying_openclaw_migration
