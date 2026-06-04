@@ -38,6 +38,36 @@ def register(app_id, username, password):
     logging.info(f"register, app_id={app_id} username={username}, result:{result}")
     return result
 
+def create_group(app_id, owner_user_id, name, group_type=0, user_list=None):
+    config = lanying_config.get_lanying_connector(app_id)
+    if config:
+        adminToken = config.get('lanying_admin_token', '')
+        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+        body = {
+            'name': name,
+            'type': group_type,
+        }
+        normalized_user_list = []
+        for user_id in user_list or []:
+            try:
+                normalized_user_list.append(int(user_id))
+            except Exception:
+                logging.info(f"create_group skip invalid invitee user_id: {user_id}")
+        if len(normalized_user_list) > 0:
+            body['user_list'] = normalized_user_list
+        response = requests.post(
+            apiEndpoint + '/group/create',
+            headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(owner_user_id)},
+            json=body
+        )
+        try:
+            result = response.json()
+        except Exception as e:
+            logging.exception(e)
+            result = {}
+        logging.info(f"create_group, app_id={app_id} owner_user_id={owner_user_id}, body={body}, result:{result}")
+        return result
+
 def set_user_profile(app_id, user_id, description, nick_name, private_info, public_info = ''):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
@@ -501,13 +531,28 @@ def upload_chat_file(app_id, user_id, file_suffix, file_content_type, file_type,
 def send_message_async(config, app_id, from_user_id, to_user_id, type, content_type, content, extra = {}):
     executor.submit(send_message_sync, config, app_id, from_user_id, to_user_id, type, content_type, content, extra)
 
-def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_type, content, extra = {}):
-    logging.info(f"Send message received, from={from_user_id} to={to_user_id} type={type}, content_type={content_type} content={content} extra={extra}")
+def build_send_message_body(from_user_id, to_user_id, type, content_type, content, extra = {}):
     ext = extra.get('ext', {})
     attachment = extra.get('attachment', {})
     msg_config = extra.get('msg_config', {})
     online_only = extra.get('online_only', False)
     related_mid = extra.get('related_mid', 0)
+    return {
+        'type': type,
+        'from_user_id': from_user_id,
+        'targets': [to_user_id],
+        'content_type': content_type,
+        'content': content,
+        'attachment': json.dumps(attachment, ensure_ascii=False) if attachment else '',
+        'config': json.dumps(msg_config, ensure_ascii=False),
+        'ext': json.dumps(ext, ensure_ascii=False) if ext else '',
+        'online_only': online_only,
+        'related_mid': related_mid,
+    }
+
+def post_send_message(config, app_id, from_user_id, to_user_id, type, content_type, content, extra = {}):
+    attachment = extra.get('attachment', {})
+    msg_config = extra.get('msg_config', {})
     adminToken = config['lanying_admin_token']
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     message_antispam = lanying_config.get_message_antispam(app_id)
@@ -519,22 +564,20 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
             download_url = upload_res['url']
             attachment['fLen'] = upload_res['file_size']
             attachment['url'] = download_url
+    if not ('skip_antispam_prompt' in extra and extra['skip_antispam_prompt'] == True):
+        msg_config['antispam_prompt'] = message_antispam
+    logging.info(f"Send message start post, from={from_user_id} to={to_user_id} type={type}, content_type={content_type} content={content} extra={extra}, attachment={attachment}")
+    return requests.post(
+        apiEndpoint + '/message/send',
+        headers={'app_id': app_id, 'access-token': adminToken},
+        json=build_send_message_body(from_user_id, to_user_id, type, content_type, content, dict(extra, attachment=attachment, msg_config=msg_config)),
+    )
+
+def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_type, content, extra = {}):
+    logging.info(f"Send message received, from={from_user_id} to={to_user_id} type={type}, content_type={content_type} content={content} extra={extra}")
+    adminToken = config['lanying_admin_token']
     if adminToken:
-        if not ('skip_antispam_prompt' in extra and extra['skip_antispam_prompt'] == True):
-            msg_config['antispam_prompt'] = message_antispam
-        logging.info(f"Send message start post, from={from_user_id} to={to_user_id} type={type}, content_type={content_type} content={content} extra={extra}, attachment={attachment}")
-        sendResponse = requests.post(apiEndpoint + '/message/send',
-                                    headers={'app_id': app_id, 'access-token': adminToken},
-                                    json={'type':type,
-                                          'from_user_id':from_user_id,
-                                          'targets':[to_user_id],
-                                          'content_type':content_type,
-                                          'content': content,
-                                          'attachment': json.dumps(attachment, ensure_ascii=False) if attachment else '',
-                                          'config': json.dumps(msg_config, ensure_ascii=False),
-                                          'ext': json.dumps(ext, ensure_ascii=False) if ext else '',
-                                          'online_only': online_only,
-                                          'related_mid': related_mid})
+        sendResponse = post_send_message(config, app_id, from_user_id, to_user_id, type, content_type, content, extra)
         logging.info(sendResponse)
         try:
             res = sendResponse.json()
@@ -546,6 +589,25 @@ def send_message_sync(config, app_id, from_user_id, to_user_id, type, content_ty
         except Exception as e:
             pass
     return 0
+
+def fetch_conversation_messages(config, app_id, acting_user_id, opposite_id, limit=20, msg_id_start=0):
+    adminToken = config['lanying_admin_token']
+    apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    response = requests.get(
+        apiEndpoint + '/message/conversation',
+        headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(acting_user_id)},
+        params={'limit': limit, 'msg_id_start': msg_id_start, 'opposite_id': opposite_id},
+    )
+    try:
+        result = response.json()
+    except Exception as e:
+        logging.exception(e)
+        result = {'code': response.status_code, 'message': 'invalid_json'}
+    logging.info(
+        f"fetch_conversation_messages, app_id={app_id} acting_user_id={acting_user_id}, "
+        f"opposite_id={opposite_id}, limit={limit}, msg_id_start={msg_id_start}, result:{result}"
+    )
+    return result
 
 def get_wechat_official_account_access_token(config, app_id):
     wechat_app_id = config['wechat_app_id']

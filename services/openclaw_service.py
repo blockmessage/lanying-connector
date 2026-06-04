@@ -3,10 +3,16 @@ import logging
 import os
 import json
 import lanying_openclaw
+import lanying_openclaw_sync_validation
 from datetime import date as datetime_date
 from datetime import timedelta as datetime_timedelta
 service = 'openclaw'
 bp = Blueprint(service, __name__)
+
+def html_response(body, status_code=200):
+    resp = make_response(body, status_code)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return resp
 
 # @bp.route("/service/openclaw/check_client_login", methods=["POST"])
 # def check_client_login():
@@ -221,6 +227,46 @@ def delete_node():
     else:
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
+
+@bp.route("/service/openclaw/run_sync_validation", methods=["POST"])
+def run_sync_validation():
+    try:
+        if not check_access_token_valid():
+            return html_response('<h1>bad authorization</h1>', 401)
+        text = request.get_data(as_text=True)
+        try:
+            data = json.loads(text) if text else {}
+        except Exception:
+            return html_response('<h1>invalid json</h1>', 400)
+        app_id = str(data.get('app_id', '') or '')
+        node_id = str(data.get('node_id', '') or '')
+        scenario = data.get('scenario')
+        scenarios = data.get('scenarios')
+        result = lanying_openclaw_sync_validation.start(app_id, node_id, scenario, scenarios)
+        if result.get('result') != 'ok':
+            return html_response(f"<h1>start sync validation failed</h1><p>{result.get('message', '')}</p>", 400)
+        task_info = result.get('data', {})
+        task = lanying_openclaw_sync_validation.get_task(task_info.get('task_id', ''))
+        if not isinstance(task, dict):
+            return html_response('<h1>task created but not found</h1>', 500)
+        return html_response(lanying_openclaw_sync_validation.build_status_page(task))
+    except Exception as err:
+        logging.exception("run_sync_validation route failed")
+        return html_response(f"<h1>run sync validation crashed</h1><pre>{str(err)}</pre>", 500)
+
+@bp.route("/service/openclaw/sync_validation/<string:task_id>", methods=["GET"])
+def sync_validation_report(task_id):
+    if not check_access_token_valid():
+        return html_response('<h1>bad authorization</h1>', 401)
+    task = lanying_openclaw_sync_validation.get_task(task_id)
+    if not isinstance(task, dict):
+        report_path = lanying_openclaw_sync_validation.get_report_path(task_id)
+        if os.path.exists(report_path):
+            return send_file(report_path)
+        return html_response('<h1>task not found</h1>', 404)
+    if os.path.exists(task.get('report_path', '')):
+        return send_file(task.get('report_path', ''))
+    return html_response(lanying_openclaw_sync_validation.build_status_page(task))
 
 def check_openclaw_server_access_token_valid():
     headerToken = request.headers.get('access-token', "")
