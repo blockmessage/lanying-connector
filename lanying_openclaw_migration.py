@@ -30,6 +30,27 @@ Common call patterns:
    migrate_inspected_session_mapping_group_states_for_all_apps(dry_run=True)
    migrate_inspected_session_mapping_group_states_for_all_apps(dry_run=False)
 
+7. Inspect unreasonable canonical session-mapping states and render HTML:
+   render_inspect_session_mapping_canonical_html_for_node(app_id, node_id)
+
+8. Inspect unreasonable canonical session-mapping states and get structured reports:
+   inspect_session_mapping_canonical_states_for_node(app_id, {"node_id": "15"})
+   inspect_session_mapping_canonical_states_for_node(app_id, full_node_info_dict)
+
+9. Migrate one unreasonable canonical session-mapping state:
+   migrate_inspected_session_mapping_canonical_state(app_id, "15", session_key, dry_run=True)
+   migrate_inspected_session_mapping_canonical_state(app_id, "15", session_key, dry_run=False)
+
+10. Migrate all unreasonable canonical session-mapping states for one node:
+   migrate_inspected_session_mapping_canonical_states_for_node(app_id, "15", dry_run=True)
+   migrate_inspected_session_mapping_canonical_states_for_node(app_id, "15", dry_run=False)
+
+11. Backward-compatible origin-only aliases:
+   render_inspect_session_mapping_origin_identity_html_for_node(app_id, node_id)
+   inspect_session_mapping_origin_identity_for_node(app_id, {"node_id": "15"})
+   migrate_inspected_session_mapping_origin_identity_state(app_id, "15", session_key, dry_run=True)
+   migrate_inspected_session_mapping_origin_identity_states_for_node(app_id, "15", dry_run=False)
+
 Notes:
 - dry_run=True only predicts the post-migration report and does not write data or call IM mutation APIs.
 - node_info may be a full node dict or just a node_id string where supported.
@@ -78,6 +99,16 @@ def _build_session_mapping_html_key_value_rows(data, ordered_keys=None):
         )
     if len(rows) == 0:
         rows.append('<tr><td colspan="2"></td></tr>')
+    return rows
+
+
+def _build_session_mapping_html_list_rows(items):
+    normalized_items = list(items or [])
+    if len(normalized_items) == 0:
+        return ['<tr><td></td></tr>']
+    rows = []
+    for item in normalized_items:
+        rows.append(f'<tr><td valign="top">{_escape_session_mapping_html(item)}</td></tr>')
     return rows
 
 
@@ -905,6 +936,694 @@ def _resolve_node_info(app_id, node_info):
     return {'node_id': node_id}
 
 
+def _append_session_mapping_state_issue(issues, proposed_changes, severity, code, message, current=None, expected=None, proposal=None):
+    issues.append({
+        'severity': severity,
+        'code': code,
+        'message': message,
+        'current': current,
+        'expected': expected,
+    })
+    if isinstance(proposal, dict):
+        proposed_changes.append(proposal)
+
+
+def _resolve_expected_root_session_key(app_id, node_id, session_key, parent_session_key, root_session_key, session_facts):
+    openclaw = lanying_openclaw
+    normalized_session_key = str(session_key).strip()
+    normalized_parent_session_key = str(parent_session_key).strip()
+    normalized_root_session_key = str(root_session_key).strip()
+    if normalized_parent_session_key != '':
+        parent_mapping = openclaw.get_session_mapping_by_session(app_id, node_id, normalized_parent_session_key)
+        if isinstance(parent_mapping, dict):
+            inherited_root = (
+                openclaw.normalize_optional_session_key(parent_mapping.get('root_session_key', '')) or
+                openclaw.normalize_optional_session_key(parent_mapping.get('effective_target_session_key', '')) or
+                normalized_parent_session_key
+            )
+            if inherited_root != '':
+                return inherited_root, 'parent_mapping'
+    if bool((session_facts or {}).get('is_clawchat_session')) and not bool((session_facts or {}).get('is_subagent')):
+        return normalized_session_key, 'session_identity'
+    if normalized_root_session_key != '':
+        return normalized_root_session_key, 'existing_root'
+    return '', ''
+
+
+def _resolve_expected_effective_target_session_key(node_info, session_key, parent_session_key, root_session_key):
+    openclaw = lanying_openclaw
+    normalized_session_key = str(session_key).strip()
+    normalized_parent_session_key = str(parent_session_key).strip()
+    normalized_root_session_key = str(root_session_key).strip()
+    if normalized_session_key == '':
+        return ''
+    if normalized_parent_session_key == '' and normalized_root_session_key == '':
+        return ''
+    return openclaw.resolve_effective_target_session_key(
+        normalized_session_key,
+        {
+            'session_key': normalized_session_key,
+            'parent_session_key': normalized_parent_session_key,
+            'root_session_key': normalized_root_session_key or normalized_parent_session_key or normalized_session_key,
+        },
+        openclaw.is_merge_sub_sessions_enabled(node_info),
+    )
+
+
+def _resolve_expected_direct_origin_identity(root_identity):
+    openclaw = lanying_openclaw
+    if not openclaw.is_direct_session_identity(root_identity):
+        return '', ''
+    target_user_id = str((root_identity or {}).get('target_id', '')).strip()
+    if target_user_id == '':
+        return '', ''
+    return 'direct_user', target_user_id
+
+
+def _analyze_session_mapping_canonical_detail(
+    app_id,
+    node_info,
+    detail,
+    default_management_user_id='',
+    bound_chatbot_user_id='',
+):
+    openclaw = lanying_openclaw
+    normalized_detail = openclaw.normalize_session_mapping_record(detail)
+    session_key = str(normalized_detail.get('session_key', '')).strip()
+    if session_key == '':
+        return {
+            'session_key': '',
+            'status': 'ignored',
+            'issues': [],
+            'proposed_changes': [],
+        }
+    normalized_node_info = dict(node_info or {})
+    node_id = str(normalized_node_info.get('node_id', '')).strip()
+    session_facts = openclaw.get_session_key_facts(session_key)
+    session_identity = openclaw.parse_clawchat_session_identity(session_key)
+    parent_session_key = str(normalized_detail.get('parent_session_key', '')).strip()
+    current_root_session_key = str(normalized_detail.get('root_session_key', '')).strip()
+    expected_root_session_key, root_source = _resolve_expected_root_session_key(
+        app_id,
+        node_id,
+        session_key,
+        parent_session_key,
+        current_root_session_key,
+        session_facts,
+    )
+    root_session_key_for_eval = expected_root_session_key or current_root_session_key or session_key
+    root_identity = openclaw.parse_clawchat_session_identity(root_session_key_for_eval)
+    root_mode = openclaw.resolve_root_session_sync_mode(root_identity)
+    target_user_id = ''
+    if openclaw.is_direct_session_identity(root_identity):
+        target_user_id = str((root_identity or {}).get('target_id', '')).strip()
+
+    issues = []
+    proposed_changes = []
+    expected_fields = {}
+    current_fields = {
+        'app_id': str(normalized_detail.get('app_id', '')).strip(),
+        'node_id': str(normalized_detail.get('node_id', '')).strip(),
+        'openclaw_user_id': str(normalized_detail.get('openclaw_user_id', '')).strip(),
+        'management_user_id': str(normalized_detail.get('management_user_id', '')).strip(),
+        'origin_kind': str(normalized_detail.get('origin_kind', '')).strip(),
+        'origin_user_id': str(normalized_detail.get('origin_user_id', '')).strip(),
+        'chatbot_user_id': str(normalized_detail.get('chatbot_user_id', '')).strip(),
+        'group_id': str(normalized_detail.get('group_id', '')).strip(),
+        'parent_session_key': parent_session_key,
+        'root_session_key': current_root_session_key,
+        'effective_target_session_key': str(normalized_detail.get('effective_target_session_key', '')).strip(),
+    }
+
+    def expect_field(field, target, severity, code, message, reason, risk='low', allow_empty=False):
+        if target is None:
+            return
+        target_text = str(target).strip()
+        if target_text == '' and not allow_empty:
+            return
+        expected_fields[field] = target_text
+        current_text = str(current_fields.get(field, '')).strip()
+        if current_text == target_text:
+            return
+        _append_session_mapping_state_issue(
+            issues,
+            proposed_changes,
+            severity,
+            code,
+            message,
+            current=current_text,
+            expected=target_text,
+            proposal=_build_mapping_field_change(
+                session_key,
+                field,
+                current_text,
+                target_text,
+                reason,
+                risk=risk,
+            ),
+        )
+
+    expect_field('app_id', app_id, 'error', 'mapping_app_id_mismatch', 'mapping 的 app_id 与当前 app 不一致', 'session mapping 的 app_id 应与当前 app_id 一致')
+    expect_field('node_id', node_id, 'error', 'mapping_node_id_mismatch', 'mapping 的 node_id 与当前节点不一致', 'session mapping 的 node_id 应与当前 node_id 一致')
+    expect_field(
+        'openclaw_user_id',
+        str(normalized_node_info.get('user_id', '')).strip(),
+        'error',
+        'mapping_openclaw_user_mismatch',
+        'mapping 的 openclaw_user_id 与当前节点用户不一致',
+        'session mapping 的 openclaw_user_id 应与当前节点 user_id 一致',
+    )
+    expect_field(
+        'management_user_id',
+        str(default_management_user_id).strip(),
+        'error',
+        'mapping_management_user_mismatch',
+        'mapping 的 management_user_id 与当前 app manager 不一致',
+        'session mapping 的 management_user_id 应与当前 app manager user 一致',
+    )
+
+    if expected_root_session_key != '':
+        expect_field(
+            'root_session_key',
+            expected_root_session_key,
+            'error',
+            'mapping_root_session_key_mismatch',
+            'mapping 的 root_session_key 与当前 lineage 推导结果不一致',
+            f'按当前 lineage 规则补齐 root_session_key 来源: {root_source or "session_identity"}',
+        )
+
+    effective_root_session_key = expected_root_session_key or current_root_session_key
+    expected_effective_target_session_key = _resolve_expected_effective_target_session_key(
+        normalized_node_info,
+        session_key,
+        parent_session_key,
+        effective_root_session_key,
+    )
+    if expected_effective_target_session_key != '':
+        expect_field(
+            'effective_target_session_key',
+            expected_effective_target_session_key,
+            'error',
+            'mapping_effective_target_mismatch',
+            'mapping 的 effective_target_session_key 与当前规则推导结果不一致',
+            '按当前 merge_sub_sessions 与 lineage 规则重建 effective_target_session_key',
+        )
+
+    if bool(session_facts.get('is_direct')):
+        expect_field(
+            'group_id',
+            '',
+            'error',
+            'direct_session_group_id_should_be_empty',
+            'direct clawchat session 不应绑定 group_id',
+            'direct clawchat session 在当前规则下应为 metadata_only，group_id 必须为空',
+            allow_empty=True,
+        )
+    elif bool(session_facts.get('is_group')) and not bool(session_facts.get('is_subagent')):
+        expected_group_id = str((session_identity or {}).get('target_id', '')).strip()
+        expect_field(
+            'group_id',
+            expected_group_id,
+            'error',
+            'group_session_group_id_mismatch',
+            'group clawchat session 的 group_id 与 session_key target 不一致',
+            'group clawchat session 应直接复用 session_key 里的群 ID',
+        )
+
+    if root_mode in ['router_group', 'router_direct']:
+        expect_field(
+            'chatbot_user_id',
+            str(bound_chatbot_user_id).strip(),
+            'error',
+            'router_session_chatbot_user_mismatch',
+            'router session 的 chatbot_user_id 与当前绑定 chatbot user 不一致',
+            'router session 应绑定当前节点关联的 chatbot_user_id',
+        )
+
+    expected_origin_kind, expected_origin_user_id = _resolve_expected_direct_origin_identity(root_identity)
+    if expected_origin_kind != '' and expected_origin_user_id != '':
+        expect_field(
+            'origin_kind',
+            expected_origin_kind,
+            'error',
+            'direct_root_origin_kind_mismatch',
+            'direct root lineage 的 origin_kind 与当前规则不一致',
+            'direct root lineage 的 origin_kind 应固定为 direct_user',
+        )
+        expect_field(
+            'origin_user_id',
+            expected_origin_user_id,
+            'error',
+            'direct_root_origin_user_mismatch',
+            'direct root lineage 的 origin_user_id 与当前规则不一致',
+            'direct root lineage 的 origin_user_id 应等于 direct target user',
+        )
+
+    return {
+        'session_key': session_key,
+        'session_facts': session_facts,
+        'root_mode': root_mode,
+        'target_user_id': target_user_id,
+        'current_fields': current_fields,
+        'expected_fields': expected_fields,
+        'status': 'dirty' if len(issues) > 0 else 'clean',
+        'issues': issues,
+        'proposed_changes': proposed_changes,
+    }
+
+
+def inspect_session_mapping_canonical_states_for_node(app_id, node_info):
+    openclaw = lanying_openclaw
+    normalized_node_info = _resolve_node_info(app_id, node_info)
+    node_id = str((normalized_node_info or {}).get('node_id', '')).strip()
+    if node_id == '':
+        return {'result': 'ignored', 'message': 'bad node id'}
+    default_management_user_id = ''
+    app_user_result = openclaw.ensure_openclaw_app_manager_user(app_id)
+    if isinstance(app_user_result, dict) and app_user_result.get('result') == 'ok':
+        default_management_user_id = str(app_user_result.get('data', {}).get('user_id', '')).strip()
+    bound_chatbot_user_id = openclaw.resolve_bound_chatbot_user_id(app_id, node_id)
+    mappings = openclaw.list_session_mappings_for_node(app_id, node_id)
+    reports = []
+    dirty_count = 0
+    for mapping in mappings:
+        report = _analyze_session_mapping_canonical_detail(
+            app_id,
+            normalized_node_info,
+            mapping,
+            default_management_user_id=default_management_user_id,
+            bound_chatbot_user_id=bound_chatbot_user_id,
+        )
+        if str(report.get('status', '')).strip() == 'ignored':
+            continue
+        if str(report.get('status', '')).strip() == 'dirty':
+            dirty_count += 1
+        reports.append(report)
+    return {
+        'result': 'ok',
+        'data': {
+            'node_id': node_id,
+            'default_management_user_id': default_management_user_id,
+            'bound_chatbot_user_id': bound_chatbot_user_id,
+            'checked_mapping_count': len(reports),
+            'dirty_mapping_count': dirty_count,
+            'mapping_reports': reports,
+        }
+    }
+
+
+def render_inspect_session_mapping_canonical_html_for_node(app_id, node_id):
+    openclaw = lanying_openclaw
+    mappings = sorted(
+        openclaw.list_session_mappings_for_node(app_id, node_id),
+        key=lambda item: str((item or {}).get('session_key', '')).strip(),
+    )
+    inspect_result = inspect_session_mapping_canonical_states_for_node(app_id, {'node_id': str(node_id).strip()})
+    reports_by_session_key = {}
+    if isinstance(inspect_result, dict):
+        for report in list(inspect_result.get('data', {}).get('mapping_reports', []) or []):
+            session_key = str(report.get('session_key', '')).strip()
+            if session_key != '':
+                reports_by_session_key[session_key] = report
+    header = (
+        '<tr>'
+        '<th>session_key</th>'
+        '<th>mapping</th>'
+        '<th>session_facts</th>'
+        '<th>origin_identity</th>'
+        '<th>expected_fields</th>'
+        '<th>status</th>'
+        '<th>issues</th>'
+        '<th>proposed_changes</th>'
+        '</tr>'
+    )
+    rows = [header]
+    for mapping in mappings:
+        normalized_mapping = openclaw.normalize_session_mapping_record(mapping)
+        session_key = str((normalized_mapping or {}).get('session_key', '')).strip()
+        report = reports_by_session_key.get(session_key)
+        if not isinstance(report, dict):
+            continue
+        session_facts = openclaw.get_session_key_facts(session_key)
+        mapping_summary = _annotate_time_fields({
+            'app_id': normalized_mapping.get('app_id', ''),
+            'node_id': normalized_mapping.get('node_id', ''),
+            'openclaw_user_id': normalized_mapping.get('openclaw_user_id', ''),
+            'management_user_id': normalized_mapping.get('management_user_id', ''),
+            'origin_kind': normalized_mapping.get('origin_kind', ''),
+            'origin_user_id': normalized_mapping.get('origin_user_id', ''),
+            'chatbot_user_id': normalized_mapping.get('chatbot_user_id', ''),
+            'group_id': normalized_mapping.get('group_id', ''),
+            'parent_session_key': normalized_mapping.get('parent_session_key', ''),
+            'root_session_key': normalized_mapping.get('root_session_key', ''),
+            'effective_target_session_key': normalized_mapping.get('effective_target_session_key', ''),
+            'updated_at': normalized_mapping.get('updated_at', ''),
+            'created_at': normalized_mapping.get('created_at', ''),
+        }, second_keys=['created_at', 'updated_at'])
+        expected_summary = dict(report.get('expected_fields', {}))
+        expected_summary['root_mode'] = report.get('root_mode', '')
+        expected_summary['target_user_id'] = report.get('target_user_id', '')
+        origin_issue_codes = set()
+        for issue in list(report.get('issues', []) or []):
+            origin_issue_codes.add(str((issue or {}).get('code', '')).strip())
+        origin_expected_kind = str(expected_summary.get('origin_kind', '')).strip()
+        origin_expected_user_id = str(expected_summary.get('origin_user_id', '')).strip()
+        origin_identity_summary = {
+            'current_origin_kind': normalized_mapping.get('origin_kind', ''),
+            'current_origin_user_id': normalized_mapping.get('origin_user_id', ''),
+            'expected_origin_kind': origin_expected_kind,
+            'expected_origin_user_id': origin_expected_user_id,
+            'origin_repair_reason': (
+                'direct root lineage inferred from root_session_key'
+                if (
+                    'direct_root_origin_kind_mismatch' in origin_issue_codes or
+                    'direct_root_origin_user_mismatch' in origin_issue_codes
+                )
+                else ''
+            ),
+        }
+        issues_html = _build_session_mapping_html_table(_build_session_mapping_html_list_rows([
+            f"{str(issue.get('severity', '')).strip()}: {str(issue.get('code', '')).strip()} - {str(issue.get('message', '')).strip()}"
+            for issue in list(report.get('issues', []) or [])
+        ]))
+        change_rows = []
+        for change in list(report.get('proposed_changes', []) or []):
+            change_rows.append(
+                '<tr><td>'
+                + _build_session_mapping_html_table(
+                    _build_session_mapping_html_key_value_rows(
+                        change,
+                        ['action', 'field', 'from', 'to', 'reason', 'risk'],
+                    )
+                )
+                + '</td></tr>'
+            )
+        proposed_changes_html = _build_session_mapping_html_table(change_rows or ['<tr><td></td></tr>'])
+        rows.append(
+            '<tr>'
+            f'<td valign="top">{_escape_session_mapping_html(session_key)}</td>'
+            f'<td valign="top">{_build_session_mapping_html_table(_build_session_mapping_html_key_value_rows(mapping_summary))}</td>'
+            f'<td valign="top">{_build_session_mapping_html_table(_build_session_mapping_html_key_value_rows(session_facts, ["canonical_session_key", "channel", "chat_type", "target_id", "is_router", "is_direct", "is_subagent"]))}</td>'
+            f'<td valign="top">{_build_session_mapping_html_table(_build_session_mapping_html_key_value_rows(origin_identity_summary))}</td>'
+            f'<td valign="top">{_build_session_mapping_html_table(_build_session_mapping_html_key_value_rows(expected_summary))}</td>'
+            f'<td valign="top">{_escape_session_mapping_html(report.get("status", ""))}</td>'
+            f'<td valign="top">{issues_html}</td>'
+            f'<td valign="top">{proposed_changes_html}</td>'
+            '</tr>'
+        )
+    return _build_session_mapping_html_table(rows)
+
+
+def _find_canonical_mapping_report_by_session_key(inspect_result, session_key):
+    normalized_session_key = str(session_key).strip()
+    if not isinstance(inspect_result, dict):
+        return None
+    for report in list(inspect_result.get('data', {}).get('mapping_reports', []) or []):
+        if str(report.get('session_key', '')).strip() == normalized_session_key:
+            return report
+    return None
+
+
+def _predict_canonical_mapping_report_after_changes(report):
+    predicted = dict(report or {})
+    predicted_current_fields = dict(predicted.get('current_fields', {}))
+    for change in list((report or {}).get('proposed_changes', []) or []):
+        if str((change or {}).get('action', '')).strip() != 'mapping_field_update':
+            continue
+        field = str((change or {}).get('field', '')).strip()
+        if field == '':
+            continue
+        predicted_current_fields[field] = str(change.get('to', '')).strip()
+    predicted['current_fields'] = predicted_current_fields
+    predicted['issues'] = []
+    predicted['status'] = 'clean'
+    predicted['proposed_changes'] = []
+    return predicted
+
+
+def _canonical_mapping_change_signature(report):
+    signature = []
+    for change in list((report or {}).get('proposed_changes', []) or []):
+        if not isinstance(change, dict):
+            continue
+        signature.append((
+            str(change.get('action', '')).strip(),
+            str(change.get('field', '')).strip(),
+            str(change.get('from', '')).strip(),
+            str(change.get('to', '')).strip(),
+            str(change.get('session_key', '')).strip(),
+        ))
+    return tuple(signature)
+
+
+def migrate_inspected_session_mapping_canonical_state(app_id, node_info, session_key, dry_run=False):
+    openclaw = lanying_openclaw
+    normalized_node_info = _resolve_node_info(app_id, node_info)
+    node_id = str((normalized_node_info or {}).get('node_id', '')).strip()
+    normalized_session_key = str(session_key).strip()
+    if node_id == '' or normalized_session_key == '':
+        return {'result': 'error', 'message': 'bad node_id or session_key'}
+    before_inspect = inspect_session_mapping_canonical_states_for_node(app_id, normalized_node_info)
+    before_report = _find_canonical_mapping_report_by_session_key(before_inspect, normalized_session_key)
+    if not isinstance(before_report, dict):
+        return {'result': 'error', 'message': 'canonical session mapping inspect report not found'}
+    before_html = render_inspect_session_mapping_canonical_html_for_node(app_id, node_id)
+    if dry_run:
+        return {
+            'result': 'ok',
+            'data': {
+                'session_key': normalized_session_key,
+                'dry_run': True,
+                'before_report': before_report,
+                'after_report': _predict_canonical_mapping_report_after_changes(before_report),
+                'applied_changes': [],
+                'before_html': before_html,
+                'after_html': before_html,
+            }
+        }
+    mapping = openclaw.get_session_mapping_by_session(app_id, node_id, normalized_session_key)
+    if not isinstance(mapping, dict):
+        return {'result': 'error', 'message': 'session mapping not found'}
+    for change in list(before_report.get('proposed_changes', []) or []):
+        if str(change.get('action', '')).strip() != 'mapping_field_update':
+            return {'result': 'error', 'message': f'unsupported canonical mapping change: {change}'}
+        field = str(change.get('field', '')).strip()
+        mapping[field] = change.get('to', '')
+    set_result = openclaw.rewrite_session_mapping_for_migration(
+        app_id,
+        node_id,
+        mapping,
+        change_source='canonical_session_mapping_migration',
+    )
+    if set_result.get('result') != 'ok':
+        return {'result': 'error', 'message': 'set session mapping failed', 'data': {'set_result': set_result}}
+    after_inspect = inspect_session_mapping_canonical_states_for_node(app_id, normalized_node_info)
+    after_report = _find_canonical_mapping_report_by_session_key(after_inspect, normalized_session_key)
+    after_html = render_inspect_session_mapping_canonical_html_for_node(app_id, node_id)
+    return {
+        'result': 'ok',
+        'data': {
+            'session_key': normalized_session_key,
+            'dry_run': False,
+            'before_report': before_report,
+            'after_report': after_report,
+            'applied_changes': list(before_report.get('proposed_changes', []) or []),
+            'before_html': before_html,
+            'after_html': after_html,
+        }
+    }
+
+
+def migrate_inspected_session_mapping_canonical_states_for_node(app_id, node_info, dry_run=False):
+    openclaw = lanying_openclaw
+    normalized_node_info = _resolve_node_info(app_id, node_info)
+    node_id = str((normalized_node_info or {}).get('node_id', '')).strip()
+    if node_id == '':
+        return {'result': 'error', 'message': 'bad node id'}
+    max_rounds = 5
+    results_by_session_key = {}
+    seen_signatures_by_session_key = {}
+    inspect_result = inspect_session_mapping_canonical_states_for_node(app_id, normalized_node_info)
+    initial_dirty_count = 0
+    stop_reason = 'clean'
+    rounds_run = 0
+    after_inspect = inspect_result
+
+    for round_number in range(1, max_rounds + 1):
+        rounds_run = round_number
+        reports = sorted(
+            list(after_inspect.get('data', {}).get('mapping_reports', []) or []),
+            key=lambda item: str((item or {}).get('session_key', '')).strip(),
+        )
+        dirty_reports = [report for report in reports if str(report.get('status', '')).strip() == 'dirty']
+        if round_number == 1:
+            initial_dirty_count = len(dirty_reports)
+        if len(dirty_reports) == 0:
+            stop_reason = 'clean'
+            break
+        if dry_run:
+            for report in dirty_reports:
+                session_key = str(report.get('session_key', '')).strip()
+                if session_key == '':
+                    continue
+                if session_key not in results_by_session_key:
+                    results_by_session_key[session_key] = {
+                        'result': 'ok',
+                        'data': {
+                            'session_key': session_key,
+                            'dry_run': True,
+                            'before_report': report,
+                            'after_report': _predict_canonical_mapping_report_after_changes(report),
+                            'applied_changes': [],
+                            'before_html': '',
+                            'after_html': '',
+                        }
+                    }
+            stop_reason = 'dry_run'
+            break
+
+        any_progress = False
+        repeated_signature_detected = False
+        round_had_error = False
+        for report in dirty_reports:
+            session_key = str(report.get('session_key', '')).strip()
+            if session_key == '':
+                continue
+            if session_key not in results_by_session_key:
+                results_by_session_key[session_key] = {
+                    'result': 'ok',
+                    'data': {
+                        'session_key': session_key,
+                        'dry_run': False,
+                        'before_report': report,
+                        'after_report': None,
+                        'applied_changes': [],
+                        'before_html': '',
+                        'after_html': '',
+                    }
+                }
+            signature = _canonical_mapping_change_signature(report)
+            previous_signatures = seen_signatures_by_session_key.setdefault(session_key, set())
+            if signature in previous_signatures:
+                repeated_signature_detected = True
+                continue
+            previous_signatures.add(signature)
+
+            mapping = openclaw.get_session_mapping_by_session(app_id, node_id, session_key)
+            if not isinstance(mapping, dict):
+                results_by_session_key[session_key] = {
+                    'result': 'error',
+                    'message': 'session mapping not found',
+                    'data': {
+                        'session_key': session_key,
+                    }
+                }
+                round_had_error = True
+                continue
+            unsupported_change = None
+            for change in list(report.get('proposed_changes', []) or []):
+                if str(change.get('action', '')).strip() != 'mapping_field_update':
+                    unsupported_change = change
+                    break
+                field = str(change.get('field', '')).strip()
+                mapping[field] = change.get('to', '')
+            if unsupported_change is not None:
+                results_by_session_key[session_key] = {
+                    'result': 'error',
+                    'message': f'unsupported canonical mapping change: {unsupported_change}',
+                    'data': {
+                        'session_key': session_key,
+                    }
+                }
+                round_had_error = True
+                continue
+            set_result = openclaw.rewrite_session_mapping_for_migration(
+                app_id,
+                node_id,
+                mapping,
+                change_source='canonical_session_mapping_migration',
+            )
+            if set_result.get('result') != 'ok':
+                results_by_session_key[session_key] = {
+                    'result': 'error',
+                    'message': 'set session mapping failed',
+                    'data': {
+                        'session_key': session_key,
+                        'set_result': set_result,
+                    }
+                }
+                round_had_error = True
+                continue
+            any_progress = True
+            results_by_session_key[session_key]['data']['applied_changes'].extend([
+                dict(change, round=round_number)
+                for change in list(report.get('proposed_changes', []) or [])
+            ])
+
+        after_inspect = inspect_session_mapping_canonical_states_for_node(app_id, normalized_node_info)
+        if round_had_error:
+            stop_reason = 'error'
+            break
+        if repeated_signature_detected and not any_progress:
+            stop_reason = 'repeated_proposed_changes'
+            break
+        if not any_progress:
+            stop_reason = 'no_progress'
+            break
+    else:
+        stop_reason = 'max_rounds_reached'
+
+    after_reports_by_session_key = {}
+    for report in list(after_inspect.get('data', {}).get('mapping_reports', []) or []):
+        session_key = str((report or {}).get('session_key', '')).strip()
+        if session_key != '':
+            after_reports_by_session_key[session_key] = report
+    results = []
+    for session_key in sorted(results_by_session_key.keys()):
+        result = results_by_session_key[session_key]
+        if result.get('result') != 'ok':
+            results.append(result)
+            continue
+        result['data']['after_report'] = after_reports_by_session_key.get(session_key)
+        results.append(result)
+    return {
+        'result': 'ok',
+        'data': {
+            'node_id': node_id,
+            'dry_run': bool(dry_run),
+            'dirty_before_count': initial_dirty_count,
+            'migration_results': results,
+            'after_inspect': after_inspect,
+            'rounds_run': rounds_run,
+            'stop_reason': stop_reason,
+        }
+    }
+
+
+def inspect_session_mapping_origin_identity_for_node(app_id, node_info):
+    return inspect_session_mapping_canonical_states_for_node(app_id, node_info)
+
+
+def render_inspect_session_mapping_origin_identity_html_for_node(app_id, node_id):
+    return render_inspect_session_mapping_canonical_html_for_node(app_id, node_id)
+
+
+def _find_origin_identity_report_by_session_key(inspect_result, session_key):
+    return _find_canonical_mapping_report_by_session_key(inspect_result, session_key)
+
+
+def _predict_origin_identity_report_after_changes(report):
+    return _predict_canonical_mapping_report_after_changes(report)
+
+
+def migrate_inspected_session_mapping_origin_identity_state(app_id, node_info, session_key, dry_run=False):
+    return migrate_inspected_session_mapping_canonical_state(app_id, node_info, session_key, dry_run=dry_run)
+
+
+def migrate_inspected_session_mapping_origin_identity_states_for_node(app_id, node_info, dry_run=False):
+    return migrate_inspected_session_mapping_canonical_states_for_node(app_id, node_info, dry_run=dry_run)
+
+
 def _predict_report_after_changes(report):
     predicted = dict(report or {})
     predicted['issues'] = []
@@ -931,7 +1650,12 @@ def _apply_group_state_change(app_id, node_id, session_key, change):
             return {'result': 'error', 'message': 'session mapping not found'}
         field = str(normalized_change.get('field', '')).strip()
         mapping[field] = normalized_change.get('to', '')
-        return openclaw.set_session_mapping(app_id, node_id, mapping)
+        return openclaw.rewrite_session_mapping_for_migration(
+            app_id,
+            node_id,
+            mapping,
+            change_source='group_state_session_mapping_migration',
+        )
     group_id = str(normalized_change.get('group_id', '')).strip()
     user_id = str(normalized_change.get('user_id', '')).strip()
     if action == 'group_member_add':

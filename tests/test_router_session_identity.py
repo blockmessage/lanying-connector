@@ -260,6 +260,120 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "target_id": "6597711675232",
             },
         )
+
+    def test_rewrite_session_mapping_for_migration_allows_rebinding_existing_session_group(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        session_key = "agent:main:clawchat-router:direct:6632092019520"
+        old_group_id = "legacy-group"
+        new_mapping = {
+            "session_key": session_key,
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "manager-1",
+            "origin_kind": "direct_user",
+            "origin_user_id": "6632092019520",
+            "chatbot_user_id": "chatbot-user",
+            "group_id": "",
+            "root_session_key": session_key,
+            "effective_target_session_key": session_key,
+        }
+        old_mapping = dict(new_mapping, group_id=old_group_id, origin_kind="openclaw_control", origin_user_id="", created_at=123)
+        old_body = json.dumps(old_mapping, ensure_ascii=False)
+        redis.set(m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", session_key), old_body)
+        redis.set(m.get_openclaw_session_mapping_by_group_key("app-id", "node-1", "openclaw-user", old_group_id), old_body)
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda _redis, key: redis.get(key)), \
+             mock.patch.object(m, "record_session_mapping_change_async") as mocked_log:
+            result = m.rewrite_session_mapping_for_migration("app-id", "node-1", new_mapping)
+            saved = m.get_session_mapping_by_session("app-id", "node-1", session_key)
+            old_group_mapping = m.get_session_mapping_by_group("app-id", "node-1", "openclaw-user", old_group_id)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(saved["group_id"], "")
+        self.assertEqual(saved["origin_kind"], "direct_user")
+        self.assertEqual(saved["origin_user_id"], "6632092019520")
+        self.assertIsNone(old_group_mapping)
+        mocked_log.assert_called_once()
+
+    def test_rewrite_session_mapping_for_migration_still_rejects_group_bound_to_another_session(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        target_session_key = "agent:main:clawchat-router:group:group-2"
+        conflict_session_key = "agent:main:clawchat-router:group:group-1"
+        target_group_id = "group-2"
+        target_mapping = {
+            "session_key": target_session_key,
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "manager-1",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "",
+            "chatbot_user_id": "chatbot-user",
+            "group_id": "wrong-group",
+            "root_session_key": target_session_key,
+            "effective_target_session_key": target_session_key,
+        }
+        conflict_mapping = dict(target_mapping, session_key=conflict_session_key, group_id=target_group_id)
+        redis.set(m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", target_session_key), json.dumps(target_mapping, ensure_ascii=False))
+        redis.set(m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", conflict_session_key), json.dumps(conflict_mapping, ensure_ascii=False))
+        redis.set(m.get_openclaw_session_mapping_by_group_key("app-id", "node-1", "openclaw-user", target_group_id), json.dumps(conflict_mapping, ensure_ascii=False))
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), target_session_key, conflict_session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda _redis, key: redis.get(key)):
+            result = m.rewrite_session_mapping_for_migration(
+                "app-id",
+                "node-1",
+                dict(target_mapping, group_id=target_group_id),
+            )
+
+        self.assertEqual(result["result"], "error")
+        self.assertEqual(result["message"], "group already bind to another session")
+
+    def test_rewrite_session_mapping_for_migration_deletes_old_group_lookup_when_openclaw_user_changes(self):
+        m = lanying_openclaw
+        redis = FakeRedis()
+        session_key = "agent:main:clawchat-router:group:group-2"
+        group_id = "group-2"
+        new_mapping = {
+            "session_key": session_key,
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "openclaw_user_id": "new-openclaw-user",
+            "management_user_id": "manager-1",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "",
+            "chatbot_user_id": "chatbot-user",
+            "group_id": group_id,
+            "root_session_key": session_key,
+            "effective_target_session_key": session_key,
+        }
+        old_mapping = dict(new_mapping, openclaw_user_id="old-openclaw-user", created_at=123)
+        old_body = json.dumps(old_mapping, ensure_ascii=False)
+        redis.set(m.get_openclaw_session_mapping_by_session_key("app-id", "node-1", session_key), old_body)
+        redis.set(m.get_openclaw_session_mapping_by_group_key("app-id", "node-1", "old-openclaw-user", group_id), old_body)
+        redis.sadd(m.get_openclaw_session_mapping_index_key("app-id", "node-1"), session_key)
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=redis), \
+             mock.patch.object(m.lanying_redis, "redis_get", side_effect=lambda _redis, key: redis.get(key)):
+            result = m.rewrite_session_mapping_for_migration("app-id", "node-1", new_mapping)
+            saved = m.get_session_mapping_by_session("app-id", "node-1", session_key)
+            old_group_mapping = m.get_session_mapping_by_group("app-id", "node-1", "old-openclaw-user", group_id)
+            new_group_mapping = m.get_session_mapping_by_group("app-id", "node-1", "new-openclaw-user", group_id)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(saved["openclaw_user_id"], "new-openclaw-user")
+        self.assertIsNone(old_group_mapping)
+        self.assertEqual(new_group_mapping["openclaw_user_id"], "new-openclaw-user")
+
+    def test_non_clawchat_session_key_remains_unchanged(self):
+        m = lanying_openclaw
+
         self.assertEqual(m.normalize_session_key("legacy-user"), "legacy-user")
         self.assertIsNone(m.parse_clawchat_session_identity("legacy-user"))
 
@@ -1195,6 +1309,35 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(result["data"]["after_report"]["status"], "clean")
         self.assertEqual(result["data"]["after_report"]["current_owner_user_id"], "new-owner")
         mocked_apply.assert_not_called()
+
+    def test_apply_group_state_change_uses_migration_rewrite_for_mapping_field_update(self):
+        m = lanying_openclaw_migration
+        mapping = {
+            "session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "group_id": "legacy-group",
+            "origin_kind": "openclaw_control",
+        }
+
+        with mock.patch.object(m.lanying_openclaw, "get_session_mapping_by_session", return_value=dict(mapping)), \
+             mock.patch.object(m.lanying_openclaw, "rewrite_session_mapping_for_migration", return_value={"result": "ok", "data": {}}) as mocked_rewrite, \
+             mock.patch.object(m.lanying_openclaw, "set_session_mapping") as mocked_set:
+            result = m._apply_group_state_change(
+                "app-id",
+                "15",
+                "agent:main:clawchat-router:direct:6632092019520",
+                {
+                    "action": "mapping_field_update",
+                    "field": "group_id",
+                    "to": "",
+                },
+            )
+
+        self.assertEqual(result["result"], "ok")
+        mocked_set.assert_not_called()
+        mocked_rewrite.assert_called_once()
+        rewritten_mapping = mocked_rewrite.call_args.args[2]
+        self.assertEqual(rewritten_mapping["group_id"], "")
+        self.assertEqual(mocked_rewrite.call_args.kwargs["change_source"], "group_state_session_mapping_migration")
 
     def test_inspect_session_mapping_group_state_for_session_only_checks_target_session(self):
         m = lanying_openclaw_migration
@@ -4716,6 +4859,394 @@ class ConfigBatchSyncTests(unittest.TestCase):
                 "value": "lanying/openai/gpt-5-mini",
             }
         ])
+
+    def test_inspect_session_mapping_canonical_states_for_node_repairs_router_direct_root_fields(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        detail = {
+            "session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "app_id": "legacy-app",
+            "node_id": "legacy-node",
+            "openclaw_user_id": "legacy-openclaw",
+            "management_user_id": "",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "",
+            "chatbot_user_id": "",
+            "group_id": "legacy-group",
+            "parent_session_key": "",
+            "root_session_key": "",
+            "effective_target_session_key": "",
+        }
+
+        with mock.patch.object(m.lanying_openclaw, "ensure_openclaw_app_manager_user", return_value={"result": "ok", "data": {"user_id": "manager-1"}}), \
+             mock.patch.object(m.lanying_openclaw, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=[detail]):
+            result = m.inspect_session_mapping_canonical_states_for_node("app-id", node_info)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["dirty_mapping_count"], 1)
+        report = result["data"]["mapping_reports"][0]
+        proposed_by_field = {
+            change["field"]: change["to"]
+            for change in report["proposed_changes"]
+            if change.get("action") == "mapping_field_update"
+        }
+        self.assertEqual(proposed_by_field["app_id"], "app-id")
+        self.assertEqual(proposed_by_field["node_id"], "15")
+        self.assertEqual(proposed_by_field["openclaw_user_id"], "openclaw-user")
+        self.assertEqual(proposed_by_field["management_user_id"], "manager-1")
+        self.assertEqual(proposed_by_field["root_session_key"], "agent:main:clawchat-router:direct:6632092019520")
+        self.assertEqual(proposed_by_field["effective_target_session_key"], "agent:main:clawchat-router:direct:6632092019520")
+        self.assertEqual(proposed_by_field["group_id"], "")
+        self.assertEqual(proposed_by_field["origin_kind"], "direct_user")
+        self.assertEqual(proposed_by_field["origin_user_id"], "6632092019520")
+        self.assertEqual(proposed_by_field["chatbot_user_id"], "chatbot-user")
+
+    def test_inspect_session_mapping_canonical_states_for_node_repairs_router_group_fields(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        detail = {
+            "session_key": "agent:main:clawchat-router:group:group-9",
+            "app_id": "app-id",
+            "node_id": "15",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "manager-1",
+            "origin_kind": "",
+            "origin_user_id": "",
+            "chatbot_user_id": "",
+            "group_id": "wrong-group",
+            "parent_session_key": "",
+            "root_session_key": "",
+            "effective_target_session_key": "",
+        }
+
+        with mock.patch.object(m.lanying_openclaw, "ensure_openclaw_app_manager_user", return_value={"result": "ok", "data": {"user_id": "manager-1"}}), \
+             mock.patch.object(m.lanying_openclaw, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=[detail]):
+            result = m.inspect_session_mapping_canonical_states_for_node("app-id", node_info)
+
+        self.assertEqual(result["result"], "ok")
+        report = result["data"]["mapping_reports"][0]
+        proposed_by_field = {
+            change["field"]: change["to"]
+            for change in report["proposed_changes"]
+            if change.get("action") == "mapping_field_update"
+        }
+        self.assertEqual(proposed_by_field["group_id"], "group-9")
+        self.assertEqual(proposed_by_field["root_session_key"], "agent:main:clawchat-router:group:group-9")
+        self.assertEqual(proposed_by_field["effective_target_session_key"], "agent:main:clawchat-router:group:group-9")
+        self.assertEqual(proposed_by_field["chatbot_user_id"], "chatbot-user")
+
+    def test_inspect_session_mapping_canonical_states_for_node_repairs_non_empty_wrong_root_session_key(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        detail = {
+            "session_key": "agent:main:clawchat-router:group:group-9",
+            "app_id": "app-id",
+            "node_id": "15",
+            "openclaw_user_id": "openclaw-user",
+            "management_user_id": "manager-1",
+            "origin_kind": "",
+            "origin_user_id": "",
+            "chatbot_user_id": "chatbot-user",
+            "group_id": "group-9",
+            "parent_session_key": "",
+            "root_session_key": "agent:main:clawchat-router:group:wrong-root",
+            "effective_target_session_key": "agent:main:clawchat-router:group:wrong-root",
+        }
+
+        with mock.patch.object(m.lanying_openclaw, "ensure_openclaw_app_manager_user", return_value={"result": "ok", "data": {"user_id": "manager-1"}}), \
+             mock.patch.object(m.lanying_openclaw, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=[detail]):
+            result = m.inspect_session_mapping_canonical_states_for_node("app-id", node_info)
+
+        report = result["data"]["mapping_reports"][0]
+        proposed_by_field = {
+            change["field"]: change["to"]
+            for change in report["proposed_changes"]
+            if change.get("action") == "mapping_field_update"
+        }
+        self.assertEqual(proposed_by_field["root_session_key"], "agent:main:clawchat-router:group:group-9")
+        self.assertEqual(proposed_by_field["effective_target_session_key"], "agent:main:clawchat-router:group:group-9")
+
+    def test_render_inspect_session_mapping_canonical_html_for_node_highlights_origin_identity(self):
+        m = lanying_openclaw_migration
+        details = [{
+            "session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "app_id": "uioczdkuvci",
+            "node_id": "8",
+            "openclaw_user_id": "6760921908880",
+            "management_user_id": "6632092019520",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "",
+            "chatbot_user_id": "6674822238512",
+            "group_id": "6632098115105",
+            "parent_session_key": "",
+            "root_session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "effective_target_session_key": "agent:main:clawchat-router:direct:6632092019520",
+        }]
+        inspect_result = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:clawchat-router:direct:6632092019520",
+                    "status": "dirty",
+                    "root_mode": "router_direct",
+                    "target_user_id": "6632092019520",
+                    "expected_fields": {
+                        "origin_kind": "direct_user",
+                        "origin_user_id": "6632092019520",
+                    },
+                    "issues": [
+                        {
+                            "severity": "error",
+                            "code": "direct_root_origin_kind_mismatch",
+                            "message": "direct root lineage 的 origin_kind 与当前规则不一致",
+                        },
+                        {
+                            "severity": "error",
+                            "code": "direct_root_origin_user_mismatch",
+                            "message": "direct root lineage 的 origin_user_id 与当前规则不一致",
+                        },
+                    ],
+                    "proposed_changes": [],
+                }]
+            },
+        }
+
+        with mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=details), \
+             mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", return_value=inspect_result):
+            html_text = m.render_inspect_session_mapping_canonical_html_for_node("app-id", "8")
+
+        self.assertIn("origin_identity", html_text)
+        self.assertIn("current_origin_kind", html_text)
+        self.assertIn("openclaw_control", html_text)
+        self.assertIn("expected_origin_kind", html_text)
+        self.assertIn("direct_user", html_text)
+        self.assertIn("expected_origin_user_id", html_text)
+        self.assertIn("6632092019520", html_text)
+        self.assertIn("origin_repair_reason", html_text)
+        self.assertIn("direct root lineage inferred from root_session_key", html_text)
+
+    def test_migrate_inspected_session_mapping_canonical_state_applies_all_mapping_field_updates(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        before_report = {
+            "session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "status": "dirty",
+            "proposed_changes": [
+                {
+                    "action": "mapping_field_update",
+                    "field": "origin_kind",
+                    "to": "direct_user",
+                },
+                {
+                    "action": "mapping_field_update",
+                    "field": "origin_user_id",
+                    "to": "6632092019520",
+                },
+                {
+                    "action": "mapping_field_update",
+                    "field": "chatbot_user_id",
+                    "to": "chatbot-user",
+                },
+            ],
+        }
+        before_inspect = {
+            "result": "ok",
+            "data": {"mapping_reports": [before_report]},
+        }
+        after_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [
+                    {
+                        "session_key": "agent:main:clawchat-router:direct:6632092019520",
+                        "status": "clean",
+                        "proposed_changes": [],
+                    }
+                ]
+            },
+        }
+        mapping = {
+            "session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "",
+            "chatbot_user_id": "",
+        }
+
+        with mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", side_effect=[before_inspect, after_inspect]), \
+             mock.patch.object(m, "render_inspect_session_mapping_canonical_html_for_node", side_effect=["before-html", "after-html"]), \
+             mock.patch.object(m.lanying_openclaw, "get_session_mapping_by_session", return_value=dict(mapping)), \
+             mock.patch.object(m.lanying_openclaw, "rewrite_session_mapping_for_migration", side_effect=lambda app_id, node_id, body, change_source='': {"result": "ok", "data": body}) as mocked_set:
+            result = m.migrate_inspected_session_mapping_canonical_state(
+                "app-id",
+                node_info,
+                "agent:main:clawchat-router:direct:6632092019520",
+            )
+
+        self.assertEqual(result["result"], "ok")
+        saved_mapping = mocked_set.call_args.args[2]
+        self.assertEqual(saved_mapping["origin_kind"], "direct_user")
+        self.assertEqual(saved_mapping["origin_user_id"], "6632092019520")
+        self.assertEqual(saved_mapping["chatbot_user_id"], "chatbot-user")
+        self.assertEqual(result["data"]["before_html"], "before-html")
+        self.assertEqual(result["data"]["after_html"], "after-html")
+
+    def test_migrate_inspected_session_mapping_canonical_states_for_node_reuses_single_inspect_cycle(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        before_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [
+                    {
+                        "session_key": "agent:main:clawchat-router:direct:user-1",
+                        "status": "dirty",
+                        "proposed_changes": [
+                            {"action": "mapping_field_update", "field": "origin_kind", "to": "direct_user"},
+                        ],
+                    },
+                    {
+                        "session_key": "agent:main:clawchat-router:group:group-1",
+                        "status": "dirty",
+                        "proposed_changes": [
+                            {"action": "mapping_field_update", "field": "group_id", "to": "group-1"},
+                        ],
+                    },
+                ],
+            },
+        }
+        after_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [
+                    {
+                        "session_key": "agent:main:clawchat-router:direct:user-1",
+                        "status": "clean",
+                        "proposed_changes": [],
+                    },
+                    {
+                        "session_key": "agent:main:clawchat-router:group:group-1",
+                        "status": "clean",
+                        "proposed_changes": [],
+                    },
+                ],
+            },
+        }
+        mapping_lookup = {
+            "agent:main:clawchat-router:direct:user-1": {
+                "session_key": "agent:main:clawchat-router:direct:user-1",
+                "origin_kind": "openclaw_control",
+            },
+            "agent:main:clawchat-router:group:group-1": {
+                "session_key": "agent:main:clawchat-router:group:group-1",
+                "group_id": "wrong-group",
+            },
+        }
+
+        def _get_mapping(app_id, node_id, session_key):
+            return dict(mapping_lookup[session_key])
+
+        with mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", side_effect=[before_inspect, after_inspect]) as mocked_inspect, \
+             mock.patch.object(m, "render_inspect_session_mapping_canonical_html_for_node") as mocked_render, \
+             mock.patch.object(m.lanying_openclaw, "get_session_mapping_by_session", side_effect=_get_mapping), \
+             mock.patch.object(m.lanying_openclaw, "rewrite_session_mapping_for_migration", side_effect=lambda app_id, node_id, body, change_source='': {"result": "ok", "data": body}) as mocked_set:
+            result = m.migrate_inspected_session_mapping_canonical_states_for_node("app-id", node_info, dry_run=False)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(mocked_inspect.call_count, 2)
+        mocked_render.assert_not_called()
+        self.assertEqual(mocked_set.call_count, 2)
+        self.assertEqual(result["data"]["dirty_before_count"], 2)
+
+    def test_migrate_inspected_session_mapping_canonical_states_for_node_converges_multiple_rounds(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        first_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:subagent:child-1",
+                    "status": "dirty",
+                    "proposed_changes": [
+                        {"action": "mapping_field_update", "field": "root_session_key", "to": "agent:main:clawchat-router:group:group-1"},
+                    ],
+                }]
+            },
+        }
+        second_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:subagent:child-1",
+                    "status": "dirty",
+                    "proposed_changes": [
+                        {"action": "mapping_field_update", "field": "effective_target_session_key", "to": "agent:main:clawchat-router:group:group-1"},
+                    ],
+                }]
+            },
+        }
+        clean_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:subagent:child-1",
+                    "status": "clean",
+                    "proposed_changes": [],
+                }]
+            },
+        }
+        mapping = {
+            "session_key": "agent:main:subagent:child-1",
+            "root_session_key": "",
+            "effective_target_session_key": "",
+        }
+
+        with mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", side_effect=[first_inspect, second_inspect, clean_inspect]) as mocked_inspect, \
+             mock.patch.object(m.lanying_openclaw, "get_session_mapping_by_session", return_value=dict(mapping)), \
+             mock.patch.object(m.lanying_openclaw, "rewrite_session_mapping_for_migration", side_effect=lambda app_id, node_id, body, change_source='': {"result": "ok", "data": body}) as mocked_set:
+            result = m.migrate_inspected_session_mapping_canonical_states_for_node("app-id", node_info, dry_run=False)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["stop_reason"], "clean")
+        self.assertEqual(result["data"]["rounds_run"], 3)
+        self.assertEqual(mocked_inspect.call_count, 3)
+        self.assertEqual(mocked_set.call_count, 2)
+        self.assertEqual(
+            [entry["round"] for entry in result["data"]["migration_results"][0]["data"]["applied_changes"]],
+            [1, 2],
+        )
+
+    def test_migrate_inspected_session_mapping_canonical_states_for_node_stops_on_repeated_proposals(self):
+        m = lanying_openclaw_migration
+        node_info = {"node_id": "15", "user_id": "openclaw-user", "session_map_sync": "on"}
+        repeated_inspect = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:subagent:loop-1",
+                    "status": "dirty",
+                    "proposed_changes": [
+                        {"action": "mapping_field_update", "field": "root_session_key", "from": "", "to": "agent:main:clawchat-router:group:group-1"},
+                    ],
+                }]
+            },
+        }
+        mapping = {
+            "session_key": "agent:main:subagent:loop-1",
+            "root_session_key": "",
+        }
+
+        with mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", side_effect=[repeated_inspect, repeated_inspect, repeated_inspect]) as mocked_inspect, \
+             mock.patch.object(m.lanying_openclaw, "get_session_mapping_by_session", return_value=dict(mapping)), \
+             mock.patch.object(m.lanying_openclaw, "rewrite_session_mapping_for_migration", side_effect=lambda app_id, node_id, body, change_source='': {"result": "ok", "data": body}) as mocked_set:
+            result = m.migrate_inspected_session_mapping_canonical_states_for_node("app-id", node_info, dry_run=False)
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["stop_reason"], "repeated_proposed_changes")
+        self.assertEqual(mocked_inspect.call_count, 3)
+        self.assertEqual(mocked_set.call_count, 1)
 
 
 if __name__ == "__main__":

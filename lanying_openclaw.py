@@ -2810,6 +2810,72 @@ def set_session_mapping(app_id, node_id, mapping):
         'data': body
     }
 
+def rewrite_session_mapping_for_migration(app_id, node_id, mapping, change_source='migration_rewrite_session_mapping'):
+    mapping = normalize_session_mapping_record(mapping)
+    session_key = normalize_session_key(mapping.get('session_key', ''))
+    group_id = str(mapping.get('group_id', '')).strip()
+    openclaw_user_id = str(mapping.get('openclaw_user_id', '')).strip()
+    if session_key == '' or openclaw_user_id == '':
+        return {
+            'result': 'error',
+            'message': 'bad session mapping'
+        }
+    previous_session_mapping = get_session_mapping_by_session(app_id, node_id, session_key)
+    if previous_session_mapping is None:
+        return {
+            'result': 'error',
+            'message': 'session mapping not found'
+        }
+    previous_session_group_id = str(previous_session_mapping.get('group_id', '')).strip()
+    previous_openclaw_user_id = str(previous_session_mapping.get('openclaw_user_id', '')).strip()
+    previous_group_mapping = (
+        get_session_mapping_by_group(app_id, node_id, openclaw_user_id, group_id)
+        if group_id != '' else None
+    )
+    if group_id != '' and previous_group_mapping is not None and normalize_session_key(previous_group_mapping.get('session_key', '')) != session_key:
+        return {
+            'result': 'error',
+            'message': 'group already bind to another session'
+        }
+    redis = lanying_redis.get_redis_connection()
+    body = dict(mapping)
+    body['session_key'] = session_key
+    body['group_id'] = group_id
+    body['openclaw_user_id'] = openclaw_user_id
+    body['updated_at'] = int(time.time())
+    if 'created_at' not in body or int(body.get('created_at', 0) or 0) <= 0:
+        body['created_at'] = int(previous_session_mapping.get('created_at', 0) or 0) or body['updated_at']
+    body_json = json.dumps(body, ensure_ascii=False)
+    redis.set(get_openclaw_session_mapping_by_session_key(app_id, node_id, session_key), body_json)
+    should_delete_previous_group_lookup = (
+        previous_session_group_id != '' and (
+            previous_session_group_id != group_id or previous_openclaw_user_id != openclaw_user_id
+        )
+    )
+    if should_delete_previous_group_lookup:
+        redis.delete(get_openclaw_session_mapping_by_group_key(app_id, node_id, previous_openclaw_user_id, previous_session_group_id))
+    if group_id != '':
+        redis.set(get_openclaw_session_mapping_by_group_key(app_id, node_id, openclaw_user_id, group_id), body_json)
+    redis.sadd(get_openclaw_session_mapping_index_key(app_id, node_id), session_key)
+    record_session_mapping_change_async(
+        app_id,
+        node_id,
+        previous_session_mapping,
+        body,
+        change_source,
+        extra_metadata={
+            'previous_session_group_id': previous_session_group_id,
+            'previous_openclaw_user_id': previous_openclaw_user_id,
+            'group_lookup_key_written': group_id != '',
+            'group_lookup_key_deleted': should_delete_previous_group_lookup,
+            'migration_rewrite': True,
+        },
+    )
+    return {
+        'result': 'ok',
+        'data': body
+    }
+
 def send_session_mapping_signal(node_info, signal_type, mappings):
     if not isinstance(mappings, list):
         return {
