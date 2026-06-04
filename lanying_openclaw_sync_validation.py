@@ -20,10 +20,20 @@ STATUS_FAILED = 'failed'
 STATUS_ERROR = 'error'
 DEFAULT_TIMEOUT_MS = 30000
 DEFAULT_POLL_INTERVAL_MS = 1000
+DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS = 10000
 LOG_SUBDIR = 'openclaw_sync_validation'
 
 tasks = {}
 tasks_lock = threading.Lock()
+
+
+def pick_int_config(value, default_value):
+    if value is None:
+        return int(default_value)
+    try:
+        return int(value)
+    except Exception:
+        return int(default_value)
 
 
 def get_task(task_id):
@@ -517,8 +527,12 @@ def build_runtime(app_id, node_id):
             'chatbot_user_id': chatbot_user_id,
             'group_openclaw_id': group_openclaw_id,
             'group_chatbot_id': group_chatbot_id,
-            'timeout_ms': int(validation_config.get('timeout_ms', DEFAULT_TIMEOUT_MS) or DEFAULT_TIMEOUT_MS),
-            'poll_interval_ms': int(validation_config.get('poll_interval_ms', DEFAULT_POLL_INTERVAL_MS) or DEFAULT_POLL_INTERVAL_MS),
+            'timeout_ms': pick_int_config(validation_config.get('timeout_ms'), DEFAULT_TIMEOUT_MS),
+            'poll_interval_ms': pick_int_config(validation_config.get('poll_interval_ms'), DEFAULT_POLL_INTERVAL_MS),
+            'duplicate_observation_window_ms': pick_int_config(
+                validation_config.get('duplicate_observation_window_ms'),
+                DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS,
+            ),
             'provisioning_rows': provisioning_rows + roster_rows + group_rows,
         },
     }
@@ -596,6 +610,22 @@ def summarize_messages(messages):
     return summary
 
 
+def merge_message_snapshots(primary, secondary):
+    merged = []
+    seen = set()
+    for message in (primary or []) + (secondary or []):
+        if not isinstance(message, dict):
+            continue
+        msg_id = str(message.get('msg_id', '')).strip()
+        dedupe_key = msg_id if msg_id != '' else json.dumps(message, ensure_ascii=False, sort_keys=True)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        merged.append(message)
+    merged.sort(key=lambda item: (int(item.get('timestamp', 0) or 0), str(item.get('msg_id', ''))))
+    return merged
+
+
 def get_mapping_sender_user_id(mapping):
     if not isinstance(mapping, dict):
         return ''
@@ -653,7 +683,31 @@ def fetch_conversation(runtime, scenario_def):
 
 
 def find_reply(messages, expected_reply_user_id, trigger_timestamp):
+    replies = find_replies(messages, expected_reply_user_id, trigger_timestamp, '')
+    return replies[0] if len(replies) > 0 else None
+
+
+def extract_request_msg_id(send_result):
+    if not isinstance(send_result, dict):
+        return ''
+    result = send_result.get('result', {})
+    if not isinstance(result, dict):
+        return ''
+    msg_ids = result.get('msg_ids')
+    if isinstance(msg_ids, list) and len(msg_ids) > 0:
+        return str(msg_ids[0]).strip()
+    data = result.get('data', {})
+    if isinstance(data, dict):
+        data_msg_ids = data.get('msg_ids')
+        if isinstance(data_msg_ids, list) and len(data_msg_ids) > 0:
+            return str(data_msg_ids[0]).strip()
+    return ''
+
+
+def find_replies(messages, expected_reply_user_id, trigger_timestamp, request_msg_id=''):
     expected = str(expected_reply_user_id or '').strip()
+    expected_request_msg_id = str(request_msg_id or '').strip()
+    matched = []
     for message in messages:
         if not isinstance(message, dict):
             continue
@@ -664,9 +718,55 @@ def find_reply(messages, expected_reply_user_id, trigger_timestamp):
         ext = message.get('ext', {})
         openclaw_info = ext.get('openclaw', {}) if isinstance(ext, dict) else {}
         openclaw_type = str(openclaw_info.get('type', '')).strip()
-        if openclaw_type in ['session_sync_delivery', 'router_reply', 'im_reply_delivery'] or str(message.get('content', '')).strip() != '':
-            return message
-    return None
+        if openclaw_type not in ['session_sync_delivery', 'router_reply', 'im_reply_delivery'] and str(message.get('content', '')).strip() == '':
+            continue
+        message_request_msg_id = str(openclaw_info.get('request_msg_id', '')).strip()
+        message_trigger_msg_id = str(openclaw_info.get('trigger_msg_id', '')).strip()
+        if expected_request_msg_id != '':
+            if message_request_msg_id == '' and message_trigger_msg_id == '':
+                continue
+            if expected_request_msg_id not in [message_request_msg_id, message_trigger_msg_id]:
+                continue
+        matched.append(message)
+    return matched
+
+
+def find_duplicate_visible_replies_by_content(messages, primary_reply, expected_reply_user_id, trigger_timestamp):
+    if not isinstance(primary_reply, dict):
+        return []
+    primary_content = str(primary_reply.get('content', '')).strip()
+    primary_from_user_id = str(primary_reply.get('from_user_id', '')).strip()
+    if primary_content == '' or primary_from_user_id == '':
+        return [primary_reply]
+    matched = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if int(message.get('timestamp', 0) or 0) < int(trigger_timestamp or 0):
+            continue
+        if str(message.get('from_user_id', '')).strip() != primary_from_user_id:
+            continue
+        if expected_reply_user_id != '' and str(message.get('from_user_id', '')).strip() != str(expected_reply_user_id).strip():
+            continue
+        if str(message.get('content', '')).strip() != primary_content:
+            continue
+        matched.append(message)
+    return matched
+
+
+def merge_reply_candidates(primary, secondary):
+    merged = []
+    seen = set()
+    for message in (primary or []) + (secondary or []):
+        if not isinstance(message, dict):
+            continue
+        msg_id = str(message.get('msg_id', '')).strip()
+        dedupe_key = msg_id if msg_id != '' else json.dumps(message, ensure_ascii=False, sort_keys=True)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        merged.append(message)
+    return merged
 
 
 def select_relevant_mappings(runtime, scenario_def, trigger_timestamp):
@@ -759,17 +859,54 @@ def execute_scenario(runtime, scenario_def):
     now_ms = int(time.time() * 1000)
     unique_text = build_trigger_text(scenario_def, now_ms)
     send_result = send_message(runtime, scenario_def, unique_text)
+    request_msg_id = extract_request_msg_id(send_result)
     conversation_snapshot = []
+    all_observed_messages = []
     matched_reply = None
-    deadline = now_ms + int(runtime.get('timeout_ms', DEFAULT_TIMEOUT_MS) or DEFAULT_TIMEOUT_MS)
-    poll_interval_ms = int(runtime.get('poll_interval_ms', DEFAULT_POLL_INTERVAL_MS) or DEFAULT_POLL_INTERVAL_MS)
+    matched_replies = []
+    duplicate_replies = []
+    deadline = now_ms + pick_int_config(runtime.get('timeout_ms', DEFAULT_TIMEOUT_MS), DEFAULT_TIMEOUT_MS)
+    poll_interval_ms = pick_int_config(runtime.get('poll_interval_ms', DEFAULT_POLL_INTERVAL_MS), DEFAULT_POLL_INTERVAL_MS)
+    duplicate_observation_window_ms = pick_int_config(
+        runtime.get('duplicate_observation_window_ms', DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS),
+        DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS,
+    )
     while int(time.time() * 1000) <= deadline:
         conversation_result = fetch_conversation(runtime, scenario_def)
         conversation_snapshot = summarize_messages(((conversation_result.get('data') or {}).get('messages') or []))
-        matched_reply = find_reply(conversation_snapshot, scenario_def.get('expected_reply_user_id', ''), now_ms)
+        all_observed_messages = merge_message_snapshots(all_observed_messages, conversation_snapshot)
+        matched_replies = find_replies(
+            conversation_snapshot,
+            scenario_def.get('expected_reply_user_id', ''),
+            now_ms,
+            request_msg_id,
+        )
+        matched_reply = matched_replies[0] if len(matched_replies) > 0 else None
         if matched_reply is not None:
             break
         time.sleep(max(poll_interval_ms, 100) / 1000.0)
+    if matched_reply is not None:
+        duplicate_deadline = int(time.time() * 1000) + max(0, duplicate_observation_window_ms)
+        while True:
+            conversation_result = fetch_conversation(runtime, scenario_def)
+            conversation_snapshot = summarize_messages(((conversation_result.get('data') or {}).get('messages') or []))
+            all_observed_messages = merge_message_snapshots(all_observed_messages, conversation_snapshot)
+            matched_replies = find_replies(
+                conversation_snapshot,
+                scenario_def.get('expected_reply_user_id', ''),
+                now_ms,
+                request_msg_id,
+            )
+            matched_reply = matched_replies[0] if len(matched_replies) > 0 else None
+            duplicate_replies = find_duplicate_visible_replies_by_content(
+                conversation_snapshot,
+                matched_reply,
+                scenario_def.get('expected_reply_user_id', ''),
+                now_ms,
+            )
+            if len(matched_replies) > 1 or int(time.time() * 1000) >= duplicate_deadline:
+                break
+            time.sleep(max(poll_interval_ms, 100) / 1000.0)
     expected_session_key = str(scenario_def.get('expected_session_key', '')).strip()
     reply_session_key = ''
     if isinstance((matched_reply or {}).get('ext', {}), dict):
@@ -794,11 +931,18 @@ def execute_scenario(runtime, scenario_def):
         )
     reply_from_user_id = str((matched_reply or {}).get('from_user_id', ''))
     reply_ok = matched_reply is not None and reply_from_user_id == str(scenario_def.get('expected_reply_user_id', ''))
+    deduped_visible_replies = merge_reply_candidates(matched_replies, duplicate_replies)
+    reply_count = len(deduped_visible_replies)
+    duplicate_reply_detected = reply_count > 1
+    matched_reply_msg_ids = [str(message.get('msg_id', '')).strip() for message in deduped_visible_replies if isinstance(message, dict)]
     failure_reason = ''
     status = STATUS_PASSED
     if not reply_ok:
         status = STATUS_FAILED
         failure_reason = '未拉到预期回复或回复身份不正确'
+    elif duplicate_reply_detected:
+        status = STATUS_FAILED
+        failure_reason = '重复消息：检测到多条最终可见回复'
     elif not session_key_ok:
         status = STATUS_FAILED
         failure_reason = f"未命中预期 session_key: {expected_session_key}"
@@ -833,10 +977,14 @@ def execute_scenario(runtime, scenario_def):
             {'label': 'exact_reply_mapping_found', 'value': isinstance(exact_reply_mapping, dict)},
             {'label': 'exact_reply_mapping_sender_user_id', 'value': get_mapping_sender_user_id(exact_reply_mapping)},
             {'label': 'reply_found', 'value': matched_reply is not None},
+            {'label': 'matched_visible_reply_count', 'value': reply_count},
+            {'label': 'duplicate_reply_detected', 'value': duplicate_reply_detected},
+            {'label': 'matched_visible_reply_msg_ids', 'value': matched_reply_msg_ids},
+            {'label': 'duplicate_content_fallback_used', 'value': len(duplicate_replies) > len(matched_replies)},
             {'label': 'session_key_ok', 'value': session_key_ok},
             {'label': 'mapping_sender_ok', 'value': mapping_sender_ok},
         ],
-        'messages': conversation_snapshot,
+        'messages': all_observed_messages,
         'mapping_rows': build_mapping_rows(runtime, relevant_mappings),
         'notes': '',
     }

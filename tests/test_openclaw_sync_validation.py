@@ -237,14 +237,106 @@ class OpenClawSyncValidationTests(unittest.TestCase):
             "legacy-sender",
         )
 
+    def test_extract_request_msg_id_reads_top_level_msg_ids(self):
+        m = _load_openclaw_sync_validation()
+        self.assertEqual(
+            m.extract_request_msg_id({
+                "result": {
+                    "code": 200,
+                    "msg_ids": [12345],
+                }
+            }),
+            "12345",
+        )
+
+    def test_find_replies_filters_by_request_msg_id(self):
+        m = _load_openclaw_sync_validation()
+        matched = m.find_replies([
+            {
+                "msg_id": "m1",
+                "from_user_id": "openclaw-user",
+                "content": "reply-1",
+                "timestamp": 2000,
+                "ext": {"openclaw": {"type": "session_sync_delivery", "request_msg_id": "req-1"}},
+            },
+            {
+                "msg_id": "m2",
+                "from_user_id": "openclaw-user",
+                "content": "reply-2",
+                "timestamp": 2001,
+                "ext": {"openclaw": {"type": "session_sync_delivery", "request_msg_id": "req-2"}},
+            },
+            {
+                "msg_id": "m3",
+                "from_user_id": "openclaw-user",
+                "content": "reply-3",
+                "timestamp": 2002,
+                "ext": {},
+            },
+        ], "openclaw-user", 1000, "req-2")
+        self.assertEqual([item["msg_id"] for item in matched], ["m2"])
+
+    def test_find_replies_requires_explicit_request_link_when_request_msg_id_known(self):
+        m = _load_openclaw_sync_validation()
+        matched = m.find_replies([
+            {
+                "msg_id": "m1",
+                "from_user_id": "openclaw-user",
+                "content": "reply-1",
+                "timestamp": 2000,
+                "ext": {},
+            },
+            {
+                "msg_id": "m2",
+                "from_user_id": "openclaw-user",
+                "content": "reply-2",
+                "timestamp": 2001,
+                "ext": {"openclaw": {"type": "session_sync_delivery", "trigger_msg_id": "req-1"}},
+            },
+        ], "openclaw-user", 1000, "req-1")
+        self.assertEqual([item["msg_id"] for item in matched], ["m2"])
+
+    def test_find_duplicate_visible_replies_by_content_matches_same_content(self):
+        m = _load_openclaw_sync_validation()
+        matched = m.find_duplicate_visible_replies_by_content([
+            {
+                "msg_id": "m1",
+                "from_user_id": "openclaw-user",
+                "content": "same-reply",
+                "timestamp": 2000,
+                "ext": {"openclaw": {"type": "session_sync_delivery", "request_msg_id": "req-1"}},
+            },
+            {
+                "msg_id": "m2",
+                "from_user_id": "openclaw-user",
+                "content": "same-reply",
+                "timestamp": 2001,
+                "ext": {"openclaw": {"type": "session_sync_delivery", "request_msg_id": "bad-req"}},
+            },
+            {
+                "msg_id": "m3",
+                "from_user_id": "openclaw-user",
+                "content": "other-reply",
+                "timestamp": 2002,
+                "ext": {"openclaw": {"type": "session_sync_delivery", "request_msg_id": "req-1"}},
+            },
+        ], {
+            "msg_id": "m1",
+            "from_user_id": "openclaw-user",
+            "content": "same-reply",
+            "timestamp": 2000,
+        }, "openclaw-user", 1000)
+        self.assertEqual([item["msg_id"] for item in matched], ["m1", "m2"])
+
     def test_execute_scenario_prefers_exact_reply_session_mapping_for_sender_check(self):
         m = _load_openclaw_sync_validation()
         reply_timestamp = int(__import__("time").time() * 1000) + 5000
         runtime = {
             "app_id": "app-id",
             "node_id": "node-1",
-            "timeout_ms": 100,
+            "timeout_ms": 500,
             "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
             "provisioning_rows": [],
             "sender_username": "sender-name",
             "sender_password": "sender-pass",
@@ -294,6 +386,8 @@ class OpenClawSyncValidationTests(unittest.TestCase):
         self.assertTrue(comparison["exact_reply_mapping_found"])
         self.assertEqual(comparison["exact_reply_mapping_sender_user_id"], "sender-user")
         self.assertTrue(comparison["mapping_sender_ok"])
+        self.assertEqual(comparison["matched_visible_reply_count"], 1)
+        self.assertFalse(comparison["duplicate_reply_detected"])
 
     def test_execute_scenario_accepts_origin_user_id_for_mapping_sender_check(self):
         m = _load_openclaw_sync_validation()
@@ -301,8 +395,9 @@ class OpenClawSyncValidationTests(unittest.TestCase):
         runtime = {
             "app_id": "app-id",
             "node_id": "node-1",
-            "timeout_ms": 100,
+            "timeout_ms": 500,
             "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
             "provisioning_rows": [],
             "sender_username": "sender-name",
             "sender_password": "sender-pass",
@@ -344,6 +439,86 @@ class OpenClawSyncValidationTests(unittest.TestCase):
             result = m.execute_scenario(runtime, scenario_def)
         self.assertEqual(result["status"], m.STATUS_PASSED)
 
+    def test_execute_scenario_fails_when_duplicate_visible_replies_detected(self):
+        m = _load_openclaw_sync_validation()
+        reply_timestamp = int(__import__("time").time() * 1000) + 5000
+        runtime = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "timeout_ms": 100,
+            "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 100,
+            "provisioning_rows": [],
+            "sender_username": "sender-name",
+            "sender_password": "sender-pass",
+        }
+        scenario_def = {
+            "name": "direct_openclaw",
+            "description": "direct case",
+            "chat_type": "direct",
+            "target_user_id": "openclaw-user",
+            "conversation_id": "openclaw-user",
+            "sender_user_id": "sender-user",
+            "expected_reply_user_id": "openclaw-user",
+            "require_mapping": True,
+        }
+        reply_messages = {
+            "data": {
+                "messages": [
+                    {
+                        "msg_id": "reply-1",
+                        "from_xid": {"uid": "openclaw-user"},
+                        "to_xid": {"uid": "sender-user"},
+                        "content": "reply-1",
+                        "ctype": "TEXT",
+                        "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:clawchat:direct:sender-user", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                        "timestamp": reply_timestamp,
+                    },
+                    {
+                        "msg_id": "reply-2",
+                        "from_xid": {"uid": "openclaw-user"},
+                        "to_xid": {"uid": "sender-user"},
+                        "content": "reply-1",
+                        "ctype": "TEXT",
+                        "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:clawchat:direct:sender-user", "trigger_msg_id": "wrong-request"}}, ensure_ascii=False),
+                        "timestamp": reply_timestamp + 1,
+                    },
+                ]
+            }
+        }
+        fake_send_result = {"http_status": 200, "result": {"code": 200, "msg_ids": ["request-1"]}}
+        with mock.patch.object(m, "send_message", return_value=fake_send_result), \
+             mock.patch.object(m, "fetch_conversation", return_value=reply_messages), \
+             mock.patch.object(m, "select_relevant_mappings", return_value=[]), \
+             mock.patch.object(m.core, "get_session_mapping_by_session", return_value={
+                 "session_key": "agent:main:clawchat:direct:sender-user",
+                 "sender_user_id": "",
+                 "origin_user_id": "sender-user",
+                 "openclaw_user_id": "openclaw-user",
+                 "updated_at": 2,
+             }), \
+             mock.patch.object(m, "build_mapping_rows", return_value=[]):
+            result = m.execute_scenario(runtime, scenario_def)
+        self.assertEqual(result["status"], m.STATUS_FAILED)
+        self.assertIn("重复消息", result["failure_reason"])
+        comparison = {row["label"]: row["value"] for row in result["comparison_rows"]}
+        self.assertEqual(comparison["matched_visible_reply_count"], 2)
+        self.assertTrue(comparison["duplicate_reply_detected"])
+        self.assertTrue(comparison["duplicate_content_fallback_used"])
+
+    def test_merge_message_snapshots_keeps_all_observed_messages(self):
+        m = _load_openclaw_sync_validation()
+        merged = m.merge_message_snapshots(
+            [
+                {"msg_id": "request-1", "timestamp": 1000, "content": "request"},
+            ],
+            [
+                {"msg_id": "request-1", "timestamp": 1000, "content": "request"},
+                {"msg_id": "reply-1", "timestamp": 2000, "content": "reply"},
+            ],
+        )
+        self.assertEqual([item["msg_id"] for item in merged], ["request-1", "reply-1"])
+
     def test_start_and_run_sync_validation_task_writes_report_and_updates_status(self):
         m = _load_openclaw_sync_validation()
         with tempfile.TemporaryDirectory() as tempdir, \
@@ -360,6 +535,7 @@ class OpenClawSyncValidationTests(unittest.TestCase):
                     "provisioning_rows": [],
                     "timeout_ms": 100,
                     "poll_interval_ms": 10,
+                    "duplicate_observation_window_ms": 0,
                 },
              }), \
              mock.patch.object(m, "build_scenario_definition", return_value={
@@ -410,6 +586,7 @@ class OpenClawSyncValidationTests(unittest.TestCase):
                     "provisioning_rows": [],
                     "timeout_ms": 100,
                     "poll_interval_ms": 10,
+                    "duplicate_observation_window_ms": 0,
                 },
              }), \
              mock.patch.object(m, "build_scenario_definition", return_value={
