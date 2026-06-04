@@ -42,6 +42,10 @@ NODE_PRESENCE_SOURCE_ONLINE_MARKER = 'online_marker'
 NODE_PRESENCE_SOURCE_OFFLINE_MARKER = 'offline_marker'
 NODE_PRESENCE_SOURCE_PROBE_TIMEOUT = 'probe_timeout'
 NODE_PRESENCE_SOURCE_UNKNOWN = 'unknown'
+SESSION_TRANSCRIPT_MATERIALIZATION_DEDUPE_TTL_MS = 15000
+recent_session_transcript_materialization_by_key = {}
+VISIBLE_REPLY_MATERIALIZATION_DEDUPE_TTL_MS = 15000
+recent_visible_reply_materialization_by_key = {}
 
 class NodeSetting:
     def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
@@ -3850,7 +3854,7 @@ def handle_session_message_sync_event(app_id, node_info, event):
     visible_delivery_reason = str(event.get('visible_delivery_reason', '')).strip()
     if visible_delivery_owner == 'plugin':
         logging.info(
-            f"handle_session_message_sync_event skip plugin-owned visible delivery | "
+            f"visible_reply_route plugin_owned_skip | "
             f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
             f"parent_session_key:{parent_session_key}, root_session_key:{root_session_key}, "
             f"visible_delivery_reason:{visible_delivery_reason}"
@@ -3870,6 +3874,13 @@ def handle_session_message_sync_event(app_id, node_info, event):
             f"suppression_reason:{suppression_reason}"
         )
         return
+    if source == 'control_ui_reply' and role == 'assistant':
+        logging.info(
+            f"visible_reply_route connector_materialize | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+            f"visible_delivery_owner:{visible_delivery_owner or 'connector'}, "
+            f"visible_delivery_reason:{visible_delivery_reason or 'transcript_sync'}"
+        )
     message_id = str(event.get('message_id', '')).strip()
     trigger_msg_id = str(event.get('trigger_msg_id', '')).strip()
     message_seq = str(event.get('message_seq', '')).strip()
@@ -3903,8 +3914,18 @@ def handle_session_message_sync_event(app_id, node_info, event):
         if ensure_result['result'] == 'ok':
             mapping = ensure_result['data']
         elif ensure_result['result'] == 'ignored':
+            logging.info(
+                f"handle_session_message_sync_event skip because ensure_session_mapping ignored | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                f"source:{source}, role:{role}"
+            )
             return
     if mapping is None:
+        logging.info(
+            f"handle_session_message_sync_event skip because session mapping missing | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+            f"source:{source}, role:{role}"
+        )
         return
     delivery_lineage = resolve_session_lineage(
         app_id,
@@ -3943,6 +3964,15 @@ def handle_session_message_sync_event(app_id, node_info, event):
                     f"target_session_key:{target_session_key}"
                 )
         target = resolve_effective_session_sync_target(app_id, node_info, mapping)
+        dedupe_state = reserve_recent_session_transcript_materialization(event, role)
+        dedupe_key = dedupe_state.get('dedupe_key', '')
+        if dedupe_state.get('duplicate'):
+            logging.info(
+                f"transcript_materialization_dedupe duplicate_skip | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                f"message_id:{message_id}, source:{source}, role:{role}"
+            )
+            return
         if target.get('kind') == 'direct' and role == 'assistant':
             parent_target = resolve_parent_group_session_sync_target(app_id, node_info, mapping)
             if parent_target is not None:
@@ -3969,6 +3999,11 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 )
                 if router_reply_result > 0:
                     return
+                logging.info(
+                    f"handle_session_message_sync_event router group reply forward returned empty; fallback continues | "
+                    f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                    f"message_id:{message_id}, source:{source}, role:{role}"
+                )
         if (
             target.get('kind') == 'direct' and
             role == 'assistant' and
@@ -3984,8 +4019,29 @@ def handle_session_message_sync_event(app_id, node_info, event):
             )
             if router_reply_result > 0:
                 return
+            logging.info(
+                f"handle_session_message_sync_event router direct reply forward returned empty; fallback continues | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                f"message_id:{message_id}, source:{source}, role:{role}"
+            )
+        visible_reply_dedupe_state = reserve_recent_visible_reply_materialization(
+            session_key=session_key,
+            source=source,
+            role=role,
+            message_id=message_id,
+            request_msg_id=trigger_msg_id,
+            text=text,
+        )
+        visible_reply_dedupe_keys = visible_reply_dedupe_state.get('dedupe_keys', [])
+        if visible_reply_dedupe_state.get('duplicate'):
+            logging.info(
+                f"visible_reply_dedupe duplicate_skip_transcript_entry | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                f"message_id:{message_id}, trigger_msg_id:{trigger_msg_id}, source:{source}, role:{role}"
+            )
+            return
         if target.get('kind') == 'direct':
-            forward_session_sync_to_direct(
+            msg_id = forward_session_sync_to_direct(
                 app_id,
                 node_info,
                 target.get('target_user_id', ''),
@@ -3996,11 +4052,27 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 target.get('session_key', ''),
                 delivery_ext,
             )
+            if msg_id <= 0:
+                forget_recent_session_transcript_materialization(dedupe_key)
+                forget_recent_visible_reply_materialization(visible_reply_dedupe_keys)
+                logging.info(
+                    f"visible_reply_materialization direct_send_empty | "
+                    f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                    f"message_id:{message_id}, source:{source}, role:{role}"
+                )
             return
         target_mapping = target.get('mapping', mapping)
         if target.get('kind') == 'group' and role == 'user' and should_send_control_ui_user_as_management(observed_origin_facts, target_mapping):
             target_mapping = apply_control_ui_user_sender_override(target_mapping)
-        forward_session_sync_to_group(app_id, node_info, target_mapping, role, text, delivery_ext)
+        msg_id = forward_session_sync_to_group(app_id, node_info, target_mapping, role, text, delivery_ext)
+        if msg_id <= 0:
+            forget_recent_session_transcript_materialization(dedupe_key)
+            forget_recent_visible_reply_materialization(visible_reply_dedupe_keys)
+            logging.info(
+                f"visible_reply_materialization group_send_empty | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                f"message_id:{message_id}, source:{source}, role:{role}"
+            )
 
 def handle_chat_message(msg):
     from_user_id = msg['from']['uid']
@@ -4012,6 +4084,154 @@ def handle_chat_message(msg):
         if isinstance(ext, dict) and 'openclaw' in ext:
             event = ext['openclaw']
             handle_client_event(event, app_id, from_user_id, ctype)
+
+def cleanup_recent_session_transcript_materialization(now_ms=None):
+    current_ms = int(now_ms if isinstance(now_ms, int) else time.time() * 1000)
+    stale_keys = []
+    for key, updated_at in list(recent_session_transcript_materialization_by_key.items()):
+        try:
+            if current_ms - int(updated_at or 0) > SESSION_TRANSCRIPT_MATERIALIZATION_DEDUPE_TTL_MS:
+                stale_keys.append(key)
+        except Exception:
+            stale_keys.append(key)
+    for key in stale_keys:
+        recent_session_transcript_materialization_by_key.pop(key, None)
+
+def build_session_transcript_materialization_dedupe_key(event, role):
+    if not isinstance(event, dict):
+        return ''
+    session_key = normalize_session_key(event.get('session', ''))
+    message_id = str(event.get('message_id', '')).strip()
+    source = str(event.get('source', '')).strip()
+    normalized_role = str(role or '').strip().lower()
+    if session_key == '' or message_id == '' or source == '' or normalized_role == '':
+        return ''
+    return '\u0000'.join([session_key, message_id, source, normalized_role])
+
+def reserve_recent_session_transcript_materialization(event, role):
+    dedupe_key = build_session_transcript_materialization_dedupe_key(event, role)
+    if dedupe_key == '':
+        return {
+            'dedupe_key': '',
+            'duplicate': False,
+        }
+    now_ms = int(time.time() * 1000)
+    cleanup_recent_session_transcript_materialization(now_ms)
+    if dedupe_key in recent_session_transcript_materialization_by_key:
+        return {
+            'dedupe_key': dedupe_key,
+            'duplicate': True,
+        }
+    recent_session_transcript_materialization_by_key[dedupe_key] = now_ms
+    return {
+        'dedupe_key': dedupe_key,
+        'duplicate': False,
+    }
+
+def forget_recent_session_transcript_materialization(dedupe_key):
+    normalized_key = str(dedupe_key or '').strip()
+    if normalized_key == '':
+        return
+    recent_session_transcript_materialization_by_key.pop(normalized_key, None)
+
+def cleanup_recent_visible_reply_materialization(now_ms=None):
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    expired_keys = [
+        dedupe_key
+        for dedupe_key, updated_at in recent_visible_reply_materialization_by_key.items()
+        if now_ms - int(updated_at or 0) > VISIBLE_REPLY_MATERIALIZATION_DEDUPE_TTL_MS
+    ]
+    for dedupe_key in expired_keys:
+        recent_visible_reply_materialization_by_key.pop(dedupe_key, None)
+
+def build_visible_reply_materialization_dedupe_keys(
+    session_key='',
+    source='',
+    role='',
+    message_id='',
+    request_msg_id='',
+    text='',
+):
+    normalized_session_key = normalize_session_key(session_key)
+    normalized_source = str(source or '').strip()
+    normalized_role = str(role or '').strip().lower()
+    normalized_message_id = str(message_id or '').strip()
+    normalized_request_msg_id = str(request_msg_id or '').strip()
+    normalized_text = str(text or '').strip()
+    if (
+        normalized_session_key == '' or
+        normalized_source != 'control_ui_reply' or
+        normalized_role != 'assistant'
+    ):
+        return []
+    keys = []
+    if normalized_message_id != '':
+        keys.append('\u0000'.join([
+            'message_id',
+            normalized_session_key,
+            normalized_message_id,
+            normalized_source,
+            normalized_role,
+        ]))
+    if normalized_request_msg_id != '' and normalized_text != '':
+        keys.append('\u0000'.join([
+            'request_msg_id_text',
+            normalized_session_key,
+            normalized_request_msg_id,
+            normalized_source,
+            normalized_role,
+            normalized_text,
+        ]))
+    return keys
+
+def reserve_recent_visible_reply_materialization(
+    session_key='',
+    source='',
+    role='',
+    message_id='',
+    request_msg_id='',
+    text='',
+):
+    dedupe_keys = build_visible_reply_materialization_dedupe_keys(
+        session_key=session_key,
+        source=source,
+        role=role,
+        message_id=message_id,
+        request_msg_id=request_msg_id,
+        text=text,
+    )
+    if len(dedupe_keys) == 0:
+        return {
+            'dedupe_keys': [],
+            'duplicate': False,
+            'matched_key': '',
+        }
+    now_ms = int(time.time() * 1000)
+    cleanup_recent_visible_reply_materialization(now_ms)
+    for dedupe_key in dedupe_keys:
+        if dedupe_key in recent_visible_reply_materialization_by_key:
+            return {
+                'dedupe_keys': dedupe_keys,
+                'duplicate': True,
+                'matched_key': dedupe_key,
+            }
+    for dedupe_key in dedupe_keys:
+        recent_visible_reply_materialization_by_key[dedupe_key] = now_ms
+    return {
+        'dedupe_keys': dedupe_keys,
+        'duplicate': False,
+        'matched_key': '',
+    }
+
+def forget_recent_visible_reply_materialization(dedupe_keys):
+    if not isinstance(dedupe_keys, list):
+        return
+    for dedupe_key in dedupe_keys:
+        normalized_key = str(dedupe_key or '').strip()
+        if normalized_key == '':
+            continue
+        recent_visible_reply_materialization_by_key.pop(normalized_key, None)
 
 def normalize_probe_status(status, fallback='not_checked'):
     normalized = str(status or '').strip().lower()
@@ -4358,11 +4578,30 @@ def router_reply_message(app_id, node_info, message):
         logging.info(f"router_reply_message stop for to is chatbot | chatbot_user_id: {chatbot_user_id}, to_id: {to_id}, message: {message}")
         return
     ext = build_router_reply_delivery_ext(message)
+    openclaw_ext = ext.get('openclaw', {}) if isinstance(ext.get('openclaw', {}), dict) else {}
+    visible_reply_dedupe_state = reserve_recent_visible_reply_materialization(
+        session_key=openclaw_ext.get('session', ''),
+        source=openclaw_ext.get('source', ''),
+        role=openclaw_ext.get('role', ''),
+        message_id=openclaw_ext.get('message_id', ''),
+        request_msg_id=openclaw_ext.get('request_msg_id', '') or openclaw_ext.get('trigger_msg_id', ''),
+        text=content,
+    )
+    visible_reply_dedupe_keys = visible_reply_dedupe_state.get('dedupe_keys', [])
+    if visible_reply_dedupe_state.get('duplicate'):
+        logging.info(
+            f"visible_reply_dedupe duplicate_skip_router_reply_entry | "
+            f"app_id:{app_id}, node_id:{node_id}, session_key:{normalize_session_key(openclaw_ext.get('session', ''))}, "
+            f"request_msg_id:{str(openclaw_ext.get('request_msg_id', '') or openclaw_ext.get('trigger_msg_id', '')).strip()}, "
+            f"to_id:{to_id}"
+        )
+        return
     extra = {
         'ext': ext
     }
     msg_id = lanying_im_api.send_message_sync(config, app_id, chatbot_user_id, to_id, send_msg_type, content_type, content, extra)
     if msg_id <= 0:
+        forget_recent_visible_reply_materialization(visible_reply_dedupe_keys)
         logging.info(f"router_reply_message send message failed")
 
 def sync_model_config(app_id, node_id, sync_preset_prompt=True):

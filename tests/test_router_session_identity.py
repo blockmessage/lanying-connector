@@ -3789,6 +3789,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
     def test_router_reply_message_carries_openclaw_delivery_context(self):
         m = lanying_openclaw
+        m.recent_visible_reply_materialization_by_key.clear()
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
 
         with mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
@@ -3830,6 +3831,36 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-1")
         self.assertNotIn("trigger_msg_id", ext["openclaw"])
         self.assertNotIn("request_msg_id", ext["openclaw"])
+        m.recent_visible_reply_materialization_by_key.clear()
+
+    def test_router_reply_message_suppresses_duplicate_visible_reply_materialization(self):
+        m = lanying_openclaw
+        m.recent_visible_reply_materialization_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        message = {
+            "type": "CHAT",
+            "content": "reply content",
+            "msgId": "im-req-1",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "session_sync_delivery",
+                    "session": "agent:main:clawchat-router:direct:sender-user",
+                    "source": "control_ui_reply",
+                    "role": "assistant",
+                    "request_msg_id": "im-request-1",
+                }
+            }),
+            "to": {"uid": "sender-user"},
+        }
+
+        with mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=100) as mocked_send:
+            m.router_reply_message("app-id", node_info, message)
+            m.router_reply_message("app-id", node_info, message)
+
+        self.assertEqual(mocked_send.call_count, 1)
+        m.recent_visible_reply_materialization_by_key.clear()
 
     def test_router_root_direct_assistant_sync_prefers_router_reply(self):
         m = lanying_openclaw
@@ -4345,6 +4376,234 @@ class RouterSessionIdentityTests(unittest.TestCase):
         mocked_router_reply.assert_not_called()
         mocked_direct.assert_not_called()
         mocked_group.assert_not_called()
+
+    def test_handle_session_message_sync_event_suppresses_duplicate_transcript_materialization(self):
+        m = lanying_openclaw
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat-router:direct:sender-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "openclaw-user",
+            "effective_target_session_key": "agent:main:clawchat-router:direct:sender-user",
+        }
+        event = {
+            "type": "session_transcript_observed",
+            "source": "control_ui_reply",
+            "session": "agent:main:clawchat-router:direct:sender-user",
+            "message_id": "duplicate-transcript-1",
+            "message": {
+                "role": "assistant",
+                "content": "duplicate transcript content",
+            },
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "direct",
+                 "target_user_id": "sender-user",
+                 "origin_kind": "direct_user",
+                 "origin_user_id": "sender-user",
+                 "chatbot_user_id": "openclaw-user",
+             }), \
+             mock.patch.object(m, "forward_session_sync_router_direct_reply", return_value=0), \
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=301) as mocked_direct:
+            m.handle_session_message_sync_event("app-id", node_info, event)
+            m.handle_session_message_sync_event("app-id", node_info, event)
+
+        self.assertEqual(mocked_direct.call_count, 1)
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
+
+    def test_handle_session_message_sync_event_does_not_suppress_distinct_message_ids(self):
+        m = lanying_openclaw
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat-router:direct:sender-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "openclaw-user",
+            "effective_target_session_key": "agent:main:clawchat-router:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "direct",
+                 "target_user_id": "sender-user",
+                 "origin_kind": "direct_user",
+                 "origin_user_id": "sender-user",
+                 "chatbot_user_id": "openclaw-user",
+             }), \
+             mock.patch.object(m, "forward_session_sync_router_direct_reply", return_value=0), \
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=301) as mocked_direct:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat-router:direct:sender-user",
+                    "message_id": "distinct-transcript-1",
+                    "message": {
+                        "role": "assistant",
+                        "content": "same text different id",
+                    },
+                },
+            )
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat-router:direct:sender-user",
+                    "message_id": "distinct-transcript-2",
+                    "message": {
+                        "role": "assistant",
+                        "content": "same text different id",
+                    },
+                },
+            )
+
+        self.assertEqual(mocked_direct.call_count, 2)
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
+
+    def test_router_reply_visible_materialization_is_suppressed_after_direct_transcript_delivery(self):
+        m = lanying_openclaw
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:direct:sender-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "openclaw-user",
+            "effective_target_session_key": "agent:main:clawchat:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "direct",
+                 "session_key": "agent:main:clawchat:direct:sender-user",
+                 "target_user_id": "sender-user",
+                 "origin_kind": "direct_user",
+                 "origin_user_id": "sender-user",
+                 "chatbot_user_id": "openclaw-user",
+             }), \
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=301) as mocked_direct, \
+             mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=100) as mocked_send:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:direct:sender-user",
+                    "message_id": "reply-visible-1",
+                    "trigger_msg_id": "im-request-42",
+                    "message": {
+                        "role": "assistant",
+                        "content": "same visible reply",
+                    },
+                },
+            )
+            m.router_reply_message(
+                "app-id",
+                node_info,
+                {
+                    "type": "CHAT",
+                    "content": "same visible reply",
+                    "msgId": "router-visible-1",
+                    "ext": json.dumps({
+                        "openclaw": {
+                            "type": "session_sync_delivery",
+                            "session": "agent:main:clawchat:direct:sender-user",
+                            "source": "control_ui_reply",
+                            "role": "assistant",
+                            "request_msg_id": "im-request-42",
+                        }
+                    }),
+                    "to": {"uid": "sender-user"},
+                },
+            )
+
+        mocked_direct.assert_called_once()
+        mocked_send.assert_not_called()
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
+
+    def test_direct_transcript_visible_materialization_is_suppressed_after_router_reply(self):
+        m = lanying_openclaw
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:direct:sender-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "openclaw-user",
+            "effective_target_session_key": "agent:main:clawchat:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=100) as mocked_send, \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "direct",
+                 "session_key": "agent:main:clawchat:direct:sender-user",
+                 "target_user_id": "sender-user",
+                 "origin_kind": "direct_user",
+                 "origin_user_id": "sender-user",
+                 "chatbot_user_id": "openclaw-user",
+             }), \
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=301) as mocked_direct:
+            m.router_reply_message(
+                "app-id",
+                node_info,
+                {
+                    "type": "CHAT",
+                    "content": "same visible reply",
+                    "msgId": "router-visible-2",
+                    "ext": json.dumps({
+                        "openclaw": {
+                            "type": "session_sync_delivery",
+                            "session": "agent:main:clawchat:direct:sender-user",
+                            "source": "control_ui_reply",
+                            "role": "assistant",
+                            "request_msg_id": "im-request-43",
+                        }
+                    }),
+                    "to": {"uid": "sender-user"},
+                },
+            )
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:direct:sender-user",
+                    "message_id": "reply-visible-2",
+                    "trigger_msg_id": "im-request-43",
+                    "message": {
+                        "role": "assistant",
+                        "content": "same visible reply",
+                    },
+                },
+            )
+
+        mocked_send.assert_called_once()
+        mocked_direct.assert_not_called()
+        m.recent_session_transcript_materialization_by_key.clear()
+        m.recent_visible_reply_materialization_by_key.clear()
 
     def test_handle_session_message_sync_event_keeps_legacy_root_reply_without_owner_hint(self):
         m = lanying_openclaw
