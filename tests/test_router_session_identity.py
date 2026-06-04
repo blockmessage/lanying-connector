@@ -327,6 +327,68 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertIn("last_message_time", html_text)
         self.assertIn("1234567 (1970-01-01 08:20:34)", html_text)
 
+    def test_render_inspect_session_mapping_canonical_html_for_node_highlights_origin_identity(self):
+        m = lanying_openclaw_migration
+        details = [{
+            "session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "app_id": "uioczdkuvci",
+            "node_id": "8",
+            "openclaw_user_id": "6760921908880",
+            "management_user_id": "6632092019520",
+            "origin_kind": "openclaw_control",
+            "origin_user_id": "",
+            "chatbot_user_id": "6674822238512",
+            "group_id": "6632098115105",
+            "parent_session_key": "",
+            "root_session_key": "agent:main:clawchat-router:direct:6632092019520",
+            "effective_target_session_key": "agent:main:clawchat-router:direct:6632092019520",
+        }]
+        inspect_result = {
+            "result": "ok",
+            "data": {
+                "mapping_reports": [{
+                    "session_key": "agent:main:clawchat-router:direct:6632092019520",
+                    "status": "dirty",
+                    "root_mode": "router_direct",
+                    "target_user_id": "6632092019520",
+                    "expected_fields": {
+                        "origin_kind": "direct_user",
+                        "origin_user_id": "6632092019520",
+                    },
+                    "issues": [
+                        {
+                            "severity": "error",
+                            "code": "direct_root_origin_kind_mismatch",
+                            "message": "direct root lineage 的 origin_kind 与当前规则不一致",
+                        },
+                        {
+                            "severity": "error",
+                            "code": "direct_root_origin_user_mismatch",
+                            "message": "direct root lineage 的 origin_user_id 与当前规则不一致",
+                        },
+                    ],
+                    "proposed_changes": [],
+                }]
+            },
+        }
+
+        with mock.patch.object(m.lanying_openclaw, "list_session_mappings_for_node", return_value=details), \
+             mock.patch.object(m.lanying_openclaw, "get_session_last_message_time", return_value=1234567), \
+             mock.patch.object(m, "inspect_session_mapping_canonical_states_for_node", return_value=inspect_result):
+            html_text = m.render_inspect_session_mapping_canonical_html_for_node("app-id", "8")
+
+        self.assertIn("origin_identity", html_text)
+        self.assertIn("current_origin_kind", html_text)
+        self.assertIn("openclaw_control", html_text)
+        self.assertIn("expected_origin_kind", html_text)
+        self.assertIn("direct_user", html_text)
+        self.assertIn("expected_origin_user_id", html_text)
+        self.assertIn("6632092019520", html_text)
+        self.assertIn("origin_repair_reason", html_text)
+        self.assertIn("direct root lineage inferred from root_session_key", html_text)
+        self.assertIn("last_message_time", html_text)
+        self.assertIn("1234567 (1970-01-01 08:20:34)", html_text)
+
     def test_legacy_agent_main_clawchat_group_and_direct_session_keys_are_canonicalized(self):
         m = lanying_openclaw
 
@@ -2872,7 +2934,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
              mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": mapping}), \
-             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct:
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=1) as mocked_direct:
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
@@ -4079,7 +4141,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
              mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": mapping}), \
-             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct:
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=1) as mocked_direct:
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
@@ -4139,9 +4201,9 @@ class RouterSessionIdentityTests(unittest.TestCase):
                  "chatbot_user_id": "chatbot-user",
              }), \
              mock.patch.object(m, "forward_session_sync_router_group_reply", return_value=1) as mocked_group_reply, \
-             mock.patch.object(m, "forward_session_sync_router_direct_reply") as mocked_direct_router_reply, \
-             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct, \
-             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group:
+             mock.patch.object(m, "forward_session_sync_router_direct_reply", return_value=1) as mocked_direct_router_reply, \
+             mock.patch.object(m, "forward_session_sync_to_direct", return_value=1) as mocked_direct, \
+             mock.patch.object(m, "forward_session_sync_to_group", return_value=1) as mocked_group:
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
@@ -4205,7 +4267,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                  "mapping": child_mapping,
                  "session_key": "agent:main:subagent:test-child",
              }), \
-             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group_forward:
+             mock.patch.object(m, "forward_session_sync_to_group", return_value=1) as mocked_group_forward:
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
@@ -4297,7 +4359,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                  "mapping": child_mapping,
                  "session_key": "agent:main:subagent:test-child",
              }), \
-             mock.patch.object(m, "forward_session_sync_to_group"):
+             mock.patch.object(m, "forward_session_sync_to_group", return_value=1):
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
@@ -5029,7 +5091,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                  "session_key": "agent:main:subagent:test-child",
              }), \
              mock.patch.object(m, "forward_session_sync_router_group_reply", return_value=1) as mocked_group_reply, \
-             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group_forward:
+             mock.patch.object(m, "forward_session_sync_to_group", return_value=1) as mocked_group_forward:
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
@@ -5065,7 +5127,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                  "session_key": "agent:main:subagent:test-child",
              }), \
              mock.patch.object(m, "forward_session_sync_router_group_reply", return_value=1) as mocked_group_reply, \
-             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group_forward:
+             mock.patch.object(m, "forward_session_sync_to_group", return_value=1) as mocked_group_forward:
             m.handle_session_message_sync_event(
                 "app-id",
                 node_info,
