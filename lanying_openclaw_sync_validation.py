@@ -1149,9 +1149,23 @@ def is_subagent_task_message(message, expected_marker):
     content = str(message.get('content', '')).strip()
     if content == '':
         return False
+    if (
+        content.startswith('Spawned subagent') or
+        content.startswith('[Subagent Task]') or
+        '\n[Subagent Task]' in content
+    ):
+        return True
     if expected_marker != '' and expected_marker in content:
         return False
-    return content.startswith('[Subagent Task]') or content.startswith('Spawned subagent')
+    return False
+
+
+def is_exact_marker_message(message, expected_marker):
+    if not isinstance(message, dict):
+        return False
+    if expected_marker == '':
+        return False
+    return str(message.get('content', '')).strip() == expected_marker
 
 
 def execute_scenario(runtime, scenario_def):
@@ -1267,10 +1281,10 @@ def execute_scenario(runtime, scenario_def):
             all_observed_messages = merge_message_snapshots(all_observed_messages, subagent_snapshot)
             _, root_visible_reply_sessions, subagent_visible_reply_sessions, subagent_visible_reply_messages = build_observed_session_sync_state()
             marker = f"SYNC_OK_{str(scenario_def.get('name', '')).strip()}_{now_ms}"
-            parent_relay_marker_found = matched_reply is not None and marker in str((matched_reply or {}).get('content', '')).strip()
+            parent_relay_marker_found = is_exact_marker_message(matched_reply, marker)
             subagent_result_messages = [
                 message for message in subagent_visible_reply_messages
-                if marker != '' and marker in str(message.get('content', '')).strip()
+                if is_exact_marker_message(message, marker)
             ]
             subagent_task_messages = [
                 message for message in subagent_visible_reply_messages
@@ -1404,18 +1418,16 @@ def execute_scenario(runtime, scenario_def):
     if expect_root_and_sub_sessions:
         expected_subagent_marker = f"SYNC_OK_{str(scenario_def.get('name', '')).strip()}_{now_ms}"
     parent_relay_marker_found = (
-        expected_subagent_marker != '' and
-        matched_reply is not None and
-        expected_subagent_marker in str((matched_reply or {}).get('content', '')).strip()
+        is_exact_marker_message(matched_reply, expected_subagent_marker)
     )
     subagent_marker_found = any(
-        expected_subagent_marker != '' and expected_subagent_marker in str(message.get('content', '')).strip()
+        is_exact_marker_message(message, expected_subagent_marker)
         for message in deduped_visible_replies
         if isinstance(message, dict)
     )
     subagent_result_messages = [
         message for message in subagent_visible_reply_messages
-        if expected_subagent_marker != '' and expected_subagent_marker in str(message.get('content', '')).strip()
+        if is_exact_marker_message(message, expected_subagent_marker)
     ]
     subagent_task_messages = [
         message for message in subagent_visible_reply_messages
