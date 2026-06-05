@@ -43,6 +43,7 @@ def _load_lanying_openclaw():
             fetch_conversation_messages=lambda *args, **kwargs: {"code": 200, "data": {"messages": []}},
             register=lambda *args, **kwargs: {"code": 200, "data": {"user_id": "sender-user"}},
             create_group=lambda *args, **kwargs: {"code": 200, "data": {"group_id": "group-1"}},
+            admin_join_group_direct=lambda *args, **kwargs: {"code": 200},
             admin_add_roster_direct=lambda *args, **kwargs: {"code": 200},
         ),
         "lanying_utils": types.SimpleNamespace(
@@ -75,6 +76,8 @@ def _load_openclaw_sync_validation():
         "lanying_im_api": types.SimpleNamespace(
             post_send_message=lambda *args, **kwargs: types.SimpleNamespace(status_code=200, json=lambda: {"code": 200, "msg_ids": [101]}),
             fetch_conversation_messages=lambda *args, **kwargs: {"code": 200, "data": {"messages": []}},
+            create_group=lambda *args, **kwargs: {"code": 200, "data": {"group_id": "group-1"}},
+            admin_join_group_direct=lambda *args, **kwargs: {"code": 200},
         ),
         "lanying_openclaw": _load_lanying_openclaw(),
         "lanying_async": types.SimpleNamespace(
@@ -146,16 +149,109 @@ class OpenClawSyncValidationTests(unittest.TestCase):
         self.assertTrue(any(row["label"] == "validation_sender_username" for row in data["provisioning_rows"]))
         self.assertTrue(any(row["label"] == "validation_sender_password" for row in data["provisioning_rows"]))
 
+    def test_create_validation_group_explicitly_joins_members(self):
+        m = _load_openclaw_sync_validation()
+        with mock.patch.object(m.lanying_im_api, "create_group", return_value={
+            "code": 200,
+            "data": {
+                "group_id": "group-99",
+            },
+        }) as create_group_mock, \
+             mock.patch.object(m.lanying_im_api, "admin_join_group_direct", return_value={"code": 200}) as join_group_mock:
+            result = m.create_validation_group("app-id", "owner-user", "test-group", ["10001", "10002"])
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["group_id"], "group-99")
+        create_group_mock.assert_called_once()
+        join_group_mock.assert_called_once_with("app-id", "group-99", [10001, 10002])
+        self.assertEqual(result["data"]["join_result"], {"code": 200})
+
     def test_normalize_sync_validation_scenarios_supports_all_and_single(self):
         m = _load_openclaw_sync_validation()
         self.assertEqual(
-            m.normalize_scenarios("all", None),
-            ["group_openclaw", "group_chatbot", "direct_openclaw", "direct_chatbot"],
+            m.normalize_scenarios("all", None)["requested_scenarios"],
+            [
+                "group_openclaw",
+                "group_chatbot",
+                "direct_openclaw",
+                "direct_chatbot",
+                "group_openclaw_subagent",
+                "group_chatbot_subagent",
+                "direct_openclaw_subagent",
+                "direct_chatbot_subagent",
+            ],
         )
         self.assertEqual(
-            m.normalize_scenarios("direct_openclaw", None),
+            m.normalize_scenarios("direct_openclaw", None)["requested_scenarios"],
             ["direct_openclaw"],
         )
+
+    def test_normalize_sync_validation_scenarios_supports_alias_groups(self):
+        m = _load_openclaw_sync_validation()
+        self.assertEqual(
+            m.normalize_scenarios("subagent", None)["requested_scenarios"],
+            [
+                "group_openclaw_subagent",
+                "group_chatbot_subagent",
+                "direct_openclaw_subagent",
+                "direct_chatbot_subagent",
+            ],
+        )
+        self.assertEqual(
+            m.normalize_scenarios("group", None)["requested_scenarios"],
+            [
+                "group_openclaw",
+                "group_chatbot",
+                "group_openclaw_subagent",
+                "group_chatbot_subagent",
+            ],
+        )
+        self.assertEqual(
+            m.normalize_scenarios(None, "direct,chatbot")["requested_scenarios"],
+            [
+                "direct_openclaw",
+                "direct_chatbot",
+                "direct_openclaw_subagent",
+                "direct_chatbot_subagent",
+                "group_chatbot",
+                "group_chatbot_subagent",
+            ],
+        )
+        self.assertEqual(
+            m.normalize_scenarios(None, ["basic", "direct_openclaw_subagent", "openclaw"])["requested_scenarios"],
+            [
+                "group_openclaw",
+                "group_chatbot",
+                "direct_openclaw",
+                "direct_chatbot",
+                "direct_openclaw_subagent",
+                "group_openclaw_subagent",
+            ],
+        )
+
+    def test_normalize_sync_validation_scenarios_supports_comma_separated_scenario_field(self):
+        m = _load_openclaw_sync_validation()
+        result = m.normalize_scenarios("direct_openclaw_subagent,direct_chatbot_subagent", None)
+        self.assertEqual(
+            result["requested_scenarios"],
+            [
+                "direct_openclaw_subagent",
+                "direct_chatbot_subagent",
+            ],
+        )
+        self.assertEqual(result["invalid_names"], [])
+
+    def test_normalize_sync_validation_scenarios_returns_invalid_names_without_fallback(self):
+        m = _load_openclaw_sync_validation()
+        result = m.normalize_scenarios("direct_openclaw_subagent,unknown_case", None)
+        self.assertEqual(result["requested_scenarios"], ["direct_openclaw_subagent"])
+        self.assertEqual(result["invalid_names"], ["unknown_case"])
+
+    def test_start_sync_validation_rejects_invalid_scenario_names(self):
+        m = _load_openclaw_sync_validation()
+        result = m.start("app-id", "node-1", "direct_openclaw_subagent,unknown_case", None)
+        self.assertEqual(result["result"], "error")
+        self.assertIn("invalid scenario name", result["message"])
+        self.assertIn("unknown_case", result["message"])
 
     def test_render_sync_validation_report_html_contains_summary_and_failure(self):
         m = _load_openclaw_sync_validation()
@@ -195,6 +291,61 @@ class OpenClawSyncValidationTests(unittest.TestCase):
         text = m.build_trigger_text({"name": "direct_openclaw"}, 12345)
         self.assertIn("不要回复 NO_REPLY", text)
         self.assertIn("SYNC_OK_direct_openclaw_12345", text)
+
+    def test_build_trigger_text_for_subagent_scenario_requests_child_session(self):
+        m = _load_openclaw_sync_validation()
+        text = m.build_trigger_text({"name": "direct_chatbot_subagent", "expect_root_and_sub_sessions": True}, 12345)
+        self.assertIn("必须创建一个子 session 或 subagent", text)
+        self.assertIn("请不要直接在当前会话回答", text)
+        self.assertIn("主会话等待子 session 完成后再继续", text)
+        self.assertIn("主会话在收到子 session 结果后", text)
+        self.assertIn("不要回复 NO_REPLY", text)
+        self.assertIn("SYNC_OK_direct_chatbot_subagent_12345", text)
+
+    def test_list_subagent_conversation_views_accepts_second_precision_mapping_times(self):
+        m = _load_openclaw_sync_validation()
+        runtime = {"app_id": "app-id", "node_id": "node-1"}
+        scenario_def = {"sender_user_id": "sender-user"}
+        with mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[
+            {
+                "session_key": "agent:main:subagent:test-child",
+                "group_id": "group-child",
+                "sender_user_id": "",
+                "origin_user_id": "sender-user",
+                "parent_session_key": "agent:main:clawchat-router:group:group-root",
+                "root_session_key": "agent:main:clawchat-router:group:group-root",
+                "updated_at": 1780644987,
+            }
+        ]), mock.patch.object(m.core, "get_session_last_message_time", return_value=1780644994717):
+            out = m.list_subagent_conversation_views(
+                runtime,
+                scenario_def,
+                1780644969884,
+                ["agent:main:clawchat-router:group:group-root"],
+            )
+        self.assertEqual(out, [{"sender_user_id": "sender-user", "conversation_id": "group-child", "chat_type": "group"}])
+
+    def test_select_relevant_mappings_uses_last_message_time_for_second_precision_updates(self):
+        m = _load_openclaw_sync_validation()
+        runtime = {"app_id": "app-id", "node_id": "node-1"}
+        scenario_def = {
+            "sender_user_id": "sender-user",
+            "conversation_id": "group-root",
+            "expected_reply_user_id": "chatbot-user",
+            "chat_type": "group",
+        }
+        mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "group-root",
+            "sender_user_id": "",
+            "origin_user_id": "sender-user",
+            "openclaw_user_id": "chatbot-user",
+            "updated_at": 1780644987,
+        }
+        with mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[mapping]), \
+             mock.patch.object(m.core, "get_session_last_message_time", return_value=1780644994717):
+            out = m.select_relevant_mappings(runtime, scenario_def, 1780644969884)
+        self.assertEqual(out, [mapping])
 
     def test_send_message_group_uses_client_like_mention_config(self):
         m = _load_openclaw_sync_validation()
@@ -505,6 +656,601 @@ class OpenClawSyncValidationTests(unittest.TestCase):
         self.assertEqual(comparison["matched_visible_reply_count"], 2)
         self.assertTrue(comparison["duplicate_reply_detected"])
         self.assertTrue(comparison["duplicate_content_fallback_used"])
+
+    def test_execute_subagent_scenario_requires_root_and_subagent_replies(self):
+        m = _load_openclaw_sync_validation()
+        reply_timestamp = 1000001
+        runtime = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "timeout_ms": 100,
+            "subagent_timeout_ms": 100,
+            "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
+            "provisioning_rows": [],
+            "sender_username": "sender-name",
+            "sender_password": "sender-pass",
+        }
+        scenario_def = {
+            "name": "direct_chatbot_subagent",
+            "description": "subagent case",
+            "chat_type": "direct",
+            "target_user_id": "chatbot-user",
+            "conversation_id": "chatbot-user",
+            "sender_user_id": "sender-user",
+            "expected_reply_user_id": "chatbot-user",
+            "require_mapping": True,
+            "expect_root_and_sub_sessions": True,
+        }
+        marker = "SYNC_OK_direct_chatbot_subagent_1000000"
+        fake_send_result = {"http_status": 200, "result": {"code": 200, "msg_ids": ["request-1"]}}
+        with mock.patch.object(m, "send_message", return_value=fake_send_result), \
+             mock.patch.object(m, "fetch_conversation", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-root",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": "Spawned subagent main",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:clawchat-router:direct:sender-user", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp,
+                         },
+                         {
+                             "msg_id": "reply-sub-task",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": "[Subagent Task] 请只回复指定标记",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 1,
+                         },
+                         {
+                             "msg_id": "reply-sub",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": marker,
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 2,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "fetch_conversation_view", return_value={"data": {"messages": []}}), \
+             mock.patch.object(m, "select_relevant_mappings", return_value=[]), \
+             mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[]), \
+             mock.patch.object(m.core, "get_session_mapping_by_session", side_effect=[
+                 {
+                     "session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+                 {
+                     "session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+                 {
+                     "session_key": "agent:main:subagent:test-child",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "parent_session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "root_session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "updated_at": 3,
+                 },
+             ]), \
+             mock.patch.object(m, "build_mapping_rows", return_value=[]), \
+             mock.patch.object(m.time, "time", return_value=1000.0):
+            result = m.execute_scenario(runtime, scenario_def)
+        self.assertEqual(result["status"], m.STATUS_PASSED)
+        comparison = {row["label"]: row["value"] for row in result["comparison_rows"]}
+        self.assertEqual(comparison["root_visible_reply_sessions"], ["agent:main:clawchat-router:direct:sender-user"])
+        self.assertEqual(comparison["subagent_visible_reply_sessions"], ["agent:main:subagent:test-child"])
+        self.assertEqual(comparison["subagent_visible_reply_count"], 2)
+        self.assertEqual(comparison["subagent_visible_reply_msg_ids"], ["reply-sub-task", "reply-sub"])
+        self.assertTrue(comparison["subagent_task_message_found"])
+        self.assertTrue(comparison["subagent_marker_found"])
+        self.assertTrue(comparison["subagent_result_message_found"])
+        self.assertTrue(comparison["subagent_lineage_ok"])
+
+    def test_execute_subagent_scenario_observes_child_conversation_messages(self):
+        m = _load_openclaw_sync_validation()
+        reply_timestamp = 1000001
+        runtime = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "timeout_ms": 100,
+            "subagent_timeout_ms": 100,
+            "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
+            "provisioning_rows": [],
+            "sender_username": "sender-name",
+            "sender_password": "sender-pass",
+        }
+        scenario_def = {
+            "name": "group_chatbot_subagent",
+            "description": "subagent case",
+            "chat_type": "group",
+            "target_user_id": "chatbot-user",
+            "conversation_id": "group-root",
+            "sender_user_id": "sender-user",
+            "expected_reply_user_id": "chatbot-user",
+            "require_mapping": True,
+            "expect_root_and_sub_sessions": True,
+        }
+        marker = "SYNC_OK_group_chatbot_subagent_1000000"
+        fake_send_result = {"http_status": 200, "result": {"code": 200, "msg_ids": ["request-1"]}}
+        with mock.patch.object(m, "send_message", return_value=fake_send_result), \
+             mock.patch.object(m, "fetch_conversation", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-root",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": "Spawned subagent main",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:clawchat-router:group:group-root", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "fetch_conversation_view", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-sub-task",
+                             "from_xid": {"uid": "sender-user"},
+                             "to_xid": {"uid": "chatbot-user"},
+                             "content": "[Subagent Task] 请只回复指定标记",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 1,
+                         },
+                         {
+                             "msg_id": "reply-sub",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": marker,
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 2,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "select_relevant_mappings", return_value=[]), \
+             mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[
+                 {
+                     "session_key": "agent:main:subagent:test-child",
+                     "group_id": "group-child",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "root_session_key": "agent:main:clawchat-router:group:group-root",
+                     "parent_session_key": "agent:main:clawchat-router:group:group-root",
+                     "updated_at": reply_timestamp + 10,
+                 }
+             ]), \
+             mock.patch.object(m.core, "get_session_mapping_by_session", side_effect=[
+                 {
+                     "session_key": "agent:main:clawchat-router:group:group-root",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+                 {
+                     "session_key": "agent:main:clawchat-router:group:group-root",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+                 {
+                     "session_key": "agent:main:subagent:test-child",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "parent_session_key": "agent:main:clawchat-router:group:group-root",
+                     "root_session_key": "agent:main:clawchat-router:group:group-root",
+                     "updated_at": 3,
+                 },
+             ]), \
+             mock.patch.object(m, "build_mapping_rows", return_value=[]), \
+             mock.patch.object(m.time, "time", return_value=1000.0):
+            result = m.execute_scenario(runtime, scenario_def)
+        self.assertEqual(result["status"], m.STATUS_PASSED)
+        comparison = {row["label"]: row["value"] for row in result["comparison_rows"]}
+        self.assertEqual(comparison["root_visible_reply_sessions"], ["agent:main:clawchat-router:group:group-root"])
+        self.assertEqual(comparison["subagent_visible_reply_sessions"], ["agent:main:subagent:test-child"])
+        self.assertEqual(comparison["subagent_observed_conversation_ids"], ["group-child"])
+        self.assertEqual(comparison["subagent_visible_reply_msg_ids"], ["reply-sub-task", "reply-sub"])
+        self.assertTrue(comparison["subagent_task_message_found"])
+        self.assertTrue(comparison["subagent_result_message_found"])
+        self.assertTrue(comparison["subagent_lineage_ok"])
+
+    def test_execute_subagent_scenario_fails_without_subagent_task_message(self):
+        m = _load_openclaw_sync_validation()
+        reply_timestamp = 1000001
+        runtime = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "timeout_ms": 100,
+            "subagent_timeout_ms": 100,
+            "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
+            "provisioning_rows": [],
+            "sender_username": "sender-name",
+            "sender_password": "sender-pass",
+        }
+        scenario_def = {
+            "name": "direct_chatbot_subagent",
+            "description": "subagent case",
+            "chat_type": "direct",
+            "target_user_id": "chatbot-user",
+            "conversation_id": "chatbot-user",
+            "sender_user_id": "sender-user",
+            "expected_reply_user_id": "chatbot-user",
+            "require_mapping": True,
+            "expect_root_and_sub_sessions": True,
+        }
+        marker = "SYNC_OK_direct_chatbot_subagent_1000000"
+        fake_send_result = {"http_status": 200, "result": {"code": 200, "msg_ids": ["request-1"]}}
+        with mock.patch.object(m, "send_message", return_value=fake_send_result), \
+             mock.patch.object(m, "fetch_conversation", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-root",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": "Spawned subagent main",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:clawchat-router:direct:sender-user", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp,
+                         },
+                         {
+                             "msg_id": "reply-sub",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": marker,
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 1,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "fetch_conversation_view", return_value={"data": {"messages": []}}), \
+             mock.patch.object(m, "select_relevant_mappings", return_value=[]), \
+             mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[]), \
+             mock.patch.object(m.core, "get_session_mapping_by_session", side_effect=[
+                 {
+                     "session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+                 {
+                     "session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+                 {
+                     "session_key": "agent:main:subagent:test-child",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "parent_session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "root_session_key": "agent:main:clawchat-router:direct:sender-user",
+                     "updated_at": 3,
+                 },
+             ]), \
+             mock.patch.object(m, "build_mapping_rows", return_value=[]), \
+             mock.patch.object(m.time, "time", return_value=1000.0):
+            result = m.execute_scenario(runtime, scenario_def)
+        self.assertEqual(result["status"], m.STATUS_FAILED)
+        self.assertIn("root/sub session", result["failure_reason"])
+        comparison = {row["label"]: row["value"] for row in result["comparison_rows"]}
+        self.assertEqual(comparison["subagent_visible_reply_count"], 1)
+        self.assertFalse(comparison["subagent_task_message_found"])
+        self.assertTrue(comparison["subagent_result_message_found"])
+        self.assertFalse(comparison["subagent_lineage_ok"])
+
+    def test_execute_subagent_scenario_accepts_parent_relay_marker_without_child_visible_sync(self):
+        m = _load_openclaw_sync_validation()
+        reply_timestamp = 1000001
+        runtime = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "timeout_ms": 100,
+            "subagent_timeout_ms": 100,
+            "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
+            "provisioning_rows": [],
+            "sender_username": "sender-name",
+            "sender_password": "sender-pass",
+        }
+        scenario_def = {
+            "name": "group_chatbot_subagent",
+            "description": "subagent parent relay case",
+            "chat_type": "group",
+            "target_user_id": "chatbot-user",
+            "conversation_id": "group-root",
+            "sender_user_id": "sender-user",
+            "expected_reply_user_id": "chatbot-user",
+            "require_mapping": True,
+            "expect_root_and_sub_sessions": True,
+        }
+        marker = "SYNC_OK_group_chatbot_subagent_1000000"
+        fake_send_result = {"http_status": 200, "result": {"code": 200, "msg_ids": ["request-1"]}}
+        with mock.patch.object(m, "send_message", return_value=fake_send_result), \
+             mock.patch.object(m, "fetch_conversation", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-root",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": marker,
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:clawchat-router:group:group-root", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "fetch_conversation_view", return_value={"data": {"messages": []}}), \
+             mock.patch.object(m, "select_relevant_mappings", return_value=[]), \
+             mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[]), \
+             mock.patch.object(m.core, "get_session_mapping_by_session", side_effect=[
+                 {
+                     "session_key": "agent:main:clawchat-router:group:group-root",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+                 {
+                     "session_key": "agent:main:clawchat-router:group:group-root",
+                     "sender_user_id": "",
+                     "origin_user_id": "sender-user",
+                     "openclaw_user_id": "chatbot-user",
+                     "updated_at": 2,
+                 },
+             ]), \
+             mock.patch.object(m, "build_mapping_rows", return_value=[]), \
+             mock.patch.object(m.time, "time", return_value=1000.0):
+            result = m.execute_scenario(runtime, scenario_def)
+
+        self.assertEqual(result["status"], m.STATUS_PASSED)
+        self.assertEqual(result["notes"], "latest_openclaw_parent_relay_mode")
+        comparison = {row["label"]: row["value"] for row in result["comparison_rows"]}
+        self.assertTrue(comparison["parent_relay_marker_found"])
+        self.assertTrue(comparison["subagent_parent_relay_ok"])
+        self.assertFalse(comparison["subagent_lineage_ok"])
+
+    def test_execute_subagent_scenario_infers_root_session_from_child_mapping(self):
+        m = _load_openclaw_sync_validation()
+        reply_timestamp = 1000001
+        runtime = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "timeout_ms": 100,
+            "subagent_timeout_ms": 100,
+            "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
+            "provisioning_rows": [],
+            "sender_username": "sender-name",
+            "sender_password": "sender-pass",
+        }
+        scenario_def = {
+            "name": "group_openclaw_subagent",
+            "description": "subagent inferred root case",
+            "chat_type": "group",
+            "target_user_id": "openclaw-user",
+            "conversation_id": "group-root",
+            "sender_user_id": "sender-user",
+            "expected_reply_user_id": "openclaw-user",
+            "require_mapping": True,
+            "expect_root_and_sub_sessions": True,
+        }
+        marker = "SYNC_OK_group_openclaw_subagent_1000000"
+        child_mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "group-child",
+            "sender_user_id": "",
+            "origin_user_id": "sender-user",
+            "openclaw_user_id": "openclaw-user",
+            "parent_session_key": "agent:main:clawchat:group:group-root",
+            "root_session_key": "agent:main:clawchat:group:group-root",
+            "updated_at": reply_timestamp + 10,
+        }
+        root_mapping = {
+            "session_key": "agent:main:clawchat:group:group-root",
+            "sender_user_id": "",
+            "origin_user_id": "sender-user",
+            "openclaw_user_id": "openclaw-user",
+            "updated_at": reply_timestamp + 5,
+        }
+
+        def get_mapping(_app_id, _node_id, session_key):
+            if session_key == "agent:main:subagent:test-child":
+                return dict(child_mapping)
+            if session_key == "agent:main:clawchat:group:group-root":
+                return dict(root_mapping)
+            return None
+
+        fake_send_result = {"http_status": 200, "result": {"code": 200, "msg_ids": ["request-1"]}}
+        with mock.patch.object(m, "send_message", return_value=fake_send_result), \
+             mock.patch.object(m, "fetch_conversation", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-parent-relay",
+                             "from_xid": {"uid": "openclaw-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": marker,
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "fetch_conversation_view", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-sub-task",
+                             "from_xid": {"uid": "sender-user"},
+                             "to_xid": {"uid": "openclaw-user"},
+                             "content": "[Subagent Task] 请只回复指定标记",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 1,
+                         },
+                         {
+                             "msg_id": "reply-sub",
+                             "from_xid": {"uid": "openclaw-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": marker,
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 2,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "select_relevant_mappings", return_value=[]), \
+             mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[dict(child_mapping)]), \
+             mock.patch.object(m.core, "get_session_mapping_by_session", side_effect=get_mapping), \
+             mock.patch.object(m, "build_mapping_rows", return_value=[]), \
+             mock.patch.object(m.time, "time", return_value=1000.0):
+            result = m.execute_scenario(runtime, scenario_def)
+
+        self.assertEqual(result["status"], m.STATUS_PASSED)
+        comparison = {row["label"]: row["value"] for row in result["comparison_rows"]}
+        self.assertEqual(comparison["root_visible_reply_sessions"], [])
+        self.assertEqual(comparison["inferred_root_visible_reply_sessions"], ["agent:main:clawchat:group:group-root"])
+        self.assertEqual(comparison["subagent_visible_reply_sessions"], ["agent:main:subagent:test-child"])
+        self.assertTrue(comparison["subagent_lineage_ok"])
+        self.assertTrue(comparison["mapping_sender_ok"])
+
+    def test_execute_subagent_scenario_resolves_child_sender_from_parent_mapping(self):
+        m = _load_openclaw_sync_validation()
+        reply_timestamp = 1000001
+        runtime = {
+            "app_id": "app-id",
+            "node_id": "node-1",
+            "timeout_ms": 100,
+            "subagent_timeout_ms": 100,
+            "poll_interval_ms": 10,
+            "duplicate_observation_window_ms": 0,
+            "provisioning_rows": [],
+            "sender_username": "sender-name",
+            "sender_password": "sender-pass",
+        }
+        scenario_def = {
+            "name": "direct_chatbot_subagent",
+            "description": "subagent inherited sender case",
+            "chat_type": "direct",
+            "target_user_id": "chatbot-user",
+            "conversation_id": "chatbot-user",
+            "sender_user_id": "sender-user",
+            "expected_reply_user_id": "chatbot-user",
+            "require_mapping": True,
+            "expect_root_and_sub_sessions": True,
+        }
+        marker = "SYNC_OK_direct_chatbot_subagent_1000000"
+        child_mapping = {
+            "session_key": "agent:main:subagent:test-child",
+            "group_id": "group-child",
+            "sender_user_id": "",
+            "origin_user_id": "",
+            "openclaw_user_id": "chatbot-user",
+            "parent_session_key": "agent:main:clawchat-router:direct:sender-user",
+            "root_session_key": "agent:main:clawchat-router:direct:sender-user",
+            "updated_at": reply_timestamp + 10,
+        }
+        root_mapping = {
+            "session_key": "agent:main:clawchat-router:direct:sender-user",
+            "sender_user_id": "",
+            "origin_user_id": "sender-user",
+            "openclaw_user_id": "chatbot-user",
+            "updated_at": reply_timestamp + 5,
+        }
+
+        def get_mapping(_app_id, _node_id, session_key):
+            if session_key == "agent:main:subagent:test-child":
+                return dict(child_mapping)
+            if session_key == "agent:main:clawchat-router:direct:sender-user":
+                return dict(root_mapping)
+            return None
+
+        fake_send_result = {"http_status": 200, "result": {"code": 200, "msg_ids": ["request-1"]}}
+        with mock.patch.object(m, "send_message", return_value=fake_send_result), \
+             mock.patch.object(m, "fetch_conversation", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-root",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": "Spawned subagent main",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:clawchat-router:direct:sender-user", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "fetch_conversation_view", return_value={
+                 "data": {
+                     "messages": [
+                         {
+                             "msg_id": "reply-sub-task",
+                             "from_xid": {"uid": "sender-user"},
+                             "to_xid": {"uid": "chatbot-user"},
+                             "content": "[Subagent Task] 请只回复指定标记",
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 1,
+                         },
+                         {
+                             "msg_id": "reply-sub",
+                             "from_xid": {"uid": "chatbot-user"},
+                             "to_xid": {"uid": "sender-user"},
+                             "content": marker,
+                             "ctype": "TEXT",
+                             "ext": json.dumps({"openclaw": {"type": "session_sync_delivery", "session": "agent:main:subagent:test-child", "request_msg_id": "request-1"}}, ensure_ascii=False),
+                             "timestamp": reply_timestamp + 2,
+                         },
+                     ]
+                 }
+             }), \
+             mock.patch.object(m, "select_relevant_mappings", return_value=[]), \
+             mock.patch.object(m.core, "list_session_mappings_for_node", return_value=[dict(child_mapping)]), \
+             mock.patch.object(m.core, "get_session_mapping_by_session", side_effect=get_mapping), \
+             mock.patch.object(m, "build_mapping_rows", return_value=[]), \
+             mock.patch.object(m.time, "time", return_value=1000.0):
+            result = m.execute_scenario(runtime, scenario_def)
+
+        self.assertEqual(result["status"], m.STATUS_PASSED)
+        comparison = {row["label"]: row["value"] for row in result["comparison_rows"]}
+        self.assertTrue(comparison["mapping_sender_ok"])
+        self.assertTrue(comparison["subagent_lineage_ok"])
 
     def test_merge_message_snapshots_keeps_all_observed_messages(self):
         m = _load_openclaw_sync_validation()

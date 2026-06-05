@@ -10,6 +10,31 @@ import os
 import lanying_utils
 import lanying_redis
 
+
+def summarize_conversation_result_for_log(result):
+    if not isinstance(result, dict):
+        return {'result_type': type(result).__name__}
+    summary = {
+        'code': result.get('code'),
+    }
+    data = result.get('data')
+    if not isinstance(data, dict):
+        if 'message' in result:
+            summary['message'] = result.get('message')
+        return summary
+    messages = data.get('messages')
+    summary['is_last'] = data.get('is_last')
+    summary['next_msg_id'] = data.get('next_msg_id')
+    if isinstance(messages, list):
+        summary['message_count'] = len(messages)
+        if len(messages) > 0:
+            summary['first_msg_id'] = messages[0].get('msg_id')
+            summary['last_msg_id'] = messages[-1].get('msg_id')
+            summary['last_timestamp'] = messages[-1].get('timestamp')
+    else:
+        summary['message_count'] = 0
+    return summary
+
 def get_user_profile(app_id, user_id):
     config = lanying_config.get_lanying_connector(app_id)
     if config:
@@ -603,9 +628,10 @@ def fetch_conversation_messages(config, app_id, acting_user_id, opposite_id, lim
     except Exception as e:
         logging.exception(e)
         result = {'code': response.status_code, 'message': 'invalid_json'}
+    result_summary = summarize_conversation_result_for_log(result)
     logging.info(
         f"fetch_conversation_messages, app_id={app_id} acting_user_id={acting_user_id}, "
-        f"opposite_id={opposite_id}, limit={limit}, msg_id_start={msg_id_start}, result:{result}"
+        f"opposite_id={opposite_id}, limit={limit}, msg_id_start={msg_id_start}, result_summary:{result_summary}"
     )
     return result
 

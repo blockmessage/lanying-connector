@@ -40,6 +40,62 @@ lanying_im_api = _load_lanying_im_api()
 
 
 class LanyingImApiTests(unittest.TestCase):
+    def test_summarize_conversation_result_for_log_omits_message_bodies(self):
+        summary = lanying_im_api.summarize_conversation_result_for_log({
+            "code": 200,
+            "data": {
+                "is_last": False,
+                "next_msg_id": 12345,
+                "messages": [
+                    {"msg_id": 11, "timestamp": 1001, "content": "hello"},
+                    {"msg_id": 22, "timestamp": 1002, "content": "world"},
+                ],
+            },
+        })
+
+        self.assertEqual(summary["code"], 200)
+        self.assertEqual(summary["is_last"], False)
+        self.assertEqual(summary["next_msg_id"], 12345)
+        self.assertEqual(summary["message_count"], 2)
+        self.assertEqual(summary["first_msg_id"], 11)
+        self.assertEqual(summary["last_msg_id"], 22)
+        self.assertEqual(summary["last_timestamp"], 1002)
+        self.assertNotIn("messages", summary)
+        self.assertNotIn("content", str(summary))
+
+    def test_fetch_conversation_messages_logs_summary_instead_of_full_messages(self):
+        fake_response = mock.Mock()
+        fake_response.json.return_value = {
+            "code": 200,
+            "data": {
+                "is_last": False,
+                "next_msg_id": 12345,
+                "messages": [
+                    {"msg_id": 11, "timestamp": 1001, "content": "secret-body-1"},
+                    {"msg_id": 22, "timestamp": 1002, "content": "secret-body-2"},
+                ],
+            },
+        }
+
+        with mock.patch.object(lanying_im_api.requests, "get", return_value=fake_response), \
+             mock.patch.object(lanying_im_api.logging, "info") as mocked_info:
+            result = lanying_im_api.fetch_conversation_messages(
+                {"lanying_admin_token": "admin-token"},
+                "app-id",
+                "100",
+                "200",
+                limit=20,
+                msg_id_start=0,
+            )
+
+        self.assertEqual(result["code"], 200)
+        logged_text = mocked_info.call_args[0][0]
+        self.assertIn("result_summary:", logged_text)
+        self.assertIn("message_count", logged_text)
+        self.assertNotIn("secret-body-1", logged_text)
+        self.assertNotIn("secret-body-2", logged_text)
+        self.assertNotIn("'messages':", logged_text)
+
     def test_get_group_info_passes_group_id_as_query_param(self):
         fake_response = mock.Mock()
         fake_response.json.return_value = {"code": 200, "data": {"group_id": "9"}}

@@ -19,6 +19,7 @@ STATUS_PASSED = 'passed'
 STATUS_FAILED = 'failed'
 STATUS_ERROR = 'error'
 DEFAULT_TIMEOUT_MS = 30000
+DEFAULT_SUBAGENT_TIMEOUT_MS = 60000
 DEFAULT_POLL_INTERVAL_MS = 1000
 DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS = 10000
 LOG_SUBDIR = 'openclaw_sync_validation'
@@ -34,6 +35,20 @@ def pick_int_config(value, default_value):
         return int(value)
     except Exception:
         return int(default_value)
+
+
+def normalize_comparable_timestamp_ms(value):
+    try:
+        timestamp = int(value or 0)
+    except Exception:
+        return 0
+    if timestamp <= 0:
+        return 0
+    # Session mapping timestamps are often stored in seconds while message
+    # timestamps are milliseconds. Normalize them before cross-source compares.
+    if timestamp < 1000000000000:
+        return timestamp * 1000
+    return timestamp
 
 
 def get_task(task_id):
@@ -296,7 +311,55 @@ def get_validation_config(app_id, node_id=None):
 
 
 def normalize_scenarios(scenario=None, scenarios=None):
-    available = ['group_openclaw', 'group_chatbot', 'direct_openclaw', 'direct_chatbot']
+    available = [
+        'group_openclaw',
+        'group_chatbot',
+        'direct_openclaw',
+        'direct_chatbot',
+        'group_openclaw_subagent',
+        'group_chatbot_subagent',
+        'direct_openclaw_subagent',
+        'direct_chatbot_subagent',
+    ]
+    aliases = {
+        'all': available,
+        'basic': [
+            'group_openclaw',
+            'group_chatbot',
+            'direct_openclaw',
+            'direct_chatbot',
+        ],
+        'subagent': [
+            'group_openclaw_subagent',
+            'group_chatbot_subagent',
+            'direct_openclaw_subagent',
+            'direct_chatbot_subagent',
+        ],
+        'group': [
+            'group_openclaw',
+            'group_chatbot',
+            'group_openclaw_subagent',
+            'group_chatbot_subagent',
+        ],
+        'direct': [
+            'direct_openclaw',
+            'direct_chatbot',
+            'direct_openclaw_subagent',
+            'direct_chatbot_subagent',
+        ],
+        'openclaw': [
+            'group_openclaw',
+            'direct_openclaw',
+            'group_openclaw_subagent',
+            'direct_openclaw_subagent',
+        ],
+        'chatbot': [
+            'group_chatbot',
+            'direct_chatbot',
+            'group_chatbot_subagent',
+            'direct_chatbot_subagent',
+        ],
+    }
     names = []
     if isinstance(scenarios, list):
         for item in scenarios:
@@ -310,16 +373,33 @@ def normalize_scenarios(scenario=None, scenarios=None):
                 names.append(text)
     single = str(scenario or '').strip()
     if single != '':
-        names.append(single)
-    if len(names) == 0 or 'all' in names:
-        return available
+        for item in single.split(','):
+            text = str(item or '').strip()
+            if text != '':
+                names.append(text)
+    if len(names) == 0:
+        return {
+            'requested_scenarios': list(available),
+            'invalid_names': [],
+        }
     normalized = []
     seen = set()
+    invalid_names = []
     for name in names:
-        if name in available and name not in seen:
-            seen.add(name)
-            normalized.append(name)
-    return normalized
+        candidates = aliases.get(name, [name])
+        matched = False
+        for candidate in candidates:
+            if candidate in available and candidate not in seen:
+                seen.add(candidate)
+                normalized.append(candidate)
+            if candidate in available:
+                matched = True
+        if not matched:
+            invalid_names.append(name)
+    return {
+        'requested_scenarios': normalized,
+        'invalid_names': invalid_names,
+    }
 
 
 def parse_result_code(result):
@@ -427,11 +507,33 @@ def create_validation_group(app_id, owner_user_id, group_name, member_user_ids=N
             'message': 'create validation group missing group_id',
             'details': result,
         }
+    normalized_member_user_ids = []
+    for user_id in member_user_ids or []:
+        normalized_user_id = str(user_id or '').strip()
+        if normalized_user_id == '':
+            continue
+        try:
+            normalized_member_user_ids.append(int(normalized_user_id))
+        except Exception:
+            logging.info(f"create_validation_group skip invalid member user_id: {user_id}")
+    join_result = None
+    if len(normalized_member_user_ids) > 0:
+        join_result = lanying_im_api.admin_join_group_direct(app_id, group_id, normalized_member_user_ids)
+        if parse_result_code(join_result) != 200:
+            return {
+                'result': 'error',
+                'message': 'create validation group member_join failed',
+                'details': {
+                    'create_result': result,
+                    'join_result': join_result,
+                },
+            }
     return {
         'result': 'ok',
         'data': {
             'group_id': group_id,
             'create_result': result,
+            'join_result': join_result,
         },
     }
 
@@ -583,6 +685,50 @@ def build_scenario_definition(runtime, scenario_name):
             'expected_reply_user_id': chatbot_user_id,
             'require_mapping': True,
         },
+        'group_openclaw_subagent': {
+            'name': 'group_openclaw_subagent',
+            'description': '群聊 @OpenClawUserId 请求主 agent 生成子 session 后，验证 root/sub session 的消息都正常同步回 IM。',
+            'chat_type': 'group',
+            'target_user_id': openclaw_user_id,
+            'conversation_id': str(runtime.get('group_openclaw_id', '')),
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': openclaw_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+        },
+        'group_chatbot_subagent': {
+            'name': 'group_chatbot_subagent',
+            'description': '群聊 @ChatbotUserId 请求主 agent 生成子 session 后，验证 root/sub session 的消息都正常同步回 IM。',
+            'chat_type': 'group',
+            'target_user_id': chatbot_user_id,
+            'conversation_id': str(runtime.get('group_chatbot_id', '')),
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': chatbot_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+        },
+        'direct_openclaw_subagent': {
+            'name': 'direct_openclaw_subagent',
+            'description': '单聊 OpenClawUserId 请求主 agent 生成子 session 后，验证 root/sub session 的消息都正常同步回 IM。',
+            'chat_type': 'direct',
+            'target_user_id': openclaw_user_id,
+            'conversation_id': openclaw_user_id,
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': openclaw_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+        },
+        'direct_chatbot_subagent': {
+            'name': 'direct_chatbot_subagent',
+            'description': '单聊 ChatbotUserId 请求主 agent 生成子 session 后，验证 root/sub session 的消息都正常同步回 IM。',
+            'chat_type': 'direct',
+            'target_user_id': chatbot_user_id,
+            'conversation_id': chatbot_user_id,
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': chatbot_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+        },
     }
     return definitions.get(scenario_name)
 
@@ -590,6 +736,15 @@ def build_scenario_definition(runtime, scenario_name):
 def build_trigger_text(scenario_def, now_ms):
     name = str(scenario_def.get('name', '')).strip()
     marker = f"SYNC_OK_{name}_{now_ms}"
+    if bool(scenario_def.get('expect_root_and_sub_sessions')):
+        return (
+            f"这是联调测试，请不要直接在当前会话回答。"
+            f"必须创建一个子 session 或 subagent 来处理本次请求。"
+            f"主会话等待子 session 完成后再继续。"
+            f"子 session 最终请只回复“{marker}”，不要回复 NO_REPLY，也不要输出其他内容。"
+            f"主会话在收到子 session 结果后，必须把“{marker}”原样作为当前聊天的最终可见回复再次发回，"
+            f"不要输出 NO_REPLY，也不要补充其他内容。"
+        )
     return f"这是联调测试，请直接回复“{marker}”，不要回复 NO_REPLY，也不要输出其他内容。"
 
 
@@ -626,6 +781,18 @@ def merge_message_snapshots(primary, secondary):
     return merged
 
 
+def extract_openclaw_session_key(message):
+    if not isinstance(message, dict):
+        return ''
+    ext = message.get('ext', {})
+    if not isinstance(ext, dict):
+        return ''
+    openclaw_info = ext.get('openclaw', {})
+    if not isinstance(openclaw_info, dict):
+        return ''
+    return str(openclaw_info.get('session', '')).strip()
+
+
 def get_mapping_sender_user_id(mapping):
     if not isinstance(mapping, dict):
         return ''
@@ -633,6 +800,36 @@ def get_mapping_sender_user_id(mapping):
         str(mapping.get('origin_user_id', '')).strip() or
         str(mapping.get('sender_user_id', '')).strip()
     )
+
+
+def get_effective_mapping_sender_user_id(app_id, node_id, mapping, visited_session_keys=None):
+    if not isinstance(mapping, dict):
+        return ''
+    direct_sender_user_id = get_mapping_sender_user_id(mapping)
+    if direct_sender_user_id != '':
+        return direct_sender_user_id
+    visited = set(visited_session_keys or [])
+    current_session_key = str(mapping.get('session_key', '')).strip()
+    if current_session_key != '':
+        if current_session_key in visited:
+            return ''
+        visited.add(current_session_key)
+    for candidate_session_key in [
+        str(mapping.get('parent_session_key', '')).strip(),
+        str(mapping.get('root_session_key', '')).strip(),
+    ]:
+        if candidate_session_key == '' or candidate_session_key in visited:
+            continue
+        inherited_mapping = core.get_session_mapping_by_session(app_id, node_id, candidate_session_key)
+        inherited_sender_user_id = get_effective_mapping_sender_user_id(
+            app_id,
+            node_id,
+            inherited_mapping,
+            visited,
+        )
+        if inherited_sender_user_id != '':
+            return inherited_sender_user_id
+    return ''
 
 
 def send_message(runtime, scenario_def, content):
@@ -682,6 +879,68 @@ def fetch_conversation(runtime, scenario_def):
     )
 
 
+def build_conversation_view(sender_user_id, conversation_id, chat_type):
+    return {
+        'sender_user_id': str(sender_user_id or '').strip(),
+        'conversation_id': str(conversation_id or '').strip(),
+        'chat_type': str(chat_type or '').strip(),
+    }
+
+
+def fetch_conversation_view(runtime, conversation_view):
+    return lanying_im_api.fetch_conversation_messages(
+        runtime.get('config', {}),
+        runtime.get('app_id', ''),
+        conversation_view.get('sender_user_id', ''),
+        conversation_view.get('conversation_id', ''),
+        limit=20,
+        msg_id_start=0,
+    )
+
+
+def list_subagent_conversation_views(runtime, scenario_def, trigger_timestamp, root_session_keys=None):
+    sender_user_id = str(scenario_def.get('sender_user_id', '')).strip()
+    if sender_user_id == '':
+        return []
+    root_session_key_set = set([
+        str(item or '').strip()
+        for item in (root_session_keys or [])
+        if str(item or '').strip() != ''
+    ])
+    mappings = core.list_session_mappings_for_node(runtime.get('app_id', ''), runtime.get('node_id', ''))
+    views = []
+    seen_conversations = set()
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        session_key = str(mapping.get('session_key', '')).strip()
+        if ':subagent:' not in session_key:
+            continue
+        group_id = str(mapping.get('group_id', '')).strip()
+        if group_id == '' or group_id in seen_conversations:
+            continue
+        if get_effective_mapping_sender_user_id(
+            runtime.get('app_id', ''),
+            runtime.get('node_id', ''),
+            mapping,
+        ) != sender_user_id:
+            continue
+        mapping_updated_at_ms = normalize_comparable_timestamp_ms(mapping.get('updated_at', 0))
+        mapping_last_message_time_ms = normalize_comparable_timestamp_ms(
+            core.get_session_last_message_time(runtime.get('app_id', ''), runtime.get('node_id', ''), session_key)
+        )
+        mapping_activity_ms = max(mapping_updated_at_ms, mapping_last_message_time_ms)
+        if mapping_activity_ms < normalize_comparable_timestamp_ms(trigger_timestamp):
+            continue
+        parent_session_key = str(mapping.get('parent_session_key', '')).strip()
+        root_session_key = str(mapping.get('root_session_key', '')).strip()
+        if len(root_session_key_set) > 0 and parent_session_key not in root_session_key_set and root_session_key not in root_session_key_set:
+            continue
+        seen_conversations.add(group_id)
+        views.append(build_conversation_view(sender_user_id, group_id, 'group'))
+    return views
+
+
 def find_reply(messages, expected_reply_user_id, trigger_timestamp):
     replies = find_replies(messages, expected_reply_user_id, trigger_timestamp, '')
     return replies[0] if len(replies) > 0 else None
@@ -725,6 +984,27 @@ def find_replies(messages, expected_reply_user_id, trigger_timestamp, request_ms
         if expected_request_msg_id != '':
             if message_request_msg_id == '' and message_trigger_msg_id == '':
                 continue
+            if expected_request_msg_id not in [message_request_msg_id, message_trigger_msg_id]:
+                continue
+        matched.append(message)
+    return matched
+
+
+def find_session_sync_messages(messages, trigger_timestamp, request_msg_id=''):
+    expected_request_msg_id = str(request_msg_id or '').strip()
+    matched = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if int(message.get('timestamp', 0) or 0) < int(trigger_timestamp or 0):
+            continue
+        ext = message.get('ext', {})
+        openclaw_info = ext.get('openclaw', {}) if isinstance(ext, dict) else {}
+        if str(openclaw_info.get('type', '')).strip() != 'session_sync_delivery':
+            continue
+        message_request_msg_id = str(openclaw_info.get('request_msg_id', '')).strip()
+        message_trigger_msg_id = str(openclaw_info.get('trigger_msg_id', '')).strip()
+        if expected_request_msg_id != '':
             if expected_request_msg_id not in [message_request_msg_id, message_trigger_msg_id]:
                 continue
         matched.append(message)
@@ -788,7 +1068,11 @@ def select_relevant_mappings(runtime, scenario_def, trigger_timestamp):
             score += 3
         if str(mapping.get('openclaw_user_id', '')) == expected_reply_user_id:
             score += 1
-        if int(mapping.get('updated_at', 0) or 0) >= int(trigger_timestamp or 0):
+        mapping_updated_at_ms = normalize_comparable_timestamp_ms(mapping.get('updated_at', 0))
+        mapping_last_message_time_ms = normalize_comparable_timestamp_ms(
+            core.get_session_last_message_time(runtime.get('app_id', ''), runtime.get('node_id', ''), str(mapping.get('session_key', '')))
+        )
+        if max(mapping_updated_at_ms, mapping_last_message_time_ms) >= normalize_comparable_timestamp_ms(trigger_timestamp):
             score += 1
         if score > 0:
             selected.append((score, mapping))
@@ -835,6 +1119,29 @@ def merge_mapping_candidates(primary, secondary):
     return merged
 
 
+def infer_root_session_keys_from_mappings(root_session_keys, reply_session_mappings):
+    inferred = []
+    seen = set()
+    for session_key in root_session_keys or []:
+        normalized = str(session_key or '').strip()
+        if normalized == '' or normalized in seen:
+            continue
+        seen.add(normalized)
+        inferred.append(normalized)
+    for mapping in reply_session_mappings or []:
+        if not isinstance(mapping, dict):
+            continue
+        for candidate_session_key in [
+            str(mapping.get('root_session_key', '')).strip(),
+            str(mapping.get('parent_session_key', '')).strip(),
+        ]:
+            if candidate_session_key == '' or ':subagent:' in candidate_session_key or candidate_session_key in seen:
+                continue
+            seen.add(candidate_session_key)
+            inferred.append(candidate_session_key)
+    return inferred
+
+
 def execute_scenario(runtime, scenario_def):
     missing_fields = []
     for field in ['sender_user_id', 'target_user_id', 'conversation_id']:
@@ -860,18 +1167,69 @@ def execute_scenario(runtime, scenario_def):
     unique_text = build_trigger_text(scenario_def, now_ms)
     send_result = send_message(runtime, scenario_def, unique_text)
     request_msg_id = extract_request_msg_id(send_result)
+    expect_root_and_sub_sessions = bool(scenario_def.get('expect_root_and_sub_sessions'))
     conversation_snapshot = []
     all_observed_messages = []
     matched_reply = None
     matched_replies = []
     duplicate_replies = []
-    deadline = now_ms + pick_int_config(runtime.get('timeout_ms', DEFAULT_TIMEOUT_MS), DEFAULT_TIMEOUT_MS)
+    timeout_ms = pick_int_config(runtime.get('timeout_ms', DEFAULT_TIMEOUT_MS), DEFAULT_TIMEOUT_MS)
+    subagent_timeout_ms = pick_int_config(
+        runtime.get('subagent_timeout_ms', DEFAULT_SUBAGENT_TIMEOUT_MS),
+        DEFAULT_SUBAGENT_TIMEOUT_MS,
+    )
+    if expect_root_and_sub_sessions:
+        timeout_ms = max(timeout_ms, subagent_timeout_ms)
+    deadline = time.monotonic() + (max(timeout_ms, 0) / 1000.0)
     poll_interval_ms = pick_int_config(runtime.get('poll_interval_ms', DEFAULT_POLL_INTERVAL_MS), DEFAULT_POLL_INTERVAL_MS)
     duplicate_observation_window_ms = pick_int_config(
         runtime.get('duplicate_observation_window_ms', DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS),
         DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS,
     )
-    while int(time.time() * 1000) <= deadline:
+    observed_subagent_views = []
+
+    def collect_subagent_observations():
+        root_session_keys = []
+        seen_root_session_keys = set()
+        for message in all_observed_messages:
+            session_key = extract_openclaw_session_key(message)
+            if session_key == '' or ':subagent:' in session_key or session_key in seen_root_session_keys:
+                continue
+            seen_root_session_keys.add(session_key)
+            root_session_keys.append(session_key)
+        subagent_views = list_subagent_conversation_views(runtime, scenario_def, now_ms, root_session_keys)
+        subagent_snapshots = []
+        for conversation_view in subagent_views:
+            result = fetch_conversation_view(runtime, conversation_view)
+            snapshot = summarize_messages(((result.get('data') or {}).get('messages') or []))
+            subagent_snapshots = merge_message_snapshots(subagent_snapshots, snapshot)
+        return subagent_views, subagent_snapshots
+
+    def build_observed_session_sync_state():
+        observed_sync_messages = find_session_sync_messages(all_observed_messages, now_ms, request_msg_id)
+        root_sessions = []
+        child_sessions = []
+        child_messages = []
+        seen_root_sessions = set()
+        seen_child_sessions = set()
+        for message in observed_sync_messages:
+            session_key = extract_openclaw_session_key(message)
+            if session_key == '':
+                continue
+            if ':subagent:' in session_key:
+                if session_key not in seen_child_sessions:
+                    seen_child_sessions.add(session_key)
+                    child_sessions.append(session_key)
+                child_messages.append(message)
+            else:
+                if str(message.get('from_user_id', '')).strip() != str(scenario_def.get('expected_reply_user_id', '')).strip():
+                    continue
+                if session_key not in seen_root_sessions:
+                    seen_root_sessions.add(session_key)
+                    root_sessions.append(session_key)
+        return observed_sync_messages, root_sessions, child_sessions, child_messages
+
+    while time.monotonic() <= deadline:
         conversation_result = fetch_conversation(runtime, scenario_def)
         conversation_snapshot = summarize_messages(((conversation_result.get('data') or {}).get('messages') or []))
         all_observed_messages = merge_message_snapshots(all_observed_messages, conversation_snapshot)
@@ -882,11 +1240,38 @@ def execute_scenario(runtime, scenario_def):
             request_msg_id,
         )
         matched_reply = matched_replies[0] if len(matched_replies) > 0 else None
-        if matched_reply is not None:
+        if expect_root_and_sub_sessions:
+            observed_subagent_views, subagent_snapshot = collect_subagent_observations()
+            all_observed_messages = merge_message_snapshots(all_observed_messages, subagent_snapshot)
+            _, root_visible_reply_sessions, subagent_visible_reply_sessions, subagent_visible_reply_messages = build_observed_session_sync_state()
+            marker = f"SYNC_OK_{str(scenario_def.get('name', '')).strip()}_{now_ms}"
+            parent_relay_marker_found = matched_reply is not None and marker in str((matched_reply or {}).get('content', '')).strip()
+            subagent_result_messages = [
+                message for message in subagent_visible_reply_messages
+                if marker != '' and marker in str(message.get('content', '')).strip()
+            ]
+            subagent_task_messages = [
+                message for message in subagent_visible_reply_messages
+                if message not in subagent_result_messages
+            ]
+            if (
+                matched_reply is not None and
+                len(root_visible_reply_sessions) > 0 and
+                (
+                    (
+                        len(subagent_visible_reply_sessions) > 0 and
+                        len(subagent_task_messages) > 0 and
+                        len(subagent_result_messages) > 0
+                    ) or
+                    parent_relay_marker_found
+                )
+            ):
+                break
+        elif matched_reply is not None:
             break
         time.sleep(max(poll_interval_ms, 100) / 1000.0)
-    if matched_reply is not None:
-        duplicate_deadline = int(time.time() * 1000) + max(0, duplicate_observation_window_ms)
+    if matched_reply is not None and not expect_root_and_sub_sessions:
+        duplicate_deadline = time.monotonic() + (max(0, duplicate_observation_window_ms) / 1000.0)
         while True:
             conversation_result = fetch_conversation(runtime, scenario_def)
             conversation_snapshot = summarize_messages(((conversation_result.get('data') or {}).get('messages') or []))
@@ -904,7 +1289,7 @@ def execute_scenario(runtime, scenario_def):
                 scenario_def.get('expected_reply_user_id', ''),
                 now_ms,
             )
-            if len(matched_replies) > 1 or int(time.time() * 1000) >= duplicate_deadline:
+            if len(matched_replies) > 1 or time.monotonic() >= duplicate_deadline:
                 break
             time.sleep(max(poll_interval_ms, 100) / 1000.0)
     expected_session_key = str(scenario_def.get('expected_session_key', '')).strip()
@@ -916,14 +1301,6 @@ def execute_scenario(runtime, scenario_def):
     if reply_session_key != '':
         exact_reply_mapping = core.get_session_mapping_by_session(runtime.get('app_id', ''), runtime.get('node_id', ''), reply_session_key)
     relevant_mappings = merge_mapping_candidates([exact_reply_mapping] if isinstance(exact_reply_mapping, dict) else [], relevant_mappings)
-    mapping_sender_ok = True
-    if scenario_def.get('require_mapping'):
-        if isinstance(exact_reply_mapping, dict):
-            mapping_sender_ok = get_mapping_sender_user_id(exact_reply_mapping) == str(scenario_def.get('sender_user_id', ''))
-        elif len(relevant_mappings) == 0:
-            mapping_sender_ok = False
-        else:
-            mapping_sender_ok = any(get_mapping_sender_user_id(mapping) == str(scenario_def.get('sender_user_id', '')) for mapping in relevant_mappings)
     session_key_ok = True
     if expected_session_key != '':
         session_key_ok = reply_session_key == expected_session_key and any(
@@ -932,14 +1309,130 @@ def execute_scenario(runtime, scenario_def):
     reply_from_user_id = str((matched_reply or {}).get('from_user_id', ''))
     reply_ok = matched_reply is not None and reply_from_user_id == str(scenario_def.get('expected_reply_user_id', ''))
     deduped_visible_replies = merge_reply_candidates(matched_replies, duplicate_replies)
+    if expect_root_and_sub_sessions:
+        observed_sync_messages, root_visible_reply_sessions, subagent_visible_reply_sessions, subagent_visible_reply_messages = build_observed_session_sync_state()
+        deduped_visible_replies = observed_sync_messages
+    else:
+        root_visible_reply_sessions = []
+        subagent_visible_reply_sessions = []
+        subagent_visible_reply_messages = []
+    reply_session_mappings = []
+    seen_reply_sessions = set()
+    for message in deduped_visible_replies:
+        session_key = extract_openclaw_session_key(message)
+        if session_key == '':
+            continue
+        if not expect_root_and_sub_sessions:
+            if ':subagent:' in session_key:
+                if session_key not in subagent_visible_reply_sessions:
+                    subagent_visible_reply_sessions.append(session_key)
+                subagent_visible_reply_messages.append(message)
+            else:
+                if session_key not in root_visible_reply_sessions:
+                    root_visible_reply_sessions.append(session_key)
+        if session_key in seen_reply_sessions:
+            continue
+        seen_reply_sessions.add(session_key)
+        mapping = core.get_session_mapping_by_session(runtime.get('app_id', ''), runtime.get('node_id', ''), session_key)
+        if isinstance(mapping, dict):
+            reply_session_mappings.append(mapping)
+    relevant_mappings = merge_mapping_candidates(reply_session_mappings, relevant_mappings)
+    inferred_root_visible_reply_sessions = infer_root_session_keys_from_mappings(
+        root_visible_reply_sessions,
+        reply_session_mappings,
+    )
+    mapping_sender_ok = True
+    if scenario_def.get('require_mapping'):
+        if expect_root_and_sub_sessions:
+            mapping_sender_ok = (
+                len(reply_session_mappings) > 0 and
+                all(
+                    get_effective_mapping_sender_user_id(
+                        runtime.get('app_id', ''),
+                        runtime.get('node_id', ''),
+                        mapping,
+                    ) == str(scenario_def.get('sender_user_id', ''))
+                    for mapping in reply_session_mappings
+                )
+            )
+        elif isinstance(exact_reply_mapping, dict):
+            mapping_sender_ok = get_effective_mapping_sender_user_id(
+                runtime.get('app_id', ''),
+                runtime.get('node_id', ''),
+                exact_reply_mapping,
+            ) == str(scenario_def.get('sender_user_id', ''))
+        elif len(relevant_mappings) == 0:
+            mapping_sender_ok = False
+        else:
+            mapping_sender_ok = any(
+                get_effective_mapping_sender_user_id(
+                    runtime.get('app_id', ''),
+                    runtime.get('node_id', ''),
+                    mapping,
+                ) == str(scenario_def.get('sender_user_id', ''))
+                for mapping in relevant_mappings
+            )
     reply_count = len(deduped_visible_replies)
-    duplicate_reply_detected = reply_count > 1
+    duplicate_reply_detected = reply_count > 1 and not expect_root_and_sub_sessions
     matched_reply_msg_ids = [str(message.get('msg_id', '')).strip() for message in deduped_visible_replies if isinstance(message, dict)]
+    expected_subagent_marker = ''
+    if expect_root_and_sub_sessions:
+        expected_subagent_marker = f"SYNC_OK_{str(scenario_def.get('name', '')).strip()}_{now_ms}"
+    parent_relay_marker_found = (
+        expected_subagent_marker != '' and
+        matched_reply is not None and
+        expected_subagent_marker in str((matched_reply or {}).get('content', '')).strip()
+    )
+    subagent_marker_found = any(
+        expected_subagent_marker != '' and expected_subagent_marker in str(message.get('content', '')).strip()
+        for message in deduped_visible_replies
+        if isinstance(message, dict)
+    )
+    subagent_result_messages = [
+        message for message in subagent_visible_reply_messages
+        if expected_subagent_marker != '' and expected_subagent_marker in str(message.get('content', '')).strip()
+    ]
+    subagent_task_messages = [
+        message for message in subagent_visible_reply_messages
+        if message not in subagent_result_messages
+    ]
+    subagent_task_message_found = len(subagent_task_messages) > 0
+    subagent_result_message_found = len(subagent_result_messages) > 0
+    subagent_lineage_ok = True
+    subagent_parent_relay_ok = False
+    if expect_root_and_sub_sessions:
+        subagent_lineage_ok = (
+            len(inferred_root_visible_reply_sessions) > 0 and
+            len(subagent_visible_reply_sessions) > 0 and
+            len(subagent_visible_reply_messages) >= 2 and
+            subagent_task_message_found and
+            subagent_result_message_found and
+            subagent_marker_found
+        )
+        if subagent_lineage_ok:
+            root_session_set = set(inferred_root_visible_reply_sessions)
+            child_session_set = set(subagent_visible_reply_sessions)
+            for mapping in reply_session_mappings:
+                session_key = str(mapping.get('session_key', '')).strip()
+                if session_key not in child_session_set:
+                    continue
+                root_session_key = str(mapping.get('root_session_key', '')).strip()
+                parent_session_key = str(mapping.get('parent_session_key', '')).strip()
+                if root_session_key not in root_session_set and parent_session_key not in root_session_set:
+                    subagent_lineage_ok = False
+                    break
+        subagent_parent_relay_ok = (
+            len(inferred_root_visible_reply_sessions) > 0 and
+            parent_relay_marker_found
+        )
     failure_reason = ''
     status = STATUS_PASSED
     if not reply_ok:
         status = STATUS_FAILED
         failure_reason = '未拉到预期回复或回复身份不正确'
+    elif expect_root_and_sub_sessions and not subagent_lineage_ok and not subagent_parent_relay_ok:
+        status = STATUS_FAILED
+        failure_reason = '未同时观察到 root/sub session 的正常同步结果'
     elif duplicate_reply_detected:
         status = STATUS_FAILED
         failure_reason = '重复消息：检测到多条最终可见回复'
@@ -981,12 +1474,36 @@ def execute_scenario(runtime, scenario_def):
             {'label': 'duplicate_reply_detected', 'value': duplicate_reply_detected},
             {'label': 'matched_visible_reply_msg_ids', 'value': matched_reply_msg_ids},
             {'label': 'duplicate_content_fallback_used', 'value': len(duplicate_replies) > len(matched_replies)},
+            {'label': 'root_visible_reply_sessions', 'value': root_visible_reply_sessions},
+            {'label': 'inferred_root_visible_reply_sessions', 'value': inferred_root_visible_reply_sessions},
+            {'label': 'subagent_visible_reply_sessions', 'value': subagent_visible_reply_sessions},
+            {'label': 'subagent_visible_reply_count', 'value': len(subagent_visible_reply_messages)},
+            {'label': 'subagent_visible_reply_msg_ids', 'value': [
+                str(message.get('msg_id', '')).strip()
+                for message in subagent_visible_reply_messages
+                if isinstance(message, dict)
+            ]},
+            {'label': 'subagent_observed_conversation_ids', 'value': [
+                str(item.get('conversation_id', '')).strip()
+                for item in observed_subagent_views
+                if isinstance(item, dict)
+            ]},
+            {'label': 'subagent_task_message_found', 'value': subagent_task_message_found},
+            {'label': 'parent_relay_marker_found', 'value': parent_relay_marker_found},
+            {'label': 'subagent_marker_found', 'value': subagent_marker_found},
+            {'label': 'subagent_result_message_found', 'value': subagent_result_message_found},
+            {'label': 'subagent_lineage_ok', 'value': subagent_lineage_ok},
+            {'label': 'subagent_parent_relay_ok', 'value': subagent_parent_relay_ok},
             {'label': 'session_key_ok', 'value': session_key_ok},
             {'label': 'mapping_sender_ok', 'value': mapping_sender_ok},
         ],
         'messages': all_observed_messages,
         'mapping_rows': build_mapping_rows(runtime, relevant_mappings),
-        'notes': '',
+        'notes': (
+            'latest_openclaw_parent_relay_mode'
+            if expect_root_and_sub_sessions and subagent_parent_relay_ok and not subagent_lineage_ok
+            else ''
+        ),
     }
 
 
@@ -1082,7 +1599,14 @@ def start(app_id, node_id, scenario=None, scenarios=None):
         normalized_node_id = str(node_id or '').strip()
         if normalized_app_id == '' or normalized_node_id == '':
             return {'result': 'error', 'message': 'app_id or node_id is empty'}
-        requested_scenarios = normalize_scenarios(scenario, scenarios)
+        normalized_scenarios = normalize_scenarios(scenario, scenarios)
+        requested_scenarios = normalized_scenarios.get('requested_scenarios', [])
+        invalid_names = normalized_scenarios.get('invalid_names', [])
+        if len(invalid_names) > 0:
+            return {
+                'result': 'error',
+                'message': f"invalid scenario name: {','.join([str(item) for item in invalid_names])}",
+            }
         if len(requested_scenarios) == 0:
             return {'result': 'error', 'message': 'no valid scenario selected'}
         task_id = f"sv_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
