@@ -149,7 +149,11 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "agent:main:subagent:test-child",
                 metadata={
                     "scene": "openclaw_session_group",
+                    "peer_user_id": "peer-user",
+                    "created_by_user_id": "owner-user",
                     "session_key": "agent:main:subagent:test-child",
+                    "root_session_key": "agent:main:clawchat-router:group:group-1",
+                    "parent_session_key": "agent:main:clawchat-router:group:group-1",
                 },
                 log_context={
                     "node_id": "15",
@@ -167,8 +171,11 @@ class RouterSessionIdentityTests(unittest.TestCase):
             json.loads(ext_value),
             {
                 m.OPENCLAW_SESSION_GROUP_METADATA_KEY: {
-                    "scene": "openclaw_session_group",
-                    "session_key": "agent:main:subagent:test-child",
+                    "sc": "openclaw_session_group",
+                    "p": "peer-user",
+                    "c": "owner-user",
+                    "sk": "agent:main:subagent:test-child",
+                    "rk": "agent:main:clawchat-router:group:group-1",
                 }
             },
         )
@@ -3769,18 +3776,40 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(metadata["scene"], "openclaw_session_group")
         self.assertEqual(metadata["peer_user_id"], "sender-user")
         self.assertEqual(metadata["created_by_user_id"], "chatbot-user")
-        self.assertEqual(metadata["peer_name_snapshot"], "sender-user")
         self.assertEqual(metadata["session_key"], "agent:main:subagent:test-child")
         self.assertEqual(metadata["root_session_key"], "agent:main:clawchat-router:group:group-1")
         self.assertEqual(metadata["parent_session_key"], "agent:main:clawchat-router:group:group-1")
-        self.assertEqual(metadata["node_id"], "15")
-        self.assertEqual(metadata["node_name"], "OpenClaw-15")
-        self.assertEqual(metadata["owner_user_id"], "chatbot-user")
-        self.assertEqual(metadata["origin_kind"], "im_user")
-        self.assertEqual(metadata["origin_user_id"], "sender-user")
-        self.assertEqual(metadata["effective_target_session_key"], "agent:main:subagent:test-child")
-        self.assertEqual(metadata["mapping_mode"], "create_temp_group")
+        self.assertNotIn("peer_name_snapshot", metadata)
+        self.assertNotIn("node_id", metadata)
+        self.assertNotIn("node_name", metadata)
+        self.assertNotIn("owner_user_id", metadata)
+        self.assertNotIn("origin_kind", metadata)
+        self.assertNotIn("origin_user_id", metadata)
+        self.assertNotIn("effective_target_session_key", metadata)
+        self.assertNotIn("mapping_mode", metadata)
         self.assertEqual(mocked_create_group.call_args.kwargs["log_context"]["session_key"], "agent:main:subagent:test-child")
+
+    def test_serialize_openclaw_session_group_metadata_value_stays_within_group_ext_limit(self):
+        m = lanying_openclaw
+        value = m.serialize_openclaw_session_group_metadata_value({
+            "scene": "openclaw_session_group",
+            "peer_user_id": "6653564517632",
+            "created_by_user_id": "6657853037888",
+            "session_key": "agent:main:subagent:b9ca470b-0802-474a-a558-8410a61f5be7",
+            "root_session_key": "agent:main:clawchat-router:group:6653565697409",
+            "parent_session_key": "agent:main:clawchat-router:group:6653565697409",
+            "effective_target_session_key": "agent:main:subagent:b9ca470b-0802-474a-a558-8410a61f5be7",
+            "mapping_mode": "create_temp_group",
+        })
+        self.assertNotEqual(value, "")
+        self.assertLessEqual(len(value), 255)
+        parsed = json.loads(value)[m.OPENCLAW_SESSION_GROUP_METADATA_KEY]
+        self.assertEqual(parsed["sc"], "openclaw_session_group")
+        self.assertEqual(parsed["p"], "6653564517632")
+        self.assertEqual(parsed["c"], "6657853037888")
+        self.assertEqual(parsed["sk"], "agent:main:subagent:b9ca470b-0802-474a-a558-8410a61f5be7")
+        self.assertEqual(parsed["rk"], "agent:main:clawchat-router:group:6653565697409")
+        self.assertNotIn("pk", parsed)
 
     def test_ensure_session_mapping_promotes_management_user_as_group_admin(self):
         m = lanying_openclaw

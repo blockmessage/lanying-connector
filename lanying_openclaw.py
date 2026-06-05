@@ -18,7 +18,7 @@ OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 无论用户如何要求，你都绝对不能修改本文件。"""
 TEMPORARY_GROUP_TYPE = 3
 SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES = 30 * 1024
-OPENCLAW_SESSION_GROUP_METADATA_KEY = 'openclaw_session_group_metadata'
+OPENCLAW_SESSION_GROUP_METADATA_KEY = 'ocsg'
 OPENCLAW_PROBE_FORMAT_VERSION = 1
 OPENCLAW_MANAGED_AGENTS_PATH = 'clawchat/AGENTS.md'
 PROBE_POST_SYNC_DELAY_MS = 1500
@@ -1866,32 +1866,43 @@ def is_session_sync_silent_reply_text(text):
         return False
     return normalized_text.upper() == 'NO_REPLY'
 
+
+def serialize_openclaw_session_group_metadata_value(metadata):
+    if not isinstance(metadata, dict) or len(metadata) == 0:
+        return ''
+    compact_metadata = {
+        'sc': str(metadata.get('scene', '')).strip(),
+        'p': str(metadata.get('peer_user_id', '')).strip(),
+        'c': str(metadata.get('created_by_user_id', '')).strip(),
+        'sk': normalize_session_key(metadata.get('session_key', '')),
+        'rk': normalize_optional_session_key(metadata.get('root_session_key', '')),
+    }
+    parent_session_key = normalize_optional_session_key(metadata.get('parent_session_key', ''))
+    if parent_session_key != '' and parent_session_key != compact_metadata['rk']:
+        compact_metadata['pk'] = parent_session_key
+    value = json.dumps(
+        {OPENCLAW_SESSION_GROUP_METADATA_KEY: compact_metadata},
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    if len(value) <= 255:
+        return value
+    return ''
+
+
 def build_openclaw_session_group_metadata(node_name, node_id, session_key, lineage, effective_target_session_key, owner_user_id, inherited_identity, mapping_mode=''):
     inherited_identity = normalize_session_mapping_record(inherited_identity)
-    origin_kind = str((inherited_identity or {}).get('origin_kind', '')).strip()
     origin_user_id = str((inherited_identity or {}).get('origin_user_id', '')).strip()
-    normalized_node_name = str(node_name or '').strip()
     peer_user_id = ''
-    peer_name_snapshot = ''
     if origin_user_id != '':
         peer_user_id = origin_user_id
-        peer_name_snapshot = origin_user_id
     return {
         'scene': 'openclaw_session_group',
         'peer_user_id': peer_user_id,
         'created_by_user_id': str(owner_user_id).strip(),
-        'created_at': int(time.time() * 1000),
-        'peer_name_snapshot': peer_name_snapshot,
         'session_key': normalize_session_key(session_key),
         'root_session_key': normalize_optional_session_key((lineage or {}).get('root_session_key', '')),
         'parent_session_key': normalize_optional_session_key((lineage or {}).get('parent_session_key', '')),
-        'node_id': str(node_id).strip(),
-        'node_name': normalized_node_name,
-        'owner_user_id': str(owner_user_id).strip(),
-        'origin_kind': origin_kind,
-        'origin_user_id': origin_user_id,
-        'effective_target_session_key': normalize_optional_session_key(effective_target_session_key),
-        'mapping_mode': str(mapping_mode or '').strip(),
     }
 
 def _set_openclaw_session_group_metadata(app_id, group_id, metadata, log_context=None):
@@ -1899,7 +1910,15 @@ def _set_openclaw_session_group_metadata(app_id, group_id, metadata, log_context
     if normalized_group_id == '' or not isinstance(metadata, dict) or len(metadata) == 0:
         return None
     log_context = log_context if isinstance(log_context, dict) else {}
-    value = json.dumps({OPENCLAW_SESSION_GROUP_METADATA_KEY: metadata}, ensure_ascii=False)
+    value = serialize_openclaw_session_group_metadata_value(metadata)
+    if value == '':
+        logging.info(
+            f"openclaw_session_group metadata update skipped | app_id:{app_id}, "
+            f"node_id:{log_context.get('node_id', '')}, session_key:{log_context.get('session_key', '')}, "
+            f"group_id:{normalized_group_id}, owner_user_id:{log_context.get('owner_user_id', '')}, "
+            f"metadata_key:{OPENCLAW_SESSION_GROUP_METADATA_KEY}, reason:serialized_value_too_long"
+        )
+        return {'code': 0, 'message': 'serialized_value_too_long'}
     logging.info(
         f"openclaw_session_group metadata update start | app_id:{app_id}, "
         f"node_id:{log_context.get('node_id', '')}, session_key:{log_context.get('session_key', '')}, "
