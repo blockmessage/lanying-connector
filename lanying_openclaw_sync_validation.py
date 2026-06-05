@@ -22,6 +22,7 @@ DEFAULT_TIMEOUT_MS = 30000
 DEFAULT_SUBAGENT_TIMEOUT_MS = 60000
 DEFAULT_POLL_INTERVAL_MS = 1000
 DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS = 10000
+DEFAULT_PARENT_RELAY_GRACE_MS = 1500
 LOG_SUBDIR = 'openclaw_sync_validation'
 
 tasks = {}
@@ -1142,6 +1143,17 @@ def infer_root_session_keys_from_mappings(root_session_keys, reply_session_mappi
     return inferred
 
 
+def is_subagent_task_message(message, expected_marker):
+    if not isinstance(message, dict):
+        return False
+    content = str(message.get('content', '')).strip()
+    if content == '':
+        return False
+    if expected_marker != '' and expected_marker in content:
+        return False
+    return content.startswith('[Subagent Task]') or content.startswith('Spawned subagent')
+
+
 def execute_scenario(runtime, scenario_def):
     missing_fields = []
     for field in ['sender_user_id', 'target_user_id', 'conversation_id']:
@@ -1186,7 +1198,13 @@ def execute_scenario(runtime, scenario_def):
         runtime.get('duplicate_observation_window_ms', DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS),
         DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS,
     )
+    parent_relay_grace_ms = pick_int_config(
+        runtime.get('parent_relay_grace_ms', DEFAULT_PARENT_RELAY_GRACE_MS),
+        DEFAULT_PARENT_RELAY_GRACE_MS,
+    )
     observed_subagent_views = []
+    observed_subagent_conversation_messages = []
+    parent_relay_candidate_since = None
 
     def collect_subagent_observations():
         root_session_keys = []
@@ -1242,6 +1260,10 @@ def execute_scenario(runtime, scenario_def):
         matched_reply = matched_replies[0] if len(matched_replies) > 0 else None
         if expect_root_and_sub_sessions:
             observed_subagent_views, subagent_snapshot = collect_subagent_observations()
+            observed_subagent_conversation_messages = merge_message_snapshots(
+                observed_subagent_conversation_messages,
+                subagent_snapshot,
+            )
             all_observed_messages = merge_message_snapshots(all_observed_messages, subagent_snapshot)
             _, root_visible_reply_sessions, subagent_visible_reply_sessions, subagent_visible_reply_messages = build_observed_session_sync_state()
             marker = f"SYNC_OK_{str(scenario_def.get('name', '')).strip()}_{now_ms}"
@@ -1257,16 +1279,19 @@ def execute_scenario(runtime, scenario_def):
             if (
                 matched_reply is not None and
                 len(root_visible_reply_sessions) > 0 and
-                (
-                    (
-                        len(subagent_visible_reply_sessions) > 0 and
-                        len(subagent_task_messages) > 0 and
-                        len(subagent_result_messages) > 0
-                    ) or
-                    parent_relay_marker_found
-                )
+                len(subagent_visible_reply_sessions) > 0 and
+                len(subagent_task_messages) > 0 and
+                len(subagent_result_messages) > 0
             ):
                 break
+            if matched_reply is not None and len(root_visible_reply_sessions) > 0 and parent_relay_marker_found:
+                if len(subagent_visible_reply_sessions) == 0 and len(subagent_visible_reply_messages) == 0:
+                    if parent_relay_candidate_since is None:
+                        parent_relay_candidate_since = time.monotonic()
+                    elif (time.monotonic() - parent_relay_candidate_since) * 1000.0 >= max(parent_relay_grace_ms, 0):
+                        break
+                else:
+                    parent_relay_candidate_since = None
         elif matched_reply is not None:
             break
         time.sleep(max(poll_interval_ms, 100) / 1000.0)
@@ -1396,8 +1421,18 @@ def execute_scenario(runtime, scenario_def):
         message for message in subagent_visible_reply_messages
         if message not in subagent_result_messages
     ]
+    subagent_task_validation_messages = (
+        observed_subagent_conversation_messages
+        if len(observed_subagent_conversation_messages) > 0
+        else subagent_visible_reply_messages
+    )
+    subagent_first_visible_message = subagent_task_validation_messages[0] if len(subagent_task_validation_messages) > 0 else None
     subagent_task_message_found = len(subagent_task_messages) > 0
     subagent_result_message_found = len(subagent_result_messages) > 0
+    subagent_first_task_message_ok = is_subagent_task_message(
+        subagent_first_visible_message,
+        expected_subagent_marker,
+    )
     subagent_lineage_ok = True
     subagent_parent_relay_ok = False
     if expect_root_and_sub_sessions:
@@ -1405,6 +1440,7 @@ def execute_scenario(runtime, scenario_def):
             len(inferred_root_visible_reply_sessions) > 0 and
             len(subagent_visible_reply_sessions) > 0 and
             len(subagent_visible_reply_messages) >= 2 and
+            subagent_first_task_message_ok and
             subagent_task_message_found and
             subagent_result_message_found and
             subagent_marker_found
@@ -1423,7 +1459,9 @@ def execute_scenario(runtime, scenario_def):
                     break
         subagent_parent_relay_ok = (
             len(inferred_root_visible_reply_sessions) > 0 and
-            parent_relay_marker_found
+            parent_relay_marker_found and
+            len(subagent_visible_reply_sessions) == 0 and
+            len(subagent_visible_reply_messages) == 0
         )
     failure_reason = ''
     status = STATUS_PASSED
@@ -1483,12 +1521,17 @@ def execute_scenario(runtime, scenario_def):
                 for message in subagent_visible_reply_messages
                 if isinstance(message, dict)
             ]},
+            {'label': 'subagent_first_visible_reply_msg_id', 'value': (
+                str((subagent_first_visible_message or {}).get('msg_id', '')).strip()
+                if isinstance(subagent_first_visible_message, dict) else ''
+            )},
             {'label': 'subagent_observed_conversation_ids', 'value': [
                 str(item.get('conversation_id', '')).strip()
                 for item in observed_subagent_views
                 if isinstance(item, dict)
             ]},
             {'label': 'subagent_task_message_found', 'value': subagent_task_message_found},
+            {'label': 'subagent_first_task_message_ok', 'value': subagent_first_task_message_ok},
             {'label': 'parent_relay_marker_found', 'value': parent_relay_marker_found},
             {'label': 'subagent_marker_found', 'value': subagent_marker_found},
             {'label': 'subagent_result_message_found', 'value': subagent_result_message_found},
@@ -1534,6 +1577,11 @@ def run_task(task_id):
             'notes': '',
         }]
         append_log(task, f"task failed before scenarios | reason:{runtime_result.get('message', '')}")
+        logging.info(
+            f"run_sync_validation finished | task_id:{task_id}, app_id:{task.get('app_id', '')}, "
+            f"node_id:{task.get('node_id', '')}, status:{task.get('status', '')}, "
+            f"scenario_total:0, scenario_failed:1, reason:{runtime_result.get('message', '')}"
+        )
         write_report(task)
         return
     runtime = runtime_result.get('data', {})
@@ -1590,6 +1638,17 @@ def run_task(task_id):
     task['status'] = STATUS_FAILED if overall_failed else STATUS_PASSED
     task['ended_at'] = int(time.time() * 1000)
     append_log(task, f"task finished | status:{task.get('status', '')}")
+    scenario_total = len(task.get('scenarios', []))
+    scenario_failed = len([
+        item for item in task.get('scenarios', [])
+        if isinstance(item, dict) and item.get('status') != STATUS_PASSED
+    ])
+    logging.info(
+        f"run_sync_validation finished | task_id:{task_id}, app_id:{task.get('app_id', '')}, "
+        f"node_id:{task.get('node_id', '')}, status:{task.get('status', '')}, "
+        f"scenario_total:{scenario_total}, scenario_failed:{scenario_failed}, "
+        f"report_path:{task.get('report_path', '')}"
+    )
     write_report(task)
 
 
