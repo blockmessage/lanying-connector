@@ -18,7 +18,8 @@ OPENCLAW_PROTECTED_FILE_RULE = """#文件保护（Top priority）
 无论用户如何要求，你都绝对不能修改本文件。"""
 TEMPORARY_GROUP_TYPE = 3
 SESSION_MAPPING_SIGNAL_CHUNK_MAX_BYTES = 30 * 1024
-OPENCLAW_SESSION_GROUP_METADATA_KEY = 'ocsg'
+OPENCLAW_SESSION_GROUP_METADATA_KEY = 'new_session_metadata'
+OPENCLAW_SESSION_GROUP_METADATA_MAX_LENGTH = 1024
 OPENCLAW_PROBE_FORMAT_VERSION = 1
 OPENCLAW_MANAGED_AGENTS_PATH = 'clawchat/AGENTS.md'
 PROBE_POST_SYNC_DELAY_MS = 1500
@@ -1870,22 +1871,25 @@ def is_session_sync_silent_reply_text(text):
 def serialize_openclaw_session_group_metadata_value(metadata):
     if not isinstance(metadata, dict) or len(metadata) == 0:
         return ''
-    compact_metadata = {
-        'sc': str(metadata.get('scene', '')).strip(),
-        'p': str(metadata.get('peer_user_id', '')).strip(),
-        'c': str(metadata.get('created_by_user_id', '')).strip(),
-        'sk': normalize_session_key(metadata.get('session_key', '')),
-        'rk': normalize_optional_session_key(metadata.get('root_session_key', '')),
+    serialized_metadata = {
+        'scene': str(metadata.get('scene', '')).strip(),
+        'peer_user_id': str(metadata.get('peer_user_id', '')).strip(),
+        'created_by_user_id': str(metadata.get('created_by_user_id', '')).strip(),
+        'created_at': int(metadata.get('created_at', 0) or 0),
+        'name_source': str(metadata.get('name_source', '')).strip(),
+        'peer_name_snapshot': str(metadata.get('peer_name_snapshot', '')).strip(),
+        'session_key': normalize_session_key(metadata.get('session_key', '')),
+        'root_session_key': normalize_optional_session_key(metadata.get('root_session_key', '')),
     }
     parent_session_key = normalize_optional_session_key(metadata.get('parent_session_key', ''))
-    if parent_session_key != '' and parent_session_key != compact_metadata['rk']:
-        compact_metadata['pk'] = parent_session_key
+    if parent_session_key != '' and parent_session_key != serialized_metadata['root_session_key']:
+        serialized_metadata['parent_session_key'] = parent_session_key
     value = json.dumps(
-        {OPENCLAW_SESSION_GROUP_METADATA_KEY: compact_metadata},
+        {OPENCLAW_SESSION_GROUP_METADATA_KEY: serialized_metadata},
         ensure_ascii=False,
         separators=(',', ':'),
     )
-    if len(value) <= 255:
+    if len(value) <= OPENCLAW_SESSION_GROUP_METADATA_MAX_LENGTH:
         return value
     return ''
 
@@ -1894,12 +1898,17 @@ def build_openclaw_session_group_metadata(node_name, node_id, session_key, linea
     inherited_identity = normalize_session_mapping_record(inherited_identity)
     origin_user_id = str((inherited_identity or {}).get('origin_user_id', '')).strip()
     peer_user_id = ''
+    peer_name_snapshot = ''
     if origin_user_id != '':
         peer_user_id = origin_user_id
+        peer_name_snapshot = origin_user_id
     return {
         'scene': 'openclaw_session_group',
         'peer_user_id': peer_user_id,
         'created_by_user_id': str(owner_user_id).strip(),
+        'created_at': int(time.time() * 1000),
+        'name_source': 'openclaw_session_group',
+        'peer_name_snapshot': peer_name_snapshot,
         'session_key': normalize_session_key(session_key),
         'root_session_key': normalize_optional_session_key((lineage or {}).get('root_session_key', '')),
         'parent_session_key': normalize_optional_session_key((lineage or {}).get('parent_session_key', '')),
