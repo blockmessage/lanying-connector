@@ -74,6 +74,7 @@ def create_node():
     node_id = str(data['node_id'])
     lanying_link = str(data['lanying_link'])
     access_type = str(data.get('access_type', 'friend'))
+    show_in_support = data.get('show_in_support')
     access_list = '' # not allow when create
     chatbot_id = '' # not allow when create
     session_map_sync = str(data.get('session_map_sync', 'off') or 'off')
@@ -89,7 +90,8 @@ def create_node():
         access_list=access_list,
         chatbot_id = chatbot_id,
         session_map_sync=session_map_sync,
-        merge_sub_sessions=merge_sub_sessions
+        merge_sub_sessions=merge_sub_sessions,
+        show_in_support=show_in_support
     )
     result = lanying_openclaw.create_node(setting)
     if result['result'] == 'error':
@@ -111,6 +113,7 @@ def configure_node():
     lanying_link = str(data['lanying_link'])
     access_type = str(data['access_type'])
     access_list = str(data['access_list'])
+    show_in_support = data.get('show_in_support')
     chatbot_id = str(data['chatbot_id'])
     session_map_sync = str(data.get('session_map_sync', 'off') or 'off')
     merge_sub_sessions = str(data.get('merge_sub_sessions', 'off') or 'off')
@@ -121,7 +124,8 @@ def configure_node():
         access_list=access_list,
         chatbot_id = chatbot_id,
         session_map_sync=session_map_sync,
-        merge_sub_sessions=merge_sub_sessions
+        merge_sub_sessions=merge_sub_sessions,
+        show_in_support=show_in_support
     )
     result = lanying_openclaw.configure_node(app_id, node_id, setting)
     if result['result'] == 'error':

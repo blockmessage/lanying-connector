@@ -34,6 +34,15 @@ def parse_access_list(access_list_str):
             logging.info(f"parse_access_list skip invalid user_id: {item}")
     return integer_access_list
 
+def normalize_show_in_support(access_type, show_in_support=None):
+    normalized_access_type = str(access_type or 'public')
+    if normalized_access_type == 'friend':
+        return 'off'
+    if show_in_support is None:
+        return 'on'
+    value = str(show_in_support).strip().lower()
+    return 'off' if value == 'off' else 'on'
+
 def init_chatbot_im_user_setting(app_id, old_chatbot_info, chatbot_info):
     chatbot_id = str(chatbot_info.get('chatbot_id', ''))
     user_id = chatbot_info.get('user_id')
@@ -118,7 +127,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
                    audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect = 'off',
-                   access_type='public', access_list=''):
+                   access_type='public', access_list='', show_in_support=None):
     logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
     now = int(time.time())
     if get_user_chatbot_id(app_id, user_id):
@@ -129,6 +138,7 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
     capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
     if nickname == '':
         nickname = name
+    show_in_support = normalize_show_in_support(access_type, show_in_support)
     redis = lanying_redis.get_redis_connection()
     redis.hmset(get_chatbot_key(app_id, chatbot_id), {
         "chatbot_id": chatbot_id,
@@ -158,7 +168,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "content_security": content_security,
         "preset_protect": preset_protect,
         "access_type": access_type,
-        "access_list": access_list
+        "access_list": access_list,
+        "show_in_support": show_in_support
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -246,7 +257,8 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect)
+                                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect,
+                                   show_in_support='off')
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -319,7 +331,8 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
                                    capsule_chatbot['history_msg_count_min'], capsule_chatbot['history_msg_size_max'],
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
-                                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect)
+                                   audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect,
+                                   show_in_support='off')
     if create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
@@ -356,7 +369,8 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
                       preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                       message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                       quota_exceed_reply_msg, group_history_use_mode,
-                      audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, access_type='public', access_list=''):
+                      audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, access_type='public', access_list='',
+                      show_in_support=None):
     logging.info(f"start configure chatbot: app_id={app_id}, account_status={account_status}, account_type={account_type}, verification_level={verification_level}, chatbot_id={chatbot_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}, quota_exceed_reply_type={quota_exceed_reply_type}, quota_exceed_reply_msg={quota_exceed_reply_msg}, group_history_use_mode={group_history_use_mode}")
     chatbot_info = get_chatbot(app_id, chatbot_id)
     if not chatbot_info:
@@ -378,6 +392,7 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         force_content_security_chatbot_ids = get_force_content_security_chatbot_ids(app_id)
         if chatbot_id in force_content_security_chatbot_ids:
             return {'result':'error', 'message': 'content_security closed need custom site'}
+    show_in_support = normalize_show_in_support(access_type, show_in_support)
     setting_result = init_chatbot_im_user_setting(app_id, chatbot_info, {
         'chatbot_id': chatbot_id,
         'user_id': user_id,
@@ -410,7 +425,8 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         "link_profile": json.dumps(link_profile, ensure_ascii=False),
         "content_security": content_security,
         "access_type": access_type,
-        "access_list": access_list
+        "access_list": access_list,
+        "show_in_support": show_in_support
     })
     if old_user_id != user_id:
         if old_user_id:
@@ -657,6 +673,8 @@ def get_chatbot(app_id, chatbot_id):
             dto['access_type'] = 'public'
         if 'access_list' not in dto:
             dto['access_list'] = ''
+        if 'show_in_support' not in dto:
+            dto['show_in_support'] = normalize_show_in_support(dto.get('access_type', 'public'))
         try:
             import lanying_openclaw
             dto['openclaw_id'] = lanying_openclaw.get_chatbot_node_id(app_id, chatbot_id) or ''

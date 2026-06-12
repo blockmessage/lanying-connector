@@ -48,8 +48,17 @@ recent_session_transcript_materialization_by_key = {}
 VISIBLE_REPLY_MATERIALIZATION_DEDUPE_TTL_MS = 15000
 recent_visible_reply_materialization_by_key = {}
 
+def normalize_show_in_support(access_type, show_in_support=None):
+    normalized_access_type = str(access_type or 'public')
+    if normalized_access_type == 'friend':
+        return 'off'
+    if show_in_support is None:
+        return 'on'
+    value = str(show_in_support).strip().lower()
+    return 'off' if value == 'off' else 'on'
+
 class NodeSetting:
-    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
+    def __init__(self, app_id, name, product_id, charge_id, node_id, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off', show_in_support=None):
         self.app_id = app_id
         self.name = name
         self.product_id = product_id
@@ -61,6 +70,7 @@ class NodeSetting:
         self.chatbot_id = chatbot_id
         self.session_map_sync = session_map_sync
         self.merge_sub_sessions = merge_sub_sessions
+        self.show_in_support = normalize_show_in_support(access_type, show_in_support)
 
     def to_hmset_fields(self):
         return {
@@ -74,11 +84,12 @@ class NodeSetting:
             'access_list': self.access_list,
             'chatbot_id': self.chatbot_id,
             'session_map_sync': self.session_map_sync,
-            'merge_sub_sessions': self.merge_sub_sessions
+            'merge_sub_sessions': self.merge_sub_sessions,
+            'show_in_support': self.show_in_support
         }
 
 class ConfigureNodeParam:
-    def __init__(self, name, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off'):
+    def __init__(self, name, lanying_link, access_type, access_list, chatbot_id, session_map_sync='off', merge_sub_sessions='off', show_in_support=None):
         self.name = name
         self.lanying_link = lanying_link
         self.access_type = access_type
@@ -86,6 +97,7 @@ class ConfigureNodeParam:
         self.chatbot_id = chatbot_id
         self.session_map_sync = session_map_sync
         self.merge_sub_sessions = merge_sub_sessions
+        self.show_in_support = normalize_show_in_support(access_type, show_in_support)
 
     def to_hmset_fields(self):
         return {
@@ -95,7 +107,8 @@ class ConfigureNodeParam:
             'access_list': self.access_list,
             'chatbot_id': self.chatbot_id,
             'session_map_sync': self.session_map_sync,
-            'merge_sub_sessions': self.merge_sub_sessions
+            'merge_sub_sessions': self.merge_sub_sessions,
+            'show_in_support': self.show_in_support
         }
 
 def extract_system_prompt_text_from_preset(preset):
@@ -5323,6 +5336,8 @@ def get_node(app_id, node_id):
             dto['access_type'] = 'public'
         if 'access_list' not in dto:
             dto['access_list'] = ''
+        if 'show_in_support' not in dto:
+            dto['show_in_support'] = normalize_show_in_support(dto.get('access_type', 'public'))
         if 'plugin_version' not in dto:
             dto['plugin_version'] = ''
         if 'api_version' not in dto:

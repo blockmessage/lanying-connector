@@ -102,7 +102,7 @@ class ChatbotAccessTests(unittest.TestCase):
     def setUp(self):
         self.module, self.fake_redis = _load_lanying_chatbot()
 
-    def create_chatbot(self, access_type="public", user_id=1001, access_list=""):
+    def create_chatbot(self, access_type="public", user_id=1001, access_list="", show_in_support=None):
         m = self.module
         return m.create_chatbot(
             "app-id",
@@ -129,11 +129,14 @@ class ChatbotAccessTests(unittest.TestCase):
             "on",
             access_type=access_type,
             access_list=access_list,
+            show_in_support=show_in_support,
         )
 
-    def seed_chatbot(self, access_type="public", user_id=1001, access_list=""):
+    def seed_chatbot(self, access_type="public", user_id=1001, access_list="", show_in_support=None):
         m = self.module
         chatbot_id = "chatbot-1"
+        if show_in_support is None:
+            show_in_support = "off" if access_type == "friend" else "on"
         self.fake_redis.hmset(
             m.get_chatbot_key("app-id", chatbot_id),
             {
@@ -164,6 +167,7 @@ class ChatbotAccessTests(unittest.TestCase):
                 "content_security": "on",
                 "access_type": access_type,
                 "access_list": access_list,
+                "show_in_support": show_in_support,
             },
         )
         self.fake_redis.rpush(m.get_chatbot_ids_key("app-id"), chatbot_id)
@@ -171,7 +175,7 @@ class ChatbotAccessTests(unittest.TestCase):
         m.set_name_chatbot_id("app-id", "bot-name", chatbot_id)
         return chatbot_id
 
-    def configure_chatbot(self, chatbot_id, access_type="public", user_id=1001, history_msg_count_max=20, access_list=""):
+    def configure_chatbot(self, chatbot_id, access_type="public", user_id=1001, history_msg_count_max=20, access_list="", show_in_support=None):
         m = self.module
         return m.configure_chatbot(
             "app-id",
@@ -202,6 +206,7 @@ class ChatbotAccessTests(unittest.TestCase):
             "on",
             access_type=access_type,
             access_list=access_list,
+            show_in_support=show_in_support,
         )
 
     def test_init_chatbot_im_user_setting_public_syncs_im_setting(self):
@@ -274,6 +279,14 @@ class ChatbotAccessTests(unittest.TestCase):
         mocked_auth.assert_not_called()
         chatbot = m.get_chatbot("app-id", result["data"]["id"])
         self.assertEqual(chatbot["access_type"], "public")
+        self.assertEqual(chatbot["show_in_support"], "on")
+
+    def test_create_chatbot_can_store_public_non_support(self):
+        m = self.module
+        result = self.create_chatbot(access_type="public", show_in_support="off")
+        self.assertEqual(result["result"], "ok")
+        chatbot = m.get_chatbot("app-id", result["data"]["id"])
+        self.assertEqual(chatbot["show_in_support"], "off")
 
     def test_configure_chatbot_public_to_friend_resyncs_im_setting(self):
         m = self.module
@@ -286,6 +299,7 @@ class ChatbotAccessTests(unittest.TestCase):
         mocked_auth.assert_called_once_with("app-id", 1001, 1)
         chatbot = m.get_chatbot("app-id", chatbot_id)
         self.assertEqual(chatbot["access_type"], "friend")
+        self.assertEqual(chatbot["show_in_support"], "off")
 
     def test_configure_chatbot_friend_access_list_updates_roster(self):
         m = self.module
@@ -314,6 +328,28 @@ class ChatbotAccessTests(unittest.TestCase):
         mocked_auth.assert_not_called()
         chatbot = m.get_chatbot("app-id", chatbot_id)
         self.assertEqual(chatbot["history_msg_count_max"], 30)
+
+    def test_configure_chatbot_public_non_support_is_persisted(self):
+        m = self.module
+        chatbot_id = self.seed_chatbot(access_type="public")
+        result = self.configure_chatbot(chatbot_id, access_type="public", show_in_support="off")
+        self.assertEqual(result["result"], "ok")
+        chatbot = m.get_chatbot("app-id", chatbot_id)
+        self.assertEqual(chatbot["show_in_support"], "off")
+
+    def test_get_chatbot_defaults_show_in_support_on_for_legacy_public(self):
+        m = self.module
+        chatbot_id = self.seed_chatbot(access_type="public")
+        del self.fake_redis.hashes[m.get_chatbot_key("app-id", chatbot_id)]["show_in_support"]
+        chatbot = m.get_chatbot("app-id", chatbot_id)
+        self.assertEqual(chatbot["show_in_support"], "on")
+
+    def test_get_chatbot_defaults_show_in_support_off_for_legacy_friend(self):
+        m = self.module
+        chatbot_id = self.seed_chatbot(access_type="friend")
+        del self.fake_redis.hashes[m.get_chatbot_key("app-id", chatbot_id)]["show_in_support"]
+        chatbot = m.get_chatbot("app-id", chatbot_id)
+        self.assertEqual(chatbot["show_in_support"], "off")
 
     def test_configure_chatbot_resyncs_im_setting_for_new_user_id(self):
         m = self.module
