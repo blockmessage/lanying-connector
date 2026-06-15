@@ -10,6 +10,7 @@ import lanying_im_api
 import lanying_utils
 import json
 import hashlib
+import threading
 import lanying_vendor
 import lanying_pgvector
 import requests
@@ -50,6 +51,8 @@ VISIBLE_REPLY_MATERIALIZATION_DEDUPE_TTL_MS = 15000
 recent_visible_reply_materialization_by_key = {}
 SESSION_TRANSCRIPT_AI_DYNAMIC_STREAM_TTL_MS = 10 * 60 * 1000
 recent_session_ai_dynamic_stream_by_key = {}
+recent_session_ai_dynamic_lock_by_key = {}
+recent_session_ai_dynamic_lock_registry_lock = threading.Lock()
 SESSION_TRANSCRIPT_AI_DYNAMIC_DEDUPE_TTL_MS = 15000
 recent_session_ai_dynamic_dedupe_by_key = {}
 REQUEST_DEBUG_STREAM_TTL_MS = 10 * 60 * 1000
@@ -1955,7 +1958,7 @@ def choose_session_sync_markdown_language(text, preferred=''):
     normalized_text = str(text or '').strip()
     if normalized_text.startswith('{') or normalized_text.startswith('['):
         return 'json'
-    return 'text'
+    return ''
 
 def extract_session_sync_tool_output_text(value):
     if isinstance(value, str):
@@ -1988,15 +1991,22 @@ def summarize_session_sync_tool_call_context_line(tool_name, arguments):
     normalized_tool_name = str(tool_name or '').strip()
     if not isinstance(arguments, dict):
         return ''
-    if normalized_tool_name == 'exec':
-        command = str(arguments.get('command', '')).strip()
-        if command != '':
-            return f"with `{command}`"
     if normalized_tool_name == 'sessions_yield':
         message = str(arguments.get('message', '')).strip()
         if message != '':
             return f"with {message}"
     return ''
+
+def summarize_session_sync_tool_call_heading(tool_name, arguments, status_kind=''):
+    label = humanize_session_sync_tool_label(tool_name, status_kind)
+    normalized_tool_name = str(tool_name or '').strip()
+    if not isinstance(arguments, dict):
+        return label
+    if normalized_tool_name == 'exec':
+        command = str(arguments.get('command', '')).strip()
+        if command != '':
+            return f"{label} `{command}`"
+    return label
 
 def summarize_session_sync_intermediate_message(message):
     def summarize_content(content):
@@ -2030,11 +2040,13 @@ def summarize_session_sync_intermediate_message(message):
                 arguments = parse_session_sync_tool_arguments(content.get('arguments'))
                 status_kind = classify_session_sync_status_kind(tool_name)
                 transcript_kind = status_kind or ('yield' if tool_name == 'sessions_yield' else 'tool_call')
-                lines = [humanize_session_sync_tool_label(tool_name, status_kind)]
+                lines = [summarize_session_sync_tool_call_heading(tool_name, arguments, status_kind)]
                 context_line = summarize_session_sync_tool_call_context_line(tool_name, arguments)
                 if context_line != '':
                     lines.extend(['', context_line])
                 if arguments not in [None, '', {}]:
+                    if len(lines) > 0 and lines[-1] != '':
+                        lines.append('')
                     lines.append('Tool input')
                     formatted_arguments = format_session_sync_structured_value(arguments)
                     lines.append(wrap_session_sync_markdown_block(
@@ -2074,13 +2086,18 @@ def summarize_session_sync_intermediate_message(message):
         status_kind = classify_session_sync_status_kind(tool_name)
         content = message.get('content') if isinstance(message, dict) and 'content' in message else message
         payload = extract_session_sync_tool_output_text(content)
-        payload_language = 'text'
+        payload_language = ''
         if payload == '':
             payload = format_session_sync_structured_value(content)
             payload_language = choose_session_sync_markdown_language(payload, 'json')
+        else:
+            payload = format_session_sync_structured_value(payload)
+            payload_language = choose_session_sync_markdown_language(payload)
         lines = []
         if tool_name != '':
             lines.extend([humanize_session_sync_tool_label(tool_name, status_kind), ''])
+        elif len(lines) > 0 and lines[-1] != '':
+            lines.append('')
         lines.append('Tool output')
         if payload != '':
             lines.append(wrap_session_sync_markdown_block(payload, payload_language))
@@ -4105,6 +4122,63 @@ def cleanup_recent_session_ai_dynamic_state(now_ms=None):
             stale_request_keys.append(key)
     for key in stale_request_keys:
         recent_request_debug_stream_by_key.pop(key, None)
+    with recent_session_ai_dynamic_lock_registry_lock:
+        stale_lock_keys = []
+        for key, entry in list(recent_session_ai_dynamic_lock_by_key.items()):
+            if key in recent_session_ai_dynamic_stream_by_key:
+                continue
+            if key in recent_request_debug_stream_by_key:
+                continue
+            if not isinstance(entry, dict):
+                stale_lock_keys.append(key)
+                continue
+            if int(entry.get('active_count', 0) or 0) > 0:
+                continue
+            updated_at = int(entry.get('updated_at', 0) or 0)
+            if current_ms - updated_at <= SESSION_TRANSCRIPT_AI_DYNAMIC_STREAM_TTL_MS:
+                continue
+            stale_lock_keys.append(key)
+        for key in stale_lock_keys:
+            recent_session_ai_dynamic_lock_by_key.pop(key, None)
+
+def acquire_session_ai_dynamic_stream_lock(stream_key):
+    normalized_stream_key = str(stream_key or '').strip()
+    if normalized_stream_key == '':
+        recent_session_ai_dynamic_lock_registry_lock.acquire()
+        return ''
+    with recent_session_ai_dynamic_lock_registry_lock:
+        entry = recent_session_ai_dynamic_lock_by_key.get(normalized_stream_key)
+        if not isinstance(entry, dict):
+            entry = {
+                'lock': threading.Lock(),
+                'active_count': 0,
+                'updated_at': int(time.time() * 1000),
+            }
+            recent_session_ai_dynamic_lock_by_key[normalized_stream_key] = entry
+        entry['active_count'] = int(entry.get('active_count', 0) or 0) + 1
+        entry['updated_at'] = int(time.time() * 1000)
+        lock = entry['lock']
+    lock.acquire()
+    return normalized_stream_key
+
+def release_session_ai_dynamic_stream_lock(stream_key):
+    normalized_stream_key = str(stream_key or '').strip()
+    if normalized_stream_key == '':
+        recent_session_ai_dynamic_lock_registry_lock.release()
+        return
+    entry = None
+    with recent_session_ai_dynamic_lock_registry_lock:
+        entry = recent_session_ai_dynamic_lock_by_key.get(normalized_stream_key)
+    if isinstance(entry, dict):
+        entry['lock'].release()
+        with recent_session_ai_dynamic_lock_registry_lock:
+            refreshed_entry = recent_session_ai_dynamic_lock_by_key.get(normalized_stream_key)
+            if isinstance(refreshed_entry, dict):
+                refreshed_entry['active_count'] = max(
+                    0,
+                    int(refreshed_entry.get('active_count', 0) or 0) - 1,
+                )
+                refreshed_entry['updated_at'] = int(time.time() * 1000)
 
 def remember_request_debug_stream_state(request_msg_id, last_msg_id, seq, content='', now_ms=None):
     normalized_request_msg_id = str(request_msg_id or '').strip()
@@ -4229,7 +4303,29 @@ def resolve_chatbot_status_bar_enabled(app_id, node_info, mapping):
     preset_ext = preset.get('ext', {}) if isinstance(preset, dict) else {}
     return preset_ext.get('status_bar') is True, chatbot_info
 
-def resolve_session_transcript_ai_dynamic_target(app_id, node_info, mapping, target, target_identity, request_msg_id):
+def resolve_session_transcript_ai_dynamic_target_identity(mapping, target):
+    candidate_session_keys = []
+    if isinstance(target, dict):
+        candidate_session_keys.extend([
+            target.get('session_key', ''),
+            ((target.get('mapping', {}) or {}).get('session_key', '') if isinstance(target.get('mapping', {}), dict) else ''),
+        ])
+    if isinstance(mapping, dict):
+        candidate_session_keys.extend([
+            mapping.get('effective_target_session_key', ''),
+            mapping.get('root_session_key', ''),
+            mapping.get('session_key', ''),
+        ])
+    for candidate in candidate_session_keys:
+        normalized_candidate = normalize_optional_session_key(candidate)
+        if normalized_candidate == '':
+            continue
+        identity = parse_clawchat_session_identity(normalized_candidate)
+        if is_clawchat_session_identity(identity):
+            return identity
+    return None
+
+def resolve_session_transcript_ai_dynamic_target(app_id, node_info, mapping, target, request_msg_id):
     status_bar_enabled, chatbot_info = resolve_chatbot_status_bar_enabled(app_id, node_info, mapping)
     if not status_bar_enabled:
         return {
@@ -4246,7 +4342,11 @@ def resolve_session_transcript_ai_dynamic_target(app_id, node_info, mapping, tar
             return {
                 'result': 'missing_target',
             }
-        is_router_direct = isinstance(target_identity, dict) and str(target_identity.get('channel', '')).strip() == 'clawchat-router'
+        resolved_target_identity = resolve_session_transcript_ai_dynamic_target_identity(mapping, target)
+        is_router_direct = (
+            is_direct_session_identity(resolved_target_identity) and
+            str((resolved_target_identity or {}).get('channel', '')).strip() == 'clawchat-router'
+        )
         from_user_id = chatbot_user_id if is_router_direct else node_user_id
         if from_user_id == '':
             return {
@@ -4344,7 +4444,6 @@ def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, targ
         node_info,
         mapping,
         target,
-        target_identity,
         request_msg_id,
     )
     if target_config_result.get('result') == 'status_bar_disabled':
@@ -4366,48 +4465,52 @@ def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, targ
         target_config.get('target_kind', ''),
         target_config.get('target_id', ''),
     )
-    now_ms = int(time.time() * 1000)
-    cleanup_recent_session_ai_dynamic_state(now_ms)
-    state = recent_session_ai_dynamic_stream_by_key.get(stream_key, {})
-    if not isinstance(state, dict) or len(state) == 0:
-        state = resolve_request_debug_stream_state(request_msg_id, now_ms)
-    existing_content = str((state or {}).get('content', '')).strip()
-    next_content = str(payload.get('text', '')).strip()
-    if next_content == '':
-        return {
-            'result': 'suppressed',
-        }
-    delta_content = next_content if existing_content == '' else f"\n\n{next_content}"
-    cumulative_content = next_content if existing_content == '' else f"{existing_content}\n\n{next_content}"
-    seq = int((state or {}).get('seq', 0) or 0) + 1
-    ext = dict(delivery_ext or {})
-    ai_ext = dict(ext.get('ai', {})) if isinstance(ext.get('ai', {}), dict) else {}
-    ai_ext.update({
-        'role': 'ai',
-        'is_debug_msg': True,
-        'stream': True,
-        'seq': seq,
-        'request_msg_id': request_msg_id,
-        'finish': False,
-        'need_antispam_check': False,
-    })
-    ext['ai'] = ai_ext
-    last_msg_id = int((state or {}).get('last_msg_id', 0) or 0)
-    msg_id = send_session_transcript_ai_dynamic_update(
-        target_config,
-        delta_content if last_msg_id > 0 else cumulative_content,
-        ext,
-        related_mid=last_msg_id,
-        is_finish=False,
-        content_type=11 if last_msg_id > 0 else 0,
-    )
-    if msg_id > 0:
-        recent_session_ai_dynamic_stream_by_key[stream_key] = {
-            'last_msg_id': last_msg_id or msg_id,
-            'content': cumulative_content,
+    acquired_stream_key = acquire_session_ai_dynamic_stream_lock(stream_key)
+    try:
+        now_ms = int(time.time() * 1000)
+        cleanup_recent_session_ai_dynamic_state(now_ms)
+        state = recent_session_ai_dynamic_stream_by_key.get(stream_key, {})
+        if not isinstance(state, dict) or len(state) == 0:
+            state = resolve_request_debug_stream_state(request_msg_id, now_ms)
+        existing_content = str((state or {}).get('content', '')).strip()
+        next_content = str(payload.get('text', '')).strip()
+        if next_content == '':
+            return {
+                'result': 'suppressed',
+            }
+        delta_content = next_content if existing_content == '' else f"\n\n{next_content}"
+        cumulative_content = next_content if existing_content == '' else f"{existing_content}\n\n{next_content}"
+        seq = int((state or {}).get('seq', 0) or 0) + 1
+        ext = dict(delivery_ext or {})
+        ai_ext = dict(ext.get('ai', {})) if isinstance(ext.get('ai', {}), dict) else {}
+        ai_ext.update({
+            'role': 'ai',
+            'is_debug_msg': True,
+            'stream': True,
             'seq': seq,
-            'updated_at': now_ms,
-        }
+            'request_msg_id': request_msg_id,
+            'finish': False,
+            'need_antispam_check': False,
+        })
+        ext['ai'] = ai_ext
+        last_msg_id = int((state or {}).get('last_msg_id', 0) or 0)
+        msg_id = send_session_transcript_ai_dynamic_update(
+            target_config,
+            delta_content if last_msg_id > 0 else cumulative_content,
+            ext,
+            related_mid=last_msg_id,
+            is_finish=False,
+            content_type=11 if last_msg_id > 0 else 0,
+        )
+        if msg_id > 0:
+            recent_session_ai_dynamic_stream_by_key[stream_key] = {
+                'last_msg_id': last_msg_id or msg_id,
+                'content': cumulative_content,
+                'seq': seq,
+                'updated_at': now_ms,
+            }
+    finally:
+        release_session_ai_dynamic_stream_lock(acquired_stream_key)
     return {
         'result': 'delivered' if msg_id > 0 else 'send_failed',
         'stream_key': stream_key,
@@ -4431,7 +4534,6 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
         node_info,
         mapping,
         target,
-        target_identity,
         request_msg_id,
     )
     if target_config_result.get('result') != 'ok':
@@ -4444,44 +4546,48 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
         target_config.get('target_kind', ''),
         target_config.get('target_id', ''),
     )
-    now_ms = int(time.time() * 1000)
-    cleanup_recent_session_ai_dynamic_state(now_ms)
-    state = recent_session_ai_dynamic_stream_by_key.get(stream_key, {})
-    if not isinstance(state, dict) or len(state) == 0:
-        state = resolve_request_debug_stream_state(request_msg_id, now_ms)
-        if isinstance(state, dict) and len(state) > 0:
-            recent_session_ai_dynamic_stream_by_key[stream_key] = dict(state)
-    if not isinstance(state, dict) or len(state) == 0:
-        return
-    last_msg_id = int(state.get('last_msg_id', 0) or 0)
-    content = str(state.get('content', '')).strip()
-    completion_line = build_session_transcript_ai_dynamic_completion_line(content)
-    if completion_line != '':
-        content = f"{content}\n\n{completion_line}" if content != '' else completion_line
-    if last_msg_id <= 0 or content == '':
+    acquired_stream_key = acquire_session_ai_dynamic_stream_lock(stream_key)
+    try:
+        now_ms = int(time.time() * 1000)
+        cleanup_recent_session_ai_dynamic_state(now_ms)
+        state = recent_session_ai_dynamic_stream_by_key.get(stream_key, {})
+        if not isinstance(state, dict) or len(state) == 0:
+            state = resolve_request_debug_stream_state(request_msg_id, now_ms)
+            if isinstance(state, dict) and len(state) > 0:
+                recent_session_ai_dynamic_stream_by_key[stream_key] = dict(state)
+        if not isinstance(state, dict) or len(state) == 0:
+            return
+        last_msg_id = int(state.get('last_msg_id', 0) or 0)
+        content = str(state.get('content', '')).strip()
+        completion_line = build_session_transcript_ai_dynamic_completion_line(content)
+        if completion_line != '':
+            content = f"{content}\n\n{completion_line}" if content != '' else completion_line
+        if last_msg_id <= 0 or content == '':
+            recent_session_ai_dynamic_stream_by_key.pop(stream_key, None)
+            return
+        seq = int(state.get('seq', 0) or 0) + 1
+        ext = dict(delivery_ext or {})
+        ai_ext = dict(ext.get('ai', {})) if isinstance(ext.get('ai', {}), dict) else {}
+        ai_ext.update({
+            'role': 'ai',
+            'is_debug_msg': True,
+            'stream': True,
+            'seq': seq,
+            'request_msg_id': request_msg_id,
+            'finish': True,
+            'need_antispam_check': False,
+        })
+        ext['ai'] = ai_ext
+        send_session_transcript_ai_dynamic_update(
+            target_config,
+            content,
+            ext,
+            related_mid=last_msg_id,
+            is_finish=True,
+        )
         recent_session_ai_dynamic_stream_by_key.pop(stream_key, None)
-        return
-    seq = int(state.get('seq', 0) or 0) + 1
-    ext = dict(delivery_ext or {})
-    ai_ext = dict(ext.get('ai', {})) if isinstance(ext.get('ai', {}), dict) else {}
-    ai_ext.update({
-        'role': 'ai',
-        'is_debug_msg': True,
-        'stream': True,
-        'seq': seq,
-        'request_msg_id': request_msg_id,
-        'finish': True,
-        'need_antispam_check': False,
-    })
-    ext['ai'] = ai_ext
-    send_session_transcript_ai_dynamic_update(
-        target_config,
-        content,
-        ext,
-        related_mid=last_msg_id,
-        is_finish=True,
-    )
-    recent_session_ai_dynamic_stream_by_key.pop(stream_key, None)
+    finally:
+        release_session_ai_dynamic_stream_lock(acquired_stream_key)
 
 def maybe_finish_router_reply_ai_dynamic(app_id, node_info, message, delivery_ext):
     if not isinstance(message, dict) or not isinstance(delivery_ext, dict):
