@@ -655,6 +655,47 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         redirect.assert_not_called()
         handle_try.assert_not_called()
 
+    def test_handle_chat_message_skips_outer_debug_finish_when_openclaw_defers(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'reply_msg_type': 'CHAT',
+            'reply_from': 'chatbot-user',
+            'reply_to': 'sender-user',
+        }
+        msg = {
+            'msgId': 'mid-openclaw-defer-finish',
+            'appId': 1,
+            'type': 'CHAT',
+            'content': 'hello',
+            'from': {'uid': 'sender-user'},
+            'to': {'uid': 'chatbot-user'},
+            'ext': '',
+        }
+
+        def defer_to_openclaw(config_in, msg_in, retry_times):
+            config_in['defer_debug_finish_to_openclaw'] = True
+            return ''
+
+        with (
+            mock.patch.object(m, 'maybe_sync_to_openclaw'),
+            mock.patch.object(m, 'init_chatbot_config'),
+            mock.patch.object(m, 'maybe_reply_message_read_ack'),
+            mock.patch.object(m, 'maybe_transcription_audio_msg'),
+            mock.patch.object(m, 'maybe_save_image_msg'),
+            mock.patch.object(m, 'maybe_add_history'),
+            mock.patch.object(m, 'handle_chat_message_try', side_effect=defer_to_openclaw),
+            mock.patch.object(m, 'add_debug_message') as mocked_debug,
+            mock.patch.object(m, 'replyMessageAsync'),
+        ):
+            result = m.handle_chat_message(config, msg)
+
+        self.assertIsNone(result)
+        mocked_debug.assert_not_called()
+
     def test_build_openclaw_reply_ext_contains_sync_context(self):
         try:
             m = importlib.import_module('openai_service')

@@ -1227,7 +1227,8 @@ def handle_chat_message(config, msg):
             if len(reply_list) > 0:
                 time.sleep(0.5)
     time.sleep(0.5)
-    add_debug_message(config, "处理完成", {'is_last_msg': True})
+    if not config.get('defer_debug_finish_to_openclaw', False):
+        add_debug_message(config, "处理完成", {'is_last_msg': True})
 
 def handle_chat_message_try(config, msg, retry_times):
     app_id = msg['appId']
@@ -1732,13 +1733,16 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                     f"redirect_to_openclaw router_request target | app_id:{app_id}, group_id:{group_id}, chatbot_id:{chatbot_id}, chatbot_user_id:{chatbot_user_id}, node_id:{openclaw_node_info.get('node_id', '')}, cold_start:{is_cold_start}"
                 )
         logging.info(f"redirect_to_openclaw | node: {openclaw_node_info}, msg: {msg}")
-        return lanying_openclaw.redirect_to_openclaw(
+        redirect_result = lanying_openclaw.redirect_to_openclaw(
             openclaw_node_info,
             msg,
             openclaw_embedding_knowledge,
             router_type=router_type,
             cold_start=is_cold_start,
         )
+        if redirect_result == '':
+            config['defer_debug_finish_to_openclaw'] = True
+        return redirect_result
     preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
     response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
     response = lanying_openai_compat.normalize_vendor_response(response)
@@ -5832,6 +5836,15 @@ def add_debug_message(config, content, opt = {}):
         config['debug_msg_seq'] = debug_msg_seq + 1
         send_msg_type = 1 if reply_msg_type == 'CHAT' else 2
         last_debug_msg_id = config.get('last_debug_msg_id')
+        def remember_debug_stream_state(message_id, display_content=''):
+            if message_id is None:
+                return
+            lanying_openclaw.remember_request_debug_stream_state(
+                request_msg_id,
+                int(message_id or 0),
+                debug_msg_seq,
+                display_content,
+            )
         if is_debug:
             if not is_reasoning_msg:
                 if last_debug_msg_id is None:
@@ -5853,6 +5866,7 @@ def add_debug_message(config, content, opt = {}):
                 msg_id = lanying_im_api.send_message_sync(config, app_id, reply_from, reply_to, send_msg_type, 0, final_content, extra)
                 if msg_id > 0:
                     config['last_debug_msg_id'] = msg_id
+                    remember_debug_stream_state(msg_id, final_content)
             else:
                 extra = {
                     'ext': ext,
@@ -5862,8 +5876,10 @@ def add_debug_message(config, content, opt = {}):
                 if is_last_msg:
                     final_debug_message = config.get('final_debug_message', '')
                     lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_debug_message, extra)
+                    remember_debug_stream_state(last_debug_msg_id, final_debug_message)
                 else:
                     lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 11, final_content, extra)
+                    remember_debug_stream_state(last_debug_msg_id, config.get('final_debug_message', final_content))
         elif status_bar:
             trunc_size = 150
             if not is_reasoning_msg:
@@ -5883,6 +5899,7 @@ def add_debug_message(config, content, opt = {}):
                 msg_id = lanying_im_api.send_message_sync(config, app_id, reply_from, reply_to, send_msg_type, 0, final_content, extra)
                 if msg_id > 0:
                     config['last_debug_msg_id'] = msg_id
+                    remember_debug_stream_state(msg_id, final_content)
             else:
                 extra = {
                     'ext': ext,
@@ -5894,10 +5911,13 @@ def add_debug_message(config, content, opt = {}):
                     if is_first_reasoning_msg:
                         config['is_first_reasoning_msg'] = False
                         lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_content, extra)
+                        remember_debug_stream_state(last_debug_msg_id, final_content)
                     else:
                         lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 11, final_content, extra)
+                        remember_debug_stream_state(last_debug_msg_id, final_content)
                 else:
                     lanying_im_api.send_message_async(config, app_id, reply_from, reply_to, send_msg_type, 12, final_content, extra)
+                    remember_debug_stream_state(last_debug_msg_id, final_content)
 
 def replyAudioMessageAsync(config, content, audio_filename, ext = {}):
     add_ai_message_cnt(content)
