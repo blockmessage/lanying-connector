@@ -321,6 +321,14 @@ def normalize_scenarios(scenario=None, scenarios=None):
         'group_chatbot_subagent',
         'direct_openclaw_subagent',
         'direct_chatbot_subagent',
+        'group_openclaw_ai_dynamic',
+        'group_chatbot_ai_dynamic',
+        'direct_openclaw_ai_dynamic',
+        'direct_chatbot_ai_dynamic',
+        'group_openclaw_subagent_ai_dynamic',
+        'group_chatbot_subagent_ai_dynamic',
+        'direct_openclaw_subagent_ai_dynamic',
+        'direct_chatbot_subagent_ai_dynamic',
     ]
     aliases = {
         'all': available,
@@ -330,35 +338,73 @@ def normalize_scenarios(scenario=None, scenarios=None):
             'direct_openclaw',
             'direct_chatbot',
         ],
+        'ai_dynamic_basic': [
+            'group_openclaw_ai_dynamic',
+            'group_chatbot_ai_dynamic',
+            'direct_openclaw_ai_dynamic',
+            'direct_chatbot_ai_dynamic',
+        ],
         'subagent': [
             'group_openclaw_subagent',
             'group_chatbot_subagent',
             'direct_openclaw_subagent',
             'direct_chatbot_subagent',
         ],
+        'ai_dynamic_subagent': [
+            'group_openclaw_subagent_ai_dynamic',
+            'group_chatbot_subagent_ai_dynamic',
+            'direct_openclaw_subagent_ai_dynamic',
+            'direct_chatbot_subagent_ai_dynamic',
+        ],
         'group': [
             'group_openclaw',
             'group_chatbot',
             'group_openclaw_subagent',
             'group_chatbot_subagent',
+            'group_openclaw_ai_dynamic',
+            'group_chatbot_ai_dynamic',
+            'group_openclaw_subagent_ai_dynamic',
+            'group_chatbot_subagent_ai_dynamic',
         ],
         'direct': [
             'direct_openclaw',
             'direct_chatbot',
             'direct_openclaw_subagent',
             'direct_chatbot_subagent',
+            'direct_openclaw_ai_dynamic',
+            'direct_chatbot_ai_dynamic',
+            'direct_openclaw_subagent_ai_dynamic',
+            'direct_chatbot_subagent_ai_dynamic',
         ],
         'openclaw': [
             'group_openclaw',
             'direct_openclaw',
             'group_openclaw_subagent',
             'direct_openclaw_subagent',
+            'group_openclaw_ai_dynamic',
+            'direct_openclaw_ai_dynamic',
+            'group_openclaw_subagent_ai_dynamic',
+            'direct_openclaw_subagent_ai_dynamic',
         ],
         'chatbot': [
             'group_chatbot',
             'direct_chatbot',
             'group_chatbot_subagent',
             'direct_chatbot_subagent',
+            'group_chatbot_ai_dynamic',
+            'direct_chatbot_ai_dynamic',
+            'group_chatbot_subagent_ai_dynamic',
+            'direct_chatbot_subagent_ai_dynamic',
+        ],
+        'ai_dynamic': [
+            'group_openclaw_ai_dynamic',
+            'group_chatbot_ai_dynamic',
+            'direct_openclaw_ai_dynamic',
+            'direct_chatbot_ai_dynamic',
+            'group_openclaw_subagent_ai_dynamic',
+            'group_chatbot_subagent_ai_dynamic',
+            'direct_openclaw_subagent_ai_dynamic',
+            'direct_chatbot_subagent_ai_dynamic',
         ],
     }
     names = []
@@ -730,6 +776,98 @@ def build_scenario_definition(runtime, scenario_name):
             'require_mapping': True,
             'expect_root_and_sub_sessions': True,
         },
+        'group_openclaw_ai_dynamic': {
+            'name': 'group_openclaw_ai_dynamic',
+            'description': '群聊 @OpenClawUserId 触发工具型中间态后，验证 AI动态 已同步到 IM。',
+            'chat_type': 'group',
+            'target_user_id': openclaw_user_id,
+            'conversation_id': str(runtime.get('group_openclaw_id', '')),
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': openclaw_user_id,
+            'require_mapping': True,
+            'expect_ai_dynamic': True,
+        },
+        'group_chatbot_ai_dynamic': {
+            'name': 'group_chatbot_ai_dynamic',
+            'description': '群聊 @ChatbotUserId 触发工具型中间态后，验证 AI动态 已同步到 IM。',
+            'chat_type': 'group',
+            'target_user_id': chatbot_user_id,
+            'conversation_id': str(runtime.get('group_chatbot_id', '')),
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': chatbot_user_id,
+            'require_mapping': True,
+            'expect_ai_dynamic': True,
+        },
+        'direct_openclaw_ai_dynamic': {
+            'name': 'direct_openclaw_ai_dynamic',
+            'description': '单聊 OpenClawUserId 触发工具型中间态后，验证 AI动态 已同步到 IM。',
+            'chat_type': 'direct',
+            'target_user_id': openclaw_user_id,
+            'conversation_id': openclaw_user_id,
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': openclaw_user_id,
+            'require_mapping': True,
+            'expect_ai_dynamic': True,
+        },
+        'direct_chatbot_ai_dynamic': {
+            'name': 'direct_chatbot_ai_dynamic',
+            'description': '单聊 ChatbotUserId 触发工具型中间态后，验证 AI动态 已同步到 IM。',
+            'chat_type': 'direct',
+            'target_user_id': chatbot_user_id,
+            'conversation_id': chatbot_user_id,
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': chatbot_user_id,
+            'require_mapping': True,
+            'expect_ai_dynamic': True,
+        },
+        'group_openclaw_subagent_ai_dynamic': {
+            'name': 'group_openclaw_subagent_ai_dynamic',
+            'description': '群聊 @OpenClawUserId 请求子 session，并验证 subagent/yield 等 AI动态 与最终消息都正常同步。',
+            'chat_type': 'group',
+            'target_user_id': openclaw_user_id,
+            'conversation_id': str(runtime.get('group_openclaw_id', '')),
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': openclaw_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+            'expect_ai_dynamic': True,
+        },
+        'group_chatbot_subagent_ai_dynamic': {
+            'name': 'group_chatbot_subagent_ai_dynamic',
+            'description': '群聊 @ChatbotUserId 请求子 session，并验证 subagent/yield 等 AI动态 与最终消息都正常同步。',
+            'chat_type': 'group',
+            'target_user_id': chatbot_user_id,
+            'conversation_id': str(runtime.get('group_chatbot_id', '')),
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': chatbot_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+            'expect_ai_dynamic': True,
+        },
+        'direct_openclaw_subagent_ai_dynamic': {
+            'name': 'direct_openclaw_subagent_ai_dynamic',
+            'description': '单聊 OpenClawUserId 请求子 session，并验证 subagent/yield 等 AI动态 与最终消息都正常同步。',
+            'chat_type': 'direct',
+            'target_user_id': openclaw_user_id,
+            'conversation_id': openclaw_user_id,
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': openclaw_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+            'expect_ai_dynamic': True,
+        },
+        'direct_chatbot_subagent_ai_dynamic': {
+            'name': 'direct_chatbot_subagent_ai_dynamic',
+            'description': '单聊 ChatbotUserId 请求子 session，并验证 subagent/yield 等 AI动态 与最终消息都正常同步。',
+            'chat_type': 'direct',
+            'target_user_id': chatbot_user_id,
+            'conversation_id': chatbot_user_id,
+            'sender_user_id': sender_user_id,
+            'expected_reply_user_id': chatbot_user_id,
+            'require_mapping': True,
+            'expect_root_and_sub_sessions': True,
+            'expect_ai_dynamic': True,
+        },
     }
     return definitions.get(scenario_name)
 
@@ -737,6 +875,14 @@ def build_scenario_definition(runtime, scenario_name):
 def build_trigger_text(scenario_def, now_ms):
     name = str(scenario_def.get('name', '')).strip()
     marker = f"SYNC_OK_{name}_{now_ms}"
+    if bool(scenario_def.get('expect_ai_dynamic')) and not bool(scenario_def.get('expect_root_and_sub_sessions')):
+        return (
+            f"这是联调测试，请不要直接回答。"
+            f"必须先调用至少一个可用工具产生日志型中间态，优先使用 exec 执行 `pwd`，"
+            f"如果 exec 不可用就调用任意其它可用工具。"
+            f"在完成工具调用后，最终请只回复“{marker}”，"
+            f"不要回复 NO_REPLY，也不要补充其他内容。"
+        )
     if bool(scenario_def.get('expect_root_and_sub_sessions')):
         return (
             f"这是联调测试，请不要直接在当前会话回答。"
@@ -768,15 +914,24 @@ def summarize_messages(messages):
 
 def merge_message_snapshots(primary, secondary):
     merged = []
-    seen = set()
+    index_by_msg_id = {}
+    seen_fallback = set()
     for message in (primary or []) + (secondary or []):
         if not isinstance(message, dict):
             continue
         msg_id = str(message.get('msg_id', '')).strip()
-        dedupe_key = msg_id if msg_id != '' else json.dumps(message, ensure_ascii=False, sort_keys=True)
-        if dedupe_key in seen:
+        if msg_id != '':
+            existing_index = index_by_msg_id.get(msg_id)
+            if existing_index is None:
+                index_by_msg_id[msg_id] = len(merged)
+                merged.append(message)
+            else:
+                merged[existing_index] = message
             continue
-        seen.add(dedupe_key)
+        dedupe_key = json.dumps(message, ensure_ascii=False, sort_keys=True)
+        if dedupe_key in seen_fallback:
+            continue
+        seen_fallback.add(dedupe_key)
         merged.append(message)
     merged.sort(key=lambda item: (int(item.get('timestamp', 0) or 0), str(item.get('msg_id', ''))))
     return merged
@@ -975,6 +1130,8 @@ def find_replies(messages, expected_reply_user_id, trigger_timestamp, request_ms
             continue
         if expected != '' and str(message.get('from_user_id', '')) != expected:
             continue
+        if is_ai_dynamic_message(message):
+            continue
         ext = message.get('ext', {})
         openclaw_info = ext.get('openclaw', {}) if isinstance(ext, dict) else {}
         openclaw_type = str(openclaw_info.get('type', '')).strip()
@@ -1012,6 +1169,99 @@ def find_session_sync_messages(messages, trigger_timestamp, request_msg_id=''):
     return matched
 
 
+def is_ai_dynamic_message(message):
+    if not isinstance(message, dict):
+        return False
+    ext = message.get('ext', {})
+    if not isinstance(ext, dict):
+        return False
+    ai_info = ext.get('ai', {})
+    return isinstance(ai_info, dict) and ai_info.get('is_debug_msg') is True
+
+
+def extract_ai_dynamic_request_msg_id(message):
+    if not isinstance(message, dict):
+        return ''
+    ext = message.get('ext', {})
+    if not isinstance(ext, dict):
+        return ''
+    ai_info = ext.get('ai', {})
+    if isinstance(ai_info, dict):
+        request_msg_id = str(ai_info.get('request_msg_id', '')).strip()
+        if request_msg_id != '':
+            return request_msg_id
+    openclaw_info = ext.get('openclaw', {})
+    if isinstance(openclaw_info, dict):
+        request_msg_id = str(openclaw_info.get('request_msg_id', '')).strip()
+        if request_msg_id != '':
+            return request_msg_id
+        trigger_msg_id = str(openclaw_info.get('trigger_msg_id', '')).strip()
+        if trigger_msg_id != '':
+            return trigger_msg_id
+    return ''
+
+
+def find_ai_dynamic_messages(messages, trigger_timestamp, request_msg_id=''):
+    expected_request_msg_id = str(request_msg_id or '').strip()
+    matched = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if int(message.get('timestamp', 0) or 0) < int(trigger_timestamp or 0):
+            continue
+        if not is_ai_dynamic_message(message):
+            continue
+        if expected_request_msg_id != '':
+            message_request_msg_id = extract_ai_dynamic_request_msg_id(message)
+            if message_request_msg_id != expected_request_msg_id:
+                continue
+        matched.append(message)
+    return matched
+
+
+def ai_dynamic_message_has_intermediate_content(message):
+    if not isinstance(message, dict):
+        return False
+    content = str(message.get('content', '')).strip()
+    if content == '':
+        return False
+    hints = [
+        'Tool input',
+        'Tool output',
+        'Yield',
+        'Heartbeat',
+        'Status',
+        'Sub-agent',
+        'Subagent',
+        '处理开始',
+        '处理完成',
+    ]
+    return any(hint in content for hint in hints)
+
+
+def is_ai_dynamic_finish_message(message):
+    if not isinstance(message, dict):
+        return False
+    ext = message.get('ext', {})
+    if isinstance(ext, dict):
+        ai_info = ext.get('ai', {})
+        if isinstance(ai_info, dict) and ai_info.get('finish') is True:
+            return True
+    content = str(message.get('content', '')).strip()
+    return content.endswith('处理完成') or '[蓝莺AI]' in content and '处理完成' in content
+
+
+def is_ai_dynamic_history_snapshot_only_ok(messages, reply_ok):
+    if not isinstance(messages, list) or len(messages) != 1:
+        return False
+    if not reply_ok:
+        return False
+    message = messages[0]
+    if not is_ai_dynamic_message(message):
+        return False
+    return ai_dynamic_message_has_intermediate_content(message)
+
+
 def find_duplicate_visible_replies_by_content(messages, primary_reply, expected_reply_user_id, trigger_timestamp):
     if not isinstance(primary_reply, dict):
         return []
@@ -1024,6 +1274,8 @@ def find_duplicate_visible_replies_by_content(messages, primary_reply, expected_
         if not isinstance(message, dict):
             continue
         if int(message.get('timestamp', 0) or 0) < int(trigger_timestamp or 0):
+            continue
+        if is_ai_dynamic_message(message):
             continue
         if str(message.get('from_user_id', '')).strip() != primary_from_user_id:
             continue
@@ -1194,6 +1446,7 @@ def execute_scenario(runtime, scenario_def):
     send_result = send_message(runtime, scenario_def, unique_text)
     request_msg_id = extract_request_msg_id(send_result)
     expect_root_and_sub_sessions = bool(scenario_def.get('expect_root_and_sub_sessions'))
+    expect_ai_dynamic = bool(scenario_def.get('expect_ai_dynamic'))
     conversation_snapshot = []
     all_observed_messages = []
     matched_reply = None
@@ -1331,6 +1584,62 @@ def execute_scenario(runtime, scenario_def):
             if len(matched_replies) > 1 or time.monotonic() >= duplicate_deadline:
                 break
             time.sleep(max(poll_interval_ms, 100) / 1000.0)
+    ai_dynamic_messages = find_ai_dynamic_messages(all_observed_messages, now_ms, request_msg_id)
+    ai_dynamic_finish_found = any(
+        is_ai_dynamic_finish_message(message)
+        for message in ai_dynamic_messages
+    )
+    ai_dynamic_non_finish_found = any(
+        isinstance(((message.get('ext', {}) or {}).get('ai', {})), dict) and
+        ((message.get('ext', {}) or {}).get('ai', {}) or {}).get('finish') is not True
+        for message in ai_dynamic_messages
+        if isinstance(message, dict)
+    )
+    ai_dynamic_intermediate_content_found = any(
+        ai_dynamic_message_has_intermediate_content(message)
+        for message in ai_dynamic_messages
+    )
+    ai_dynamic_single_final_snapshot_ok = (
+        len(ai_dynamic_messages) > 0 and
+        ai_dynamic_finish_found and
+        ai_dynamic_intermediate_content_found
+    )
+    if expect_ai_dynamic and not (ai_dynamic_single_final_snapshot_ok or (ai_dynamic_non_finish_found and ai_dynamic_finish_found)):
+        ai_dynamic_deadline = time.monotonic() + (max(0, duplicate_observation_window_ms) / 1000.0)
+        while time.monotonic() <= ai_dynamic_deadline:
+            conversation_result = fetch_conversation(runtime, scenario_def)
+            conversation_snapshot = summarize_messages(((conversation_result.get('data') or {}).get('messages') or []))
+            all_observed_messages = merge_message_snapshots(all_observed_messages, conversation_snapshot)
+            if expect_root_and_sub_sessions:
+                observed_subagent_views, subagent_snapshot = collect_subagent_observations()
+                observed_subagent_conversation_messages = merge_message_snapshots(
+                    observed_subagent_conversation_messages,
+                    subagent_snapshot,
+                )
+                all_observed_messages = merge_message_snapshots(all_observed_messages, subagent_snapshot)
+            ai_dynamic_messages = find_ai_dynamic_messages(all_observed_messages, now_ms, request_msg_id)
+            ai_dynamic_finish_found = any(
+                is_ai_dynamic_finish_message(message)
+                for message in ai_dynamic_messages
+            )
+            ai_dynamic_non_finish_found = any(
+                isinstance(((message.get('ext', {}) or {}).get('ai', {})), dict) and
+                ((message.get('ext', {}) or {}).get('ai', {}) or {}).get('finish') is not True
+                for message in ai_dynamic_messages
+                if isinstance(message, dict)
+            )
+            ai_dynamic_intermediate_content_found = any(
+                ai_dynamic_message_has_intermediate_content(message)
+                for message in ai_dynamic_messages
+            )
+            ai_dynamic_single_final_snapshot_ok = (
+                len(ai_dynamic_messages) > 0 and
+                ai_dynamic_finish_found and
+                ai_dynamic_intermediate_content_found
+            )
+            if ai_dynamic_single_final_snapshot_ok or (ai_dynamic_non_finish_found and ai_dynamic_finish_found):
+                break
+            time.sleep(max(poll_interval_ms, 100) / 1000.0)
     expected_session_key = str(scenario_def.get('expected_session_key', '')).strip()
     reply_session_key = ''
     if isinstance((matched_reply or {}).get('ext', {}), dict):
@@ -1347,6 +1656,10 @@ def execute_scenario(runtime, scenario_def):
         )
     reply_from_user_id = str((matched_reply or {}).get('from_user_id', ''))
     reply_ok = matched_reply is not None and reply_from_user_id == str(scenario_def.get('expected_reply_user_id', ''))
+    ai_dynamic_history_snapshot_only_ok = is_ai_dynamic_history_snapshot_only_ok(
+        ai_dynamic_messages,
+        reply_ok,
+    )
     deduped_visible_replies = merge_reply_candidates(matched_replies, duplicate_replies)
     if expect_root_and_sub_sessions:
         observed_sync_messages, root_visible_reply_sessions, subagent_visible_reply_sessions, subagent_visible_reply_messages = build_observed_session_sync_state()
@@ -1414,6 +1727,7 @@ def execute_scenario(runtime, scenario_def):
     reply_count = len(deduped_visible_replies)
     duplicate_reply_detected = reply_count > 1 and not expect_root_and_sub_sessions
     matched_reply_msg_ids = [str(message.get('msg_id', '')).strip() for message in deduped_visible_replies if isinstance(message, dict)]
+    ai_dynamic_msg_ids = [str(message.get('msg_id', '')).strip() for message in ai_dynamic_messages if isinstance(message, dict)]
     expected_subagent_marker = ''
     if expect_root_and_sub_sessions:
         expected_subagent_marker = f"SYNC_OK_{str(scenario_def.get('name', '')).strip()}_{now_ms}"
@@ -1486,6 +1800,23 @@ def execute_scenario(runtime, scenario_def):
     elif duplicate_reply_detected:
         status = STATUS_FAILED
         failure_reason = '重复消息：检测到多条最终可见回复'
+    elif expect_ai_dynamic and len(ai_dynamic_messages) == 0:
+        status = STATUS_FAILED
+        failure_reason = '未观察到 AI动态 消息'
+    elif expect_ai_dynamic and not ai_dynamic_intermediate_content_found:
+        status = STATUS_FAILED
+        failure_reason = 'AI动态 消息未出现预期的中间态内容'
+    elif expect_ai_dynamic and not ai_dynamic_finish_found and not ai_dynamic_history_snapshot_only_ok:
+        status = STATUS_FAILED
+        failure_reason = '未观察到 AI动态 完成消息'
+    elif (
+        expect_ai_dynamic and
+        not ai_dynamic_single_final_snapshot_ok and
+        not ai_dynamic_non_finish_found and
+        not ai_dynamic_history_snapshot_only_ok
+    ):
+        status = STATUS_FAILED
+        failure_reason = '历史消息中未保留可验证的 AI动态 追加轨迹'
     elif not session_key_ok:
         status = STATUS_FAILED
         failure_reason = f"未命中预期 session_key: {expected_session_key}"
@@ -1524,6 +1855,14 @@ def execute_scenario(runtime, scenario_def):
             {'label': 'duplicate_reply_detected', 'value': duplicate_reply_detected},
             {'label': 'matched_visible_reply_msg_ids', 'value': matched_reply_msg_ids},
             {'label': 'duplicate_content_fallback_used', 'value': len(duplicate_replies) > len(matched_replies)},
+            {'label': 'expect_ai_dynamic', 'value': expect_ai_dynamic},
+            {'label': 'ai_dynamic_count', 'value': len(ai_dynamic_messages)},
+            {'label': 'ai_dynamic_msg_ids', 'value': ai_dynamic_msg_ids},
+            {'label': 'ai_dynamic_non_finish_found', 'value': ai_dynamic_non_finish_found},
+            {'label': 'ai_dynamic_finish_found', 'value': ai_dynamic_finish_found},
+            {'label': 'ai_dynamic_intermediate_content_found', 'value': ai_dynamic_intermediate_content_found},
+            {'label': 'ai_dynamic_single_final_snapshot_ok', 'value': ai_dynamic_single_final_snapshot_ok},
+            {'label': 'ai_dynamic_history_snapshot_only_ok', 'value': ai_dynamic_history_snapshot_only_ok},
             {'label': 'root_visible_reply_sessions', 'value': root_visible_reply_sessions},
             {'label': 'inferred_root_visible_reply_sessions', 'value': inferred_root_visible_reply_sessions},
             {'label': 'subagent_visible_reply_sessions', 'value': subagent_visible_reply_sessions},
