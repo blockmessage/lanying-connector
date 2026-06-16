@@ -2936,6 +2936,182 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "chatbot-user",
         ])
 
+    def test_handle_session_message_sync_event_subagent_sequence_matrix(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        scenario_cases = [
+            {
+                "name": "group_openclaw_subagent",
+                "mapping": {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-9",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat:group:group-9",
+                    "effective_target_session_key": "agent:main:subagent:test-child",
+                },
+                "expected_from_to": [
+                    ("sender-user", "group-9"),
+                    ("openclaw-user", "group-9"),
+                    ("management-user", "group-9"),
+                    ("openclaw-user", "group-9"),
+                ],
+                "expected_router_direct_replies": [],
+                "expected_router_group_replies": [],
+            },
+            {
+                "name": "group_chatbot_subagent",
+                "mapping": {
+                    "session_key": "agent:main:subagent:test-child",
+                    "group_id": "group-19",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "chatbot-user",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat-router:group:group-19",
+                    "effective_target_session_key": "agent:main:subagent:test-child",
+                },
+                "expected_from_to": [
+                    ("sender-user", "group-19"),
+                    ("chatbot-user", "group-19"),
+                    ("management-user", "group-19"),
+                    ("chatbot-user", "group-19"),
+                ],
+                "expected_router_direct_replies": [],
+                "expected_router_group_replies": [],
+            },
+            {
+                "name": "direct_openclaw_subagent",
+                "mapping": {
+                    "session_key": "agent:main:subagent:test-child",
+                    "origin_kind": "direct_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat:direct:sender-user",
+                    "effective_target_session_key": "agent:main:clawchat:direct:sender-user",
+                },
+                "expected_from_to": [
+                    ("sender-user", "openclaw-user"),
+                    ("openclaw-user", "sender-user"),
+                    ("sender-user", "openclaw-user"),
+                    ("openclaw-user", "sender-user"),
+                ],
+                "expected_router_direct_replies": [],
+                "expected_router_group_replies": [],
+            },
+            {
+                "name": "direct_chatbot_subagent",
+                "mapping": {
+                    "session_key": "agent:main:subagent:test-child",
+                    "origin_kind": "direct_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "chatbot-user",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat-router:direct:sender-user",
+                    "effective_target_session_key": "agent:main:clawchat-router:direct:sender-user",
+                },
+                "expected_from_to": [
+                    ("sender-user", "chatbot-user"),
+                    ("sender-user", "chatbot-user"),
+                ],
+                "expected_router_direct_replies": [
+                    ("sender-user", "reply from child session"),
+                    ("sender-user", "reply from OpenClaw console"),
+                ],
+                "expected_router_group_replies": [],
+            },
+        ]
+
+        event_counter = {"value": 0}
+
+        def _build_event(source, role, content, observed_message_type):
+            event_counter["value"] += 1
+            return {
+                "type": "session_transcript_observed",
+                "source": source,
+                "session": "agent:main:subagent:test-child",
+                "root_session": current_case["mapping"]["root_session_key"],
+                "message_id": f"{current_case['name']}:{event_counter['value']}",
+                "message": {
+                    "role": role,
+                    "content": content,
+                },
+                "observed_message_type": observed_message_type,
+                "sync_variant": (
+                    "im_subagent_bootstrap"
+                    if source == "control_ui_user" and observed_message_type == "im_inbound_user"
+                    else ""
+                ),
+            }
+
+        for current_case in scenario_cases:
+            with self.subTest(current_case=current_case["name"]):
+                m.recent_session_ai_dynamic_stream_by_key.clear()
+                m.recent_session_ai_dynamic_dedupe_by_key.clear()
+                m.recent_request_debug_stream_by_key.clear()
+                with m.recent_session_ai_dynamic_lock_registry_lock:
+                    m.recent_session_ai_dynamic_lock_by_key.clear()
+                sent_calls = []
+                router_direct_reply_calls = []
+                router_group_reply_calls = []
+
+                def _capture_send(_config, _app_id, from_user_id, to_user_id, _send_type, _ctype, text, _extra):
+                    sent_calls.append((from_user_id, to_user_id, text))
+                    return len(sent_calls) + 100
+
+                def _capture_router_direct_reply(_app_id, _node_info, target_user_id, text, delivery_ext=None):
+                    router_direct_reply_calls.append((target_user_id, text, delivery_ext))
+                    return 1
+
+                def _capture_router_group_reply(_app_id, _node_info, mapping, text, delivery_ext=None):
+                    router_group_reply_calls.append((str((mapping or {}).get("session_key", "")).strip(), text, delivery_ext))
+                    return 1
+
+                with mock.patch.object(m, "get_session_mapping_by_session", return_value=current_case["mapping"]), \
+                     mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": current_case["mapping"]}), \
+                     mock.patch.object(m, "ensure_user_joined_group", return_value=True), \
+                     mock.patch.object(m, "ensure_user_group_admin", return_value=True), \
+                     mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+                     mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=_capture_send), \
+                     mock.patch.object(m, "forward_session_sync_router_direct_reply", side_effect=_capture_router_direct_reply), \
+                     mock.patch.object(m, "forward_session_sync_router_group_reply", side_effect=_capture_router_group_reply):
+                    m.handle_session_message_sync_event(
+                        "app-id",
+                        node_info,
+                        _build_event("control_ui_user", "user", "[Subagent Task]: do work\n[Subagent Context]: ...", "im_inbound_user"),
+                    )
+                    m.handle_session_message_sync_event(
+                        "app-id",
+                        node_info,
+                        _build_event("control_ui_reply", "assistant", "reply from child session", "control_ui_reply"),
+                    )
+                    m.handle_session_message_sync_event(
+                        "app-id",
+                        node_info,
+                        _build_event("control_ui_user", "user", "question from OpenClaw console", "control_ui_user"),
+                    )
+                    m.handle_session_message_sync_event(
+                        "app-id",
+                        node_info,
+                        _build_event("control_ui_reply", "assistant", "reply from OpenClaw console", "control_ui_reply"),
+                    )
+
+                self.assertEqual(
+                    [(item[0], item[1]) for item in sent_calls],
+                    current_case["expected_from_to"],
+                )
+                self.assertEqual(
+                    [(item[0], item[1]) for item in router_direct_reply_calls],
+                    current_case["expected_router_direct_replies"],
+                )
+                self.assertEqual(
+                    [(item[0], item[1]) for item in router_group_reply_calls],
+                    current_case["expected_router_group_replies"],
+                )
+
     def test_openclaw_direct_child_control_ui_user_sync_uses_sender_identity(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
@@ -2970,6 +3146,159 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_direct.call_args.args[2], "sender-user")
         self.assertEqual(mocked_direct.call_args.args[3], "sender-user")
         self.assertEqual(mocked_direct.call_args.args[5], "user")
+
+    def test_handle_session_message_sync_event_root_console_sequence_matrix(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        scenario_cases = [
+            {
+                "name": "group_openclaw_root",
+                "mapping": {
+                    "session_key": "agent:main:clawchat:group:group-9",
+                    "group_id": "group-9",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat:group:group-9",
+                    "effective_target_session_key": "agent:main:clawchat:group:group-9",
+                },
+                "expected_from_to": [
+                    ("management-user", "group-9"),
+                    ("openclaw-user", "group-9"),
+                ],
+                "expected_router_direct_replies": [],
+                "expected_router_group_replies": [],
+            },
+            {
+                "name": "group_chatbot_root",
+                "mapping": {
+                    "session_key": "agent:main:clawchat-router:group:group-19",
+                    "group_id": "group-19",
+                    "origin_kind": "im_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "chatbot-user",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat-router:group:group-19",
+                    "effective_target_session_key": "agent:main:clawchat-router:group:group-19",
+                },
+                "expected_from_to": [
+                    ("management-user", "group-19"),
+                ],
+                "expected_router_direct_replies": [],
+                "expected_router_group_replies": [
+                    ("agent:main:clawchat-router:group:group-19", "reply from OpenClaw console"),
+                ],
+            },
+            {
+                "name": "direct_openclaw_root",
+                "mapping": {
+                    "session_key": "agent:main:clawchat:direct:sender-user",
+                    "origin_kind": "direct_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat:direct:sender-user",
+                    "effective_target_session_key": "agent:main:clawchat:direct:sender-user",
+                },
+                "expected_from_to": [
+                    ("sender-user", "openclaw-user"),
+                    ("openclaw-user", "sender-user"),
+                ],
+                "expected_router_direct_replies": [],
+                "expected_router_group_replies": [],
+            },
+            {
+                "name": "direct_chatbot_root",
+                "mapping": {
+                    "session_key": "agent:main:clawchat-router:direct:sender-user",
+                    "origin_kind": "direct_user",
+                    "origin_user_id": "sender-user",
+                    "chatbot_user_id": "chatbot-user",
+                    "management_user_id": "management-user",
+                    "root_session_key": "agent:main:clawchat-router:direct:sender-user",
+                    "effective_target_session_key": "agent:main:clawchat-router:direct:sender-user",
+                },
+                "expected_from_to": [
+                    ("sender-user", "chatbot-user"),
+                ],
+                "expected_router_direct_replies": [
+                    ("sender-user", "reply from OpenClaw console"),
+                ],
+                "expected_router_group_replies": [],
+            },
+        ]
+
+        for current_case in scenario_cases:
+            with self.subTest(current_case=current_case["name"]):
+                sent_calls = []
+                router_direct_reply_calls = []
+                router_group_reply_calls = []
+
+                def _capture_send(_config, _app_id, from_user_id, to_user_id, _send_type, _ctype, text, _extra):
+                    sent_calls.append((from_user_id, to_user_id, text))
+                    return len(sent_calls) + 200
+
+                def _capture_router_direct_reply(_app_id, _node_info, target_user_id, text, delivery_ext=None):
+                    router_direct_reply_calls.append((target_user_id, text, delivery_ext))
+                    return 1
+
+                def _capture_router_group_reply(_app_id, _node_info, mapping, text, delivery_ext=None):
+                    router_group_reply_calls.append((str((mapping or {}).get("session_key", "")).strip(), text, delivery_ext))
+                    return 1
+
+                with mock.patch.object(m, "get_session_mapping_by_session", return_value=current_case["mapping"]), \
+                     mock.patch.object(m, "ensure_session_mapping", return_value={"result": "ok", "data": current_case["mapping"]}), \
+                     mock.patch.object(m, "ensure_user_joined_group", return_value=True), \
+                     mock.patch.object(m, "ensure_user_group_admin", return_value=True), \
+                     mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+                     mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=_capture_send), \
+                     mock.patch.object(m, "forward_session_sync_router_direct_reply", side_effect=_capture_router_direct_reply), \
+                     mock.patch.object(m, "forward_session_sync_router_group_reply", side_effect=_capture_router_group_reply):
+                    m.handle_session_message_sync_event(
+                        "app-id",
+                        node_info,
+                        {
+                            "type": "session_transcript_observed",
+                            "source": "control_ui_user",
+                            "session": current_case["mapping"]["session_key"],
+                            "root_session": current_case["mapping"]["root_session_key"],
+                            "message_id": f"{current_case['name']}:1",
+                            "observed_message_type": "control_ui_user",
+                            "message": {
+                                "role": "user",
+                                "content": "question from OpenClaw console",
+                            },
+                        },
+                    )
+                    m.handle_session_message_sync_event(
+                        "app-id",
+                        node_info,
+                        {
+                            "type": "session_transcript_observed",
+                            "source": "control_ui_reply",
+                            "session": current_case["mapping"]["session_key"],
+                            "root_session": current_case["mapping"]["root_session_key"],
+                            "message_id": f"{current_case['name']}:2",
+                            "message": {
+                                "role": "assistant",
+                                "content": "reply from OpenClaw console",
+                            },
+                        },
+                    )
+
+                self.assertEqual(
+                    [(item[0], item[1]) for item in sent_calls],
+                    current_case["expected_from_to"],
+                )
+                self.assertEqual(
+                    [(item[0], item[1]) for item in router_direct_reply_calls],
+                    current_case["expected_router_direct_replies"],
+                )
+                self.assertEqual(
+                    [(item[0], item[1]) for item in router_group_reply_calls],
+                    current_case["expected_router_group_replies"],
+                )
 
     def test_router_direct_child_control_ui_user_sync_reaches_im_send_path(self):
         m = lanying_openclaw
@@ -6516,6 +6845,116 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(sent_extra["ext"]["ai"]["finish"], False)
         self.assertIn("Status", mocked_send.call_args.args[6])
         self.assertIn("connection refused", mocked_send.call_args.args[6])
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+    def test_handle_session_message_sync_event_does_not_fallback_intermediate_direct_to_visible_reply(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat-router:direct:sender-user",
+            "origin_kind": "direct_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "chatbot-user",
+            "effective_target_session_key": "agent:main:clawchat-router:direct:sender-user",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "direct",
+                 "session_key": "agent:main:clawchat-router:direct:sender-user",
+                 "target_user_id": "sender-user",
+                 "origin_kind": "direct_user",
+                 "origin_user_id": "sender-user",
+                 "chatbot_user_id": "chatbot-user",
+             }), \
+             mock.patch.object(m, "resolve_chatbot_status_bar_enabled", return_value=(True, {"user_id": "chatbot-user"})), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value={"result": "missing_sender"}), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync") as mocked_send, \
+             mock.patch.object(m, "forward_session_sync_to_direct") as mocked_direct:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat-router:direct:sender-user",
+                    "message_id": "direct-tool-call-no-fallback-1",
+                    "trigger_msg_id": "request-direct-no-fallback-1",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "toolCall",
+                                "name": "exec",
+                                "arguments": {
+                                    "command": "pwd",
+                                },
+                            }
+                        ],
+                    },
+                },
+            )
+
+        mocked_send.assert_not_called()
+        mocked_direct.assert_not_called()
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+    def test_handle_session_message_sync_event_does_not_fallback_intermediate_group_to_visible_reply(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-42",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "group",
+                 "session_key": "agent:main:clawchat:group:group-42",
+                 "mapping": mapping,
+             }), \
+             mock.patch.object(m, "resolve_chatbot_status_bar_enabled", return_value=(True, {"user_id": "chatbot-user"})), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value={"result": "sender_not_ready"}), \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group, \
+             mock.patch.object(m.lanying_im_api, "send_message_sync") as mocked_send:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:group:group-42",
+                    "message_id": "group-tool-result-no-fallback-1",
+                    "trigger_msg_id": "request-group-no-fallback-1",
+                    "message": {
+                        "role": "toolResult",
+                        "toolName": "exec",
+                        "content": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "workspace-state.json",
+                                }
+                            ],
+                        },
+                    },
+                },
+            )
+
+        mocked_send.assert_not_called()
+        mocked_group.assert_not_called()
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
 

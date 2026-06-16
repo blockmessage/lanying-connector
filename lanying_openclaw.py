@@ -4984,6 +4984,14 @@ def handle_session_message_sync_event(app_id, node_info, event):
                     event,
                     delivery_ext,
                 )
+        if bool(intermediate_payload.get('is_intermediate')):
+            logging.info(
+                f"handle_session_message_sync_event drop intermediate visible fallback | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                f"message_id:{message_id}, source:{source}, role:{role}, "
+                f"transcript_kind:{transcript_kind}"
+            )
+            return
         if target.get('kind') == 'group' and role == 'assistant':
             # Compatibility guard for older plugin nodes / historical sessions.
             # The primary fix is preserving router origin in plugin execution ctx;
