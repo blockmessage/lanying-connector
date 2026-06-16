@@ -3898,6 +3898,45 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertIn('"status": "error"', summary["text"])
         self.assertIn('"message": "connection refused"', summary["text"])
 
+    def test_resolve_session_transcript_intermediate_payload_classifies_plain_text_heartbeat(self):
+        m = lanying_openclaw
+
+        poll_summary = m.resolve_session_transcript_intermediate_payload(
+            {
+                "source": "control_ui_user",
+                "transcript_kind": "heartbeat",
+                "status_kind": "heartbeat",
+                "intermediate_text": "[OpenClaw heartbeat poll]",
+            },
+            {
+                "role": "user",
+                "content": "[OpenClaw heartbeat poll]",
+            },
+        )
+        self.assertEqual(poll_summary["transcript_kind"], "heartbeat")
+        self.assertEqual(poll_summary["status_kind"], "heartbeat")
+        self.assertTrue(poll_summary["is_intermediate"])
+
+        ok_summary = m.resolve_session_transcript_intermediate_payload(
+            {
+                "source": "control_ui_reply",
+                "transcript_kind": "text",
+                "intermediate_text": "HEARTBEAT_OK",
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "HEARTBEAT_OK",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(ok_summary["transcript_kind"], "heartbeat")
+        self.assertEqual(ok_summary["status_kind"], "heartbeat")
+        self.assertTrue(ok_summary["is_intermediate"])
+
     def test_router_mapping_signal_carries_origin_and_chatbot_user_id(self):
         m = lanying_openclaw
         node_info = {
@@ -5689,6 +5728,446 @@ class RouterSessionIdentityTests(unittest.TestCase):
         with m.recent_session_ai_dynamic_lock_registry_lock:
             m.recent_session_ai_dynamic_lock_by_key.clear()
 
+    def test_maybe_deliver_session_transcript_ai_dynamic_delivers_in_arrival_order(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-42",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {
+            "kind": "group",
+            "session_key": "agent:main:clawchat:group:group-42",
+            "mapping": mapping,
+        }
+        delivery_ext = {
+            "openclaw": {
+                "type": "session_sync_delivery",
+                "session": "agent:main:clawchat:group:group-42",
+                "source": "control_ui_reply",
+                "role": "assistant",
+                "request_msg_id": "request-reorder-1",
+            },
+            "ai": {
+                "ai_generate": False,
+            },
+        }
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "request_msg_id": "request-reorder-1",
+                "target_kind": "group",
+                "target_id": "group-42",
+            },
+        }
+        with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[901, 902]) as mocked_send:
+            buffered_result = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:group:group-42",
+                    "message_id": "tool-result-reorder-1",
+                    "trigger_msg_id": "request-reorder-1",
+                    "seq_id": 5,
+                    "message_timestamp": 1005,
+                },
+                {
+                    "role": "toolResult",
+                    "toolName": "exec",
+                    "content": "workspace-state.json",
+                },
+                delivery_ext,
+            )
+            delivered_result = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:group:group-42",
+                    "message_id": "tool-call-reorder-1",
+                    "trigger_msg_id": "request-reorder-1",
+                    "seq_id": 4,
+                    "message_timestamp": 1004,
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "name": "sessions_yield",
+                            "arguments": {
+                                "message": "Waiting for subagent completion",
+                            },
+                        }
+                    ],
+                },
+                delivery_ext,
+            )
+
+        self.assertEqual(buffered_result["result"], "delivered")
+        self.assertEqual(delivered_result["result"], "delivered")
+        self.assertEqual(mocked_send.call_count, 2)
+        self.assertIn("Tool output", mocked_send.call_args_list[0].args[6])
+        self.assertIn("workspace-state.json", mocked_send.call_args_list[0].args[6])
+        self.assertIn("Yield", mocked_send.call_args_list[1].args[6])
+        self.assertIn("Waiting for subagent completion", mocked_send.call_args_list[1].args[6])
+        self.assertEqual(mocked_send.call_args_list[1].args[5], 11)
+        self.assertEqual(mocked_send.call_args_list[1].args[7]["related_mid"], 901)
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+
+    def test_parse_session_sync_order_seq_prefers_seq_id_over_message_seq(self):
+        m = lanying_openclaw
+        self.assertEqual(
+            m.parse_session_sync_order_seq({
+                "seq_id": "29",
+                "message_seq": "30",
+            }),
+            29,
+        )
+        self.assertEqual(
+            m.parse_session_sync_order_seq({
+                "message_seq": "30",
+            }),
+            30,
+        )
+
+    def test_build_session_transcript_dedupe_identity_prefers_plugin_message_id(self):
+        m = lanying_openclaw
+        self.assertEqual(
+            m.build_session_transcript_dedupe_identity({
+                "_server_msg_id": "server-mid-1",
+                "message_id": "same-mid",
+                "message_seq": 23,
+            }),
+            "mid:same-mid",
+        )
+        self.assertEqual(
+            m.build_session_transcript_dedupe_identity({
+                "_server_msg_id": "server-mid-1",
+                "message_seq": 23,
+            }),
+            "server_mid:server-mid-1",
+        )
+        self.assertEqual(
+            m.build_session_transcript_dedupe_identity({
+                "message_seq": 23,
+            }),
+            "seq:23",
+        )
+
+    def test_handle_chat_message_injects_server_message_id_into_openclaw_event(self):
+        m = lanying_openclaw
+        captured = {}
+
+        def _capture_event(event, app_id, user_id, ctype):
+            captured["event"] = event
+            captured["app_id"] = app_id
+            captured["user_id"] = user_id
+            captured["ctype"] = ctype
+
+        with mock.patch.object(m, "handle_client_event", side_effect=_capture_event):
+            m.handle_chat_message({
+                "msgId": "server-mid-42",
+                "from": {"uid": "100"},
+                "to": {"uid": "100"},
+                "appId": "app-id",
+                "ctype": "COMMAND",
+                "ext": json.dumps({
+                    "openclaw": {
+                        "type": "session_transcript_observed",
+                        "message_id": "plugin-mid-1",
+                    }
+                }),
+            })
+
+        self.assertEqual(captured["event"]["_server_msg_id"], "server-mid-42")
+        self.assertEqual(captured["event"]["message_id"], "plugin-mid-1")
+        self.assertEqual(captured["app_id"], "app-id")
+        self.assertEqual(captured["user_id"], "100")
+        self.assertEqual(captured["ctype"], "COMMAND")
+
+    def test_reserve_recent_session_transcript_materialization_dedupes_same_message_id_even_with_new_message_seq(self):
+        m = lanying_openclaw
+        m.recent_session_transcript_materialization_by_key.clear()
+
+        first_state = m.reserve_recent_session_transcript_materialization(
+            {
+                "session": "agent:main:clawchat-router:group:group-42",
+                "message_id": "same-mid",
+                "message_seq": 19,
+                "source": "control_ui_reply",
+                "transcript_kind": "tool_call",
+            },
+            "assistant",
+        )
+        second_state = m.reserve_recent_session_transcript_materialization(
+            {
+                "session": "agent:main:clawchat-router:group:group-42",
+                "message_id": "same-mid",
+                "message_seq": 20,
+                "source": "control_ui_reply",
+                "transcript_kind": "tool_call",
+            },
+            "assistant",
+        )
+        next_message_state = m.reserve_recent_session_transcript_materialization(
+            {
+                "session": "agent:main:clawchat-router:group:group-42",
+                "message_id": "next-mid",
+                "message_seq": 21,
+                "source": "control_ui_reply",
+                "transcript_kind": "tool_call",
+            },
+            "assistant",
+        )
+
+        self.assertFalse(first_state["duplicate"])
+        self.assertTrue(second_state["duplicate"])
+        self.assertFalse(next_message_state["duplicate"])
+        m.recent_session_transcript_materialization_by_key.clear()
+
+    def test_reserve_recent_session_ai_dynamic_delivery_dedupes_same_message_id_even_with_new_message_seq(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+        first_state = m.reserve_recent_session_ai_dynamic_delivery(
+            {
+                "session": "agent:main:clawchat-router:group:group-42",
+                "message_id": "same-mid",
+                "message_seq": 23,
+            },
+            "yield",
+        )
+        second_state = m.reserve_recent_session_ai_dynamic_delivery(
+            {
+                "session": "agent:main:clawchat-router:group:group-42",
+                "message_id": "same-mid",
+                "message_seq": 24,
+            },
+            "yield",
+        )
+        next_message_state = m.reserve_recent_session_ai_dynamic_delivery(
+            {
+                "session": "agent:main:clawchat-router:group:group-42",
+                "message_id": "next-mid",
+                "message_seq": 25,
+            },
+            "yield",
+        )
+
+        self.assertFalse(first_state["duplicate"])
+        self.assertTrue(second_state["duplicate"])
+        self.assertFalse(next_message_state["duplicate"])
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+    def test_maybe_finish_session_transcript_ai_dynamic_keeps_completion_after_immediate_delivery(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-42",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {
+            "kind": "group",
+            "session_key": "agent:main:clawchat:group:group-42",
+            "mapping": mapping,
+        }
+        delivery_ext = {
+            "openclaw": {
+                "type": "session_sync_delivery",
+                "session": "agent:main:clawchat:group:group-42",
+                "source": "control_ui_reply",
+                "role": "assistant",
+                "request_msg_id": "request-finish-reorder-1",
+            },
+            "ai": {
+                "ai_generate": False,
+            },
+        }
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "request_msg_id": "request-finish-reorder-1",
+                "target_kind": "group",
+                "target_id": "group-42",
+            },
+        }
+        with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[901, 902]) as mocked_send:
+            buffered_result = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:group:group-42",
+                    "message_id": "tool-result-finish-reorder-1",
+                    "trigger_msg_id": "request-finish-reorder-1",
+                    "message_seq": 9,
+                    "message_timestamp": 1009,
+                },
+                {
+                    "role": "toolResult",
+                    "toolName": "exec",
+                    "content": "workspace-state.json",
+                },
+                delivery_ext,
+            )
+            m.maybe_finish_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:clawchat:group:group-42",
+                    "message_id": "final-finish-reorder-1",
+                    "trigger_msg_id": "request-finish-reorder-1",
+                },
+                delivery_ext,
+            )
+
+        self.assertEqual(buffered_result["result"], "delivered")
+        self.assertEqual(mocked_send.call_count, 2)
+        self.assertIn("Tool output", mocked_send.call_args_list[0].args[6])
+        self.assertIn("workspace-state.json", mocked_send.call_args_list[0].args[6])
+        self.assertEqual(mocked_send.call_args_list[1].args[5], 12)
+        self.assertIn("处理完成", mocked_send.call_args_list[1].args[6])
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+
+    def test_maybe_deliver_session_transcript_ai_dynamic_flushes_late_lower_message_seq(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+        delivery_ext = {
+            "openclaw": {
+                "type": "session_sync_delivery",
+                "session": "agent:main:clawchat:group:group-42",
+                "source": "control_ui_reply",
+                "role": "assistant",
+                "request_msg_id": "request-late-seq-1",
+            },
+            "ai": {
+                "ai_generate": False,
+            },
+        }
+        target_config = {
+            "lanying_admin_token": "admin-token",
+            "app_id": "app-id",
+            "reply_msg_type": "GROUPCHAT",
+            "reply_from": "openclaw-user",
+            "reply_to": "group-42",
+            "request_msg_id": "request-late-seq-1",
+            "target_kind": "group",
+            "target_id": "group-42",
+        }
+        stream_key = m.build_session_ai_dynamic_stream_key(
+            "app-id",
+            "agent:main:clawchat:group:group-42",
+            "request-late-seq-1",
+            "group",
+            "group-42",
+        )
+        m.recent_session_ai_dynamic_stream_by_key[stream_key] = {
+            "last_msg_id": 901,
+            "content": "Tool output\n```\nWaiting for subagent completion\n```",
+            "seq": 1,
+            "last_message_seq": 30,
+            "pending_items": [
+                {
+                    "order_seq": 29,
+                    "message_timestamp": 1029,
+                    "transcript_kind": "yield",
+                    "text": "Yield\n\nwith Waiting for subagent completion\n\nTool input\n```json\n{\n  \"message\": \"Waiting for subagent completion\"\n}\n```",
+                    "target_config": target_config,
+                    "delivery_ext": delivery_ext,
+                    "request_msg_id": "request-late-seq-1",
+                    "first_seen_at": 1000,
+                }
+            ],
+            "updated_at": 1000,
+        }
+        with mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
+            flush_result = m.flush_session_ai_dynamic_pending_items(
+                stream_key,
+                m.recent_session_ai_dynamic_stream_by_key[stream_key],
+                1401,
+            )
+
+        self.assertEqual(flush_result["send_count"], 1)
+        self.assertEqual(mocked_send.call_count, 1)
+        self.assertIn("Yield", mocked_send.call_args.args[6])
+        self.assertEqual(mocked_send.call_args.args[5], 11)
+        self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 901)
+        stream_state = m.recent_session_ai_dynamic_stream_by_key[stream_key]
+        self.assertEqual(stream_state["last_message_seq"], 30)
+        self.assertEqual(stream_state["seq"], 2)
+        self.assertEqual(stream_state["last_msg_id"], 901)
+        self.assertEqual(stream_state["pending_items"], [])
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+
     def test_handle_session_message_sync_event_formats_tool_result_text_without_outer_json(self):
         m = lanying_openclaw
         m.recent_session_ai_dynamic_stream_by_key.clear()
@@ -5874,6 +6353,111 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(sent_extra["ext"]["ai"]["finish"], False)
         self.assertIn("Heartbeat", mocked_send.call_args.args[6])
         self.assertIn("accepted", mocked_send.call_args.args[6])
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+
+    def test_handle_session_message_sync_event_drops_control_ui_user_heartbeat_poll(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:main",
+            "group_id": "group-42",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "effective_target_session_key": "agent:main:main",
+            "root_session_key": "agent:main:main",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "group",
+                 "session_key": "agent:main:main",
+                 "mapping": mapping,
+             }), \
+             mock.patch.object(m, "resolve_chatbot_status_bar_enabled", return_value=(True, None)), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=901) as mocked_send, \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_user",
+                    "session": "agent:main:main",
+                    "message_id": "heartbeat-poll-1",
+                    "transcript_kind": "heartbeat",
+                    "status_kind": "heartbeat",
+                    "intermediate_text": "[OpenClaw heartbeat poll]",
+                    "message": {
+                        "role": "user",
+                        "content": "[OpenClaw heartbeat poll]",
+                    },
+                },
+            )
+
+        mocked_group.assert_not_called()
+        mocked_send.assert_not_called()
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+    def test_handle_session_message_sync_event_routes_plain_text_heartbeat_ok_to_ai_dynamic(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:main",
+            "group_id": "group-42",
+            "origin_kind": "im_user",
+            "origin_user_id": "sender-user",
+            "effective_target_session_key": "agent:main:main",
+            "root_session_key": "agent:main:main",
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={
+                 "kind": "group",
+                 "session_key": "agent:main:main",
+                 "mapping": mapping,
+             }), \
+             mock.patch.object(m, "resolve_chatbot_status_bar_enabled", return_value=(True, None)), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m, "ensure_user_joined_group", return_value=True), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=901) as mocked_send, \
+             mock.patch.object(m, "forward_session_sync_to_group") as mocked_group:
+            m.handle_session_message_sync_event(
+                "app-id",
+                node_info,
+                {
+                    "type": "session_transcript_observed",
+                    "source": "control_ui_reply",
+                    "session": "agent:main:main",
+                    "message_id": "heartbeat-ok-1",
+                    "transcript_kind": "text",
+                    "intermediate_text": "HEARTBEAT_OK",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "HEARTBEAT_OK",
+                            }
+                        ],
+                    },
+                },
+            )
+
+        mocked_group.assert_not_called()
+        mocked_send.assert_called_once()
+        sent_extra = mocked_send.call_args.args[7]
+        self.assertEqual(sent_extra["ext"]["ai"]["is_debug_msg"], True)
+        self.assertEqual(sent_extra["ext"]["ai"]["stream"], True)
+        self.assertEqual(sent_extra["ext"]["ai"]["finish"], False)
+        self.assertEqual(sent_extra["ext"]["ai"]["need_antispam_check"], False)
+        self.assertIn("HEARTBEAT_OK", mocked_send.call_args.args[6])
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
 
