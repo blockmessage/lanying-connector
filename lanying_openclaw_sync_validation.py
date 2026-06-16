@@ -23,6 +23,7 @@ DEFAULT_SUBAGENT_TIMEOUT_MS = 60000
 DEFAULT_POLL_INTERVAL_MS = 1000
 DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS = 10000
 DEFAULT_PARENT_RELAY_GRACE_MS = 1500
+DEFAULT_PREVIEW_LOGIN_WAIT_MS = 0
 LOG_SUBDIR = 'openclaw_sync_validation'
 
 tasks = {}
@@ -138,7 +139,15 @@ def write_metadata(task):
         f"report_path={task.get('report_path', '')}",
         f"started_at={task.get('started_at', 0)}",
         f"ended_at={task.get('ended_at', 0)}",
+        f"preview_login_wait_ms={task.get('preview_login_wait_ms', 0)}",
     ]
+    runtime = task.get('runtime', {})
+    if isinstance(runtime, dict):
+        lines.extend([
+            f"validation_sender_user_id={runtime.get('sender_user_id', '')}",
+            f"validation_sender_username={runtime.get('sender_username', '')}",
+            f"validation_sender_password={runtime.get('sender_password', '')}",
+        ])
     try:
         with open(task.get('metadata_path', get_metadata_path(task.get('task_id', ''))), 'w', encoding='utf-8') as meta_file:
             meta_file.write('\n'.join(lines) + '\n')
@@ -278,6 +287,10 @@ def write_report(task):
 
 def build_status_page(task):
     report_url = f"/service/openclaw/sync_validation/{html_escape(task.get('task_id', ''))}"
+    runtime = task.get('runtime', {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+    preview_login_wait_ms = pick_int_config(task.get('preview_login_wait_ms'), DEFAULT_PREVIEW_LOGIN_WAIT_MS)
     return (
         '<!DOCTYPE html><html><head><meta charset="utf-8"><title>OpenClaw Sync Validation</title></head><body>'
         '<h1>OpenClaw Sync Validation Task</h1>'
@@ -285,6 +298,10 @@ def build_status_page(task):
         f"<p><strong>status:</strong> {html_escape(task.get('status', ''))}</p>"
         f"<p><strong>app_id:</strong> {html_escape(task.get('app_id', ''))}</p>"
         f"<p><strong>node_id:</strong> {html_escape(task.get('node_id', ''))}</p>"
+        f"<p><strong>validation_sender_user_id:</strong> {html_escape(runtime.get('sender_user_id', ''))}</p>"
+        f"<p><strong>validation_sender_username:</strong> {html_escape(runtime.get('sender_username', ''))}</p>"
+        f"<p><strong>validation_sender_password:</strong> {html_escape(runtime.get('sender_password', ''))}</p>"
+        f"<p><strong>preview_login_wait_seconds:</strong> {html_escape(int(preview_login_wait_ms / 1000))}</p>"
         f"<p><strong>report_dir:</strong> {html_escape(task.get('task_dir', ''))}</p>"
         f"<p><a href=\"{report_url}\">View status/report</a></p>"
         '</body></html>'
@@ -1909,7 +1926,8 @@ def run_task(task_id):
     task['started_at'] = int(time.time() * 1000)
     append_log(task, f"task started | task_id:{task_id}, app_id:{task.get('app_id', '')}, node_id:{task.get('node_id', '')}")
     write_report(task)
-    runtime_result = build_runtime(task.get('app_id', ''), task.get('node_id', ''))
+    runtime = task.get('runtime', {})
+    runtime_result = {'result': 'ok', 'data': runtime} if isinstance(runtime, dict) and len(runtime) > 0 else build_runtime(task.get('app_id', ''), task.get('node_id', ''))
     if runtime_result.get('result') != 'ok':
         task['status'] = STATUS_ERROR
         task['ended_at'] = int(time.time() * 1000)
@@ -1936,6 +1954,14 @@ def run_task(task_id):
         write_report(task)
         return
     runtime = runtime_result.get('data', {})
+    task['runtime'] = runtime
+    preview_login_wait_ms = pick_int_config(task.get('preview_login_wait_ms'), DEFAULT_PREVIEW_LOGIN_WAIT_MS)
+    if preview_login_wait_ms > 0:
+        append_log(
+            task,
+            f"preview login wait | wait_ms:{preview_login_wait_ms}, sender_username:{runtime.get('sender_username', '')}, sender_password:{runtime.get('sender_password', '')}",
+        )
+        time.sleep(preview_login_wait_ms / 1000.0)
     task['scenarios'] = []
     overall_failed = False
     for scenario_name in task.get('requested_scenarios', []):
@@ -2003,7 +2029,7 @@ def run_task(task_id):
     write_report(task)
 
 
-def start(app_id, node_id, scenario=None, scenarios=None):
+def start(app_id, node_id, scenario=None, scenarios=None, preview_login_wait_ms=None):
     try:
         normalized_app_id = str(app_id or '').strip()
         normalized_node_id = str(node_id or '').strip()
@@ -2019,7 +2045,12 @@ def start(app_id, node_id, scenario=None, scenarios=None):
             }
         if len(requested_scenarios) == 0:
             return {'result': 'error', 'message': 'no valid scenario selected'}
+        runtime_result = build_runtime(normalized_app_id, normalized_node_id)
+        if runtime_result.get('result') != 'ok':
+            return runtime_result
+        runtime = runtime_result.get('data', {})
         task_id = f"sv_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
+        resolved_preview_login_wait_ms = max(0, pick_int_config(preview_login_wait_ms, DEFAULT_PREVIEW_LOGIN_WAIT_MS))
         task = {
             'task_id': task_id,
             'app_id': normalized_app_id,
@@ -2033,6 +2064,8 @@ def start(app_id, node_id, scenario=None, scenarios=None):
             'log_path': get_log_path(task_id),
             'metadata_path': get_metadata_path(task_id),
             'scenarios': [],
+            'runtime': runtime,
+            'preview_login_wait_ms': resolved_preview_login_wait_ms,
         }
         with tasks_lock:
             tasks[task_id] = task
@@ -2046,6 +2079,11 @@ def start(app_id, node_id, scenario=None, scenarios=None):
                 'task_dir': task['task_dir'],
                 'report_path': task['report_path'],
                 'status_url': f"/service/openclaw/sync_validation/{task_id}",
+                'validation_sender_user_id': runtime.get('sender_user_id', ''),
+                'validation_sender_username': runtime.get('sender_username', ''),
+                'validation_sender_password': runtime.get('sender_password', ''),
+                'preview_login_wait_ms': resolved_preview_login_wait_ms,
+                'preview_login_wait_seconds': int(resolved_preview_login_wait_ms / 1000),
             },
         }
     except Exception as err:

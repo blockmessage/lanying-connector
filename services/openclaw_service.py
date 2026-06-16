@@ -246,7 +246,8 @@ def run_sync_validation():
         node_id = str(data.get('node_id', '') or '')
         scenario = data.get('scenario')
         scenarios = data.get('scenarios')
-        result = lanying_openclaw_sync_validation.start(app_id, node_id, scenario, scenarios)
+        preview_login_wait_ms = data.get('preview_login_wait_ms')
+        result = lanying_openclaw_sync_validation.start(app_id, node_id, scenario, scenarios, preview_login_wait_ms)
         if result.get('result') != 'ok':
             return html_response(f"<h1>start sync validation failed</h1><p>{result.get('message', '')}</p>", 400)
         task_info = result.get('data', {})

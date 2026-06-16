@@ -41,6 +41,35 @@ v = _load_sync_validation_module()
 
 
 class OpenClawSyncValidationTests(unittest.TestCase):
+    def test_build_status_page_includes_validation_sender_credentials(self):
+        html = v.build_status_page({
+            'task_id': 'task-1',
+            'status': 'running',
+            'app_id': 'app-1',
+            'node_id': '15',
+            'task_dir': 'log/task-1',
+            'preview_login_wait_ms': 10000,
+            'runtime': {
+                'sender_user_id': 'user-1',
+                'sender_username': 'sync_validation_user',
+                'sender_password': 'secret-pass',
+            },
+        })
+        self.assertIn('validation_sender_username:</strong> sync_validation_user', html)
+        self.assertIn('validation_sender_password:</strong> secret-pass', html)
+        self.assertIn('preview_login_wait_seconds:</strong> 10', html)
+
+    def test_build_status_page_defaults_preview_login_wait_seconds_to_zero(self):
+        html = v.build_status_page({
+            'task_id': 'task-2',
+            'status': 'pending',
+            'app_id': 'app-1',
+            'node_id': '15',
+            'task_dir': 'log/task-2',
+            'runtime': {},
+        })
+        self.assertIn('preview_login_wait_seconds:</strong> 0', html)
+
     def test_normalize_scenarios_includes_ai_dynamic_aliases(self):
         result = v.normalize_scenarios(scenario='ai_dynamic')
         self.assertEqual(result['invalid_names'], [])
