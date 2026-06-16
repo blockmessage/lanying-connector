@@ -4298,6 +4298,23 @@ def build_session_ai_dynamic_ext(delivery_ext, request_msg_id, seq, is_finish):
     ext['ai'] = ai_ext
     return ext
 
+def format_session_transcript_ai_dynamic_chunk(content, target_config):
+    normalized_content = str(content or '').strip()
+    if normalized_content == '':
+        return ''
+    is_debug = bool((target_config or {}).get('is_debug', False))
+    status_bar = bool((target_config or {}).get('status_bar', False))
+    if is_debug:
+        timestr = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        return f"[蓝莺AI][{timestr}] {normalized_content}"
+    if status_bar:
+        final_content = f"[蓝莺AI] {normalized_content}"
+        trunc_size = 150
+        if len(final_content) > trunc_size:
+            final_content = final_content[:trunc_size - 3] + "..."
+        return final_content
+    return normalized_content
+
 def should_flush_session_ai_dynamic_pending_item(item, now_ms):
     if not isinstance(item, dict):
         return False
@@ -4324,18 +4341,30 @@ def flush_session_ai_dynamic_pending_items(stream_key, state, now_ms):
         )
         last_msg_id = int((state or {}).get('last_msg_id', 0) or 0)
         existing_content = str((state or {}).get('content', '')).strip()
-        next_content = str(next_item.get('text', '')).strip()
+        next_content = format_session_transcript_ai_dynamic_chunk(
+            next_item.get('text', ''),
+            next_item.get('target_config', {}),
+        )
         if next_content == '':
             continue
-        delta_content = next_content if existing_content == '' else f"\n\n{next_content}"
-        cumulative_content = next_content if existing_content == '' else f"{existing_content}\n\n{next_content}"
+        target_config = next_item.get('target_config', {})
+        is_debug = bool((target_config or {}).get('is_debug', False))
+        status_bar = bool((target_config or {}).get('status_bar', False))
+        if status_bar and not is_debug:
+            delta_content = next_content
+            cumulative_content = next_content
+            content_type = 12 if last_msg_id > 0 else 0
+        else:
+            delta_content = next_content if existing_content == '' else f"\n\n{next_content}"
+            cumulative_content = next_content if existing_content == '' else f"{existing_content}\n\n{next_content}"
+            content_type = 11 if last_msg_id > 0 else 0
         msg_id = send_session_transcript_ai_dynamic_update(
-            next_item.get('target_config', {}),
+            target_config,
             delta_content if last_msg_id > 0 else cumulative_content,
             ext,
             related_mid=last_msg_id,
             is_finish=False,
-            content_type=11 if last_msg_id > 0 else 0,
+            content_type=content_type,
         )
         if msg_id <= 0:
             pending_items.insert(0, next_item)
@@ -4443,6 +4472,20 @@ def resolve_chatbot_status_bar_enabled(app_id, node_info, mapping):
     preset_ext = preset.get('ext', {}) if isinstance(preset, dict) else {}
     return preset_ext.get('status_bar') is True, chatbot_info
 
+def resolve_chatbot_ai_dynamic_mode(app_id, node_info, mapping):
+    status_bar_enabled, chatbot_info = resolve_chatbot_status_bar_enabled(app_id, node_info, mapping)
+    is_debug_enabled = False
+    if isinstance(chatbot_info, dict):
+        preset = chatbot_info.get('preset', {})
+        preset_ext = preset.get('ext', {}) if isinstance(preset, dict) else {}
+        is_debug_enabled = preset_ext.get('debug') is True
+    return {
+        'enabled': bool(status_bar_enabled or is_debug_enabled),
+        'status_bar_enabled': bool(status_bar_enabled),
+        'is_debug_enabled': bool(is_debug_enabled),
+        'chatbot_info': chatbot_info if isinstance(chatbot_info, dict) else None,
+    }
+
 def resolve_session_transcript_ai_dynamic_target_identity(mapping, target):
     candidate_session_keys = []
     if isinstance(target, dict):
@@ -4466,11 +4509,12 @@ def resolve_session_transcript_ai_dynamic_target_identity(mapping, target):
     return None
 
 def resolve_session_transcript_ai_dynamic_target(app_id, node_info, mapping, target, request_msg_id):
-    status_bar_enabled, chatbot_info = resolve_chatbot_status_bar_enabled(app_id, node_info, mapping)
-    if not status_bar_enabled:
+    ai_dynamic_mode = resolve_chatbot_ai_dynamic_mode(app_id, node_info, mapping)
+    if not ai_dynamic_mode.get('enabled'):
         return {
             'result': 'status_bar_disabled',
         }
+    chatbot_info = ai_dynamic_mode.get('chatbot_info')
     node_user_id = str((node_info or {}).get('user_id', '')).strip()
     chatbot_user_id = str((mapping or {}).get('chatbot_user_id', '')).strip()
     if chatbot_user_id == '' and isinstance(chatbot_info, dict):
@@ -4503,6 +4547,8 @@ def resolve_session_transcript_ai_dynamic_target(app_id, node_info, mapping, tar
                 'request_msg_id': request_msg_id,
                 'target_kind': 'direct',
                 'target_id': target_user_id,
+                'status_bar': bool(ai_dynamic_mode.get('status_bar_enabled')),
+                'is_debug': bool(ai_dynamic_mode.get('is_debug_enabled')),
             }
         }
     if target.get('kind') == 'group':
@@ -4537,6 +4583,8 @@ def resolve_session_transcript_ai_dynamic_target(app_id, node_info, mapping, tar
                 'request_msg_id': request_msg_id,
                 'target_kind': 'group',
                 'target_id': group_id,
+                'status_bar': bool(ai_dynamic_mode.get('status_bar_enabled')),
+                'is_debug': bool(ai_dynamic_mode.get('is_debug_enabled')),
             }
         }
     return {
@@ -4645,10 +4693,17 @@ def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, targ
         'stream_key': stream_key,
     }
 
-def build_session_transcript_ai_dynamic_completion_line(content):
+def build_session_transcript_ai_dynamic_completion_line(content, target_config=None):
     normalized_content = str(content or '').rstrip()
     if normalized_content.endswith('处理完成'):
         return ''
+    is_debug = bool((target_config or {}).get('is_debug', False))
+    status_bar = bool((target_config or {}).get('status_bar', False))
+    if is_debug:
+        timestr = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        return f"[蓝莺AI][{timestr}] 处理完成"
+    if status_bar:
+        return '[蓝莺AI] 处理完成'
     if '[蓝莺AI][' in normalized_content:
         timestr = datetime.now().strftime('%H:%M:%S.%f')[:-3]
         return f"[蓝莺AI][{timestr}] 处理完成"
@@ -4690,9 +4745,14 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
         state = recent_session_ai_dynamic_stream_by_key.get(stream_key, state)
         last_msg_id = int(state.get('last_msg_id', 0) or 0)
         content = str(state.get('content', '')).strip()
-        completion_line = build_session_transcript_ai_dynamic_completion_line(content)
+        completion_line = build_session_transcript_ai_dynamic_completion_line(content, target_config)
+        is_debug = bool((target_config or {}).get('is_debug', False))
+        status_bar = bool((target_config or {}).get('status_bar', False))
         if completion_line != '':
-            content = f"{content}\n\n{completion_line}" if content != '' else completion_line
+            if status_bar and not is_debug:
+                content = completion_line
+            else:
+                content = f"{content}\n\n{completion_line}" if content != '' else completion_line
         if last_msg_id <= 0 or content == '':
             recent_session_ai_dynamic_stream_by_key.pop(stream_key, None)
             return

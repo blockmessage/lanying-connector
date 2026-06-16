@@ -4028,6 +4028,41 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(result["data"]["reply_from"], "chatbot-user")
         self.assertEqual(result["data"]["reply_to"], "sender-user")
 
+    def test_resolve_session_transcript_ai_dynamic_target_allows_debug_without_status_bar(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat-router:direct:sender-user",
+            "root_session_key": "agent:main:clawchat-router:direct:sender-user",
+            "effective_target_session_key": "agent:main:clawchat-router:direct:sender-user",
+            "chatbot_user_id": "chatbot-user",
+        }
+        target = {
+            "kind": "direct",
+            "session_key": "agent:main:clawchat-router:direct:sender-user",
+            "target_user_id": "sender-user",
+        }
+
+        with mock.patch.object(
+            m,
+            "resolve_chatbot_status_bar_enabled",
+            return_value=(False, {"user_id": "chatbot-user", "preset": {"ext": {"debug": True}}}),
+        ), mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"):
+            result = m.resolve_session_transcript_ai_dynamic_target(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                "request-direct-chatbot-debug-only-1",
+            )
+
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(result["data"]["reply_msg_type"], "CHAT")
+        self.assertEqual(result["data"]["reply_from"], "chatbot-user")
+        self.assertEqual(result["data"]["reply_to"], "sender-user")
+        self.assertTrue(result["data"]["is_debug"])
+        self.assertFalse(result["data"]["status_bar"])
+
     def test_resolve_session_transcript_ai_dynamic_target_uses_openclaw_user_for_clawchat_group(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
@@ -5924,7 +5959,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         mocked_direct.assert_not_called()
         mocked_send.assert_called_once()
         sent_extra = mocked_send.call_args.args[7]
-        self.assertEqual(mocked_send.call_args.args[5], 11)
+        self.assertEqual(mocked_send.call_args.args[5], 12)
         self.assertEqual(sent_extra["related_mid"], 777)
         self.assertEqual(sent_extra["ext"]["ai"]["is_debug_msg"], True)
         self.assertEqual(sent_extra["ext"]["ai"]["finish"], False)
@@ -6496,6 +6531,131 @@ class RouterSessionIdentityTests(unittest.TestCase):
         m.recent_request_debug_stream_by_key.clear()
         with m.recent_session_ai_dynamic_lock_registry_lock:
             m.recent_session_ai_dynamic_lock_by_key.clear()
+
+    def test_format_session_transcript_ai_dynamic_chunk_respects_debug_and_status_bar_modes(self):
+        m = lanying_openclaw
+        debug_text = m.format_session_transcript_ai_dynamic_chunk(
+            "Tool output\n```text\nok\n```",
+            {"is_debug": True, "status_bar": False},
+        )
+        status_bar_text = m.format_session_transcript_ai_dynamic_chunk(
+            "Tool output\n```text\nok\n```",
+            {"is_debug": False, "status_bar": True},
+        )
+
+        self.assertIn("[蓝莺AI][", debug_text)
+        self.assertIn("Tool output", debug_text)
+        self.assertEqual(status_bar_text, "[蓝莺AI] Tool output\n```text\nok\n```")
+
+    def test_build_session_transcript_ai_dynamic_completion_line_prefers_debug_style(self):
+        m = lanying_openclaw
+        completion_line = m.build_session_transcript_ai_dynamic_completion_line(
+            "[蓝莺AI] Tool output\n```text\nok\n```",
+            {"is_debug": True, "status_bar": True},
+        )
+        self.assertIn("[蓝莺AI][", completion_line)
+        self.assertTrue(completion_line.endswith("处理完成"))
+
+    def test_flush_session_ai_dynamic_pending_items_uses_replace_mode_for_status_bar(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        stream_key = m.build_session_ai_dynamic_stream_key(
+            "app-id",
+            "agent:main:clawchat:group:group-42",
+            "request-status-bar-1",
+            "group",
+            "group-42",
+        )
+        state = {
+            "last_msg_id": 901,
+            "content": "[蓝莺AI] old status",
+            "seq": 1,
+            "pending_items": [
+                {
+                    "order_seq": 2,
+                    "message_timestamp": 1002,
+                    "transcript_kind": "tool_result",
+                    "text": "Tool output\n```text\nnew status\n```",
+                    "target_config": {
+                        "app_id": "app-id",
+                        "reply_msg_type": "GROUPCHAT",
+                        "reply_from": "openclaw-user",
+                        "reply_to": "group-42",
+                        "request_msg_id": "request-status-bar-1",
+                        "target_kind": "group",
+                        "target_id": "group-42",
+                        "status_bar": True,
+                        "is_debug": False,
+                    },
+                    "delivery_ext": {"ai": {"ai_generate": False}},
+                    "request_msg_id": "request-status-bar-1",
+                    "first_seen_at": 1000,
+                }
+            ],
+            "updated_at": 1000,
+        }
+        m.recent_session_ai_dynamic_stream_by_key[stream_key] = state
+
+        with mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
+            flush_result = m.flush_session_ai_dynamic_pending_items(stream_key, state, 1400)
+
+        self.assertEqual(flush_result["send_count"], 1)
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] Tool output\n```text\nnew status\n```")
+        self.assertEqual(m.recent_session_ai_dynamic_stream_by_key[stream_key]["content"], "[蓝莺AI] Tool output\n```text\nnew status\n```")
+
+    def test_maybe_finish_session_transcript_ai_dynamic_replaces_content_for_status_bar(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+        stream_key = m.build_session_ai_dynamic_stream_key(
+            "app-id",
+            "agent:main:clawchat:group:group-42",
+            "request-status-bar-finish-1",
+            "group",
+            "group-42",
+        )
+        m.recent_session_ai_dynamic_stream_by_key[stream_key] = {
+            "last_msg_id": 901,
+            "content": "[蓝莺AI] Tool output\n```text\nnew status\n```",
+            "seq": 1,
+            "pending_items": [],
+            "updated_at": int(time.time() * 1000),
+        }
+        target_config = {
+            "result": "ok",
+            "data": {
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "request_msg_id": "request-status-bar-finish-1",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
+            m.maybe_finish_session_transcript_ai_dynamic(
+                "app-id",
+                {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"},
+                {"session_key": "agent:main:clawchat:group:group-42"},
+                {"kind": "group", "mapping": {"group_id": "group-42"}},
+                None,
+                {
+                    "session": "agent:main:clawchat:group:group-42",
+                    "trigger_msg_id": "request-status-bar-finish-1",
+                },
+                {"openclaw": {"request_msg_id": "request-status-bar-finish-1"}},
+            )
+
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] 处理完成")
 
     def test_handle_session_message_sync_event_formats_tool_result_text_without_outer_json(self):
         m = lanying_openclaw
