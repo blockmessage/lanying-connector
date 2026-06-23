@@ -696,6 +696,35 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertIsNone(result)
         mocked_debug.assert_not_called()
 
+    def test_add_debug_message_remembers_request_stream_with_target(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'enable_debug_message': True,
+            'status_bar': True,
+            'app_id': 'app-id',
+            'reply_msg_type': 'GROUPCHAT',
+            'reply_from': 'openclaw-user',
+            'reply_to': 'group-42',
+            'request_msg_id': 'request-1',
+        }
+
+        with (
+            mock.patch.object(m.lanying_im_api, 'send_message_sync', return_value=777, create=True),
+            mock.patch.object(m.lanying_openclaw, 'remember_request_debug_stream_state', create=True) as remember,
+        ):
+            m.add_debug_message(config, "处理开始")
+
+        remember.assert_called_once()
+        self.assertEqual(remember.call_args.args[:4], ('request-1', 777, 1, '[蓝莺AI] 处理开始'))
+        self.assertEqual(remember.call_args.kwargs['app_id'], 'app-id')
+        self.assertEqual(remember.call_args.kwargs['target_kind'], 'group')
+        self.assertEqual(remember.call_args.kwargs['target_id'], 'group-42')
+        self.assertEqual(remember.call_args.kwargs['target_sender_id'], 'openclaw-user')
+
     def test_build_openclaw_reply_ext_contains_sync_context(self):
         try:
             m = importlib.import_module('openai_service')

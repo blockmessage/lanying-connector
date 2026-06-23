@@ -97,11 +97,54 @@ class FakeRedis:
         self.sets = {}
         self.ttls = {}
 
-    def set(self, key, value):
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.values:
+            return False
         self.values[key] = value
+        if ex is not None:
+            self.ttls[key] = ex
+        return True
 
     def get(self, key):
         return self.values.get(key)
+
+    def delete(self, key):
+        self.values.pop(key, None)
+        self.hashes.pop(key, None)
+        self.sets.pop(key, None)
+        self.ttls.pop(key, None)
+        return 1
+
+    def rpush(self, key, *values):
+        bucket = self.values.setdefault(key, [])
+        if not isinstance(bucket, list):
+            bucket = []
+            self.values[key] = bucket
+        bucket.extend(values)
+        return len(bucket)
+
+    def lrange(self, key, start, end):
+        bucket = self.values.get(key, [])
+        if not isinstance(bucket, list):
+            return []
+        normalized_end = None if int(end) == -1 else int(end) + 1
+        return list(bucket[int(start):normalized_end])
+
+    def ltrim(self, key, start, end):
+        bucket = self.values.get(key, [])
+        if not isinstance(bucket, list):
+            self.values[key] = []
+            return True
+        normalized_end = None if int(end) == -1 else int(end) + 1
+        self.values[key] = list(bucket[int(start):normalized_end])
+        return True
+
+    def expire(self, key, ttl):
+        self.ttls[key] = ttl
+        return True
+
+    def pipeline(self):
+        return FakeRedisPipeline(self)
 
     def hset(self, key, field, value):
         bucket = self.hashes.setdefault(key, {})
@@ -113,10 +156,6 @@ class FakeRedis:
     def setex(self, key, ttl, value):
         self.values[key] = value
         self.ttls[key] = ttl
-
-    def delete(self, key):
-        self.values.pop(key, None)
-        self.ttls.pop(key, None)
 
     def sadd(self, key, *values):
         bucket = self.sets.setdefault(key, set())
@@ -132,9 +171,50 @@ class FakeRedis:
         return set(self.sets.get(key, set()))
 
 
+class FakeRedisPipeline:
+    def __init__(self, redis):
+        self.redis = redis
+        self.commands = []
+
+    def watch(self, key):
+        self.watched_key = key
+
+    def get(self, key):
+        return self.redis.get(key)
+
+    def multi(self):
+        self.commands = []
+
+    def delete(self, key):
+        self.commands.append(("delete", key))
+
+    def execute(self):
+        for command, key in self.commands:
+            if command == "delete":
+                self.redis.delete(key)
+        self.commands = []
+        return True
+
+    def unwatch(self):
+        self.commands = []
+
+    def reset(self):
+        self.commands = []
+
+
 class RouterSessionIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.default_redis = FakeRedis()
+        self.redis_patcher = mock.patch.object(
+            lanying_openclaw.lanying_redis,
+            "get_redis_connection",
+            return_value=self.default_redis,
+        )
+        self.redis_patcher.start()
+
     def tearDown(self):
-        pass
+        if hasattr(self, "redis_patcher"):
+            self.redis_patcher.stop()
 
     def test_create_openclaw_session_group_updates_group_ext_async_after_success(self):
         m = lanying_openclaw
@@ -4843,6 +4923,33 @@ class RouterSessionIdentityTests(unittest.TestCase):
         payload_ext = json.loads(ext["openclaw"]["message"]["ext"])
         self.assertEqual(payload_ext["openclaw"]["session"], "agent:main:clawchat-router:direct:sender-user")
 
+    def test_router_direct_assistant_reply_strips_reply_to_current_prefix(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=99) as mocked_send:
+            m.forward_session_sync_router_direct_reply(
+                "app-id",
+                node_info,
+                "sender-user",
+                "[[reply_to_current]] reply content",
+                {
+                    "openclaw": {
+                        "type": "session_sync_delivery",
+                        "session": "agent:main:clawchat-router:direct:sender-user",
+                        "source": "control_ui_reply",
+                        "role": "assistant",
+                    },
+                    "ai": {
+                        "ai_generate": False
+                    }
+                },
+            )
+
+        ext = mocked_send.call_args.args[7]["ext"]
+        self.assertEqual(ext["openclaw"]["message"]["content"], "reply content")
+
     def test_router_reply_message_carries_openclaw_delivery_context(self):
         m = lanying_openclaw
         m.recent_visible_reply_materialization_by_key.clear()
@@ -4887,6 +4994,38 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(ext["openclaw"]["request_message_id"], "oc-req-1")
         self.assertNotIn("trigger_msg_id", ext["openclaw"])
         self.assertNotIn("request_msg_id", ext["openclaw"])
+        m.recent_visible_reply_materialization_by_key.clear()
+
+    def test_router_reply_message_strips_reply_to_current_prefix_before_send(self):
+        m = lanying_openclaw
+        m.recent_visible_reply_materialization_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+
+        with mock.patch.object(m, "resolve_bound_chatbot_user_id", return_value="chatbot-user"), \
+             mock.patch.object(m.lanying_utils, "safe_json_loads", return_value={
+                 "openclaw": {
+                     "type": "session_sync_delivery",
+                     "session": "agent:main:clawchat-router:direct:sender-user",
+                     "source": "control_ui_reply",
+                     "role": "assistant",
+                     "message_id": "router-reply-prefix-1",
+                 }
+             }), \
+             mock.patch.object(m.lanying_config, "get_lanying_admin_token", return_value="admin-token"), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=100) as mocked_send:
+            m.router_reply_message(
+                "app-id",
+                node_info,
+                {
+                    "type": "CHAT",
+                    "content": "[[reply_to_current]] reply content",
+                    "msgId": "im-req-1",
+                    "ext": '{"openclaw":{"type":"session_sync_delivery","session":"agent:main:clawchat-router:direct:sender-user","source":"control_ui_reply","role":"assistant","message_id":"router-reply-prefix-1"}}',
+                    "to": {"uid": "sender-user"},
+                },
+            )
+
+        self.assertEqual(mocked_send.call_args.args[6], "reply content")
         m.recent_visible_reply_materialization_by_key.clear()
 
     def test_router_reply_message_suppresses_duplicate_visible_reply_materialization(self):
@@ -4971,11 +5110,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
              mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[901, 902]) as mocked_send:
             m.router_reply_message("app-id", node_info, message)
 
-        self.assertEqual(mocked_send.call_count, 2)
-        self.assertEqual(mocked_send.call_args_list[0].args[5], 12)
-        self.assertEqual(mocked_send.call_args_list[0].args[7]["ext"]["ai"]["finish"], True)
-        self.assertIn("处理完成", mocked_send.call_args_list[0].args[6])
-        self.assertEqual(mocked_send.call_args_list[1].args[6], "final reply content")
+        self.assertEqual(mocked_send.call_count, 1)
+        self.assertEqual(mocked_send.call_args.args[6], "final reply content")
         m.recent_visible_reply_materialization_by_key.clear()
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
@@ -5959,18 +6095,671 @@ class RouterSessionIdentityTests(unittest.TestCase):
         mocked_direct.assert_not_called()
         mocked_send.assert_called_once()
         sent_extra = mocked_send.call_args.args[7]
-        self.assertEqual(mocked_send.call_args.args[5], 12)
-        self.assertEqual(sent_extra["related_mid"], 777)
+        self.assertEqual(mocked_send.call_args.args[5], 0)
+        self.assertNotIn("related_mid", sent_extra)
         self.assertEqual(sent_extra["ext"]["ai"]["is_debug_msg"], True)
         self.assertEqual(sent_extra["ext"]["ai"]["finish"], False)
         self.assertEqual(sent_extra["ext"]["ai"]["request_msg_id"], "request-tool-result-1")
-        self.assertEqual(sent_extra["ext"]["ai"]["seq"], 3)
+        self.assertEqual(sent_extra["ext"]["ai"]["seq"], 1)
         self.assertNotIn("[蓝莺AI] 处理完成", mocked_send.call_args.args[6])
-        self.assertIn("Tool output", mocked_send.call_args.args[6])
-        self.assertIn("workspace-state.json", mocked_send.call_args.args[6])
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] Exec")
+        self.assertNotIn("workspace-state.json", mocked_send.call_args.args[6])
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
         m.recent_request_debug_stream_by_key.clear()
+
+    def test_ai_dynamic_event_id_dedupes_with_redis(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        event = {
+            "type": "session_transcript_observed",
+            "source": "control_ui_reply",
+            "session": "agent:main:clawchat:group:group-42",
+            "message_id": "run-1:tool_result:call-1:4",
+            "event_id": "agent:main:clawchat:group:group-42|run-1|tool_result|call-1|4",
+            "stream_id": "agent:main:clawchat:group:group-42|run-1",
+            "transcript_kind": "tool_result",
+            "tool_name": "exec",
+            "intermediate_text": "Exec\n\nTool output\nSuccessfully wrote 171 bytes to IDENTITY.md",
+        }
+        message = {"role": "toolResult", "toolName": "exec", "content": "Successfully wrote 171 bytes to IDENTITY.md"}
+        delivery_ext = {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}}
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=901) as mocked_send:
+            first = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id", node_info, mapping, target, None, event, message, delivery_ext,
+            )
+            second = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id", node_info, mapping, target, None, event, message, delivery_ext,
+            )
+
+        self.assertEqual(first["result"], "delivered")
+        self.assertEqual(second["result"], "duplicate")
+        mocked_send.assert_called_once()
+        sent_extra = mocked_send.call_args.args[7]
+        self.assertNotIn("request_msg_id", sent_extra["ext"]["ai"])
+        self.assertEqual(sent_extra["ext"]["ai"]["stream_id"], "agent:main:clawchat:group:group-42|run-1")
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+    def test_ai_dynamic_event_id_dedupe_is_not_scoped_by_node_id(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        event = {
+            "session": "agent:main:clawchat:group:group-42",
+            "event_id": "agent:main:clawchat:group:group-42|run-1|tool_result|call-1|4",
+            "message_id": "run-1:tool_result:call-1:4",
+        }
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis):
+            first = m.reserve_session_ai_dynamic_delivery("app-id", "15", event, "tool_result")
+            second = m.reserve_session_ai_dynamic_delivery("app-id", "16", event, "tool_result")
+
+        self.assertFalse(first.get("duplicate"))
+        self.assertTrue(second.get("duplicate"))
+
+    def test_ai_dynamic_request_msg_id_takes_over_connector_debug_message(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "request_msg_id": "request-1",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        event = {
+            "type": "session_transcript_observed",
+            "source": "control_ui_reply",
+            "session": "agent:main:clawchat:group:group-42",
+            "message_id": "run-1:tool_result:call-1:4",
+            "event_id": "agent:main:clawchat:group:group-42|run-1|tool_result|call-1|4",
+            "stream_id": "agent:main:clawchat:group:group-42|run-1",
+            "request_msg_id": "request-1",
+            "transcript_kind": "tool_result",
+            "tool_name": "exec",
+            "intermediate_text": "Exec\n\nTool output\nSuccessfully wrote 171 bytes to IDENTITY.md",
+        }
+        message = {"role": "toolResult", "toolName": "exec", "content": "Successfully wrote 171 bytes to IDENTITY.md"}
+        delivery_ext = {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}}
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=901) as mocked_send:
+            m.remember_request_debug_stream_state(
+                "request-1",
+                777,
+                1,
+                "[蓝莺AI] 处理开始",
+                app_id="app-id",
+                target_kind="group",
+                target_id="group-42",
+                target_sender_id="openclaw-user",
+            )
+            result = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id", node_info, mapping, target, None, event, message, delivery_ext,
+            )
+
+        self.assertEqual(result["result"], "delivered")
+        mocked_send.assert_called_once()
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 777)
+        sent_ext = mocked_send.call_args.args[7]["ext"]
+        self.assertEqual(sent_ext["ai"]["request_msg_id"], "request-1")
+        self.assertEqual(sent_ext["ai"]["stream_id"], "request-1")
+
+    def test_ai_dynamic_request_stream_key_ignores_session_when_request_msg_id_exists(self):
+        m = lanying_openclaw
+        target_config = {
+            "target_kind": "group",
+            "target_id": "group-42",
+        }
+        parent_key = m.build_session_ai_dynamic_stream_key_for_event(
+            "app-id",
+            {"node_id": "15"},
+            {"session": "agent:main:clawchat:group:group-42"},
+            "request-same-1",
+            target_config,
+            request_msg_id="request-same-1",
+        )
+        child_key = m.build_session_ai_dynamic_stream_key_for_event(
+            "app-id",
+            {"node_id": "15"},
+            {"session": "agent:main:subagent:child"},
+            "request-same-1",
+            target_config,
+            request_msg_id="request-same-1",
+        )
+
+        self.assertEqual(parent_key, child_key)
+
+    def test_ai_dynamic_request_debug_state_is_scoped_by_request_msg_id(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        m.remember_request_debug_stream_state(
+            "request-sender-1",
+            777,
+            1,
+            "[蓝莺AI] 处理开始",
+            app_id="app-id",
+            target_kind="group",
+            target_id="group-42",
+            target_sender_id="openclaw-user-a",
+            redis=fake_redis,
+        )
+
+        first = m.resolve_request_debug_stream_state(
+            "request-sender-1",
+            app_id="app-id",
+            target_kind="group",
+            target_id="group-42",
+            target_sender_id="openclaw-user-b",
+            redis=fake_redis,
+        )
+        second = m.resolve_request_debug_stream_state(
+            "request-sender-1",
+            app_id="app-id",
+            target_kind="group",
+            target_id="group-42",
+            target_sender_id="openclaw-user-a",
+            redis=fake_redis,
+        )
+
+        self.assertEqual(first["last_msg_id"], 777)
+        self.assertEqual(second["last_msg_id"], 777)
+
+    def test_remember_request_debug_stream_state_does_not_overwrite_newer_stream_state(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        stream_key = m.build_session_ai_dynamic_stream_key(
+            "app-id",
+            "",
+            "request-sender-2",
+            "group",
+            "group-42",
+        )
+        self.assertTrue(m.save_session_ai_dynamic_stream_state(stream_key, {
+            "last_msg_id": 888,
+            "content": "[蓝莺AI] newer status",
+            "seq": 2,
+            "updated_at": 2000,
+        }, fake_redis))
+
+        m.remember_request_debug_stream_state(
+            "request-sender-2",
+            777,
+            1,
+            "[蓝莺AI] older status",
+            now_ms=1000,
+            app_id="app-id",
+            target_kind="group",
+            target_id="group-42",
+            target_sender_id="openclaw-user-a",
+            redis=fake_redis,
+        )
+
+        state = m.load_session_ai_dynamic_stream_state(stream_key, fake_redis)
+        self.assertEqual(state["last_msg_id"], 888)
+        self.assertEqual(state["seq"], 2)
+        self.assertEqual(state["content"], "[蓝莺AI] newer status")
+
+    def test_ai_dynamic_debug_mode_appends_after_connector_debug_message(self):
+        m = lanying_openclaw
+        fake_redis = self.default_redis
+        stream_key = m.build_session_ai_dynamic_stream_key(
+            "app-id",
+            "15",
+            "agent:main:clawchat:group:group-42",
+            "request-debug-1",
+            "group",
+            "group-42",
+        )
+        target_config = {
+            "app_id": "app-id",
+            "reply_msg_type": "GROUPCHAT",
+            "reply_from": "openclaw-user",
+            "reply_to": "group-42",
+            "target_kind": "group",
+            "target_id": "group-42",
+            "request_msg_id": "request-debug-1",
+            "status_bar": False,
+            "is_debug": True,
+        }
+        self.assertTrue(m.save_session_ai_dynamic_stream_state(stream_key, {
+            "last_msg_id": 777,
+            "content": "[蓝莺AI][12:00:00.000] 处理开始\n",
+            "seq": 1,
+            "updated_at": 1000,
+        }, fake_redis))
+
+        with mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=778) as mocked_send:
+            result = m.deliver_session_ai_dynamic_item(stream_key, {
+                "event_id": "event-debug-2",
+                "stream_id": "request-debug-1",
+                "transcript_kind": "tool_result",
+                "text": "Exec\n\nTool output\nok",
+                "target_config": target_config,
+                "delivery_ext": {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}},
+                "request_msg_id": "request-debug-1",
+            }, fake_redis, 2000)
+
+        self.assertEqual(result["send_count"], 1)
+        self.assertEqual(mocked_send.call_args.args[5], 11)
+        self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 777)
+        self.assertIn("Tool output", mocked_send.call_args.args[6])
+
+    def test_ai_dynamic_direct_delivery_uses_replace_after_first_message(self):
+        m = lanying_openclaw
+        fake_redis = self.default_redis
+        stream_key = m.build_session_ai_dynamic_stream_key(
+            "app-id",
+            "15",
+            "agent:main:clawchat:group:group-42",
+            "agent:main:clawchat:group:group-42|run-1",
+            "group",
+            "group-42",
+        )
+        target_config = {
+            "app_id": "app-id",
+            "reply_msg_type": "GROUPCHAT",
+            "reply_from": "openclaw-user",
+            "reply_to": "group-42",
+            "target_kind": "group",
+            "target_id": "group-42",
+            "status_bar": True,
+            "is_debug": False,
+        }
+        delivery_ext = {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}}
+        with mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[901, 902]) as mocked_send:
+            first = m.deliver_session_ai_dynamic_item(stream_key, {
+                "event_id": "event-4",
+                "stream_id": "agent:main:clawchat:group:group-42|run-1",
+                "transcript_kind": "tool_call",
+                "text": "Exec\n\nTool input\nfirst",
+                "target_config": target_config,
+                "delivery_ext": delivery_ext,
+            }, fake_redis, 1999)
+            second = m.deliver_session_ai_dynamic_item(stream_key, {
+                "event_id": "event-5",
+                "stream_id": "agent:main:clawchat:group:group-42|run-1",
+                "transcript_kind": "tool_result",
+                "text": "Exec\n\nTool output\nsecond",
+                "target_config": target_config,
+                "delivery_ext": delivery_ext,
+            }, fake_redis, 2000)
+
+        self.assertEqual(first["result"], "delivered")
+        self.assertEqual(second["result"], "delivered")
+        self.assertEqual(mocked_send.call_args_list[0].args[5], 0)
+        self.assertEqual(mocked_send.call_args_list[1].args[5], 12)
+        self.assertEqual(mocked_send.call_args_list[1].args[7]["related_mid"], 901)
+        self.assertEqual(m.load_session_ai_dynamic_stream_state(stream_key, fake_redis)["seq"], 2)
+
+    def test_ai_dynamic_send_failure_releases_dedupe(self):
+        m = lanying_openclaw
+        fake_redis = self.default_redis
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        event = {
+            "type": "session_transcript_observed",
+            "source": "control_ui_reply",
+            "session": "agent:main:clawchat:group:group-42",
+            "event_id": "event-send-fail",
+            "message_id": "message-send-fail",
+            "stream_id": "agent:main:clawchat:group:group-42|run-fail",
+            "transcript_kind": "tool_result",
+            "tool_name": "exec",
+            "intermediate_text": "Exec\n\nTool output\nfailed once",
+        }
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[0, 901]):
+            failed = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id", node_info, mapping, target, None, event,
+                {"role": "toolResult", "toolName": "exec", "content": "failed once"},
+                {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}},
+            )
+            retried = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id", node_info, mapping, target, None, event,
+                {"role": "toolResult", "toolName": "exec", "content": "failed once"},
+                {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}},
+            )
+
+        self.assertEqual(failed["result"], "send_failed")
+        self.assertEqual(retried["result"], "delivered")
+
+    def test_ai_dynamic_redis_unavailable_does_not_send_im(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        event = {
+            "type": "session_transcript_observed",
+            "source": "control_ui_reply",
+            "session": "agent:main:clawchat:group:group-42",
+            "message_id": "run-1:tool_result:call-1:4",
+            "event_id": "agent:main:clawchat:group:group-42|run-1|tool_result|call-1|4",
+            "stream_id": "agent:main:clawchat:group:group-42|run-1",
+            "transcript_kind": "tool_result",
+            "tool_name": "exec",
+            "intermediate_text": "Exec\n\nTool output\nSuccessfully wrote 171 bytes to IDENTITY.md",
+        }
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=None), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync") as mocked_send:
+            result = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                event,
+                {"role": "toolResult", "toolName": "exec", "content": "Successfully wrote 171 bytes to IDENTITY.md"},
+                {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}},
+            )
+
+        self.assertEqual(result["result"], "redis_unavailable")
+        mocked_send.assert_not_called()
+
+    def test_ai_dynamic_stream_state_uses_redis_across_process_cache(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        delivery_ext = {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}}
+
+        def _event(event_id, message_id, text):
+            return {
+                "type": "session_transcript_observed",
+                "source": "control_ui_reply",
+                "session": "agent:main:clawchat:group:group-42",
+                "message_id": message_id,
+                "event_id": event_id,
+                "stream_id": "agent:main:clawchat:group:group-42|run-1",
+                "transcript_kind": "tool_result",
+                "tool_name": "exec",
+                "intermediate_text": text,
+            }
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[901, 902]) as mocked_send:
+            m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                _event("event-1", "tool-output-1", "Exec\n\nTool output\nfirst"),
+                {"role": "toolResult", "toolName": "exec", "content": "first"},
+                delivery_ext,
+            )
+            m.recent_session_ai_dynamic_stream_by_key.clear()
+            m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                _event("event-2", "tool-output-2", "Exec\n\nTool output\nsecond"),
+                {"role": "toolResult", "toolName": "exec", "content": "second"},
+                delivery_ext,
+            )
+
+        self.assertEqual(mocked_send.call_args_list[0].args[5], 0)
+        self.assertEqual(mocked_send.call_args_list[1].args[5], 12)
+        self.assertEqual(mocked_send.call_args_list[1].args[7]["related_mid"], 901)
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+    def test_ai_dynamic_stream_lock_busy_does_not_consume_event_id(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        event = {
+            "type": "session_transcript_observed",
+            "source": "control_ui_reply",
+            "session": "agent:main:clawchat:group:group-42",
+            "message_id": "tool-output-locked",
+            "event_id": "event-locked",
+            "stream_id": "agent:main:clawchat:group:group-42|run-locked",
+            "transcript_kind": "tool_result",
+            "tool_name": "exec",
+            "intermediate_text": "Exec\n\nTool output\nlocked",
+        }
+        stream_key = m.build_session_ai_dynamic_stream_key_for_event(
+            "app-id",
+            node_info,
+            event,
+            event.get("stream_id", ""),
+            target_config["data"],
+            request_msg_id=event.get("request_msg_id", ""),
+        )
+        lock_key = m.build_session_ai_dynamic_stream_lock_redis_key(stream_key)
+        fake_redis.set(lock_key, "other-token")
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=901) as mocked_send, \
+             mock.patch.object(m, "SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_WAIT_MS", 1):
+            busy = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                event,
+                {"role": "toolResult", "toolName": "exec", "content": "locked"},
+                {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}},
+            )
+            fake_redis.delete(lock_key)
+            delivered = m.maybe_deliver_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                event,
+                {"role": "toolResult", "toolName": "exec", "content": "locked"},
+                {"openclaw": {"type": "session_sync_delivery"}, "ai": {"ai_generate": False}},
+            )
+
+        self.assertEqual(busy["result"], "busy")
+        self.assertEqual(delivered["result"], "delivered")
+        mocked_send.assert_called_once()
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+
+    def test_ai_dynamic_stream_lock_release_does_not_delete_new_owner(self):
+        m = lanying_openclaw
+        fake_redis = FakeRedis()
+        lock_state = {
+            "locked": True,
+            "redis_key": "lock-key",
+            "token": "old-token",
+            "redis": fake_redis,
+        }
+        fake_redis.set("lock-key", "new-token")
+
+        m.release_session_ai_dynamic_stream_distributed_lock(lock_state)
+
+        self.assertEqual(fake_redis.get("lock-key"), "new-token")
+
+    def test_handle_session_message_sync_event_rolls_back_materialization_dedupe_on_ai_dynamic_busy(self):
+        m = lanying_openclaw
+        m.recent_session_transcript_materialization_by_key.clear()
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        event = {
+            "type": "session_transcript_observed",
+            "source": "control_ui_reply",
+            "session": "agent:main:clawchat:group:group-42",
+            "message_id": "busy-tool-1",
+            "event_id": "busy-event-1",
+            "stream_id": "agent:main:clawchat:group:group-42|run-busy",
+            "transcript_kind": "tool_result",
+            "tool_name": "exec",
+            "intermediate_text": "Exec\n\nTool output\nbusy",
+            "message": {
+                "role": "toolResult",
+                "toolName": "exec",
+                "content": "busy",
+            },
+        }
+
+        with mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value={"kind": "group", "mapping": mapping}), \
+             mock.patch.object(m, "maybe_deliver_session_transcript_ai_dynamic", return_value={
+                 "result": "busy",
+                 "stream_key": "stream-key",
+             }) as mocked_dynamic:
+            m.handle_session_message_sync_event("app-id", node_info, dict(event))
+            m.handle_session_message_sync_event("app-id", node_info, dict(event))
+
+        self.assertEqual(mocked_dynamic.call_count, 2)
+        self.assertEqual(m.recent_session_transcript_materialization_by_key, {})
 
     def test_maybe_deliver_session_transcript_ai_dynamic_serializes_same_stream_updates(self):
         m = lanying_openclaw
@@ -6051,19 +6840,12 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "target_id": "group-42",
             },
         }
-        first_send_started = threading.Event()
-        send_lock = threading.Lock()
         send_call_args = []
 
         def _send_message_sync(*args, **kwargs):
-            with send_lock:
-                call_index = len(send_call_args) + 1
-            if call_index == 1:
-                first_send_started.set()
-                time.sleep(0.05)
-            with send_lock:
-                send_call_args.append(args)
-            return 901 if call_index == 1 else 902
+            send_call_args.append(args)
+            time.sleep(0.05)
+            return 901
 
         with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
              mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=_send_message_sync):
@@ -6076,7 +6858,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 args=("app-id", node_info, mapping, target, None, tool_result_event, tool_result_message, delivery_ext),
             )
             thread_one.start()
-            self.assertTrue(first_send_started.wait(1))
+            time.sleep(0.01)
             thread_two.start()
             thread_one.join()
             thread_two.join()
@@ -6085,7 +6867,6 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(send_call_args[0][5], 0)
         self.assertEqual(send_call_args[1][5], 11)
         self.assertEqual(send_call_args[1][7]["related_mid"], 901)
-        self.assertIn("workspace-state.json", send_call_args[1][6])
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
         m.recent_request_debug_stream_by_key.clear()
@@ -6121,7 +6902,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "session": "agent:main:clawchat:group:group-42",
                 "source": "control_ui_reply",
                 "role": "assistant",
-                "request_msg_id": "request-reorder-1",
+                "request_msg_id": "request-arrival-1",
             },
             "ai": {
                 "ai_generate": False,
@@ -6135,14 +6916,14 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "reply_msg_type": "GROUPCHAT",
                 "reply_from": "openclaw-user",
                 "reply_to": "group-42",
-                "request_msg_id": "request-reorder-1",
+                "request_msg_id": "request-arrival-1",
                 "target_kind": "group",
                 "target_id": "group-42",
             },
         }
         with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
              mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[901, 902]) as mocked_send:
-            buffered_result = m.maybe_deliver_session_transcript_ai_dynamic(
+            first_result = m.maybe_deliver_session_transcript_ai_dynamic(
                 "app-id",
                 node_info,
                 mapping,
@@ -6152,10 +6933,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                     "type": "session_transcript_observed",
                     "source": "control_ui_reply",
                     "session": "agent:main:clawchat:group:group-42",
-                    "message_id": "tool-result-reorder-1",
-                    "trigger_msg_id": "request-reorder-1",
-                    "seq_id": 5,
-                    "message_timestamp": 1005,
+                    "message_id": "tool-result-arrival-1",
+                    "trigger_msg_id": "request-arrival-1",
                 },
                 {
                     "role": "toolResult",
@@ -6174,10 +6953,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                     "type": "session_transcript_observed",
                     "source": "control_ui_reply",
                     "session": "agent:main:clawchat:group:group-42",
-                    "message_id": "tool-call-reorder-1",
-                    "trigger_msg_id": "request-reorder-1",
-                    "seq_id": 4,
-                    "message_timestamp": 1004,
+                    "message_id": "tool-call-arrival-1",
+                    "trigger_msg_id": "request-arrival-1",
                 },
                 {
                     "role": "assistant",
@@ -6194,7 +6971,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 delivery_ext,
             )
 
-        self.assertEqual(buffered_result["result"], "delivered")
+        self.assertEqual(first_result["result"], "delivered")
         self.assertEqual(delivered_result["result"], "delivered")
         self.assertEqual(mocked_send.call_count, 2)
         self.assertIn("Tool output", mocked_send.call_args_list[0].args[6])
@@ -6320,39 +7097,47 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertFalse(next_message_state["duplicate"])
         m.recent_session_transcript_materialization_by_key.clear()
 
-    def test_reserve_recent_session_ai_dynamic_delivery_dedupes_same_message_id_even_with_new_message_seq(self):
+    def test_reserve_session_ai_dynamic_delivery_dedupes_same_message_id_even_with_new_message_seq(self):
         m = lanying_openclaw
-        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        fake_redis = FakeRedis()
 
-        first_state = m.reserve_recent_session_ai_dynamic_delivery(
+        first_state = m.reserve_session_ai_dynamic_delivery(
+            "app-id",
+            "15",
             {
                 "session": "agent:main:clawchat-router:group:group-42",
                 "message_id": "same-mid",
                 "message_seq": 23,
             },
             "yield",
+            fake_redis,
         )
-        second_state = m.reserve_recent_session_ai_dynamic_delivery(
+        second_state = m.reserve_session_ai_dynamic_delivery(
+            "app-id",
+            "16",
             {
                 "session": "agent:main:clawchat-router:group:group-42",
                 "message_id": "same-mid",
                 "message_seq": 24,
             },
             "yield",
+            fake_redis,
         )
-        next_message_state = m.reserve_recent_session_ai_dynamic_delivery(
+        next_message_state = m.reserve_session_ai_dynamic_delivery(
+            "app-id",
+            "15",
             {
                 "session": "agent:main:clawchat-router:group:group-42",
                 "message_id": "next-mid",
                 "message_seq": 25,
             },
             "yield",
+            fake_redis,
         )
 
         self.assertFalse(first_state["duplicate"])
         self.assertTrue(second_state["duplicate"])
         self.assertFalse(next_message_state["duplicate"])
-        m.recent_session_ai_dynamic_dedupe_by_key.clear()
 
     def test_maybe_finish_session_transcript_ai_dynamic_keeps_completion_after_immediate_delivery(self):
         m = lanying_openclaw
@@ -6383,7 +7168,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "session": "agent:main:clawchat:group:group-42",
                 "source": "control_ui_reply",
                 "role": "assistant",
-                "request_msg_id": "request-finish-reorder-1",
+                "request_msg_id": "request-finish-1",
             },
             "ai": {
                 "ai_generate": False,
@@ -6397,14 +7182,14 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 "reply_msg_type": "GROUPCHAT",
                 "reply_from": "openclaw-user",
                 "reply_to": "group-42",
-                "request_msg_id": "request-finish-reorder-1",
+                "request_msg_id": "request-finish-1",
                 "target_kind": "group",
                 "target_id": "group-42",
             },
         }
         with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
              mock.patch.object(m.lanying_im_api, "send_message_sync", side_effect=[901, 902]) as mocked_send:
-            buffered_result = m.maybe_deliver_session_transcript_ai_dynamic(
+            first_result = m.maybe_deliver_session_transcript_ai_dynamic(
                 "app-id",
                 node_info,
                 mapping,
@@ -6414,10 +7199,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
                     "type": "session_transcript_observed",
                     "source": "control_ui_reply",
                     "session": "agent:main:clawchat:group:group-42",
-                    "message_id": "tool-result-finish-reorder-1",
-                    "trigger_msg_id": "request-finish-reorder-1",
-                    "message_seq": 9,
-                    "message_timestamp": 1009,
+                    "message_id": "tool-result-finish-1",
+                    "trigger_msg_id": "request-finish-1",
                 },
                 {
                     "role": "toolResult",
@@ -6436,13 +7219,13 @@ class RouterSessionIdentityTests(unittest.TestCase):
                     "type": "session_transcript_observed",
                     "source": "control_ui_reply",
                     "session": "agent:main:clawchat:group:group-42",
-                    "message_id": "final-finish-reorder-1",
-                    "trigger_msg_id": "request-finish-reorder-1",
+                    "message_id": "final-finish-1",
+                    "trigger_msg_id": "request-finish-1",
                 },
                 delivery_ext,
             )
 
-        self.assertEqual(buffered_result["result"], "delivered")
+        self.assertEqual(first_result["result"], "delivered")
         self.assertEqual(mocked_send.call_count, 2)
         self.assertIn("Tool output", mocked_send.call_args_list[0].args[6])
         self.assertIn("workspace-state.json", mocked_send.call_args_list[0].args[6])
@@ -6454,7 +7237,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         with m.recent_session_ai_dynamic_lock_registry_lock:
             m.recent_session_ai_dynamic_lock_by_key.clear()
 
-    def test_maybe_deliver_session_transcript_ai_dynamic_flushes_late_lower_message_seq(self):
+    def test_deliver_session_ai_dynamic_item_appends_to_existing_message(self):
         m = lanying_openclaw
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
@@ -6485,47 +7268,36 @@ class RouterSessionIdentityTests(unittest.TestCase):
         }
         stream_key = m.build_session_ai_dynamic_stream_key(
             "app-id",
+            "15",
             "agent:main:clawchat:group:group-42",
             "request-late-seq-1",
             "group",
             "group-42",
         )
-        m.recent_session_ai_dynamic_stream_by_key[stream_key] = {
+        m.save_session_ai_dynamic_stream_state(stream_key, {
             "last_msg_id": 901,
             "content": "Tool output\n```\nWaiting for subagent completion\n```",
             "seq": 1,
-            "last_message_seq": 30,
-            "pending_items": [
-                {
-                    "order_seq": 29,
-                    "message_timestamp": 1029,
-                    "transcript_kind": "yield",
-                    "text": "Yield\n\nwith Waiting for subagent completion\n\nTool input\n```json\n{\n  \"message\": \"Waiting for subagent completion\"\n}\n```",
-                    "target_config": target_config,
-                    "delivery_ext": delivery_ext,
-                    "request_msg_id": "request-late-seq-1",
-                    "first_seen_at": 1000,
-                }
-            ],
             "updated_at": 1000,
-        }
+        })
         with mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
-            flush_result = m.flush_session_ai_dynamic_pending_items(
-                stream_key,
-                m.recent_session_ai_dynamic_stream_by_key[stream_key],
-                1401,
-            )
+            result = m.deliver_session_ai_dynamic_item(stream_key, {
+                "transcript_kind": "yield",
+                "text": "Yield\n\nwith Waiting for subagent completion\n\nTool input\n```json\n{\n  \"message\": \"Waiting for subagent completion\"\n}\n```",
+                "target_config": target_config,
+                "delivery_ext": delivery_ext,
+                "request_msg_id": "request-late-seq-1",
+                "stream_id": "request-late-seq-1",
+            }, None, 1401)
 
-        self.assertEqual(flush_result["send_count"], 1)
+        self.assertEqual(result["send_count"], 1)
         self.assertEqual(mocked_send.call_count, 1)
         self.assertIn("Yield", mocked_send.call_args.args[6])
         self.assertEqual(mocked_send.call_args.args[5], 11)
         self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 901)
-        stream_state = m.recent_session_ai_dynamic_stream_by_key[stream_key]
-        self.assertEqual(stream_state["last_message_seq"], 30)
+        stream_state = m.load_session_ai_dynamic_stream_state(stream_key)
         self.assertEqual(stream_state["seq"], 2)
         self.assertEqual(stream_state["last_msg_id"], 901)
-        self.assertEqual(stream_state["pending_items"], [])
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
         m.recent_request_debug_stream_by_key.clear()
@@ -6545,7 +7317,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertIn("[蓝莺AI][", debug_text)
         self.assertIn("Tool output", debug_text)
-        self.assertEqual(status_bar_text, "[蓝莺AI] Tool output\n```text\nok\n```")
+        self.assertEqual(status_bar_text, "[蓝莺AI] ok")
 
     def test_build_session_transcript_ai_dynamic_completion_line_prefers_debug_style(self):
         m = lanying_openclaw
@@ -6556,53 +7328,49 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertIn("[蓝莺AI][", completion_line)
         self.assertTrue(completion_line.endswith("处理完成"))
 
-    def test_flush_session_ai_dynamic_pending_items_uses_replace_mode_for_status_bar(self):
+    def test_deliver_session_ai_dynamic_item_uses_replace_mode_for_status_bar(self):
         m = lanying_openclaw
         m.recent_session_ai_dynamic_stream_by_key.clear()
         stream_key = m.build_session_ai_dynamic_stream_key(
             "app-id",
+            "15",
             "agent:main:clawchat:group:group-42",
             "request-status-bar-1",
             "group",
             "group-42",
         )
-        state = {
+        target_config = {
+            "app_id": "app-id",
+            "reply_msg_type": "GROUPCHAT",
+            "reply_from": "openclaw-user",
+            "reply_to": "group-42",
+            "request_msg_id": "request-status-bar-1",
+            "target_kind": "group",
+            "target_id": "group-42",
+            "status_bar": True,
+            "is_debug": False,
+        }
+        m.save_session_ai_dynamic_stream_state(stream_key, {
             "last_msg_id": 901,
             "content": "[蓝莺AI] old status",
             "seq": 1,
-            "pending_items": [
-                {
-                    "order_seq": 2,
-                    "message_timestamp": 1002,
-                    "transcript_kind": "tool_result",
-                    "text": "Tool output\n```text\nnew status\n```",
-                    "target_config": {
-                        "app_id": "app-id",
-                        "reply_msg_type": "GROUPCHAT",
-                        "reply_from": "openclaw-user",
-                        "reply_to": "group-42",
-                        "request_msg_id": "request-status-bar-1",
-                        "target_kind": "group",
-                        "target_id": "group-42",
-                        "status_bar": True,
-                        "is_debug": False,
-                    },
-                    "delivery_ext": {"ai": {"ai_generate": False}},
-                    "request_msg_id": "request-status-bar-1",
-                    "first_seen_at": 1000,
-                }
-            ],
             "updated_at": 1000,
-        }
-        m.recent_session_ai_dynamic_stream_by_key[stream_key] = state
+        })
 
         with mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
-            flush_result = m.flush_session_ai_dynamic_pending_items(stream_key, state, 1400)
+            result = m.deliver_session_ai_dynamic_item(stream_key, {
+                "transcript_kind": "tool_result",
+                "text": "Tool output\n```text\nnew status\n```",
+                "target_config": target_config,
+                "delivery_ext": {"ai": {"ai_generate": False}},
+                "request_msg_id": "request-status-bar-1",
+                "stream_id": "request-status-bar-1",
+            }, None, 1400)
 
-        self.assertEqual(flush_result["send_count"], 1)
+        self.assertEqual(result["send_count"], 1)
         self.assertEqual(mocked_send.call_args.args[5], 12)
-        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] Tool output\n```text\nnew status\n```")
-        self.assertEqual(m.recent_session_ai_dynamic_stream_by_key[stream_key]["content"], "[蓝莺AI] Tool output\n```text\nnew status\n```")
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] new status")
+        self.assertEqual(m.load_session_ai_dynamic_stream_state(stream_key)["content"], "[蓝莺AI] new status")
 
     def test_maybe_finish_session_transcript_ai_dynamic_replaces_content_for_status_bar(self):
         m = lanying_openclaw
@@ -6611,20 +7379,23 @@ class RouterSessionIdentityTests(unittest.TestCase):
         m.recent_request_debug_stream_by_key.clear()
         with m.recent_session_ai_dynamic_lock_registry_lock:
             m.recent_session_ai_dynamic_lock_by_key.clear()
-        stream_key = m.build_session_ai_dynamic_stream_key(
+        stream_key = m.build_session_ai_dynamic_stream_key_for_event(
             "app-id",
-            "agent:main:clawchat:group:group-42",
+            {"node_id": "15"},
+            {"session": "agent:main:clawchat:group:group-42"},
             "request-status-bar-finish-1",
-            "group",
-            "group-42",
+            {
+                "target_kind": "group",
+                "target_id": "group-42",
+            },
+            request_msg_id="request-status-bar-finish-1",
         )
-        m.recent_session_ai_dynamic_stream_by_key[stream_key] = {
+        self.assertTrue(m.save_session_ai_dynamic_stream_state(stream_key, {
             "last_msg_id": 901,
             "content": "[蓝莺AI] Tool output\n```text\nnew status\n```",
             "seq": 1,
-            "pending_items": [],
             "updated_at": int(time.time() * 1000),
-        }
+        }))
         target_config = {
             "result": "ok",
             "data": {
@@ -6656,6 +7427,139 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(mocked_send.call_args.args[5], 12)
         self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] 处理完成")
+
+    def test_maybe_finish_session_transcript_ai_dynamic_takes_over_connector_debug_without_intermediate(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "request_msg_id": "request-finish-only-1",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+
+        m.remember_request_debug_stream_state(
+            "request-finish-only-1",
+            777,
+            1,
+            "[蓝莺AI] 处理开始",
+            app_id="app-id",
+            target_kind="group",
+            target_id="group-42",
+            target_sender_id="openclaw-user",
+        )
+        with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=778) as mocked_send:
+            m.maybe_finish_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                {
+                    "session": "agent:main:subagent:child",
+                    "request_msg_id": "request-finish-only-1",
+                    "message_id": "final-1",
+                },
+                {"openclaw": {"request_msg_id": "request-finish-only-1"}},
+            )
+
+        mocked_send.assert_called_once()
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 777)
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] 处理完成")
+
+    def test_maybe_finish_session_transcript_ai_dynamic_retries_until_lock_acquired(self):
+        m = lanying_openclaw
+        node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "chatbot_user_id": "chatbot-user",
+            "management_user_id": "management-user",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {"kind": "group", "mapping": mapping}
+        target_config = {
+            "result": "ok",
+            "data": {
+                "app_id": "app-id",
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "request_msg_id": "request-finish-retry-1",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        stream_key = m.build_session_ai_dynamic_stream_key_for_event(
+            "app-id",
+            node_info,
+            {"session": "agent:main:clawchat:group:group-42"},
+            "request-finish-retry-1",
+            target_config["data"],
+            request_msg_id="request-finish-retry-1",
+        )
+        fake_redis = FakeRedis()
+        self.assertTrue(m.save_session_ai_dynamic_stream_state(stream_key, {
+            "last_msg_id": 901,
+            "content": "[蓝莺AI] new status",
+            "seq": 1,
+            "updated_at": int(time.time() * 1000),
+        }, fake_redis))
+
+        busy_lock_state = {
+            "locked": False,
+            "redis_key": m.build_session_ai_dynamic_stream_lock_redis_key(stream_key),
+            "token": "",
+            "redis": fake_redis,
+            "enabled": True,
+        }
+        ready_lock_state = {
+            "locked": True,
+            "redis_key": m.build_session_ai_dynamic_stream_lock_redis_key(stream_key),
+            "token": "token-1",
+            "redis": fake_redis,
+            "enabled": True,
+        }
+
+        with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m, "acquire_session_ai_dynamic_stream_distributed_lock", side_effect=[busy_lock_state, ready_lock_state]), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
+            m.maybe_finish_session_transcript_ai_dynamic(
+                "app-id",
+                node_info,
+                mapping,
+                target,
+                None,
+                {
+                    "session": "agent:main:clawchat:group:group-42",
+                    "trigger_msg_id": "request-finish-retry-1",
+                },
+                {"openclaw": {"request_msg_id": "request-finish-retry-1"}},
+            )
+
+        mocked_send.assert_called_once()
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 901)
 
     def test_handle_session_message_sync_event_formats_tool_result_text_without_outer_json(self):
         m = lanying_openclaw
@@ -6713,10 +7617,9 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         mocked_direct.assert_not_called()
         sent_text = mocked_send.call_args.args[6]
-        self.assertIn("Tool output", sent_text)
-        self.assertIn("total 48", sent_text)
-        self.assertIn("AGENTS.md", sent_text)
-        self.assertIn("```\ntotal 48", sent_text)
+        self.assertEqual(sent_text, "[蓝莺AI] Exec")
+        self.assertNotIn("AGENTS.md", sent_text)
+        self.assertNotIn("```\ntotal 48", sent_text)
         self.assertNotIn('"details"', sent_text)
         self.assertNotIn('"content"', sent_text)
         m.recent_session_ai_dynamic_stream_by_key.clear()
@@ -6780,8 +7683,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
         mocked_direct.assert_not_called()
         sent_text = mocked_send.call_args.args[6]
         self.assertIn("total 48", sent_text)
-        self.assertIn("AGENTS.md", sent_text)
-        self.assertIn("```\ntotal 48", sent_text)
+        self.assertNotIn("AGENTS.md", sent_text)
+        self.assertNotIn("```\ntotal 48", sent_text)
         self.assertNotIn("raw old text", sent_text)
         self.assertNotIn('"content"', sent_text)
         m.recent_session_ai_dynamic_stream_by_key.clear()
@@ -6841,7 +7744,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(sent_extra["ext"]["ai"]["is_debug_msg"], True)
         self.assertEqual(sent_extra["ext"]["ai"]["finish"], False)
         self.assertIn("Heartbeat", mocked_send.call_args.args[6])
-        self.assertIn("accepted", mocked_send.call_args.args[6])
+        self.assertNotIn("accepted", mocked_send.call_args.args[6])
         m.recent_session_ai_dynamic_stream_by_key.clear()
 
     def test_handle_session_message_sync_event_drops_control_ui_user_heartbeat_poll(self):
@@ -7004,7 +7907,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(sent_extra["ext"]["ai"]["is_debug_msg"], True)
         self.assertEqual(sent_extra["ext"]["ai"]["finish"], False)
         self.assertIn("Status", mocked_send.call_args.args[6])
-        self.assertIn("connection refused", mocked_send.call_args.args[6])
+        self.assertNotIn("connection refused", mocked_send.call_args.args[6])
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
 
@@ -7248,10 +8151,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(mocked_send.call_count, 1)
-        self.assertEqual(mocked_send.call_args.args[5], 12)
-        self.assertEqual(mocked_send.call_args.args[7]["ext"]["ai"]["finish"], True)
-        self.assertIn("处理完成", mocked_send.call_args.args[6])
+        self.assertEqual(mocked_send.call_count, 0)
         m.recent_session_ai_dynamic_stream_by_key.clear()
         m.recent_session_ai_dynamic_dedupe_by_key.clear()
         m.recent_request_debug_stream_by_key.clear()
@@ -7683,7 +8583,7 @@ class ConfigBatchSyncTests(unittest.TestCase):
         extra = send_args[7]
         openclaw_ext = extra["ext"]["openclaw"]
         self.assertEqual(openclaw_ext["type"], "config_patch")
-        self.assertEqual(openclaw_ext["formatVersion"], 2)
+        self.assertEqual(openclaw_ext["formatVersion"], 3)
         self.assertEqual(openclaw_ext["restart"], True)
         self.assertEqual(json.loads(openclaw_ext["raw"]), patch_config)
         self.assertEqual(openclaw_ext["batchEntries"], openclaw_ext["batch_entries"])

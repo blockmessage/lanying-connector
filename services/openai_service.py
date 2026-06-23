@@ -5844,6 +5844,10 @@ def add_debug_message(config, content, opt = {}):
                 int(message_id or 0),
                 debug_msg_seq,
                 display_content,
+                app_id=app_id,
+                target_kind='direct' if reply_msg_type == 'CHAT' else 'group',
+                target_id=reply_to,
+                target_sender_id=reply_from,
             )
         if is_debug:
             if not is_reasoning_msg:

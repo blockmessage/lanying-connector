@@ -50,14 +50,17 @@ recent_session_transcript_materialization_by_key = {}
 VISIBLE_REPLY_MATERIALIZATION_DEDUPE_TTL_MS = 15000
 recent_visible_reply_materialization_by_key = {}
 SESSION_TRANSCRIPT_AI_DYNAMIC_STREAM_TTL_MS = 10 * 60 * 1000
+SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_EVENT_TTL_SECONDS = 10 * 60
+SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_STREAM_TTL_SECONDS = 10 * 60
+SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_TTL_SECONDS = 30
+SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_WAIT_MS = (SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_TTL_SECONDS + 1) * 1000
+SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_FINISH_WAIT_MS = 5 * 60 * 1000
+# Legacy compatibility placeholders. Redis is now the only AI dynamic state source.
 recent_session_ai_dynamic_stream_by_key = {}
 recent_session_ai_dynamic_lock_by_key = {}
 recent_session_ai_dynamic_lock_registry_lock = threading.Lock()
-SESSION_TRANSCRIPT_AI_DYNAMIC_DEDUPE_TTL_MS = 15000
 recent_session_ai_dynamic_dedupe_by_key = {}
-REQUEST_DEBUG_STREAM_TTL_MS = 10 * 60 * 1000
 recent_request_debug_stream_by_key = {}
-SESSION_TRANSCRIPT_AI_DYNAMIC_REORDER_WAIT_MS = 300
 
 def normalize_show_in_support(access_type, show_in_support=None):
     normalized_access_type = str(access_type or 'public')
@@ -3881,8 +3884,16 @@ def resolve_parent_group_session_sync_target(app_id, node_info, mapping):
         'session_key': normalize_optional_session_key(parent_mapping.get('session_key', '')) or parent_session_key,
     }
 
+def strip_router_reply_current_prefix(text):
+    normalized_text = str(text or '')
+    prefix = '[[reply_to_current]]'
+    if normalized_text.startswith(prefix):
+        return normalized_text[len(prefix):].lstrip()
+    return normalized_text
+
 def forward_session_sync_router_group_reply(app_id, node_info, mapping, text, delivery_ext=None):
-    if not isinstance(mapping, dict) or not isinstance(text, str) or text.strip() == '':
+    normalized_text = strip_router_reply_current_prefix(text).strip()
+    if not isinstance(mapping, dict) or normalized_text == '':
         return 0
     session_identity = parse_clawchat_session_identity(mapping.get('session_key', ''))
     if session_identity is None:
@@ -3894,7 +3905,7 @@ def forward_session_sync_router_group_reply(app_id, node_info, mapping, text, de
         return 0
     router_reply_message(app_id, node_info, {
         'type': 'GROUPCHAT',
-        'content': text.strip(),
+        'content': normalized_text,
         'ext': json.dumps(delivery_ext, ensure_ascii=False) if isinstance(delivery_ext, dict) and len(delivery_ext) > 0 else '',
         'to': {
             'uid': group_id
@@ -3902,7 +3913,7 @@ def forward_session_sync_router_group_reply(app_id, node_info, mapping, text, de
     })
     logging.info(
         f"forward_session_sync_router_group_reply | app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
-        f"session_key:{mapping.get('session_key', '')}, group_id:{group_id}, text_len:{len(text.strip())}"
+        f"session_key:{mapping.get('session_key', '')}, group_id:{group_id}, text_len:{len(normalized_text)}"
     )
     return 1
 
@@ -3971,7 +3982,7 @@ def send_router_reply_signal(node_info, message):
 
 def forward_session_sync_router_direct_reply(app_id, node_info, target_user_id, text, delivery_ext=None):
     normalized_target_user_id = str(target_user_id).strip()
-    normalized_text = str(text).strip()
+    normalized_text = strip_router_reply_current_prefix(text).strip()
     if normalized_target_user_id == '' or normalized_text == '':
         return 0
     now_ms = int(time.time() * 1000)
@@ -4116,113 +4127,91 @@ def normalize_session_transcript_event(app_id, node_info, event):
             normalized_event[source_key] = value.strip()
     return normalized_event
 
-def cleanup_recent_session_ai_dynamic_state(now_ms=None):
-    current_ms = int(now_ms if isinstance(now_ms, int) else time.time() * 1000)
-    stale_stream_keys = []
-    for key, state in list(recent_session_ai_dynamic_stream_by_key.items()):
-        updated_at = int((state or {}).get('updated_at', 0) or 0)
-        if current_ms - updated_at > SESSION_TRANSCRIPT_AI_DYNAMIC_STREAM_TTL_MS:
-            stale_stream_keys.append(key)
-    for key in stale_stream_keys:
-        recent_session_ai_dynamic_stream_by_key.pop(key, None)
-    stale_dedupe_keys = []
-    for key, updated_at in list(recent_session_ai_dynamic_dedupe_by_key.items()):
-        if current_ms - int(updated_at or 0) > SESSION_TRANSCRIPT_AI_DYNAMIC_DEDUPE_TTL_MS:
-            stale_dedupe_keys.append(key)
-    for key in stale_dedupe_keys:
-        recent_session_ai_dynamic_dedupe_by_key.pop(key, None)
-    stale_request_keys = []
-    for key, state in list(recent_request_debug_stream_by_key.items()):
-        updated_at = int((state or {}).get('updated_at', 0) or 0)
-        if current_ms - updated_at > REQUEST_DEBUG_STREAM_TTL_MS:
-            stale_request_keys.append(key)
-    for key in stale_request_keys:
-        recent_request_debug_stream_by_key.pop(key, None)
-    with recent_session_ai_dynamic_lock_registry_lock:
-        stale_lock_keys = []
-        for key, entry in list(recent_session_ai_dynamic_lock_by_key.items()):
-            if key in recent_session_ai_dynamic_stream_by_key:
-                continue
-            if key in recent_request_debug_stream_by_key:
-                continue
-            if not isinstance(entry, dict):
-                stale_lock_keys.append(key)
-                continue
-            if int(entry.get('active_count', 0) or 0) > 0:
-                continue
-            updated_at = int(entry.get('updated_at', 0) or 0)
-            if current_ms - updated_at <= SESSION_TRANSCRIPT_AI_DYNAMIC_STREAM_TTL_MS:
-                continue
-            stale_lock_keys.append(key)
-        for key in stale_lock_keys:
-            recent_session_ai_dynamic_lock_by_key.pop(key, None)
-
-def acquire_session_ai_dynamic_stream_lock(stream_key):
-    normalized_stream_key = str(stream_key or '').strip()
-    if normalized_stream_key == '':
-        recent_session_ai_dynamic_lock_registry_lock.acquire()
-        return ''
-    with recent_session_ai_dynamic_lock_registry_lock:
-        entry = recent_session_ai_dynamic_lock_by_key.get(normalized_stream_key)
-        if not isinstance(entry, dict):
-            entry = {
-                'lock': threading.Lock(),
-                'active_count': 0,
-                'updated_at': int(time.time() * 1000),
-            }
-            recent_session_ai_dynamic_lock_by_key[normalized_stream_key] = entry
-        entry['active_count'] = int(entry.get('active_count', 0) or 0) + 1
-        entry['updated_at'] = int(time.time() * 1000)
-        lock = entry['lock']
-    lock.acquire()
-    return normalized_stream_key
-
-def release_session_ai_dynamic_stream_lock(stream_key):
-    normalized_stream_key = str(stream_key or '').strip()
-    if normalized_stream_key == '':
-        recent_session_ai_dynamic_lock_registry_lock.release()
-        return
-    entry = None
-    with recent_session_ai_dynamic_lock_registry_lock:
-        entry = recent_session_ai_dynamic_lock_by_key.get(normalized_stream_key)
-    if isinstance(entry, dict):
-        entry['lock'].release()
-        with recent_session_ai_dynamic_lock_registry_lock:
-            refreshed_entry = recent_session_ai_dynamic_lock_by_key.get(normalized_stream_key)
-            if isinstance(refreshed_entry, dict):
-                refreshed_entry['active_count'] = max(
-                    0,
-                    int(refreshed_entry.get('active_count', 0) or 0) - 1,
-                )
-                refreshed_entry['updated_at'] = int(time.time() * 1000)
-
-def remember_request_debug_stream_state(request_msg_id, last_msg_id, seq, content='', now_ms=None):
+def remember_request_debug_stream_state(
+    request_msg_id,
+    last_msg_id,
+    seq,
+    content='',
+    now_ms=None,
+    app_id='',
+    target_kind='',
+    target_id='',
+    target_sender_id='',
+    redis=None,
+):
     normalized_request_msg_id = str(request_msg_id or '').strip()
     normalized_last_msg_id = int(last_msg_id or 0)
     normalized_seq = int(seq or 0)
     if normalized_request_msg_id == '' or normalized_last_msg_id <= 0:
         return
     current_ms = int(now_ms if isinstance(now_ms, int) else time.time() * 1000)
-    cleanup_recent_session_ai_dynamic_state(current_ms)
-    recent_request_debug_stream_by_key[normalized_request_msg_id] = {
+    stream_key = build_session_ai_dynamic_stream_key(
+        app_id,
+        '',
+        normalized_request_msg_id,
+        str(target_kind or '').strip(),
+        str(target_id or '').strip(),
+    )
+    state = {
         'last_msg_id': normalized_last_msg_id,
         'seq': normalized_seq,
         'content': str(content or ''),
         'updated_at': current_ms,
     }
+    if stream_key == '':
+        return
+    try:
+        redis_client = redis or get_session_ai_dynamic_redis()
+        if redis_client is None:
+            logging.warning(f"remember_request_debug_stream_state redis unavailable | stream_key:{stream_key}")
+            return
+        distributed_lock_state = acquire_session_ai_dynamic_stream_lock_until_ready(stream_key, redis=redis_client)
+        if distributed_lock_state.get('redis_unavailable'):
+            logging.warning(f"remember_request_debug_stream_state lock redis unavailable | stream_key:{stream_key}")
+            return
+        if distributed_lock_state.get('enabled') and not distributed_lock_state.get('locked'):
+            logging.warning(f"remember_request_debug_stream_state lock busy | stream_key:{stream_key}")
+            return
+        try:
+            redis_client = distributed_lock_state.get('redis') or redis_client
+            existing_state = load_session_ai_dynamic_stream_state(stream_key, redis_client)
+            if existing_state is None:
+                logging.warning(f"remember_request_debug_stream_state load redis unavailable | stream_key:{stream_key}")
+                return
+            merged_state = merge_session_ai_dynamic_stream_state(existing_state, state)
+            save_session_ai_dynamic_stream_state(stream_key, merged_state, redis_client)
+        finally:
+            release_session_ai_dynamic_stream_distributed_lock(distributed_lock_state)
+    except Exception as e:
+        logging.warning(f"remember_request_debug_stream_state redis failed | stream_key:{stream_key}, error:{e}")
 
-def resolve_request_debug_stream_state(request_msg_id, now_ms=None):
+def resolve_request_debug_stream_state(
+    request_msg_id,
+    now_ms=None,
+    app_id='',
+    target_kind='',
+    target_id='',
+    target_sender_id='',
+    redis=None,
+):
     normalized_request_msg_id = str(request_msg_id or '').strip()
     if normalized_request_msg_id == '':
         return {}
     current_ms = int(now_ms if isinstance(now_ms, int) else time.time() * 1000)
-    cleanup_recent_session_ai_dynamic_state(current_ms)
-    state = recent_request_debug_stream_by_key.get(normalized_request_msg_id, {})
-    if not isinstance(state, dict):
+    stream_key = build_session_ai_dynamic_stream_key(
+        app_id,
+        '',
+        normalized_request_msg_id,
+        str(target_kind or '').strip(),
+        str(target_id or '').strip(),
+    )
+    if stream_key == '':
+        return {}
+    state = load_session_ai_dynamic_stream_state(stream_key, redis)
+    if not isinstance(state, dict) or len(state) == 0:
         return {}
     state['updated_at'] = current_ms
-    recent_request_debug_stream_by_key[normalized_request_msg_id] = state
-    return dict(state)
+    return state
 
 def resolve_session_transcript_request_msg_id(event, delivery_ext=None):
     if not isinstance(event, dict):
@@ -4238,18 +4227,52 @@ def resolve_session_transcript_request_msg_id(event, delivery_ext=None):
             request_msg_id = str(openclaw_ext.get('request_msg_id', '')).strip()
             if request_msg_id == '':
                 request_msg_id = str(openclaw_ext.get('trigger_msg_id', '')).strip()
-    if request_msg_id == '':
-        request_msg_id = str(event.get('message_id', '')).strip()
     return request_msg_id
 
-def build_session_ai_dynamic_stream_key(app_id, session_key, request_msg_id, target_kind, target_id):
+def resolve_session_transcript_stream_id(event, delivery_ext=None, request_msg_id=''):
+    if not isinstance(event, dict):
+        return ''
+    stream_id = str(request_msg_id or '').strip()
+    if stream_id == '':
+        stream_id = str(event.get('stream_id', '')).strip()
+    if stream_id == '' and isinstance(delivery_ext, dict):
+        openclaw_ext = delivery_ext.get('openclaw', {})
+        if isinstance(openclaw_ext, dict):
+            stream_id = str(openclaw_ext.get('stream_id', '')).strip()
+    if stream_id == '':
+        stream_id = str(event.get('trigger_msg_id', '')).strip()
+    if stream_id == '':
+        stream_id = str(event.get('router_request_sid', '')).strip()
+    if stream_id == '':
+        # Legacy plugin compatibility only. This is never treated as request_msg_id.
+        stream_id = str(event.get('message_id', '')).strip()
+    return stream_id
+
+def build_session_ai_dynamic_stream_key(app_id, *parts):
+    if len(parts) == 4:
+        session_key, stream_id, target_kind, target_id = parts
+    elif len(parts) == 5:
+        _, session_key, stream_id, target_kind, target_id = parts
+    else:
+        raise TypeError(f"build_session_ai_dynamic_stream_key expects 4 or 5 parts, got {len(parts)}")
     return '|'.join([
         str(app_id or '').strip(),
-        normalize_session_key(session_key),
-        str(request_msg_id or '').strip(),
+        normalize_session_key(session_key) if str(stream_id or '').strip() != '' else '',
+        str(stream_id or '').strip(),
         str(target_kind or '').strip(),
         str(target_id or '').strip(),
     ])
+
+def build_session_ai_dynamic_stream_key_for_event(app_id, node_info, event, stream_id, target_config, request_msg_id=''):
+    normalized_stream_id = str(stream_id or '').strip()
+    session_key = '' if str(request_msg_id or '').strip() != '' else (event or {}).get('session', '')
+    return build_session_ai_dynamic_stream_key(
+        app_id,
+        session_key,
+        normalized_stream_id,
+        (target_config or {}).get('target_kind', ''),
+        (target_config or {}).get('target_id', ''),
+    )
 
 def parse_session_sync_message_seq(value):
     normalized_value = str(value or '').strip()
@@ -4283,7 +4306,320 @@ def build_session_transcript_dedupe_identity(event, fallback_text=''):
         return f"seq:{order_seq}"
     return ''
 
-def build_session_ai_dynamic_ext(delivery_ext, request_msg_id, seq, is_finish):
+def build_session_ai_dynamic_event_dedupe_identity(event, transcript_kind):
+    if not isinstance(event, dict):
+        return ''
+    event_id = str(event.get('event_id', '')).strip()
+    if event_id != '':
+        return f"event:{event_id}"
+    session_key = normalize_session_key(event.get('session', ''))
+    legacy_identity = build_session_transcript_dedupe_identity(event, event.get('intermediate_text', ''))
+    if session_key == '' or legacy_identity == '':
+        return ''
+    return f"legacy:{session_key}|{str(transcript_kind or '').strip()}|{legacy_identity}"
+
+def build_session_ai_dynamic_event_dedupe_redis_key(app_id, node_id, event, transcript_kind):
+    identity = build_session_ai_dynamic_event_dedupe_identity(event, transcript_kind)
+    if identity == '':
+        return ''
+    return ':'.join([
+        'openclaw',
+        'ai_dynamic',
+        'event',
+        str(app_id or '').strip(),
+        hashlib.sha256(identity.encode('utf-8')).hexdigest(),
+    ])
+
+def get_session_ai_dynamic_redis():
+    try:
+        redis = lanying_redis.get_redis_connection()
+        if redis is None or not hasattr(redis, 'set') or not hasattr(redis, 'get') or not hasattr(redis, 'delete'):
+            return None
+        return redis
+    except Exception as e:
+        logging.warning(f"get_session_ai_dynamic_redis failed | error:{e}")
+        return None
+
+def reserve_session_ai_dynamic_delivery(app_id, node_id, event, transcript_kind, redis=None):
+    redis_key = build_session_ai_dynamic_event_dedupe_redis_key(app_id, node_id, event, transcript_kind)
+    if redis_key == '':
+        logging.warning(
+            f"reserve_session_ai_dynamic_delivery missing redis dedupe identity | app_id:{app_id}, node_id:{node_id}, "
+            f"event_id:{str((event or {}).get('event_id', '')).strip()}"
+        )
+        return {'redis_unavailable': True, 'dedupe_key': ''}
+    redis_client = redis or get_session_ai_dynamic_redis()
+    if redis_client is None:
+        logging.warning(
+            f"reserve_session_ai_dynamic_delivery redis unavailable | app_id:{app_id}, node_id:{node_id}, "
+            f"event_id:{str((event or {}).get('event_id', '')).strip()}, redis_key:{redis_key}"
+        )
+        return {'redis_unavailable': True, 'dedupe_key': redis_key}
+    try:
+        reserved = redis_client.set(
+            redis_key,
+            '1',
+            ex=SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_EVENT_TTL_SECONDS,
+            nx=True,
+        )
+        if not reserved:
+            logging.info(
+                f"skip ai dynamic duplicate delivery | app_id:{app_id}, node_id:{node_id}, "
+                f"event_id:{str((event or {}).get('event_id', '')).strip()}, redis_key:{redis_key}"
+            )
+            return {'duplicate': True, 'dedupe_key': redis_key}
+        return {'duplicate': False, 'dedupe_key': redis_key}
+    except Exception as e:
+        logging.warning(
+            f"reserve_session_ai_dynamic_delivery redis failed | app_id:{app_id}, node_id:{node_id}, "
+            f"event_id:{str((event or {}).get('event_id', '')).strip()}, error:{e}"
+        )
+        return {'redis_unavailable': True, 'dedupe_key': redis_key}
+
+def release_session_ai_dynamic_delivery(dedupe_state, redis=None):
+    if not isinstance(dedupe_state, dict):
+        return
+    redis_key = str(dedupe_state.get('dedupe_key', '')).strip()
+    if redis_key == '' or dedupe_state.get('duplicate') or dedupe_state.get('redis_unavailable'):
+        return
+    try:
+        redis_client = redis or get_session_ai_dynamic_redis()
+        if redis_client is not None:
+            redis_client.delete(redis_key)
+    except Exception as e:
+        logging.warning(f"release_session_ai_dynamic_delivery redis failed | redis_key:{redis_key}, error:{e}")
+
+def build_session_ai_dynamic_stream_redis_key(stream_key):
+    normalized_stream_key = str(stream_key or '').strip()
+    if normalized_stream_key == '':
+        return ''
+    return ':'.join([
+        'openclaw',
+        'ai_dynamic',
+        'stream',
+        hashlib.sha256(normalized_stream_key.encode('utf-8')).hexdigest(),
+    ])
+
+def build_session_ai_dynamic_stream_lock_redis_key(stream_key):
+    normalized_stream_key = str(stream_key or '').strip()
+    if normalized_stream_key == '':
+        return ''
+    return ':'.join([
+        'openclaw',
+        'ai_dynamic',
+        'stream_lock',
+        hashlib.sha256(normalized_stream_key.encode('utf-8')).hexdigest(),
+    ])
+
+def acquire_session_ai_dynamic_stream_distributed_lock(stream_key, wait_ms=None, redis=None):
+    redis_key = build_session_ai_dynamic_stream_lock_redis_key(stream_key)
+    if redis_key == '':
+        return {
+            'locked': False,
+            'redis_key': '',
+            'token': '',
+            'redis': None,
+            'enabled': False,
+        }
+    try:
+        redis = redis or get_session_ai_dynamic_redis()
+        if redis is None:
+            return {
+                'locked': False,
+                'redis_key': redis_key,
+                'token': '',
+                'redis': None,
+                'enabled': True,
+                'redis_unavailable': True,
+            }
+        token = secrets.token_hex(16)
+        normalized_wait_ms = int(wait_ms if wait_ms is not None else SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_WAIT_MS)
+        deadline_ms = int(time.time() * 1000) + max(normalized_wait_ms, 0)
+        while True:
+            locked = redis.set(
+                redis_key,
+                token,
+                ex=SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_TTL_SECONDS,
+                nx=True,
+            )
+            if locked:
+                return {
+                    'locked': True,
+                    'redis_key': redis_key,
+                    'token': token,
+                    'redis': redis,
+                    'enabled': True,
+                }
+            if normalized_wait_ms <= 0 or int(time.time() * 1000) >= deadline_ms:
+                break
+            time.sleep(0.05)
+        logging.info(f"ai dynamic stream redis lock busy | stream_key:{stream_key}, redis_key:{redis_key}")
+        return {
+            'locked': False,
+            'redis_key': redis_key,
+            'token': token,
+            'redis': redis,
+            'enabled': True,
+        }
+    except Exception as e:
+        logging.warning(f"acquire_session_ai_dynamic_stream_distributed_lock failed | stream_key:{stream_key}, error:{e}")
+        return {
+            'locked': False,
+            'redis_key': redis_key,
+            'token': '',
+            'redis': None,
+            'enabled': True,
+            'redis_unavailable': True,
+        }
+
+def release_session_ai_dynamic_stream_distributed_lock(lock_state):
+    if not isinstance(lock_state, dict) or not lock_state.get('locked'):
+        return
+    redis = lock_state.get('redis')
+    redis_key = str(lock_state.get('redis_key', '')).strip()
+    token = str(lock_state.get('token', '')).strip()
+    if redis is None or redis_key == '' or token == '':
+        return
+    try:
+        if hasattr(redis, 'pipeline'):
+            pipe = redis.pipeline()
+            try:
+                while True:
+                    pipe.watch(redis_key)
+                    current_token = pipe.get(redis_key)
+                    if isinstance(current_token, bytes):
+                        current_token = current_token.decode('utf-8')
+                    if str(current_token or '') != token:
+                        pipe.unwatch()
+                        return
+                    pipe.multi()
+                    pipe.delete(redis_key)
+                    try:
+                        pipe.execute()
+                        return
+                    except Exception as watch_error:
+                        if watch_error.__class__.__name__ == 'WatchError':
+                            continue
+                        raise
+            finally:
+                try:
+                    pipe.reset()
+                except Exception:
+                    pass
+        logging.warning(
+            f"release_session_ai_dynamic_stream_distributed_lock skip non-transactional redis client | redis_key:{redis_key}"
+        )
+    except Exception as e:
+        logging.warning(f"release_session_ai_dynamic_stream_distributed_lock failed | redis_key:{redis_key}, error:{e}")
+
+def acquire_session_ai_dynamic_stream_lock_until_ready(stream_key, max_wait_ms=None, attempt_wait_ms=None, redis=None):
+    total_wait_ms = int(max_wait_ms if max_wait_ms is not None else SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_WAIT_MS)
+    per_attempt_wait_ms = int(
+        attempt_wait_ms
+        if attempt_wait_ms is not None
+        else min(1000, SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_WAIT_MS)
+    )
+    deadline_ms = int(time.time() * 1000) + max(total_wait_ms, 0)
+    while True:
+        lock_state = acquire_session_ai_dynamic_stream_distributed_lock(
+            stream_key,
+            wait_ms=per_attempt_wait_ms,
+            redis=redis,
+        )
+        if lock_state.get('redis_unavailable') or lock_state.get('locked') or not lock_state.get('enabled'):
+            return lock_state
+        if total_wait_ms <= 0 or int(time.time() * 1000) >= deadline_ms:
+            return lock_state
+        time.sleep(0.05)
+
+def normalize_session_ai_dynamic_stream_state(state):
+    if not isinstance(state, dict) or len(state) == 0:
+        return {}
+    return {
+        'last_msg_id': int(state.get('last_msg_id', 0) or 0),
+        'content': str(state.get('content', '') or ''),
+        'seq': int(state.get('seq', 0) or 0),
+        'updated_at': int(state.get('updated_at', 0) or 0),
+    }
+
+def merge_session_ai_dynamic_stream_state(existing_state, incoming_state):
+    normalized_existing_state = normalize_session_ai_dynamic_stream_state(existing_state)
+    normalized_incoming_state = normalize_session_ai_dynamic_stream_state(incoming_state)
+    if len(normalized_existing_state) == 0:
+        return normalized_incoming_state
+    if len(normalized_incoming_state) == 0:
+        return normalized_existing_state
+    existing_seq = int(normalized_existing_state.get('seq', 0) or 0)
+    incoming_seq = int(normalized_incoming_state.get('seq', 0) or 0)
+    if incoming_seq > existing_seq:
+        return normalized_incoming_state
+    if incoming_seq < existing_seq:
+        return normalized_existing_state
+    existing_updated_at = int(normalized_existing_state.get('updated_at', 0) or 0)
+    incoming_updated_at = int(normalized_incoming_state.get('updated_at', 0) or 0)
+    if incoming_updated_at > existing_updated_at:
+        return normalized_incoming_state
+    return normalized_existing_state
+
+def load_session_ai_dynamic_stream_state(stream_key, redis=None):
+    normalized_stream_key = str(stream_key or '').strip()
+    if normalized_stream_key == '':
+        return None
+    redis_key = build_session_ai_dynamic_stream_redis_key(normalized_stream_key)
+    if redis_key != '':
+        try:
+            redis_client = redis or get_session_ai_dynamic_redis()
+            if redis_client is not None:
+                raw_state = redis_client.get(redis_key)
+                if raw_state:
+                    if isinstance(raw_state, bytes):
+                        raw_state = raw_state.decode('utf-8')
+                    return normalize_session_ai_dynamic_stream_state(json.loads(raw_state))
+                return {}
+            logging.warning(f"load_session_ai_dynamic_stream_state redis unavailable | stream_key:{normalized_stream_key}")
+            return None
+        except Exception as e:
+            logging.warning(f"load_session_ai_dynamic_stream_state redis failed | stream_key:{normalized_stream_key}, error:{e}")
+            return None
+    return None
+
+def save_session_ai_dynamic_stream_state(stream_key, state, redis=None):
+    normalized_stream_key = str(stream_key or '').strip()
+    normalized_state = normalize_session_ai_dynamic_stream_state(state)
+    if normalized_stream_key == '' or len(normalized_state) == 0:
+        return False
+    redis_key = build_session_ai_dynamic_stream_redis_key(normalized_stream_key)
+    if redis_key == '':
+        return False
+    try:
+        redis_client = redis or get_session_ai_dynamic_redis()
+        if redis_client is not None:
+            redis_client.set(
+                redis_key,
+                json.dumps(normalized_state, ensure_ascii=False),
+                ex=SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_STREAM_TTL_SECONDS,
+            )
+            return True
+        logging.warning(f"save_session_ai_dynamic_stream_state redis unavailable | stream_key:{normalized_stream_key}")
+    except Exception as e:
+        logging.warning(f"save_session_ai_dynamic_stream_state redis failed | stream_key:{normalized_stream_key}, error:{e}")
+    return False
+
+def delete_session_ai_dynamic_stream_state(stream_key, redis=None):
+    normalized_stream_key = str(stream_key or '').strip()
+    if normalized_stream_key == '':
+        return
+    redis_key = build_session_ai_dynamic_stream_redis_key(normalized_stream_key)
+    if redis_key == '':
+        return
+    try:
+        redis_client = redis or get_session_ai_dynamic_redis()
+        if redis_client is not None:
+            redis_client.delete(redis_key)
+    except Exception as e:
+        logging.warning(f"delete_session_ai_dynamic_stream_state redis failed | stream_key:{normalized_stream_key}, error:{e}")
+
+def build_session_ai_dynamic_ext(delivery_ext, request_msg_id, stream_id, seq, is_finish):
     ext = dict(delivery_ext or {})
     ai_ext = dict(ext.get('ai', {})) if isinstance(ext.get('ai', {}), dict) else {}
     ai_ext.update({
@@ -4291,10 +4627,20 @@ def build_session_ai_dynamic_ext(delivery_ext, request_msg_id, seq, is_finish):
         'is_debug_msg': True,
         'stream': True,
         'seq': int(seq or 0),
-        'request_msg_id': request_msg_id,
         'finish': bool(is_finish),
         'need_antispam_check': False,
     })
+    normalized_request_msg_id = str(request_msg_id or '').strip()
+    if normalized_request_msg_id != '':
+        ai_ext['request_msg_id'] = normalized_request_msg_id
+    else:
+        ai_ext.pop('request_msg_id', None)
+    normalized_stream_id = str(stream_id or '').strip()
+    if normalized_stream_id != '':
+        ai_ext['stream_id'] = normalized_stream_id
+        openclaw_ext = dict(ext.get('openclaw', {})) if isinstance(ext.get('openclaw', {}), dict) else {}
+        openclaw_ext['stream_id'] = normalized_stream_id
+        ext['openclaw'] = openclaw_ext
     ext['ai'] = ai_ext
     return ext
 
@@ -4308,104 +4654,85 @@ def format_session_transcript_ai_dynamic_chunk(content, target_config):
         timestr = datetime.now().strftime('%H:%M:%S.%f')[:-3]
         return f"[蓝莺AI][{timestr}] {normalized_content}"
     if status_bar:
-        final_content = f"[蓝莺AI] {normalized_content}"
+        first_line = ''
+        for line in normalized_content.splitlines():
+            stripped = line.strip()
+            if stripped == '' or stripped.startswith('```') or stripped in ['Tool input', 'Tool output']:
+                continue
+            first_line = stripped
+            break
+        if first_line == '':
+            if 'Tool output' in normalized_content:
+                first_line = 'Tool output'
+            elif 'Tool input' in normalized_content:
+                first_line = 'Tool input'
+            else:
+                first_line = '处理中'
+        final_content = f"[蓝莺AI] {first_line}"
         trunc_size = 150
         if len(final_content) > trunc_size:
             final_content = final_content[:trunc_size - 3] + "..."
         return final_content
     return normalized_content
 
-def should_flush_session_ai_dynamic_pending_item(item, now_ms):
-    if not isinstance(item, dict):
-        return False
-    return True
-
-def flush_session_ai_dynamic_pending_items(stream_key, state, now_ms):
-    pending_items = list((state or {}).get('pending_items', []))
-    if len(pending_items) == 0:
+def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
+    redis_client = redis or get_session_ai_dynamic_redis()
+    if redis_client is None:
+        return {'result': 'redis_unavailable', 'send_count': 0, 'last_send_msg_id': 0}
+    current_ms = int(now_ms if isinstance(now_ms, int) else time.time() * 1000)
+    state = load_session_ai_dynamic_stream_state(stream_key, redis_client)
+    if state is None:
+        return {'result': 'redis_unavailable', 'send_count': 0, 'last_send_msg_id': 0}
+    if not isinstance(state, dict):
+        state = {}
+    seq = int(state.get('seq', 0) or 0) + 1
+    ext = build_session_ai_dynamic_ext(
+        item.get('delivery_ext', {}),
+        item.get('request_msg_id', ''),
+        item.get('stream_id', ''),
+        seq,
+        False,
+    )
+    last_msg_id = int(state.get('last_msg_id', 0) or 0)
+    existing_content = str(state.get('content', '') or '').strip()
+    next_content = format_session_transcript_ai_dynamic_chunk(
+        item.get('text', ''),
+        item.get('target_config', {}),
+    )
+    if next_content == '':
+        return {'result': 'suppressed', 'send_count': 0, 'last_send_msg_id': 0}
+    target_config = item.get('target_config', {})
+    is_debug = bool((target_config or {}).get('is_debug', False))
+    status_bar = bool((target_config or {}).get('status_bar', False))
+    if status_bar and not is_debug:
+        send_content = next_content
+        cumulative_content = next_content
+    else:
+        send_content = next_content if existing_content == '' else f"\n\n{next_content}"
+        cumulative_content = next_content if existing_content == '' else f"{existing_content}\n\n{next_content}"
+    content_type = resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id)
+    msg_id = send_session_transcript_ai_dynamic_update(
+        target_config,
+        send_content if last_msg_id > 0 else cumulative_content,
+        ext,
+        related_mid=last_msg_id,
+        is_finish=False,
+        content_type=content_type,
+    )
+    if msg_id <= 0:
         return {
+            'result': 'send_failed',
             'send_count': 0,
             'last_send_msg_id': 0,
+            'failed_event_id': item.get('event_id', ''),
         }
-    send_count = 0
-    last_send_msg_id = 0
-    while len(pending_items) > 0:
-        next_item = pending_items[0]
-        pending_items.pop(0)
-        seq = int((state or {}).get('seq', 0) or 0) + 1
-        ext = build_session_ai_dynamic_ext(
-            next_item.get('delivery_ext', {}),
-            next_item.get('request_msg_id', ''),
-            seq,
-            False,
-        )
-        last_msg_id = int((state or {}).get('last_msg_id', 0) or 0)
-        existing_content = str((state or {}).get('content', '')).strip()
-        next_content = format_session_transcript_ai_dynamic_chunk(
-            next_item.get('text', ''),
-            next_item.get('target_config', {}),
-        )
-        if next_content == '':
-            continue
-        target_config = next_item.get('target_config', {})
-        is_debug = bool((target_config or {}).get('is_debug', False))
-        status_bar = bool((target_config or {}).get('status_bar', False))
-        if status_bar and not is_debug:
-            delta_content = next_content
-            cumulative_content = next_content
-            content_type = 12 if last_msg_id > 0 else 0
-        else:
-            delta_content = next_content if existing_content == '' else f"\n\n{next_content}"
-            cumulative_content = next_content if existing_content == '' else f"{existing_content}\n\n{next_content}"
-            content_type = 11 if last_msg_id > 0 else 0
-        msg_id = send_session_transcript_ai_dynamic_update(
-            target_config,
-            delta_content if last_msg_id > 0 else cumulative_content,
-            ext,
-            related_mid=last_msg_id,
-            is_finish=False,
-            content_type=content_type,
-        )
-        if msg_id <= 0:
-            pending_items.insert(0, next_item)
-            break
-        state['last_msg_id'] = last_msg_id or msg_id
-        state['content'] = cumulative_content
-        state['seq'] = seq
-        state['updated_at'] = now_ms
-        last_send_msg_id = msg_id
-        send_count += 1
-    state['pending_items'] = pending_items
-    recent_session_ai_dynamic_stream_by_key[stream_key] = state
-    return {
-        'send_count': send_count,
-        'last_send_msg_id': last_send_msg_id,
-    }
-
-def reserve_recent_session_ai_dynamic_delivery(event, transcript_kind):
-    session_key = normalize_session_key((event or {}).get('session', ''))
-    if session_key == '':
-        return {
-            'duplicate': False,
-            'dedupe_key': '',
-        }
-    dedupe_identity = build_session_transcript_dedupe_identity(
-        event,
-        (event or {}).get('intermediate_text', ''),
-    )
-    dedupe_key = '|'.join([session_key, str(transcript_kind or '').strip(), dedupe_identity])
-    now_ms = int(time.time() * 1000)
-    cleanup_recent_session_ai_dynamic_state(now_ms)
-    if dedupe_key in recent_session_ai_dynamic_dedupe_by_key:
-        return {
-            'duplicate': True,
-            'dedupe_key': dedupe_key,
-        }
-    recent_session_ai_dynamic_dedupe_by_key[dedupe_key] = now_ms
-    return {
-        'duplicate': False,
-        'dedupe_key': dedupe_key,
-    }
+    state['last_msg_id'] = last_msg_id or msg_id
+    state['content'] = cumulative_content
+    state['seq'] = seq
+    state['updated_at'] = current_ms
+    if not save_session_ai_dynamic_stream_state(stream_key, state, redis_client):
+        return {'result': 'redis_unavailable', 'send_count': 1, 'last_send_msg_id': msg_id}
+    return {'result': 'delivered', 'send_count': 1, 'last_send_msg_id': msg_id}
 
 def resolve_session_transcript_intermediate_payload(event, message):
     transcript_kind = str((event or {}).get('transcript_kind', '')).strip()
@@ -4619,8 +4946,24 @@ def send_session_transcript_ai_dynamic_update(config, content, ext, related_mid=
         extra,
     )
 
+def resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id):
+    if int(last_msg_id or 0) <= 0:
+        return 0
+    is_debug = bool((target_config or {}).get('is_debug', False))
+    status_bar = bool((target_config or {}).get('status_bar', False))
+    if status_bar and not is_debug:
+        return 12
+    return 11
+
 def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, target, target_identity, event, message, delivery_ext):
     request_msg_id = resolve_session_transcript_request_msg_id(event, delivery_ext)
+    stream_id = resolve_session_transcript_stream_id(event, delivery_ext, request_msg_id)
+    if request_msg_id == '' and stream_id != '':
+        logging.info(
+            f"ai dynamic without request_msg_id use stream_id | app_id:{app_id}, "
+            f"node_id:{node_info.get('node_id', '')}, session_key:{normalize_session_key((event or {}).get('session', ''))}, "
+            f"stream_id:{stream_id}"
+        )
     payload = resolve_session_transcript_intermediate_payload(event, message)
     transcript_kind = str(payload.get('transcript_kind', '')).strip()
     if not payload.get('is_intermediate') or transcript_kind == '':
@@ -4640,56 +4983,72 @@ def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, targ
         }
     if target_config_result.get('result') != 'ok':
         return target_config_result
-    dedupe_state = reserve_recent_session_ai_dynamic_delivery(event, transcript_kind)
+    target_config = target_config_result['data']
+    next_content = str(payload.get('text', '')).strip()
+    if next_content == '':
+        return {
+            'result': 'suppressed',
+        }
+    stream_key = build_session_ai_dynamic_stream_key_for_event(app_id, node_info, event, stream_id, target_config, request_msg_id)
+    redis_client = get_session_ai_dynamic_redis()
+    if redis_client is None:
+        return {
+            'result': 'redis_unavailable',
+            'stream_key': stream_key,
+        }
+    now_ms = int(time.time() * 1000)
+    dedupe_state = reserve_session_ai_dynamic_delivery(
+        app_id,
+        node_info.get('node_id', ''),
+        event,
+        transcript_kind,
+        redis_client,
+    )
+    if dedupe_state.get('redis_unavailable'):
+        return {
+            'result': 'redis_unavailable',
+            'stream_key': stream_key,
+        }
     if dedupe_state.get('duplicate'):
         return {
             'result': 'duplicate',
+            'stream_key': stream_key,
         }
-    target_config = target_config_result['data']
-    stream_key = build_session_ai_dynamic_stream_key(
-        app_id,
-        event.get('session', ''),
-        request_msg_id,
-        target_config.get('target_kind', ''),
-        target_config.get('target_id', ''),
-    )
-    acquired_stream_key = acquire_session_ai_dynamic_stream_lock(stream_key)
+    distributed_lock_state = acquire_session_ai_dynamic_stream_distributed_lock(stream_key)
+    if distributed_lock_state.get('redis_unavailable'):
+        release_session_ai_dynamic_delivery(dedupe_state, redis_client)
+        return {
+            'result': 'redis_unavailable',
+            'stream_key': stream_key,
+        }
+    if distributed_lock_state.get('enabled') and not distributed_lock_state.get('locked'):
+        release_session_ai_dynamic_delivery(dedupe_state, redis_client)
+        return {
+            'result': 'busy',
+            'stream_key': stream_key,
+        }
+    deliver_result = {'send_count': 0}
     try:
-        now_ms = int(time.time() * 1000)
-        cleanup_recent_session_ai_dynamic_state(now_ms)
-        state = recent_session_ai_dynamic_stream_by_key.get(stream_key, {})
-        if not isinstance(state, dict) or len(state) == 0:
-            state = resolve_request_debug_stream_state(request_msg_id, now_ms)
-        next_content = str(payload.get('text', '')).strip()
-        if next_content == '':
-            return {
-                'result': 'suppressed',
-            }
-        if not isinstance(state, dict):
-            state = {}
-        pending_items = list(state.get('pending_items', []))
-        pending_items.append({
-            'order_seq': parse_session_sync_order_seq(event),
-            'message_timestamp': int((event or {}).get('message_timestamp', 0) or 0),
+        redis_client = distributed_lock_state.get('redis')
+        deliver_result = deliver_session_ai_dynamic_item(stream_key, {
+            'event_id': str((event or {}).get('event_id', '')).strip(),
+            'stream_id': stream_id,
             'transcript_kind': transcript_kind,
             'text': next_content,
             'target_config': target_config,
             'delivery_ext': delivery_ext,
             'request_msg_id': request_msg_id,
-            'first_seen_at': now_ms,
-        })
-        state['pending_items'] = pending_items
-        state.setdefault('last_msg_id', int((state or {}).get('last_msg_id', 0) or 0))
-        state.setdefault('content', str((state or {}).get('content', '')))
-        state.setdefault('seq', int((state or {}).get('seq', 0) or 0))
-        state.setdefault('last_message_seq', int((state or {}).get('last_message_seq', 0) or 0))
-        state['updated_at'] = now_ms
-        recent_session_ai_dynamic_stream_by_key[stream_key] = state
-        flush_result = flush_session_ai_dynamic_pending_items(stream_key, state, now_ms)
+        }, redis_client, now_ms)
+        if deliver_result.get('result') in ['redis_unavailable', 'send_failed']:
+            release_session_ai_dynamic_delivery(dedupe_state, redis_client)
+            return {
+                'result': deliver_result.get('result'),
+                'stream_key': stream_key,
+            }
     finally:
-        release_session_ai_dynamic_stream_lock(acquired_stream_key)
+        release_session_ai_dynamic_stream_distributed_lock(distributed_lock_state)
     return {
-        'result': 'delivered' if int(flush_result.get('send_count', 0) or 0) > 0 else 'buffered',
+        'result': deliver_result.get('result', 'delivered'),
         'stream_key': stream_key,
     }
 
@@ -4713,6 +5072,7 @@ def build_session_transcript_ai_dynamic_completion_line(content, target_config=N
 
 def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, target, target_identity, event, delivery_ext):
     request_msg_id = resolve_session_transcript_request_msg_id(event, delivery_ext)
+    stream_id = resolve_session_transcript_stream_id(event, delivery_ext, request_msg_id)
     target_config_result = resolve_session_transcript_ai_dynamic_target(
         app_id,
         node_info,
@@ -4723,26 +5083,27 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
     if target_config_result.get('result') != 'ok':
         return
     target_config = target_config_result['data']
-    stream_key = build_session_ai_dynamic_stream_key(
-        app_id,
-        event.get('session', ''),
-        request_msg_id,
-        target_config.get('target_kind', ''),
-        target_config.get('target_id', ''),
+    stream_key = build_session_ai_dynamic_stream_key_for_event(app_id, node_info, event, stream_id, target_config, request_msg_id)
+    distributed_lock_state = acquire_session_ai_dynamic_stream_lock_until_ready(
+        stream_key,
+        max_wait_ms=SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_FINISH_WAIT_MS,
     )
-    acquired_stream_key = acquire_session_ai_dynamic_stream_lock(stream_key)
+    if distributed_lock_state.get('redis_unavailable'):
+        return
+    if distributed_lock_state.get('enabled') and not distributed_lock_state.get('locked'):
+        logging.warning(
+            f"maybe_finish_session_transcript_ai_dynamic lock busy after retry | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, stream_key:{stream_key}"
+        )
+        return
     try:
         now_ms = int(time.time() * 1000)
-        cleanup_recent_session_ai_dynamic_state(now_ms)
-        state = recent_session_ai_dynamic_stream_by_key.get(stream_key, {})
-        if not isinstance(state, dict) or len(state) == 0:
-            state = resolve_request_debug_stream_state(request_msg_id, now_ms)
-            if isinstance(state, dict) and len(state) > 0:
-                recent_session_ai_dynamic_stream_by_key[stream_key] = dict(state)
+        redis_client = distributed_lock_state.get('redis')
+        state = load_session_ai_dynamic_stream_state(stream_key, redis_client)
+        if state is None:
+            return
         if not isinstance(state, dict) or len(state) == 0:
             return
-        flush_session_ai_dynamic_pending_items(stream_key, state, now_ms + SESSION_TRANSCRIPT_AI_DYNAMIC_REORDER_WAIT_MS)
-        state = recent_session_ai_dynamic_stream_by_key.get(stream_key, state)
         last_msg_id = int(state.get('last_msg_id', 0) or 0)
         content = str(state.get('content', '')).strip()
         completion_line = build_session_transcript_ai_dynamic_completion_line(content, target_config)
@@ -4754,7 +5115,7 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
             else:
                 content = f"{content}\n\n{completion_line}" if content != '' else completion_line
         if last_msg_id <= 0 or content == '':
-            recent_session_ai_dynamic_stream_by_key.pop(stream_key, None)
+            delete_session_ai_dynamic_stream_state(stream_key, redis_client)
             return
         seq = int(state.get('seq', 0) or 0) + 1
         ext = dict(delivery_ext or {})
@@ -4764,10 +5125,18 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
             'is_debug_msg': True,
             'stream': True,
             'seq': seq,
-            'request_msg_id': request_msg_id,
             'finish': True,
             'need_antispam_check': False,
         })
+        if request_msg_id != '':
+            ai_ext['request_msg_id'] = request_msg_id
+        else:
+            ai_ext.pop('request_msg_id', None)
+        if stream_id != '':
+            ai_ext['stream_id'] = stream_id
+            openclaw_ext = dict(ext.get('openclaw', {})) if isinstance(ext.get('openclaw', {}), dict) else {}
+            openclaw_ext['stream_id'] = stream_id
+            ext['openclaw'] = openclaw_ext
         ext['ai'] = ai_ext
         send_session_transcript_ai_dynamic_update(
             target_config,
@@ -4775,10 +5144,11 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
             ext,
             related_mid=last_msg_id,
             is_finish=True,
+            content_type=12,
         )
-        recent_session_ai_dynamic_stream_by_key.pop(stream_key, None)
+        delete_session_ai_dynamic_stream_state(stream_key, redis_client)
     finally:
-        release_session_ai_dynamic_stream_lock(acquired_stream_key)
+        release_session_ai_dynamic_stream_distributed_lock(distributed_lock_state)
 
 def maybe_finish_router_reply_ai_dynamic(app_id, node_info, message, delivery_ext):
     if not isinstance(message, dict) or not isinstance(delivery_ext, dict):
@@ -4803,6 +5173,8 @@ def maybe_finish_router_reply_ai_dynamic(app_id, node_info, message, delivery_ex
         'session': session_key,
         'source': 'control_ui_reply',
         'message_id': str(openclaw_ext.get('message_id', '')).strip(),
+        'event_id': str(openclaw_ext.get('event_id', '')).strip(),
+        'stream_id': str(openclaw_ext.get('stream_id', '')).strip(),
         'trigger_msg_id': str(openclaw_ext.get('request_msg_id', '') or openclaw_ext.get('trigger_msg_id', '')).strip(),
         'parent_session': normalize_optional_session_key(openclaw_ext.get('parent_session', '')),
         'root_session': normalize_optional_session_key(openclaw_ext.get('root_session', '')),
@@ -4962,6 +5334,14 @@ def handle_session_message_sync_event(app_id, node_info, event):
         observed_origin_facts.get('sync_variant', ''),
         display_kind,
     )
+    delivery_openclaw_ext = delivery_ext.get('openclaw', {}) if isinstance(delivery_ext, dict) else {}
+    if isinstance(delivery_openclaw_ext, dict):
+        event_id = str(event.get('event_id', '')).strip()
+        stream_id = str(event.get('stream_id', '')).strip()
+        if event_id != '':
+            delivery_openclaw_ext['event_id'] = event_id
+        if stream_id != '':
+            delivery_openclaw_ext['stream_id'] = stream_id
     intermediate_payload = resolve_session_transcript_intermediate_payload(event, message)
     if should_drop_session_transcript_intermediate_payload(event, intermediate_payload, role):
         logging.info(
@@ -5027,7 +5407,16 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 message,
                 delivery_ext,
             )
-            if ai_dynamic_result.get('result') in ['delivered', 'duplicate', 'suppressed', 'buffered']:
+            if ai_dynamic_result.get('result') in ['busy', 'redis_unavailable']:
+                forget_recent_session_transcript_materialization(dedupe_key)
+                logging.info(
+                    f"handle_session_message_sync_event ai_dynamic not ready | "
+                    f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                    f"message_id:{message_id}, result:{ai_dynamic_result.get('result')}, "
+                    f"stream_key:{ai_dynamic_result.get('stream_key', '')}"
+                )
+                return
+            if ai_dynamic_result.get('result') in ['delivered', 'duplicate', 'suppressed']:
                 logging.info(
                     f"handle_session_message_sync_event ai_dynamic intermediate | "
                     f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
@@ -5650,7 +6039,7 @@ def router_reply_message(app_id, node_info, message):
     }
     send_msg_type = 2 if message['type'] == 'GROUPCHAT' else 1
     content_type = 0
-    content = message['content']
+    content = strip_router_reply_current_prefix(message['content'])
     to_id = message['to']['uid']
     if str(chatbot_user_id) == str(to_id):
         logging.info(f"router_reply_message stop for to is chatbot | chatbot_user_id: {chatbot_user_id}, to_id: {to_id}, message: {message}")
