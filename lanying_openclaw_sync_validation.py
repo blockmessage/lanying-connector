@@ -4,13 +4,13 @@ import logging
 import os
 import secrets
 import socket
-import threading
 import time
 
 from lanying_async import executor
 import lanying_config
 import lanying_im_api
 import lanying_openclaw as core
+import lanying_redis
 
 
 STATUS_PENDING = 'pending'
@@ -25,9 +25,7 @@ DEFAULT_DUPLICATE_OBSERVATION_WINDOW_MS = 10000
 DEFAULT_PARENT_RELAY_GRACE_MS = 1500
 DEFAULT_PREVIEW_LOGIN_WAIT_MS = 0
 LOG_SUBDIR = 'openclaw_sync_validation'
-
-tasks = {}
-tasks_lock = threading.Lock()
+TASK_REDIS_TTL_SECONDS = 3600
 
 
 def pick_int_config(value, default_value):
@@ -53,9 +51,64 @@ def normalize_comparable_timestamp_ms(value):
     return timestamp
 
 
+def build_task_redis_key(task_id):
+    normalized_task_id = str(task_id or '').strip()
+    if normalized_task_id == '':
+        return ''
+    return f"lanying:openclaw:sync_validation:task:{normalized_task_id}"
+
+
+def get_task_redis():
+    try:
+        return lanying_redis.get_redis_connection()
+    except Exception:
+        logging.exception("get_task_redis failed")
+        return None
+
+
+def save_task(task):
+    if not isinstance(task, dict):
+        return False
+    task_id = str(task.get('task_id', '')).strip()
+    redis_key = build_task_redis_key(task_id)
+    if redis_key == '':
+        return False
+    redis_client = get_task_redis()
+    if redis_client is None:
+        logging.warning(f"save_sync_validation_task redis unavailable | task_id:{task_id}")
+        return False
+    try:
+        redis_client.set(
+            redis_key,
+            json.dumps(task, ensure_ascii=False),
+            ex=TASK_REDIS_TTL_SECONDS,
+        )
+        return True
+    except Exception:
+        logging.exception(f"save_sync_validation_task failed | task_id:{task_id}")
+        return False
+
+
 def get_task(task_id):
-    with tasks_lock:
-        return tasks.get(str(task_id or '').strip())
+    normalized_task_id = str(task_id or '').strip()
+    redis_key = build_task_redis_key(normalized_task_id)
+    if redis_key == '':
+        return None
+    redis_client = get_task_redis()
+    if redis_client is None:
+        logging.warning(f"get_sync_validation_task redis unavailable | task_id:{normalized_task_id}")
+        return None
+    try:
+        raw = redis_client.get(redis_key)
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode('utf-8')
+        parsed = safe_json_loads(raw, None)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        logging.exception(f"get_sync_validation_task failed | task_id:{normalized_task_id}")
+        return None
 
 
 def get_base_dir():
@@ -283,6 +336,7 @@ def write_report(task):
     with open(task.get('report_path', get_report_path(task.get('task_id', ''))), 'w', encoding='utf-8') as report_file:
         report_file.write(render_report_html(task))
     write_metadata(task)
+    save_task(task)
 
 
 def build_status_page(task):
@@ -2067,8 +2121,6 @@ def start(app_id, node_id, scenario=None, scenarios=None, preview_login_wait_ms=
             'runtime': runtime,
             'preview_login_wait_ms': resolved_preview_login_wait_ms,
         }
-        with tasks_lock:
-            tasks[task_id] = task
         os.makedirs(task['task_dir'], exist_ok=True)
         write_report(task)
         executor.submit(run_task, task_id)

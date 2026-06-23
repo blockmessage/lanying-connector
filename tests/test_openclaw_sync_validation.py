@@ -1,8 +1,26 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import types
 import unittest
+
+
+class FakeRedis:
+    def __init__(self):
+        self.values = {}
+        self.ttls = {}
+
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        if ex is not None:
+            self.ttls[key] = ex
+        return True
+
+    def get(self, key):
+        return self.values.get(key)
 
 
 def _load_sync_validation_module():
@@ -10,12 +28,16 @@ def _load_sync_validation_module():
     module_name = "lanying_openclaw_sync_validation_test"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     module = importlib.util.module_from_spec(spec)
+    fake_redis = FakeRedis()
     stub_modules = {
         "lanying_async": types.SimpleNamespace(
             executor=types.SimpleNamespace(submit=lambda *args, **kwargs: None),
         ),
         "lanying_config": types.SimpleNamespace(),
         "lanying_im_api": types.SimpleNamespace(),
+        "lanying_redis": types.SimpleNamespace(
+            get_redis_connection=lambda: fake_redis,
+        ),
         "lanying_openclaw": types.SimpleNamespace(
             get_session_last_message_time=lambda *args, **kwargs: 0,
             get_session_mapping_by_session=lambda *args, **kwargs: None,
@@ -34,6 +56,7 @@ def _load_sync_validation_module():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = original
+    module._test_fake_redis = fake_redis
     return module
 
 
@@ -41,6 +64,10 @@ v = _load_sync_validation_module()
 
 
 class OpenClawSyncValidationTests(unittest.TestCase):
+    def setUp(self):
+        v._test_fake_redis.values.clear()
+        v._test_fake_redis.ttls.clear()
+
     def test_build_status_page_includes_validation_sender_credentials(self):
         html = v.build_status_page({
             'task_id': 'task-1',
@@ -325,6 +352,36 @@ class OpenClawSyncValidationTests(unittest.TestCase):
         }]
         self.assertFalse(v.is_ai_dynamic_history_snapshot_only_ok(non_intermediate_messages, True))
         self.assertFalse(v.is_ai_dynamic_history_snapshot_only_ok(non_intermediate_messages, False))
+
+    def test_save_task_persists_to_redis_with_one_hour_ttl(self):
+        task = {
+            'task_id': 'task-redis-1',
+            'status': 'running',
+            'app_id': 'app-1',
+            'node_id': '15',
+        }
+
+        saved = v.save_task(task)
+
+        self.assertTrue(saved)
+        redis_key = v.build_task_redis_key('task-redis-1')
+        self.assertEqual(v._test_fake_redis.ttls[redis_key], 3600)
+        self.assertEqual(json.loads(v._test_fake_redis.values[redis_key])['status'], 'running')
+
+    def test_get_task_reads_from_redis(self):
+        task = {
+            'task_id': 'task-redis-2',
+            'status': 'passed',
+            'app_id': 'app-2',
+            'node_id': '21',
+        }
+        redis_key = v.build_task_redis_key('task-redis-2')
+        v._test_fake_redis.set(redis_key, json.dumps(task, ensure_ascii=False), ex=3600)
+
+        loaded = v.get_task('task-redis-2')
+
+        self.assertEqual(loaded['status'], 'passed')
+        self.assertEqual(loaded['app_id'], 'app-2')
 
 
 if __name__ == '__main__':

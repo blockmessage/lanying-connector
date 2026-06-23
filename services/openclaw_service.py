@@ -264,14 +264,12 @@ def sync_validation_report(task_id):
     if not check_access_token_valid():
         return html_response('<h1>bad authorization</h1>', 401)
     task = lanying_openclaw_sync_validation.get_task(task_id)
-    if not isinstance(task, dict):
-        report_path = lanying_openclaw_sync_validation.get_report_path(task_id)
-        if os.path.exists(report_path):
-            return send_file(report_path)
-        return html_response('<h1>task not found</h1>', 404)
-    if os.path.exists(task.get('report_path', '')):
-        return send_file(task.get('report_path', ''))
-    return html_response(lanying_openclaw_sync_validation.build_status_page(task))
+    if isinstance(task, dict):
+        return html_response(lanying_openclaw_sync_validation.render_report_html(task))
+    report_path = lanying_openclaw_sync_validation.get_report_path(task_id)
+    if os.path.exists(report_path):
+        return send_file(report_path)
+    return html_response('<h1>task not found</h1>', 404)
 
 def check_openclaw_server_access_token_valid():
     headerToken = request.headers.get('access-token', "")
