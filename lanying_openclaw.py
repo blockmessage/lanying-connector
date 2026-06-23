@@ -2010,6 +2010,14 @@ def summarize_session_sync_tool_call_context_line(tool_name, arguments):
     normalized_tool_name = str(tool_name or '').strip()
     if not isinstance(arguments, dict):
         return ''
+    if normalized_tool_name in ['sessions_spawn', 'subagents']:
+        task_name = str(arguments.get('taskName', '')).strip()
+        if task_name == '':
+            task_name = str(arguments.get('label', '')).strip()
+        if task_name == '':
+            task_name = str(arguments.get('name', '')).strip()
+        if task_name != '':
+            return f"with {task_name}"
     if normalized_tool_name == 'sessions_yield':
         message = str(arguments.get('message', '')).strip()
         if message != '':
@@ -4532,12 +4540,36 @@ def acquire_session_ai_dynamic_stream_lock_until_ready(stream_key, max_wait_ms=N
             return lock_state
         time.sleep(0.05)
 
+def normalize_session_ai_dynamic_stream_item(item):
+    if not isinstance(item, dict) or len(item) == 0:
+        return {}
+    return {
+        'event_id': str(item.get('event_id', '') or ''),
+        'stream_id': str(item.get('stream_id', '') or ''),
+        'transcript_kind': str(item.get('transcript_kind', '') or ''),
+        'tool_name': str(item.get('tool_name', '') or ''),
+        'status_kind': str(item.get('status_kind', '') or ''),
+        'text': str(item.get('text', '') or ''),
+        'rendered_text': str(item.get('rendered_text', '') or ''),
+        'seq_id': int(item.get('seq_id', 0) or 0),
+        'message_seq': int(item.get('message_seq', 0) or 0),
+        'message_timestamp': int(item.get('message_timestamp', 0) or 0),
+        'received_at': int(item.get('received_at', 0) or 0),
+    }
+
 def normalize_session_ai_dynamic_stream_state(state):
     if not isinstance(state, dict) or len(state) == 0:
         return {}
+    normalized_items = []
+    for item in state.get('items', []) if isinstance(state.get('items', []), list) else []:
+        normalized_item = normalize_session_ai_dynamic_stream_item(item)
+        if len(normalized_item) > 0:
+            normalized_items.append(normalized_item)
     return {
         'last_msg_id': int(state.get('last_msg_id', 0) or 0),
         'content': str(state.get('content', '') or ''),
+        'items': normalized_items,
+        'finished': bool(state.get('finished', False)),
         'seq': int(state.get('seq', 0) or 0),
         'updated_at': int(state.get('updated_at', 0) or 0),
     }
@@ -4675,6 +4707,66 @@ def format_session_transcript_ai_dynamic_chunk(content, target_config):
         return final_content
     return normalized_content
 
+def session_ai_dynamic_event_sort_key(item):
+    transcript_kind = str((item or {}).get('transcript_kind', '')).strip()
+    tool_name = str((item or {}).get('tool_name', '')).strip()
+    status_kind = str((item or {}).get('status_kind', '')).strip()
+    seq_id = int((item or {}).get('seq_id', 0) or 0)
+    message_seq = int((item or {}).get('message_seq', 0) or 0)
+    message_timestamp = int((item or {}).get('message_timestamp', 0) or 0)
+    received_at = int((item or {}).get('received_at', 0) or 0)
+    kind_priority = 50
+    if transcript_kind in ['status', 'heartbeat']:
+        kind_priority = 10
+    elif transcript_kind in ['tool_call', 'yield']:
+        kind_priority = 20
+    elif transcript_kind == 'tool_result':
+        kind_priority = 30
+    if tool_name == 'sessions_yield' and transcript_kind == 'tool_result':
+        kind_priority = 31
+    if status_kind in ['status', 'heartbeat'] and str((item or {}).get('text', '')).strip().endswith('处理完成'):
+        kind_priority = 90
+    primary = seq_id if seq_id > 0 else (message_seq if message_seq > 0 else (message_timestamp if message_timestamp > 0 else received_at))
+    return (
+        primary,
+        kind_priority,
+        message_seq if message_seq > 0 else 0,
+        message_timestamp if message_timestamp > 0 else 0,
+        received_at,
+    )
+
+def should_keep_session_ai_dynamic_item(item, ordered_items):
+    transcript_kind = str((item or {}).get('transcript_kind', '')).strip()
+    text = str((item or {}).get('text', '')).strip()
+    if transcript_kind not in ['status', 'heartbeat']:
+        return True
+    if text != '处理开始':
+        return True
+    for existing in ordered_items:
+        existing_kind = str((existing or {}).get('transcript_kind', '')).strip()
+        if existing_kind in ['tool_call', 'tool_result', 'yield']:
+            return False
+    return True
+
+def build_session_ai_dynamic_debug_content(items, target_config):
+    ordered_items = sorted(
+        [item for item in (items or []) if isinstance(item, dict)],
+        key=session_ai_dynamic_event_sort_key,
+    )
+    filtered_items = []
+    for item in ordered_items:
+        if should_keep_session_ai_dynamic_item(item, filtered_items):
+            filtered_items.append(item)
+    rendered_chunks = []
+    for item in filtered_items:
+        chunk = format_session_transcript_ai_dynamic_chunk(item.get('text', ''), target_config)
+        if chunk == '':
+            continue
+        rendered_chunks.append(chunk)
+    if len(rendered_chunks) == 0:
+        return ''
+    return '\n\n'.join(rendered_chunks)
+
 def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
     redis_client = redis or get_session_ai_dynamic_redis()
     if redis_client is None:
@@ -4694,7 +4786,9 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
         False,
     )
     last_msg_id = int(state.get('last_msg_id', 0) or 0)
-    existing_content = str(state.get('content', '') or '').strip()
+    existing_items = state.get('items', [])
+    if not isinstance(existing_items, list):
+        existing_items = []
     next_content = format_session_transcript_ai_dynamic_chunk(
         item.get('text', ''),
         item.get('target_config', {}),
@@ -4704,12 +4798,44 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
     target_config = item.get('target_config', {})
     is_debug = bool((target_config or {}).get('is_debug', False))
     status_bar = bool((target_config or {}).get('status_bar', False))
+    next_item = {
+        'event_id': str(item.get('event_id', '')).strip(),
+        'stream_id': str(item.get('stream_id', '')).strip(),
+        'transcript_kind': str(item.get('transcript_kind', '')).strip(),
+        'tool_name': str(item.get('tool_name', '')).strip(),
+        'status_kind': str(item.get('status_kind', '')).strip(),
+        'text': str(item.get('text', '')).strip(),
+        'rendered_text': next_content,
+        'seq_id': int(item.get('seq_id', 0) or 0),
+        'message_seq': int(item.get('message_seq', 0) or 0),
+        'message_timestamp': int(item.get('message_timestamp', 0) or 0),
+        'received_at': current_ms,
+    }
+    cumulative_items = list(existing_items)
+    replaced = False
+    next_event_id = next_item['event_id']
+    if next_event_id != '':
+        for index, existing_item in enumerate(cumulative_items):
+            if str((existing_item or {}).get('event_id', '')).strip() == next_event_id:
+                cumulative_items[index] = next_item
+                replaced = True
+                break
+    if not replaced:
+        cumulative_items.append(next_item)
     if status_bar and not is_debug:
         send_content = next_content
         cumulative_content = next_content
     else:
-        send_content = next_content if existing_content == '' else f"\n\n{next_content}"
-        cumulative_content = next_content if existing_content == '' else f"{existing_content}\n\n{next_content}"
+        cumulative_content = build_session_ai_dynamic_debug_content(cumulative_items, target_config)
+        send_content = cumulative_content
+    if bool(state.get('finished', False)):
+        completion_line = build_session_transcript_ai_dynamic_completion_line(cumulative_content, target_config)
+        if completion_line != '':
+            if status_bar and not is_debug:
+                cumulative_content = completion_line
+            else:
+                cumulative_content = f"{cumulative_content}\n\n{completion_line}" if cumulative_content != '' else completion_line
+            send_content = cumulative_content
     content_type = resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id)
     msg_id = send_session_transcript_ai_dynamic_update(
         target_config,
@@ -4728,6 +4854,8 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
         }
     state['last_msg_id'] = last_msg_id or msg_id
     state['content'] = cumulative_content
+    state['items'] = cumulative_items
+    state['finished'] = bool(state.get('finished', False))
     state['seq'] = seq
     state['updated_at'] = current_ms
     if not save_session_ai_dynamic_stream_state(stream_key, state, redis_client):
@@ -5033,7 +5161,12 @@ def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, targ
         deliver_result = deliver_session_ai_dynamic_item(stream_key, {
             'event_id': str((event or {}).get('event_id', '')).strip(),
             'stream_id': stream_id,
+            'seq_id': int((event or {}).get('seq_id', 0) or 0),
+            'message_seq': int((event or {}).get('message_seq', 0) or 0),
+            'message_timestamp': int((event or {}).get('message_timestamp', 0) or 0),
             'transcript_kind': transcript_kind,
+            'tool_name': str(payload.get('tool_name', '')).strip(),
+            'status_kind': str(payload.get('status_kind', '')).strip(),
             'text': next_content,
             'target_config': target_config,
             'delivery_ext': delivery_ext,
@@ -5146,7 +5279,11 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
             is_finish=True,
             content_type=12,
         )
-        delete_session_ai_dynamic_stream_state(stream_key, redis_client)
+        state['content'] = content
+        state['finished'] = True
+        state['seq'] = seq
+        state['updated_at'] = now_ms
+        save_session_ai_dynamic_stream_state(stream_key, state, redis_client)
     finally:
         release_session_ai_dynamic_stream_distributed_lock(distributed_lock_state)
 
