@@ -55,6 +55,7 @@ SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_STREAM_TTL_SECONDS = 10 * 60
 SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_TTL_SECONDS = 30
 SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_WAIT_MS = (SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_TTL_SECONDS + 1) * 1000
 SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_FINISH_WAIT_MS = 5 * 60 * 1000
+DEFAULT_AI_STREAM_INTERVAL_SECONDS = 3
 # Legacy compatibility placeholders. Redis is now the only AI dynamic state source.
 recent_session_ai_dynamic_stream_by_key = {}
 recent_session_ai_dynamic_lock_by_key = {}
@@ -918,6 +919,12 @@ def is_direct_session_identity(identity):
 
 def is_clawchat_router_session_identity(identity):
     return is_clawchat_session_identity(identity) and str(identity.get('channel', '')).strip() == 'clawchat-router'
+
+def should_emit_session_ai_dynamic_lifecycle(identity):
+    return is_clawchat_router_session_identity(identity)
+
+def should_append_session_ai_dynamic_completion_line(identity):
+    return should_emit_session_ai_dynamic_lifecycle(identity)
 
 def normalize_optional_session_key(value):
     normalized = normalize_session_key(value)
@@ -1903,6 +1910,10 @@ def classify_session_sync_plain_text_status_kind(text):
     normalized_text = str(text or '').strip()
     if normalized_text == '':
         return ''
+    if normalized_text in ['处理开始', '处理完成']:
+        return 'status'
+    if normalized_text.startswith('当前预设为:'):
+        return 'status'
     if normalized_text == '[OpenClaw heartbeat poll]':
         return 'heartbeat'
     if normalized_text.startswith('HEARTBEAT_'):
@@ -2011,13 +2022,23 @@ def summarize_session_sync_tool_call_context_line(tool_name, arguments):
     if not isinstance(arguments, dict):
         return ''
     if normalized_tool_name in ['sessions_spawn', 'subagents']:
-        task_name = str(arguments.get('taskName', '')).strip()
+        task_name = str(arguments.get('label', '')).strip()
         if task_name == '':
-            task_name = str(arguments.get('label', '')).strip()
+            task_name = str(arguments.get('taskName', '')).strip()
         if task_name == '':
             task_name = str(arguments.get('name', '')).strip()
         if task_name != '':
             return f"with {task_name}"
+        task = str(arguments.get('task', '')).strip()
+        if task != '':
+            first_line = ''
+            for line in task.splitlines():
+                stripped = line.strip()
+                if stripped != '':
+                    first_line = stripped
+                    break
+            if first_line != '':
+                return f"with {first_line}"
     if normalized_tool_name == 'sessions_yield':
         message = str(arguments.get('message', '')).strip()
         if message != '':
@@ -2034,6 +2055,13 @@ def summarize_session_sync_tool_call_heading(tool_name, arguments, status_kind='
         if command != '':
             return f"{label} `{command}`"
     return label
+
+def merge_session_sync_tool_heading_with_context(heading, context_line):
+    normalized_heading = str(heading or '').strip()
+    normalized_context_line = str(context_line or '').strip()
+    if normalized_heading == '':
+        return normalized_context_line
+    return normalized_heading
 
 def summarize_session_sync_intermediate_message(message):
     def summarize_content(content):
@@ -2067,10 +2095,11 @@ def summarize_session_sync_intermediate_message(message):
                 arguments = parse_session_sync_tool_arguments(content.get('arguments'))
                 status_kind = classify_session_sync_status_kind(tool_name)
                 transcript_kind = status_kind or ('yield' if tool_name == 'sessions_yield' else 'tool_call')
-                lines = [summarize_session_sync_tool_call_heading(tool_name, arguments, status_kind)]
                 context_line = summarize_session_sync_tool_call_context_line(tool_name, arguments)
-                if context_line != '':
-                    lines.extend(['', context_line])
+                lines = [merge_session_sync_tool_heading_with_context(
+                    summarize_session_sync_tool_call_heading(tool_name, arguments, status_kind),
+                    context_line,
+                )]
                 if arguments not in [None, '', {}]:
                     if len(lines) > 0 and lines[-1] != '':
                         lines.append('')
@@ -2120,6 +2149,16 @@ def summarize_session_sync_intermediate_message(message):
         else:
             payload = format_session_sync_structured_value(payload)
             payload_language = choose_session_sync_markdown_language(payload)
+        if status_kind == '':
+            status_kind = classify_session_sync_plain_text_status_kind(payload)
+        if status_kind in ['status', 'heartbeat']:
+            return {
+                'text': payload,
+                'transcript_kind': status_kind,
+                'tool_name': tool_name,
+                'status_kind': status_kind,
+                'is_intermediate': True,
+            }
         lines = []
         if tool_name != '':
             lines.extend([humanize_session_sync_tool_label(tool_name, status_kind), ''])
@@ -3880,6 +3919,9 @@ def resolve_parent_group_session_sync_target(app_id, node_info, mapping):
     parent_session_key = normalize_optional_session_key(mapping.get('parent_session_key', ''))
     if parent_session_key == '':
         return None
+    parent_session_identity = parse_clawchat_session_identity(parent_session_key)
+    if not is_group_session_identity(parent_session_identity):
+        return None
     parent_mapping = get_session_mapping_by_session(app_id, node_info['node_id'], parent_session_key)
     if not isinstance(parent_mapping, dict):
         return None
@@ -4160,12 +4202,6 @@ def remember_request_debug_stream_state(
         str(target_kind or '').strip(),
         str(target_id or '').strip(),
     )
-    state = {
-        'last_msg_id': normalized_last_msg_id,
-        'seq': normalized_seq,
-        'content': str(content or ''),
-        'updated_at': current_ms,
-    }
     if stream_key == '':
         return
     try:
@@ -4186,7 +4222,59 @@ def remember_request_debug_stream_state(
             if existing_state is None:
                 logging.warning(f"remember_request_debug_stream_state load redis unavailable | stream_key:{stream_key}")
                 return
-            merged_state = merge_session_ai_dynamic_stream_state(existing_state, state)
+            normalized_existing_state = normalize_session_ai_dynamic_stream_state(existing_state)
+            existing_items = normalized_existing_state.get('items', []) if isinstance(normalized_existing_state.get('items', []), list) else []
+            merged_items = []
+            snapshot_event_id = '__request_debug_snapshot__'
+            has_runtime_items = False
+            for existing_item in existing_items:
+                existing_event_id = str((existing_item or {}).get('event_id', '')).strip()
+                if existing_event_id in ['', '__preserved_existing_content__', snapshot_event_id]:
+                    continue
+                has_runtime_items = True
+                merged_items.append(existing_item)
+            normalized_content = str(content or '').strip()
+            existing_snapshot_item = next((
+                existing_item for existing_item in existing_items
+                if str((existing_item or {}).get('event_id', '')).strip() == snapshot_event_id
+            ), None)
+            snapshot_item = None
+            if has_runtime_items:
+                snapshot_item = existing_snapshot_item
+            elif normalized_content != '':
+                snapshot_item = {
+                    'event_id': snapshot_event_id,
+                    'stream_id': normalized_request_msg_id,
+                    'transcript_kind': 'status',
+                    'tool_name': '',
+                    'status_kind': 'status',
+                    'text': normalized_content,
+                    'rendered_text': normalized_content,
+                    'seq_id': 0,
+                    'message_seq': 0,
+                    'message_timestamp': 0,
+                    'received_at': 0,
+                }
+            if isinstance(snapshot_item, dict):
+                merged_items.insert(0, snapshot_item)
+            merged_state = dict(normalized_existing_state)
+            merged_state['last_msg_id'] = max(
+                int(normalized_existing_state.get('last_msg_id', 0) or 0),
+                normalized_last_msg_id,
+            )
+            merged_state['seq'] = max(
+                int(normalized_existing_state.get('seq', 0) or 0),
+                normalized_seq,
+            )
+            merged_state['updated_at'] = max(
+                int(normalized_existing_state.get('updated_at', 0) or 0),
+                current_ms,
+            )
+            merged_state['items'] = merged_items
+            merged_state['content'] = build_session_ai_dynamic_debug_content(
+                merged_items,
+                {'is_debug': True, 'status_bar': False},
+            ) if len(merged_items) > 0 else normalized_content
             save_session_ai_dynamic_stream_state(stream_key, merged_state, redis_client)
         finally:
             release_session_ai_dynamic_stream_distributed_lock(distributed_lock_state)
@@ -4557,6 +4645,24 @@ def normalize_session_ai_dynamic_stream_item(item):
         'received_at': int(item.get('received_at', 0) or 0),
     }
 
+def build_session_ai_dynamic_preserved_content_item(content):
+    normalized_content = str(content or '').strip()
+    if normalized_content == '':
+        return {}
+    return {
+        'event_id': '__preserved_existing_content__',
+        'stream_id': '',
+        'transcript_kind': 'status',
+        'tool_name': '',
+        'status_kind': 'status',
+        'text': normalized_content,
+        'rendered_text': normalized_content,
+        'seq_id': 0,
+        'message_seq': 0,
+        'message_timestamp': 0,
+        'received_at': 0,
+    }
+
 def normalize_session_ai_dynamic_stream_state(state):
     if not isinstance(state, dict) or len(state) == 0:
         return {}
@@ -4581,6 +4687,23 @@ def merge_session_ai_dynamic_stream_state(existing_state, incoming_state):
         return normalized_incoming_state
     if len(normalized_incoming_state) == 0:
         return normalized_existing_state
+    existing_items = normalized_existing_state.get('items', []) if isinstance(normalized_existing_state.get('items', []), list) else []
+    incoming_items = normalized_incoming_state.get('items', []) if isinstance(normalized_incoming_state.get('items', []), list) else []
+    if len(existing_items) > 0 and len(incoming_items) == 0:
+        merged_state = dict(normalized_existing_state)
+        merged_state['last_msg_id'] = max(
+            int(normalized_existing_state.get('last_msg_id', 0) or 0),
+            int(normalized_incoming_state.get('last_msg_id', 0) or 0),
+        )
+        merged_state['seq'] = max(
+            int(normalized_existing_state.get('seq', 0) or 0),
+            int(normalized_incoming_state.get('seq', 0) or 0),
+        )
+        merged_state['updated_at'] = max(
+            int(normalized_existing_state.get('updated_at', 0) or 0),
+            int(normalized_incoming_state.get('updated_at', 0) or 0),
+        )
+        return merged_state
     existing_seq = int(normalized_existing_state.get('seq', 0) or 0)
     incoming_seq = int(normalized_incoming_state.get('seq', 0) or 0)
     if incoming_seq > existing_seq:
@@ -4654,10 +4777,14 @@ def delete_session_ai_dynamic_stream_state(stream_key, redis=None):
 def build_session_ai_dynamic_ext(delivery_ext, request_msg_id, stream_id, seq, is_finish):
     ext = dict(delivery_ext or {})
     ai_ext = dict(ext.get('ai', {})) if isinstance(ext.get('ai', {}), dict) else {}
+    stream_interval = int(ai_ext.get('stream_interval', 0) or 0)
+    if stream_interval <= 0:
+        stream_interval = DEFAULT_AI_STREAM_INTERVAL_SECONDS
     ai_ext.update({
         'role': 'ai',
         'is_debug_msg': True,
         'stream': True,
+        'stream_interval': stream_interval,
         'seq': int(seq or 0),
         'finish': bool(is_finish),
         'need_antispam_check': False,
@@ -4726,12 +4853,23 @@ def session_ai_dynamic_event_sort_key(item):
         kind_priority = 31
     if status_kind in ['status', 'heartbeat'] and str((item or {}).get('text', '')).strip().endswith('处理完成'):
         kind_priority = 90
-    primary = seq_id if seq_id > 0 else (message_seq if message_seq > 0 else (message_timestamp if message_timestamp > 0 else received_at))
+    primary = (
+        message_timestamp
+        if message_timestamp > 0 else (
+            received_at
+            if received_at > 0 else (
+                message_seq
+                if message_seq > 0 else seq_id
+            )
+        )
+    )
     return (
         primary,
         kind_priority,
-        message_seq if message_seq > 0 else 0,
         message_timestamp if message_timestamp > 0 else 0,
+        received_at if received_at > 0 else 0,
+        message_seq if message_seq > 0 else 0,
+        seq_id if seq_id > 0 else 0,
         received_at,
     )
 
@@ -4740,6 +4878,20 @@ def should_keep_session_ai_dynamic_item(item, ordered_items):
     text = str((item or {}).get('text', '')).strip()
     if transcript_kind not in ['status', 'heartbeat']:
         return True
+    if text == '处理开始':
+        for existing in ordered_items:
+            existing_text = str((existing or {}).get('text', '')).strip()
+            if existing_text == '处理开始':
+                return False
+            for existing_line in existing_text.splitlines():
+                if str(existing_line).strip().endswith('处理开始'):
+                    return False
+            rendered_text = str((existing or {}).get('rendered_text', '')).strip()
+            for rendered_line in rendered_text.splitlines():
+                if str(rendered_line).strip().endswith('处理开始'):
+                    return False
+            if str((existing or {}).get('event_id', '')).strip() == '__preserved_existing_content__':
+                return False
     if text != '处理开始':
         return True
     for existing in ordered_items:
@@ -4759,7 +4911,9 @@ def build_session_ai_dynamic_debug_content(items, target_config):
             filtered_items.append(item)
     rendered_chunks = []
     for item in filtered_items:
-        chunk = format_session_transcript_ai_dynamic_chunk(item.get('text', ''), target_config)
+        chunk = str(item.get('rendered_text', '') or '').strip()
+        if chunk == '':
+            chunk = format_session_transcript_ai_dynamic_chunk(item.get('text', ''), target_config)
         if chunk == '':
             continue
         rendered_chunks.append(chunk)
@@ -4778,17 +4932,23 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
     if not isinstance(state, dict):
         state = {}
     seq = int(state.get('seq', 0) or 0) + 1
+    is_finished = bool(state.get('finished', False))
     ext = build_session_ai_dynamic_ext(
         item.get('delivery_ext', {}),
         item.get('request_msg_id', ''),
         item.get('stream_id', ''),
         seq,
-        False,
+        is_finished,
     )
     last_msg_id = int(state.get('last_msg_id', 0) or 0)
     existing_items = state.get('items', [])
     if not isinstance(existing_items, list):
         existing_items = []
+    if len(existing_items) == 0:
+        preserved_item = build_session_ai_dynamic_preserved_content_item(state.get('content', ''))
+        if len(preserved_item) > 0:
+            existing_items = [preserved_item]
+    previous_content = str(state.get('content', '') or '')
     next_content = format_session_transcript_ai_dynamic_chunk(
         item.get('text', ''),
         item.get('target_config', {}),
@@ -4828,7 +4988,7 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
     else:
         cumulative_content = build_session_ai_dynamic_debug_content(cumulative_items, target_config)
         send_content = cumulative_content
-    if bool(state.get('finished', False)):
+    if is_finished:
         completion_line = build_session_transcript_ai_dynamic_completion_line(cumulative_content, target_config)
         if completion_line != '':
             if status_bar and not is_debug:
@@ -4836,13 +4996,28 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
             else:
                 cumulative_content = f"{cumulative_content}\n\n{completion_line}" if cumulative_content != '' else completion_line
             send_content = cumulative_content
-    content_type = resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id)
+    content_type = 12 if is_finished else resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id)
+    if not is_finished and not (status_bar and not is_debug) and last_msg_id > 0:
+        if cumulative_content == previous_content:
+            state['content'] = cumulative_content
+            state['items'] = cumulative_items
+            state['finished'] = is_finished
+            state['seq'] = seq
+            state['updated_at'] = current_ms
+            if not save_session_ai_dynamic_stream_state(stream_key, state, redis_client):
+                return {'result': 'redis_unavailable', 'send_count': 0, 'last_send_msg_id': 0}
+            return {'result': 'suppressed', 'send_count': 0, 'last_send_msg_id': 0}
+        if previous_content != '' and cumulative_content.startswith(previous_content):
+            send_content = cumulative_content[len(previous_content):]
+        else:
+            send_content = cumulative_content
+            content_type = 12
     msg_id = send_session_transcript_ai_dynamic_update(
         target_config,
-        send_content if last_msg_id > 0 else cumulative_content,
+        send_content if not is_finished else cumulative_content,
         ext,
         related_mid=last_msg_id,
-        is_finish=False,
+        is_finish=is_finished,
         content_type=content_type,
     )
     if msg_id <= 0:
@@ -4855,7 +5030,7 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
     state['last_msg_id'] = last_msg_id or msg_id
     state['content'] = cumulative_content
     state['items'] = cumulative_items
-    state['finished'] = bool(state.get('finished', False))
+    state['finished'] = is_finished
     state['seq'] = seq
     state['updated_at'] = current_ms
     if not save_session_ai_dynamic_stream_state(stream_key, state, redis_client):
@@ -5203,9 +5378,23 @@ def build_session_transcript_ai_dynamic_completion_line(content, target_config=N
         return '[蓝莺AI] 处理完成'
     return '处理完成'
 
+def is_session_transcript_intermediate_completion_payload(payload):
+    if not isinstance(payload, dict):
+        return False
+    if not bool(payload.get('is_intermediate')):
+        return False
+    normalized_text = str(payload.get('text', '')).strip()
+    if normalized_text == '':
+        return False
+    return normalized_text.endswith('处理完成')
+
 def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, target, target_identity, event, delivery_ext):
     request_msg_id = resolve_session_transcript_request_msg_id(event, delivery_ext)
     stream_id = resolve_session_transcript_stream_id(event, delivery_ext, request_msg_id)
+    resolved_target_identity = target_identity
+    if not is_clawchat_session_identity(resolved_target_identity):
+        resolved_target_identity = resolve_session_transcript_ai_dynamic_target_identity(mapping, target)
+    append_completion_line = should_append_session_ai_dynamic_completion_line(resolved_target_identity)
     target_config_result = resolve_session_transcript_ai_dynamic_target(
         app_id,
         node_info,
@@ -5238,15 +5427,20 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
         if not isinstance(state, dict) or len(state) == 0:
             return
         last_msg_id = int(state.get('last_msg_id', 0) or 0)
-        content = str(state.get('content', '')).strip()
-        completion_line = build_session_transcript_ai_dynamic_completion_line(content, target_config)
+        items = state.get('items', []) if isinstance(state.get('items', []), list) else []
+        if len(items) > 0:
+            content = build_session_ai_dynamic_debug_content(items, target_config)
+        else:
+            content = str(state.get('content', '')).strip()
         is_debug = bool((target_config or {}).get('is_debug', False))
         status_bar = bool((target_config or {}).get('status_bar', False))
-        if completion_line != '':
-            if status_bar and not is_debug:
-                content = completion_line
-            else:
-                content = f"{content}\n\n{completion_line}" if content != '' else completion_line
+        if append_completion_line:
+            completion_line = build_session_transcript_ai_dynamic_completion_line(content, target_config)
+            if completion_line != '':
+                if status_bar and not is_debug:
+                    content = completion_line
+                else:
+                    content = f"{content}\n\n{completion_line}" if content != '' else completion_line
         if last_msg_id <= 0 or content == '':
             delete_session_ai_dynamic_stream_state(stream_key, redis_client)
             return
@@ -5372,14 +5566,14 @@ def handle_session_message_sync_event(app_id, node_info, event):
         return
     visible_delivery_owner = str(event.get('visible_delivery_owner', '')).strip()
     visible_delivery_reason = str(event.get('visible_delivery_reason', '')).strip()
-    if visible_delivery_owner == 'plugin':
+    plugin_owned_visible_reply = visible_delivery_owner == 'plugin'
+    if plugin_owned_visible_reply:
         logging.info(
             f"visible_reply_route plugin_owned_skip | "
             f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
             f"parent_session_key:{parent_session_key}, root_session_key:{root_session_key}, "
             f"visible_delivery_reason:{visible_delivery_reason}"
         )
-        return
     suppression_reason = str(event.get('suppression_reason', '')).strip()
     connector_drop_suppression_reasons = {
         'duplicate_parent_after_subagent',
@@ -5559,6 +5753,19 @@ def handle_session_message_sync_event(app_id, node_info, event):
                     f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
                     f"message_id:{message_id}, result:{ai_dynamic_result.get('result')}"
                 )
+                if (
+                    ai_dynamic_result.get('result') == 'delivered' and
+                    is_session_transcript_intermediate_completion_payload(intermediate_payload)
+                ):
+                    maybe_finish_session_transcript_ai_dynamic(
+                        app_id,
+                        node_info,
+                        mapping,
+                        target,
+                        target_identity,
+                        event,
+                        delivery_ext,
+                    )
                 return
             if role == 'assistant':
                 maybe_finish_session_transcript_ai_dynamic(
@@ -5570,6 +5777,13 @@ def handle_session_message_sync_event(app_id, node_info, event):
                     event,
                     delivery_ext,
                 )
+        if plugin_owned_visible_reply:
+            logging.info(
+                f"handle_session_message_sync_event skip visible fallback for plugin-owned reply | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
+                f"message_id:{message_id}"
+            )
+            return
         if bool(intermediate_payload.get('is_intermediate')):
             logging.info(
                 f"handle_session_message_sync_event drop intermediate visible fallback | "
