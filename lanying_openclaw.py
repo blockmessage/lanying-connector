@@ -5556,7 +5556,10 @@ def maybe_finish_im_reply_delivery_ai_dynamic(msg):
         return
     session_key = normalize_session_key(openclaw_ext.get('session', ''))
     target_identity = parse_clawchat_session_identity(session_key)
-    if not (is_direct_session_identity(target_identity) and str(target_identity.get('channel', '')).strip() == 'clawchat'):
+    if not (
+        is_clawchat_session_identity(target_identity) and
+        str(target_identity.get('channel', '')).strip() == 'clawchat'
+    ):
         return
     from_user_id = str((msg.get('from', {}) or {}).get('uid', '')).strip()
     if from_user_id == '':

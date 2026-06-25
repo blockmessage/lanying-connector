@@ -9541,6 +9541,98 @@ class RouterSessionIdentityTests(unittest.TestCase):
             "session_sync_delivery",
         )
 
+    def test_im_reply_delivery_callback_finishes_clawchat_group_ai_dynamic_stream(self):
+        m = lanying_openclaw
+        fake_redis = self.default_redis
+        app_id = "app-id"
+        node_info = {"app_id": app_id, "node_id": "15", "user_id": "openclaw-user"}
+        mapping = {
+            "session_key": "agent:main:clawchat:group:group-42",
+            "group_id": "group-42",
+            "management_user_id": "management-user",
+            "root_session_key": "agent:main:clawchat:group:group-42",
+            "effective_target_session_key": "agent:main:clawchat:group:group-42",
+        }
+        target = {
+            "kind": "group",
+            "mapping": mapping,
+            "session_key": "agent:main:clawchat:group:group-42",
+        }
+        target_config = {
+            "result": "ok",
+            "data": {
+                "lanying_admin_token": "admin-token",
+                "app_id": app_id,
+                "reply_msg_type": "GROUPCHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "group-42",
+                "request_msg_id": "im-request-group-1",
+                "target_kind": "group",
+                "target_id": "group-42",
+                "status_bar": False,
+                "is_debug": True,
+            },
+        }
+        stream_key = m.build_session_ai_dynamic_stream_key_for_event(
+            app_id,
+            node_info,
+            {"session": "agent:main:clawchat:group:group-42"},
+            "im-request-group-1",
+            target_config["data"],
+            request_msg_id="im-request-group-1",
+        )
+        self.assertTrue(m.save_session_ai_dynamic_stream_state(stream_key, {
+            "last_msg_id": 911,
+            "content": "[蓝莺AI][12:00:00.000] Sub-agent",
+            "seq": 4,
+            "updated_at": int(time.time() * 1000),
+        }, fake_redis))
+
+        msg = {
+            "appId": app_id,
+            "msgId": "visible-group-reply-1",
+            "from": {"uid": "openclaw-user"},
+            "to": {"uid": "group-42"},
+            "content": "SYNC_OK",
+            "ext": json.dumps({
+                "openclaw": {
+                    "type": "im_reply_delivery",
+                    "session": "agent:main:clawchat:group:group-42",
+                    "source": "im_reply",
+                    "role": "assistant",
+                    "visible_delivery_owner": "plugin",
+                    "trigger_msg_id": "im-request-group-1",
+                    "request_msg_id": "im-request-group-1",
+                },
+                "ai": {
+                    "role": "ai",
+                    "ai_generate": False,
+                },
+            }),
+        }
+
+        with mock.patch.object(m.lanying_redis, "get_redis_connection", return_value=fake_redis), \
+             mock.patch.object(m, "get_nodes_by_user_id", return_value=[node_info]), \
+             mock.patch.object(m, "get_session_mapping_by_session", return_value=mapping), \
+             mock.patch.object(m, "resolve_effective_session_sync_target", return_value=target), \
+             mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=912) as mocked_send:
+            m.maybe_finish_im_reply_delivery_ai_dynamic(msg)
+
+        self.assertEqual(mocked_send.call_count, 1)
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 911)
+        self.assertEqual(mocked_send.call_args.args[7]["online_only"], False)
+        self.assertTrue(mocked_send.call_args.args[7]["ext"]["ai"]["finish"])
+        self.assertEqual(
+            mocked_send.call_args.args[7]["ext"]["ai"]["stream_id"],
+            "im-request-group-1",
+        )
+        self.assertEqual(
+            mocked_send.call_args.args[7]["ext"]["openclaw"]["type"],
+            "session_sync_delivery",
+        )
+
     def test_router_group_root_assistant_sync_prefers_router_reply(self):
         m = lanying_openclaw
         node_info = {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"}
