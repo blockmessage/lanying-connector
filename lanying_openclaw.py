@@ -4370,6 +4370,25 @@ def build_session_ai_dynamic_stream_key_for_event(app_id, node_info, event, stre
         (target_config or {}).get('target_id', ''),
     )
 
+def build_session_ai_dynamic_processing_lock_key(app_id, event):
+    if not isinstance(event, dict):
+        return ''
+    session_key = normalize_session_key(event.get('session', ''))
+    identity = parse_clawchat_session_identity(session_key)
+    if not (isinstance(identity, dict) and str(identity.get('channel', '')).strip() == 'clawchat'):
+        return ''
+    request_msg_id = resolve_session_transcript_request_msg_id(event)
+    stream_id = resolve_session_transcript_stream_id(event, request_msg_id=request_msg_id)
+    stream_token = str(request_msg_id or stream_id or '').strip()
+    if stream_token == '':
+        return ''
+    return '|'.join([
+        str(app_id or '').strip(),
+        'processing',
+        session_key,
+        stream_token,
+    ])
+
 def parse_session_sync_message_seq(value):
     normalized_value = str(value or '').strip()
     if normalized_value == '':
@@ -5524,39 +5543,94 @@ def maybe_finish_router_reply_ai_dynamic(app_id, node_info, message, delivery_ex
         delivery_ext,
     )
 
-def handle_session_message_sync_event(app_id, node_info, event):
-    event = normalize_session_transcript_event(app_id, node_info, event)
-    if not isinstance(event, dict):
+def maybe_finish_im_reply_delivery_ai_dynamic(msg):
+    if not isinstance(msg, dict):
         return
-    if not is_session_map_sync_enabled(node_info):
-        logging.info(
-            f"handle_session_message_sync_event skip for session_map_sync disabled | "
-            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}"
+    app_id = str(msg.get('appId', '')).strip()
+    if app_id == '':
+        return
+    ext = lanying_utils.safe_json_loads(msg.get('ext', ''), {})
+    openclaw_ext = ext.get('openclaw', {}) if isinstance(ext, dict) else {}
+    if not isinstance(openclaw_ext, dict):
+        return
+    if str(openclaw_ext.get('type', '')).strip() != 'im_reply_delivery':
+        return
+    session_key = normalize_session_key(openclaw_ext.get('session', ''))
+    target_identity = parse_clawchat_session_identity(session_key)
+    if not (is_direct_session_identity(target_identity) and str(target_identity.get('channel', '')).strip() == 'clawchat'):
+        return
+    from_user_id = str((msg.get('from', {}) or {}).get('uid', '')).strip()
+    if from_user_id == '':
+        return
+    for node in get_nodes_by_user_id(app_id, from_user_id):
+        node_id = str(node.get('node_id', '')).strip()
+        if node_id == '':
+            continue
+        mapping = get_session_mapping_by_session(app_id, node_id, session_key)
+        if not isinstance(mapping, dict):
+            continue
+        target = resolve_effective_session_sync_target(app_id, node, mapping)
+        if not isinstance(target, dict):
+            continue
+        delivery_lineage = resolve_session_lineage(
+            app_id,
+            node_id,
+            normalize_session_key(mapping.get('session_key', '')) or session_key,
+            normalize_optional_session_key(mapping.get('parent_session_key', '')),
+            normalize_optional_session_key(mapping.get('root_session_key', '')),
         )
-        return
-    source = str(event.get('source', '')).strip()
-    session_key = normalize_session_key(event.get('session', ''))
-    parent_session_key = normalize_optional_session_key(event.get('parent_session', ''))
-    root_session_key = normalize_optional_session_key(event.get('root_session', ''))
-    observed_origin_facts = normalize_observed_origin_facts({
-        'sender_user_id': event.get('sender_user_id', ''),
-        'observed_sender_user_id': event.get('observed_sender_user_id', ''),
-        'observed_from_user_id': event.get('observed_from_user_id', ''),
-        'observed_to_id': event.get('observed_to_id', ''),
-        'observed_chat_type': event.get('observed_chat_type', ''),
-        'observed_channel': event.get('observed_channel', ''),
-        'observed_message_type': event.get('observed_message_type', ''),
-        'observed_message_type_source': event.get('observed_message_type_source', ''),
-        'sync_variant': event.get('sync_variant', ''),
-    })
-    message = event.get('message', {})
-    role = ''
-    if isinstance(message, dict):
-        role = str(message.get('role', '')).strip().lower()
-    text = extract_session_sync_text(message.get('content') if isinstance(message, dict) else message)
-    observed_origin_facts['observed_message_text'] = text
-    if session_key == '' or source not in ['control_ui_user', 'control_ui_reply']:
-        return
+        request_msg_id = str(openclaw_ext.get('request_msg_id', '') or openclaw_ext.get('trigger_msg_id', '')).strip()
+        delivery_ext = build_session_sync_delivery_ext(
+            delivery_lineage.get('session_key', '') or session_key,
+            'control_ui_reply',
+            'assistant',
+            str(openclaw_ext.get('message_id', '') or msg.get('msgId', '')).strip(),
+            request_msg_id,
+            delivery_lineage.get('parent_session_key', ''),
+            delivery_lineage.get('root_session_key', ''),
+            '',
+            '',
+        )
+        delivery_openclaw_ext = delivery_ext.get('openclaw', {}) if isinstance(delivery_ext, dict) else {}
+        if isinstance(delivery_openclaw_ext, dict):
+            delivery_openclaw_ext['visible_delivery_owner'] = 'plugin'
+        event = {
+            'session': session_key,
+            'source': 'control_ui_reply',
+            'message_id': str(openclaw_ext.get('message_id', '') or msg.get('msgId', '')).strip(),
+            'event_id': str(openclaw_ext.get('event_id', '')).strip(),
+            'stream_id': str(openclaw_ext.get('stream_id', '')).strip(),
+            'trigger_msg_id': request_msg_id,
+            'parent_session': normalize_optional_session_key(openclaw_ext.get('parent_session', '')),
+            'root_session': normalize_optional_session_key(openclaw_ext.get('root_session', '')),
+            'message': {
+                'role': 'assistant',
+                'content': str(msg.get('content', '')),
+            },
+        }
+        maybe_finish_session_transcript_ai_dynamic(
+            app_id,
+            node,
+            mapping,
+            target,
+            target_identity,
+            event,
+            delivery_ext,
+        )
+
+def _handle_session_message_sync_event_locked(
+    app_id,
+    node_info,
+    event,
+    source,
+    session_key,
+    parent_session_key,
+    root_session_key,
+    observed_origin_facts,
+    message,
+    role,
+    text,
+):
     update_session_last_message_time(app_id, node_info.get('node_id', ''), session_key)
     if source == 'control_ui_reply' and role == 'assistant' and is_session_sync_silent_reply_text(text):
         logging.info(
@@ -5882,6 +5956,77 @@ def handle_session_message_sync_event(app_id, node_info, event):
                 f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, session_key:{session_key}, "
                 f"message_id:{message_id}, source:{source}, role:{role}"
             )
+
+def handle_session_message_sync_event(app_id, node_info, event):
+    event = normalize_session_transcript_event(app_id, node_info, event)
+    if not isinstance(event, dict):
+        return
+    if not is_session_map_sync_enabled(node_info):
+        logging.info(
+            f"handle_session_message_sync_event skip for session_map_sync disabled | "
+            f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}"
+        )
+        return
+    source = str(event.get('source', '')).strip()
+    session_key = normalize_session_key(event.get('session', ''))
+    parent_session_key = normalize_optional_session_key(event.get('parent_session', ''))
+    root_session_key = normalize_optional_session_key(event.get('root_session', ''))
+    observed_origin_facts = normalize_observed_origin_facts({
+        'sender_user_id': event.get('sender_user_id', ''),
+        'observed_sender_user_id': event.get('observed_sender_user_id', ''),
+        'observed_from_user_id': event.get('observed_from_user_id', ''),
+        'observed_to_id': event.get('observed_to_id', ''),
+        'observed_chat_type': event.get('observed_chat_type', ''),
+        'observed_channel': event.get('observed_channel', ''),
+        'observed_message_type': event.get('observed_message_type', ''),
+        'observed_message_type_source': event.get('observed_message_type_source', ''),
+        'sync_variant': event.get('sync_variant', ''),
+    })
+    message = event.get('message', {})
+    role = ''
+    if isinstance(message, dict):
+        role = str(message.get('role', '')).strip().lower()
+    text = extract_session_sync_text(message.get('content') if isinstance(message, dict) else message)
+    observed_origin_facts['observed_message_text'] = text
+    if session_key == '' or source not in ['control_ui_user', 'control_ui_reply']:
+        return
+    processing_lock_key = build_session_ai_dynamic_processing_lock_key(app_id, event)
+    processing_lock_state = None
+    if processing_lock_key != '':
+        processing_lock_state = acquire_session_ai_dynamic_stream_lock_until_ready(
+            processing_lock_key,
+            max_wait_ms=SESSION_TRANSCRIPT_AI_DYNAMIC_REDIS_LOCK_WAIT_MS,
+        )
+        if processing_lock_state.get('redis_unavailable'):
+            logging.warning(
+                f"handle_session_message_sync_event processing lock unavailable; continue unlocked | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+                f"session_key:{session_key}, processing_lock_key:{processing_lock_key}"
+            )
+            processing_lock_state = None
+        elif not processing_lock_state.get('locked') and processing_lock_state.get('enabled'):
+            logging.warning(
+                f"handle_session_message_sync_event processing lock busy; continue unlocked | "
+                f"app_id:{app_id}, node_id:{node_info.get('node_id', '')}, "
+                f"session_key:{session_key}, processing_lock_key:{processing_lock_key}"
+            )
+            processing_lock_state = None
+    try:
+        _handle_session_message_sync_event_locked(
+            app_id,
+            node_info,
+            event,
+            source,
+            session_key,
+            parent_session_key,
+            root_session_key,
+            observed_origin_facts,
+            message,
+            role,
+            text,
+        )
+    finally:
+        release_session_ai_dynamic_stream_distributed_lock(processing_lock_state)
 
 def handle_chat_message(msg):
     from_user_id = msg['from']['uid']

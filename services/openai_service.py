@@ -1110,6 +1110,13 @@ def handle_chat_message(config, msg):
         maybe_save_image_msg(config, msg)
         maybe_add_history(config, msg)
         if no_reentry:
+            try:
+                lanying_openclaw.maybe_finish_im_reply_delivery_ai_dynamic(msg)
+            except Exception as finish_error:
+                logging.warning(
+                    f"maybe_finish_im_reply_delivery_ai_dynamic failed | "
+                    f"msgId:{msg.get('msgId', '')}, error:{finish_error}"
+                )
             logging.info(f"skip AI/OpenClaw processing for delivery no-reentry message | msgId: {msg.get('msgId', '')}, msg_type:{msg_type}")
             return ''
         if msg_type == 'GROUPCHAT' and is_ai_generate_disabled_msg(msg):
