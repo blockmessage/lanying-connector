@@ -4992,10 +4992,12 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
     }
     cumulative_items = list(existing_items)
     replaced = False
+    previous_matched_item = None
     next_event_id = next_item['event_id']
     if next_event_id != '':
         for index, existing_item in enumerate(cumulative_items):
             if str((existing_item or {}).get('event_id', '')).strip() == next_event_id:
+                previous_matched_item = existing_item if isinstance(existing_item, dict) else None
                 cumulative_items[index] = next_item
                 replaced = True
                 break
@@ -5006,7 +5008,7 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
         cumulative_content = next_content
     else:
         cumulative_content = build_session_ai_dynamic_debug_content(cumulative_items, target_config)
-        send_content = cumulative_content
+        send_content = next_content
     if is_finished:
         completion_line = build_session_transcript_ai_dynamic_completion_line(cumulative_content, target_config)
         if completion_line != '':
@@ -5016,8 +5018,14 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
                 cumulative_content = f"{cumulative_content}\n\n{completion_line}" if cumulative_content != '' else completion_line
             send_content = cumulative_content
     content_type = 12 if is_finished else resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id)
-    if not is_finished and not (status_bar and not is_debug) and last_msg_id > 0:
-        if cumulative_content == previous_content:
+    if not is_finished:
+        event_unchanged = False
+        if previous_matched_item is not None:
+            previous_text = str(previous_matched_item.get('text', '') or '').strip()
+            previous_rendered_text = str(previous_matched_item.get('rendered_text', '') or '').strip()
+            if previous_text == next_item['text'] and previous_rendered_text == next_item['rendered_text']:
+                event_unchanged = True
+        if event_unchanged or cumulative_content == previous_content:
             state['content'] = cumulative_content
             state['items'] = cumulative_items
             state['finished'] = is_finished
@@ -5026,11 +5034,6 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
             if not save_session_ai_dynamic_stream_state(stream_key, state, redis_client):
                 return {'result': 'redis_unavailable', 'send_count': 0, 'last_send_msg_id': 0}
             return {'result': 'suppressed', 'send_count': 0, 'last_send_msg_id': 0}
-        if previous_content != '' and cumulative_content.startswith(previous_content):
-            send_content = cumulative_content[len(previous_content):]
-        else:
-            send_content = cumulative_content
-            content_type = 12
     msg_id = send_session_transcript_ai_dynamic_update(
         target_config,
         send_content if not is_finished else cumulative_content,
@@ -5271,10 +5274,6 @@ def send_session_transcript_ai_dynamic_update(config, content, ext, related_mid=
 def resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id):
     if int(last_msg_id or 0) <= 0:
         return 0
-    is_debug = bool((target_config or {}).get('is_debug', False))
-    status_bar = bool((target_config or {}).get('status_bar', False))
-    if status_bar and not is_debug:
-        return 12
     return 11
 
 def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, target, target_identity, event, message, delivery_ext):
