@@ -7762,6 +7762,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(result["send_count"], 1)
         self.assertEqual(mocked_send.call_count, 1)
+        self.assertTrue(mocked_send.call_args.args[6].startswith("\n\nYield"))
         self.assertIn("Waiting for subagent completion", mocked_send.call_args.args[6])
         self.assertIn("Yield", mocked_send.call_args.args[6])
         self.assertEqual(mocked_send.call_args.args[5], 11)

@@ -4940,6 +4940,19 @@ def build_session_ai_dynamic_debug_content(items, target_config):
         return ''
     return '\n\n'.join(rendered_chunks)
 
+def build_session_ai_dynamic_incremental_chunk(previous_content, next_content, target_config, is_finished, content_type):
+    normalized_previous_content = str(previous_content or '')
+    normalized_next_content = str(next_content or '')
+    if normalized_next_content == '':
+        return ''
+    if is_finished:
+        return normalized_next_content
+    is_debug = bool((target_config or {}).get('is_debug', False))
+    status_bar = bool((target_config or {}).get('status_bar', False))
+    if content_type != 11 or (status_bar and not is_debug) or normalized_previous_content == '':
+        return normalized_next_content
+    return f"\n\n{normalized_next_content}"
+
 def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
     redis_client = redis or get_session_ai_dynamic_redis()
     if redis_client is None:
@@ -5018,6 +5031,13 @@ def deliver_session_ai_dynamic_item(stream_key, item, redis=None, now_ms=None):
                 cumulative_content = f"{cumulative_content}\n\n{completion_line}" if cumulative_content != '' else completion_line
             send_content = cumulative_content
     content_type = 12 if is_finished else resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id)
+    send_content = build_session_ai_dynamic_incremental_chunk(
+        previous_content,
+        send_content,
+        target_config,
+        is_finished,
+        content_type,
+    )
     if not is_finished:
         event_unchanged = False
         if previous_matched_item is not None:
