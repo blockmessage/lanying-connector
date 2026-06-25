@@ -4835,7 +4835,7 @@ def format_session_transcript_ai_dynamic_chunk(content, target_config):
         first_line = ''
         for line in normalized_content.splitlines():
             stripped = line.strip()
-            if stripped == '' or stripped.startswith('```') or stripped in ['Tool input', 'Tool output']:
+            if stripped == '' or stripped.startswith('```'):
                 continue
             first_line = stripped
             break

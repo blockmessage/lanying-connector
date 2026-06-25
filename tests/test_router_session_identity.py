@@ -7986,7 +7986,7 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertIn("[蓝莺AI][", debug_text)
         self.assertIn("Tool output", debug_text)
-        self.assertEqual(status_bar_text, "[蓝莺AI] ok")
+        self.assertEqual(status_bar_text, "[蓝莺AI] Tool output")
 
     def test_build_session_ai_dynamic_debug_content_sorts_items_without_activity_header(self):
         m = lanying_openclaw
@@ -8240,8 +8240,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
 
         self.assertEqual(result["send_count"], 1)
         self.assertEqual(mocked_send.call_args.args[5], 12)
-        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] new status")
-        self.assertEqual(m.load_session_ai_dynamic_stream_state(stream_key)["content"], "[蓝莺AI] new status")
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] Tool output")
+        self.assertEqual(m.load_session_ai_dynamic_stream_state(stream_key)["content"], "[蓝莺AI] Tool output")
 
     def test_maybe_finish_session_transcript_ai_dynamic_replaces_content_for_status_bar(self):
         m = lanying_openclaw
