@@ -8297,7 +8297,8 @@ class RouterSessionIdentityTests(unittest.TestCase):
             )
 
         self.assertEqual(mocked_send.call_args.args[5], 12)
-        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] 处理完成")
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] Tool output\n```text\nnew status\n```")
+        self.assertTrue(mocked_send.call_args.args[7]["ext"]["ai"]["finish"])
 
     def test_maybe_finish_session_transcript_ai_dynamic_finishes_direct_openclaw_without_completion_line(self):
         m = lanying_openclaw
@@ -8358,6 +8359,94 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.args[7]["ext"]["ai"]["finish"], True)
         saved_state = m.load_session_ai_dynamic_stream_state(stream_key)
         self.assertEqual(saved_state["content"], "[蓝莺AI][18:11:02.111] Exec `pwd`")
+        self.assertTrue(bool(saved_state.get("finished", False)))
+
+    def test_maybe_finish_session_transcript_ai_dynamic_keeps_latest_status_bar_content_without_rebuilding_items(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+        stream_key = m.build_session_ai_dynamic_stream_key_for_event(
+            "app-id",
+            {"node_id": "15"},
+            {"session": "agent:main:clawchat:direct:sender-user"},
+            "request-direct-openclaw-finish-items-1",
+            {
+                "target_kind": "direct",
+                "target_id": "sender-user",
+            },
+            request_msg_id="request-direct-openclaw-finish-items-1",
+        )
+        self.assertTrue(m.save_session_ai_dynamic_stream_state(stream_key, {
+            "last_msg_id": 901,
+            "content": "[蓝莺AI] total 488",
+            "items": [
+                {
+                    "event_id": "event-1",
+                    "stream_id": "request-direct-openclaw-finish-items-1",
+                    "transcript_kind": "tool_call",
+                    "tool_name": "exec",
+                    "status_kind": "",
+                    "text": "Exec `ls -la ~/.openclaw`",
+                    "rendered_text": "[蓝莺AI] Exec `ls -la ~/.openclaw`",
+                    "seq_id": 1,
+                    "message_seq": 1,
+                    "message_timestamp": 1,
+                    "received_at": 1,
+                },
+                {
+                    "event_id": "event-2",
+                    "stream_id": "request-direct-openclaw-finish-items-1",
+                    "transcript_kind": "tool_result",
+                    "tool_name": "exec",
+                    "status_kind": "",
+                    "text": "total 488",
+                    "rendered_text": "[蓝莺AI] total 488",
+                    "seq_id": 2,
+                    "message_seq": 2,
+                    "message_timestamp": 2,
+                    "received_at": 2,
+                },
+            ],
+            "seq": 2,
+            "updated_at": int(time.time() * 1000),
+        }))
+        target_config = {
+            "result": "ok",
+            "data": {
+                "app_id": "app-id",
+                "reply_msg_type": "CHAT",
+                "reply_from": "openclaw-user",
+                "reply_to": "sender-user",
+                "request_msg_id": "request-direct-openclaw-finish-items-1",
+                "target_kind": "direct",
+                "target_id": "sender-user",
+                "status_bar": True,
+                "is_debug": False,
+            },
+        }
+        with mock.patch.object(m, "resolve_session_transcript_ai_dynamic_target", return_value=target_config), \
+             mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
+            m.maybe_finish_session_transcript_ai_dynamic(
+                "app-id",
+                {"app_id": "app-id", "node_id": "15", "user_id": "openclaw-user"},
+                {"session_key": "agent:main:clawchat:direct:sender-user"},
+                {"kind": "direct", "session_key": "agent:main:clawchat:direct:sender-user", "target_user_id": "sender-user"},
+                {"channel": "clawchat", "chat_type": "direct", "target_id": "sender-user"},
+                {
+                    "session": "agent:main:clawchat:direct:sender-user",
+                    "trigger_msg_id": "request-direct-openclaw-finish-items-1",
+                },
+                {"openclaw": {"request_msg_id": "request-direct-openclaw-finish-items-1"}},
+            )
+
+        mocked_send.assert_called_once()
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] total 488")
+        saved_state = m.load_session_ai_dynamic_stream_state(stream_key)
+        self.assertEqual(saved_state["content"], "[蓝莺AI] total 488")
         self.assertTrue(bool(saved_state.get("finished", False)))
 
     def test_maybe_finish_session_transcript_ai_dynamic_takes_over_connector_debug_without_intermediate(self):

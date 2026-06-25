@@ -5468,14 +5468,16 @@ def maybe_finish_session_transcript_ai_dynamic(app_id, node_info, mapping, targe
             return
         if not isinstance(state, dict) or len(state) == 0:
             return
+        is_debug = bool((target_config or {}).get('is_debug', False))
+        status_bar = bool((target_config or {}).get('status_bar', False))
         last_msg_id = int(state.get('last_msg_id', 0) or 0)
         items = state.get('items', []) if isinstance(state.get('items', []), list) else []
-        if len(items) > 0:
+        if status_bar and not is_debug:
+            content = str(state.get('content', '')).strip()
+        elif len(items) > 0:
             content = build_session_ai_dynamic_debug_content(items, target_config)
         else:
             content = str(state.get('content', '')).strip()
-        is_debug = bool((target_config or {}).get('is_debug', False))
-        status_bar = bool((target_config or {}).get('status_bar', False))
         if append_completion_line:
             completion_line = build_session_transcript_ai_dynamic_completion_line(content, target_config)
             if completion_line != '':
