@@ -5294,6 +5294,10 @@ def send_session_transcript_ai_dynamic_update(config, content, ext, related_mid=
 def resolve_session_ai_dynamic_intermediate_content_type(target_config, last_msg_id):
     if int(last_msg_id or 0) <= 0:
         return 0
+    is_debug = bool((target_config or {}).get('is_debug', False))
+    status_bar = bool((target_config or {}).get('status_bar', False))
+    if status_bar and not is_debug:
+        return 12
     return 11
 
 def maybe_deliver_session_transcript_ai_dynamic(app_id, node_info, mapping, target, target_identity, event, message, delivery_ext):

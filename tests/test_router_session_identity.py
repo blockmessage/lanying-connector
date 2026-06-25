@@ -7862,6 +7862,84 @@ class RouterSessionIdentityTests(unittest.TestCase):
         self.assertEqual(stream_state["seq"], 10)
         self.assertEqual(len(stream_state["items"]), 2)
 
+    def test_deliver_session_ai_dynamic_item_uses_replace_for_status_bar_without_debug(self):
+        m = lanying_openclaw
+        m.recent_session_ai_dynamic_stream_by_key.clear()
+        m.recent_session_ai_dynamic_dedupe_by_key.clear()
+        m.recent_request_debug_stream_by_key.clear()
+        with m.recent_session_ai_dynamic_lock_registry_lock:
+            m.recent_session_ai_dynamic_lock_by_key.clear()
+        delivery_ext = {
+            "openclaw": {
+                "type": "session_sync_delivery",
+                "session": "agent:main:clawchat:group:group-42",
+                "source": "control_ui_reply",
+                "role": "assistant",
+                "request_msg_id": "request-status-bar-1",
+            },
+            "ai": {
+                "ai_generate": False,
+            },
+        }
+        target_config = {
+            "lanying_admin_token": "admin-token",
+            "app_id": "app-id",
+            "reply_msg_type": "GROUPCHAT",
+            "reply_from": "openclaw-user",
+            "reply_to": "group-42",
+            "request_msg_id": "request-status-bar-1",
+            "target_kind": "group",
+            "target_id": "group-42",
+            "status_bar": True,
+            "is_debug": False,
+        }
+        stream_key = m.build_session_ai_dynamic_stream_key(
+            "app-id",
+            "15",
+            "agent:main:clawchat:group:group-42",
+            "request-status-bar-1",
+            "group",
+            "group-42",
+        )
+        m.save_session_ai_dynamic_stream_state(stream_key, {
+            "last_msg_id": 901,
+            "content": "[蓝莺AI] 处理开始",
+            "items": [
+                {
+                    "event_id": "existing-status-bar-1",
+                    "stream_id": "request-status-bar-1",
+                    "transcript_kind": "status",
+                    "tool_name": "session_status",
+                    "status_kind": "status",
+                    "text": "处理开始",
+                    "rendered_text": "[蓝莺AI] 处理开始",
+                    "seq_id": 1,
+                    "message_seq": 1,
+                    "message_timestamp": 1,
+                    "received_at": 1000,
+                },
+            ],
+            "seq": 1,
+            "updated_at": 1000,
+        })
+        with mock.patch.object(m.lanying_im_api, "send_message_sync", return_value=902) as mocked_send:
+            result = m.deliver_session_ai_dynamic_item(stream_key, {
+                "event_id": "existing-status-bar-2",
+                "transcript_kind": "status",
+                "status_kind": "status",
+                "text": "当前预设为: openclaw-jp",
+                "target_config": target_config,
+                "delivery_ext": delivery_ext,
+                "request_msg_id": "request-status-bar-1",
+                "stream_id": "request-status-bar-1",
+            }, None, 1401)
+
+        self.assertEqual(result["send_count"], 1)
+        self.assertEqual(mocked_send.call_count, 1)
+        self.assertEqual(mocked_send.call_args.args[5], 12)
+        self.assertEqual(mocked_send.call_args.args[6], "[蓝莺AI] 当前预设为: openclaw-jp")
+        self.assertEqual(mocked_send.call_args.args[7]["related_mid"], 901)
+
     def test_build_session_ai_dynamic_debug_content_prefers_rendered_text_to_keep_original_timestamps(self):
         m = lanying_openclaw
         content = m.build_session_ai_dynamic_debug_content(
