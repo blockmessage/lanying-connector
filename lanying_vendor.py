@@ -1374,7 +1374,8 @@ def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_confi
 def chat_retry(vendor, prepare_info, preset, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
     model = preset['model']
-    async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_chat_resp_failed_{vendor}')
+    if should_notify_ai_retry_failure(vendor, prepare_info):
+        async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回异常, id:{unique_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_chat_resp_failed_{vendor}')
     try:
         new_resp = do_chat_retry(vendor, prepare_info, preset, resp, unique_id)
         new_resp = normalize_chat_response(new_resp)
@@ -1473,7 +1474,8 @@ def embedding(app_id, vendor, prepare_info, model, text):
 
 def embedding_retry(app_id, vendor, prepare_info, model, text, resp):
     unique_id = datetime.now().strftime('%Y-%m-%d-%H-%M-%S.%f')
-    async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, app_id:{app_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_embedding_resp_failed_{vendor}')
+    if should_notify_ai_retry_failure(vendor, prepare_info):
+        async_send_message_with_filter(f'【蓝莺Connector】AI Embedding 返回异常, id:{unique_id}, app_id:{app_id}, vendor:{vendor}, model:{model}, resp:{resp}', f'ai_embedding_resp_failed_{vendor}')
     try:
         new_resp = do_embedding_retry(app_id, vendor, prepare_info, model, text, resp, unique_id)
         if 'result' in new_resp and new_resp['result'] == 'ok':
@@ -1532,6 +1534,19 @@ def do_embedding_retry(app_id, vendor, prepare_info, model, text, resp, unique_i
 def encoding_for_model(app_id, vendor, model):
     module = get_module(app_id, vendor)
     return module.encoding_for_model(model)
+
+def should_notify_ai_retry_failure(vendor, prepare_info):
+    if isinstance(vendor, str) and vendor.startswith('custom_vendor_'):
+        return False
+    if not isinstance(prepare_info, dict):
+        return True
+    auth_info = prepare_info.get('auth_info')
+    if not isinstance(auth_info, dict):
+        return True
+    key_type = str(auth_info.get('key_type', '') or '').strip()
+    if key_type == 'self':
+        return False
+    return True
 
 def async_send_message_with_filter(text, filter_name):
     if lanying_utils.is_preview_server():

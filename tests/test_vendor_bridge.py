@@ -209,6 +209,58 @@ class VendorBridgeTests(unittest.TestCase):
         out = lanying_vendor.get_module("app", "custom_vendor_1")
         self.assertIs(out, _NativeModule)
 
+    def test_chat_retry_skips_slack_for_custom_vendor(self):
+        notices = []
+        prepare_info = {"auth_info": {"key_type": "self"}}
+        preset = {"model": "m1"}
+        resp = {"result": "error"}
+
+        with mock.patch.object(lanying_vendor, "async_send_message_with_filter", side_effect=lambda text, filter_name: notices.append((text, filter_name))), \
+             mock.patch.object(lanying_vendor, "do_chat_retry", return_value=resp):
+            out = lanying_vendor.chat_retry("custom_vendor_openai_1", prepare_info, preset, resp)
+
+        self.assertEqual(out, resp)
+        self.assertEqual(notices, [])
+
+    def test_chat_retry_sends_slack_for_share_vendor(self):
+        notices = []
+        prepare_info = {"auth_info": {"key_type": "share"}}
+        preset = {"model": "m1"}
+        resp = {"result": "error"}
+
+        with mock.patch.object(lanying_vendor, "async_send_message_with_filter", side_effect=lambda text, filter_name: notices.append((text, filter_name))), \
+             mock.patch.object(lanying_vendor, "do_chat_retry", return_value=resp):
+            out = lanying_vendor.chat_retry("openai", prepare_info, preset, resp)
+
+        self.assertEqual(out, resp)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0][1], "ai_chat_resp_failed_openai")
+
+    def test_embedding_retry_skips_slack_for_custom_vendor(self):
+        notices = []
+        prepare_info = {"auth_info": {"key_type": "self"}, "type": "query"}
+        resp = {"result": "error"}
+
+        with mock.patch.object(lanying_vendor, "async_send_message_with_filter", side_effect=lambda text, filter_name: notices.append((text, filter_name))), \
+             mock.patch.object(lanying_vendor, "do_embedding_retry", return_value=resp):
+            out = lanying_vendor.embedding_retry("app", "custom_vendor_openai_1", prepare_info, "text-embedding-3-small", "hello", resp)
+
+        self.assertEqual(out, resp)
+        self.assertEqual(notices, [])
+
+    def test_embedding_retry_sends_slack_for_share_vendor(self):
+        notices = []
+        prepare_info = {"auth_info": {"key_type": "share"}, "type": "query"}
+        resp = {"result": "error"}
+
+        with mock.patch.object(lanying_vendor, "async_send_message_with_filter", side_effect=lambda text, filter_name: notices.append((text, filter_name))), \
+             mock.patch.object(lanying_vendor, "do_embedding_retry", return_value=resp):
+            out = lanying_vendor.embedding_retry("app", "openai", prepare_info, "text-embedding-3-small", "hello", resp)
+
+        self.assertEqual(out, resp)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0][1], "ai_embedding_resp_failed_openai")
+
     def test_v2_disabled_catalog_model_is_filtered(self):
         lanying_vendor.get_vendor = lambda app_id, vendor_id: {
             "vendor_id": vendor_id,
