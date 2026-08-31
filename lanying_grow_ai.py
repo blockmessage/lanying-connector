@@ -35,7 +35,7 @@ import lanying_oss
 from github import Github
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition, auto_deploy):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -56,6 +56,7 @@ class TaskSetting:
         self.commit_type = commit_type
         self.target_summary_dir = target_summary_dir
         self.embedding_condition = embedding_condition
+        self.auto_deploy = auto_deploy
 
     def to_hmset_fields(self):
         return {
@@ -78,7 +79,8 @@ class TaskSetting:
             'target_dir': self.target_dir,
             'commit_type': self.commit_type,
             'target_summary_dir': self.target_summary_dir,
-            'embedding_condition': json.dumps(self.embedding_condition, ensure_ascii=False)
+            'embedding_condition': json.dumps(self.embedding_condition, ensure_ascii=False),
+            'auto_deploy': self.auto_deploy
         }
 
 class SiteSetting:
@@ -498,6 +500,8 @@ def get_task(app_id, task_id):
             dto['title_reuse'] = 'off'
         if 'site_id_list' not in dto:
             dto['site_id_list'] = []
+        if 'auto_deploy' not in dto:
+            dto['auto_deploy'] = 'on' if dto['site_id_list'] else 'off'
         if 'target_dir' not in dto:
             dto['target_dir'] = dto.get('deploy',{}).get('gitbook_target_dir', '/articles')
         if 'commit_type' not in dto:
@@ -857,12 +861,22 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     if result['result'] == 'error':
         return result
     logging.info(f"do_run_task finish | app_id:{app_id}, task_run_id:{task_run_id}")
-    site_list = get_task_site_list(task)
-    if site_list != []:
+    site_list = get_auto_deploy_site_list(app_id, task_id)
+    if site_list:
         from lanying_tasks import grow_ai_deply_task_run
         update_task_run_field(app_id, task_run_id, "deploy_status", "pending")
         grow_ai_deply_task_run.apply_async(args = [app_id, task_run_id], countdown=5)
     return {'result': 'ok'}
+
+
+def get_auto_deploy_site_list(app_id, task_id):
+    task = get_task(app_id, task_id)
+    if task is None:
+        return []
+    site_list = get_task_site_list(task)
+    if task.get('auto_deploy', 'on' if site_list else 'off') != 'on':
+        return []
+    return site_list
 
 def make_task_run_result_zip_file(app_id, task_run_id):
     logging.info(f"make_task_run_result_zip_file start | app_id:{app_id}, task_run_id:{task_run_id}")
@@ -1472,8 +1486,8 @@ def task_run_preview(app_id, task_run_id):
     if task is None:
         return {'result': 'error', 'message': 'task not exist'}
     sites = get_task_site_list(task)
-    if len(sites) != 1:
-        return {'result': 'error', 'message': 'preview requires exactly one site'}
+    if not sites:
+        return {'result': 'error', 'message': 'no site to preview'}
     site = sites[0]
     if site.get('github_hosting') != 'on':
         return {'result': 'error', 'message': 'preview only supports github hosting site'}
@@ -1565,7 +1579,7 @@ def dispatch_preview_workflow(preview):
             'callback_url': f'{connector_server}/grow_ai/preview_deploy_finish?code={callback_code}'
         }
     }
-    response = requests.post(workflow_url, headers=context['headers'], json=payload)
+    response = requests.post(workflow_url, headers=get_grow_ai_workflow_headers(), json=payload)
     if response.status_code != 204:
         logging.info(f'preview workflow dispatch failed | code:{response.status_code}, text:{response.text}')
         delete_preview_callback(check_code)
@@ -1781,7 +1795,7 @@ def dispatch_clear_preview(preview):
     set_preview_callback(code, {'type': 'clear', 'app_id': preview['app_id'], 'preview_id': preview['preview_id']})
     connector_server = lanying_utils.get_internet_connector_server()
     workflow_url = f'https://api.github.com/repos/maxim-top/im.gitbook/actions/workflows/{PREVIEW_CLEAR_WORKFLOW}/dispatches'
-    response = requests.post(workflow_url, headers=context['headers'], json={
+    response = requests.post(workflow_url, headers=get_grow_ai_workflow_headers(), json={
         'ref': 'master',
         'inputs': {
             'site_name': site['site_name'],
@@ -2460,7 +2474,6 @@ def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_re
     deploy_repo_owner = 'maxim-top'
     deploy_repo_name = 'im.gitbook'
     deploy_workflow_id = 'deploy_sub_site.yml'
-    deploy_github_token = os.getenv('GROW_AI_GITHUB_TOKEN', '')
     site_name = get_github_site(github_owner, github_repo)
     cdn_url = make_site_full_url(site_name)
     site = get_site(app_id, site_id)
@@ -2479,10 +2492,7 @@ def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_re
     })
     connector_server = lanying_utils.get_internet_connector_server()
     # 构建请求头和请求URL
-    headers = {
-        'Authorization': f'token {deploy_github_token}',
-        'Accept': 'application/vnd.github.v3+json'
-    }
+    headers = get_grow_ai_workflow_headers()
     url = f'https://api.github.com/repos/{deploy_repo_owner}/{deploy_repo_name}/actions/workflows/{deploy_workflow_id}/dispatches'
 
     # 请求体内容
@@ -4530,6 +4540,12 @@ def get_github():
 
 def get_github_token():
     return os.getenv('GITHUB_HOSTING_TOKEN')
+
+def get_grow_ai_workflow_headers():
+    return {
+        'Authorization': f"token {os.getenv('GROW_AI_GITHUB_TOKEN', '')}",
+        'Accept': 'application/vnd.github.v3+json'
+    }
 
 def get_github_org():
     return os.getenv('GITHUB_HOSTING_ORG')

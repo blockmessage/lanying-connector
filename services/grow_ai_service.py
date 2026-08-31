@@ -113,6 +113,7 @@ def create_task():
     deploy = dict(data.get('deploy', {'type': 'none'}))
     title_reuse = str(data.get('title_reuse', 'off'))
     site_id_list = list(data.get('site_id_list', []))
+    auto_deploy = 'on' if str(data.get('auto_deploy', 'on' if site_id_list else 'off')) == 'on' else 'off'
     if 'target_dir' in data:
         target_dir = str(data.get('target_dir')).strip()
     else:
@@ -143,7 +144,8 @@ def create_task():
         target_dir = target_dir,
         commit_type = commit_type,
         target_summary_dir = target_summary_dir,
-        embedding_condition = embedding_condition
+        embedding_condition = embedding_condition,
+        auto_deploy = auto_deploy
     )
     result = lanying_grow_ai.create_task(task_setting)
     if result['result'] == 'error':
@@ -179,6 +181,11 @@ def configure_task():
     deploy = dict(data.get('deploy', {'type': 'none'}))
     title_reuse = str(data.get('title_reuse', 'off'))
     site_id_list = list(data.get('site_id_list', []))
+    if 'auto_deploy' in data:
+        auto_deploy = 'on' if str(data['auto_deploy']) == 'on' else 'off'
+    else:
+        task = lanying_grow_ai.get_task(app_id, task_id)
+        auto_deploy = task.get('auto_deploy', 'on' if site_id_list else 'off') if task else ('on' if site_id_list else 'off')
     if 'target_dir' in data:
         target_dir = str(data.get('target_dir')).strip()
     else:
@@ -209,7 +216,8 @@ def configure_task():
         target_dir = target_dir,
         commit_type = commit_type,
         target_summary_dir = target_summary_dir,
-        embedding_condition = embedding_condition
+        embedding_condition = embedding_condition,
+        auto_deploy = auto_deploy
     )
     result = lanying_grow_ai.configure_task(task_id, task_setting)
     if result['result'] == 'error':

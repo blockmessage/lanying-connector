@@ -1,7 +1,10 @@
 import unittest
 from unittest.mock import MagicMock, call, patch
 
+from flask import Flask
+
 import lanying_grow_ai
+from services import grow_ai_service
 
 
 class DummyLock:
@@ -13,6 +16,72 @@ class DummyLock:
 
 
 class GrowAIPreviewTest(unittest.TestCase):
+    def test_auto_deploy_uses_latest_task_setting(self):
+        with patch.object(lanying_grow_ai, 'get_task', return_value={
+            'app_id': 'app', 'task_id': 'task', 'site_id_list': ['site'],
+            'auto_deploy': 'off'
+        }) as get_task, patch.object(lanying_grow_ai, 'get_task_site_list', return_value=[{
+            'site_id': 'site'
+        }]):
+            sites = lanying_grow_ai.get_auto_deploy_site_list('app', 'task')
+
+        self.assertEqual([], sites)
+        get_task.assert_called_once_with('app', 'task')
+
+    def test_configure_without_auto_deploy_preserves_current_value(self):
+        app = Flask(__name__)
+        payload = {
+            'app_id': 'app', 'task_id': 'task', 'name': 'name', 'note': '',
+            'chatbot_id': 'chatbot', 'prompt': 'prompt', 'keywords': 'keyword',
+            'word_count_min': 500, 'word_count_max': 1200, 'image_count': 0,
+            'article_count': 1, 'cycle_type': 'none', 'cycle_interval': 3600,
+            'file_list': [], 'site_id_list': ['site']
+        }
+        task_setting = MagicMock()
+        with app.test_request_context(json=payload), \
+                patch.object(grow_ai_service, 'check_access_token_valid', return_value=True), \
+                patch.object(lanying_grow_ai, 'get_task', return_value={'auto_deploy': 'off'}), \
+                patch.object(lanying_grow_ai, 'TaskSetting', return_value=task_setting) as setting_class, \
+                patch.object(lanying_grow_ai, 'configure_task', return_value={
+                    'result': 'ok', 'data': {'success': True}
+                }):
+            response = grow_ai_service.configure_task()
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('off', setting_class.call_args.kwargs['auto_deploy'])
+
+    def test_preview_workflow_uses_deploy_token(self):
+        with patch.dict('os.environ', {
+            'GITHUB_HOSTING_TOKEN': 'content-token',
+            'GROW_AI_GITHUB_TOKEN': 'workflow-token'
+        }):
+            headers = lanying_grow_ai.get_grow_ai_workflow_headers()
+
+        self.assertEqual('token workflow-token', headers['Authorization'])
+
+    def test_preview_uses_first_site_like_direct_deploy(self):
+        redis = MagicMock()
+        redis.lock.return_value = DummyLock()
+        preview_task = MagicMock()
+        first_site = {'site_id': 'site1', 'github_hosting': 'on'}
+        with patch.object(lanying_grow_ai, 'get_task_run', return_value={
+            'task_id': 'task', 'zip_file': 'book.zip'
+        }), patch.object(lanying_grow_ai, 'get_task', return_value={'task_id': 'task'}), \
+                patch.object(lanying_grow_ai, 'get_task_site_list', return_value=[
+                    first_site, {'site_id': 'site2', 'github_hosting': 'on'}
+                ]), patch.object(lanying_grow_ai, 'get_site', return_value=first_site), \
+                patch.object(lanying_grow_ai, 'generate_preview_id', return_value='preview1'), \
+                patch.object(lanying_grow_ai.lanying_redis, 'get_redis_connection', return_value=redis), \
+                patch.object(lanying_grow_ai, 'update_site_field') as update_site, \
+                patch.object(lanying_grow_ai, 'update_task_run_field'), patch.dict('sys.modules', {
+                    'lanying_tasks': MagicMock(grow_ai_preview_task=preview_task)
+                }):
+            result = lanying_grow_ai.task_run_preview('app', 'run')
+
+        self.assertEqual('ok', result['result'])
+        update_site.assert_called_with('app', 'site1', 'pending_preview_id', 'preview1')
+        preview_task.apply_async.assert_called_once_with(args=['app', 'preview1'])
+
     def test_preview_callback_is_consumed_once(self):
         redis = MagicMock()
         redis.lock.return_value = DummyLock()
