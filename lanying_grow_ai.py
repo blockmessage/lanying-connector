@@ -603,6 +603,9 @@ def delete_task_run(app_id, task_run_id):
     task_run = get_task_run(app_id, task_run_id)
     if task_run is None:
         return {'result': 'ok', 'data':{'success': True}}
+    preview_id = task_run.get('preview_id', '')
+    if preview_id and get_preview(app_id, preview_id) is not None:
+        return {'result': 'error', 'message': 'task_run has preview'}
     file_size = task_run.get('file_size', 0)
     incrby_service_usage(app_id, 'storage_size', -file_size)
     task_id = task_run['task_id']
@@ -926,11 +929,69 @@ def deploy_task_run(app_id, task_run_id):
         return {'result': 'error', 'message': 'task_run deploy_status cannot deploy'}
     if 'zip_file' not in task_run:
         return {'result': 'error', 'message': 'zip file not exist'}
-    from lanying_tasks import grow_ai_deply_task_run
-    grow_ai_deply_task_run.apply_async(args = [app_id, task_run_id])
+    task = get_task(app_id, task_run['task_id'])
+    sites = get_task_site_list(task) if task else []
+    if sites:
+        site_id = str(sites[0]['site_id'])
+        redis = lanying_redis.get_redis_connection()
+        lock_key = f'lanying-connector-grow-ai-preview-site-lock:{app_id}:{site_id}'
+        with redis.lock(lock_key, timeout=120):
+            site = get_site(app_id, site_id)
+            if site and (site.get('active_preview_id', '') or site.get('pending_preview_id', '')):
+                discard_result = discard_site_previews_for_direct_publish(app_id, site)
+                if discard_result['result'] == 'error':
+                    return discard_result
+            from lanying_tasks import grow_ai_deply_task_run
+            grow_ai_deply_task_run.apply_async(args=[app_id, task_run_id])
+    else:
+        from lanying_tasks import grow_ai_deply_task_run
+        grow_ai_deply_task_run.apply_async(args=[app_id, task_run_id])
     return {'result': 'ok', 'data':{
         'success': True
     }}
+
+
+def discard_site_previews_for_direct_publish(app_id, site):
+    preview_ids = []
+    for field in ['pending_preview_id', 'active_preview_id']:
+        preview_id = site.get(field, '')
+        if preview_id and preview_id not in preview_ids:
+            preview_ids.append(preview_id)
+    previews = [get_preview(app_id, preview_id) for preview_id in preview_ids]
+    previews = [preview for preview in previews if preview is not None]
+    if not previews:
+        update_site_field(app_id, site['site_id'], 'pending_preview_id', '')
+        update_site_field(app_id, site['site_id'], 'active_preview_id', '')
+        return {'result': 'ok', 'data': {'success': True}}
+
+    redis = lanying_redis.get_redis_connection()
+    for preview in previews:
+        context = get_preview_github_context(preview)
+        if context['result'] == 'error':
+            return context
+        if preview.get('status') == 'pr_open' and preview.get('pr_number'):
+            response = requests.patch(
+                f"{context['api_url']}/pulls/{preview['pr_number']}",
+                headers=context['headers'], json={'state': 'closed'})
+            if response.status_code != 200:
+                return {'result': 'error', 'message': 'github fail to close PR'}
+            redis.srem(preview_pr_set_key(), f"{app_id}:{preview['preview_id']}")
+
+    clear_preview = next(
+        (preview for preview in previews if preview['preview_id'] == site.get('active_preview_id', '')),
+        previews[0])
+    clear_result = dispatch_clear_preview(clear_preview)
+    if clear_result['result'] == 'error':
+        return clear_result
+
+    update_site_field(app_id, site['site_id'], 'pending_preview_id', '')
+    update_site_field(app_id, site['site_id'], 'active_preview_id', '')
+    for preview in previews:
+        update_preview_field(app_id, preview['preview_id'], 'status', 'clearing')
+        if preview['preview_id'] != clear_preview['preview_id'] and preview.get('status') not in ['building', 'deploying']:
+            cleanup_preview_without_site(app_id, preview['preview_id'])
+    logging.info(f"direct publish discarded previews | app_id:{app_id}, site_id:{site['site_id']}, preview_ids:{preview_ids}")
+    return {'result': 'ok', 'data': {'success': True}}
 
 def do_deploy_task_run(app_id, task_run_id, has_retry_times):
     try:
@@ -990,7 +1051,7 @@ def del_content_meta_key(content, key):
     pattern = r'^{}: (.*)\n?'.format(key)
     return re.sub(pattern, '', content, 1, re.MULTILINE)
 
-def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
+def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_branch=None):
     logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     timestr = datetime.now().strftime('%Y%m%d%H%M%S')
     task_run = get_task_run(app_id, task_run_id)
@@ -1042,7 +1103,9 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         if target_summary_relative_dir == '.':
             target_summary_relative_dir = ''
         logging.info(f"do_deploy_task_run_internal dir: abs_base_dir:{abs_base_dir}, abs_target_dir:{abs_target_dir}, abs_target_summary_dir:{abs_target_summary_dir},target_relative_dir:{target_relative_dir}")
-        if commit_type == 'pull_request':
+        if preview_branch:
+            new_branch = preview_branch
+        elif commit_type == 'pull_request':
             new_branch = f"grow-ai-{task_run_id}-{timestr}"
         else:
             new_branch = base_branch
@@ -1077,7 +1140,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
             return {'result': 'error', 'message': 'github SUMMARY.md not found'}
         file_info = response.json()
         summary_text = base64.b64decode(file_info['content']).decode('utf-8')
-        if commit_type == 'pull_request':
+        if preview_branch or commit_type == 'pull_request':
             # 创建新分支
             data = {
                 "ref": f"refs/heads/{new_branch}",
@@ -1269,7 +1332,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
         if response.status_code != 200:
             logging.info(f"github response | {response.content}")
             return {'result': 'error', 'message': 'github fail to move commit'}
-        if commit_type == 'pull_request':
+        if commit_type == 'pull_request' and not preview_branch:
             # 提交Pull Request
             title = f"Grow AI PR: {task_run_id}"
             body = f"Grow AI PR: {task_run_id}"
@@ -1289,8 +1352,566 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times):
             pr_url = ''
         logging.info(f"deploy task_run success | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}, pr_url:{pr_url}")
         return {'result': 'ok', 'data':{
-            'pr_url': pr_url
+            'pr_url': pr_url,
+            'base_commit_sha': commit_sha,
+            'commit_sha': new_commit_sha,
+            'branch': new_branch
         }}
+
+
+PREVIEW_DEPLOY_WORKFLOW = 'preview_sub_site.yml'
+PREVIEW_CLEAR_WORKFLOW = 'clear_preview_sub_site.yml'
+PREVIEW_CALLBACK_TTL = 2 * 60 * 60
+
+
+def preview_key(app_id, preview_id):
+    return f'lanying_connector:grow_ai:preview:{app_id}:{preview_id}'
+
+
+def preview_callback_key(code):
+    return f'lanying_connector:grow_ai:preview_callback:{code}'
+
+
+def preview_pr_set_key():
+    return 'lanying_connector:grow_ai:preview_pr_open'
+
+
+def preview_publish_commit_key(repository, commit_sha):
+    return f'lanying_connector:grow_ai:preview_publish_commit:{repository}:{commit_sha}'
+
+
+def generate_preview_id():
+    return uuid.uuid4().hex[:12]
+
+
+def update_preview_field(app_id, preview_id, field, value):
+    redis = lanying_redis.get_redis_connection()
+    redis.hset(preview_key(app_id, preview_id), field, value)
+
+
+def get_preview(app_id, preview_id):
+    redis = lanying_redis.get_redis_connection()
+    info = lanying_redis.redis_hgetall(redis, preview_key(app_id, preview_id))
+    if not info or 'preview_id' not in info:
+        return None
+    dto = dict(info)
+    for field in ['create_time', 'pr_number']:
+        if field in dto:
+            dto[field] = int(dto[field])
+    site = get_site(app_id, dto['site_id'])
+    if site:
+        maybe_add_site_url(site)
+        site_name = site.get('site_name', '')
+        preview_site_name = f'preview-{site_name}'
+        dto['url'] = make_site_full_url(preview_site_name)
+        dto['cdn_token'] = calc_site_cdn_token(preview_site_name)
+    dto['retryable'] = dto.get('status') == 'error' and dto.get('error') in ['preview deploy failed', 'preview workflow dispatch failed']
+    return dto
+
+
+def set_preview_callback(code, info):
+    redis = lanying_redis.get_redis_connection()
+    redis.setex(preview_callback_key(code), PREVIEW_CALLBACK_TTL, json.dumps(info, ensure_ascii=False))
+
+
+def get_preview_callback(code):
+    if not code:
+        return None
+    redis = lanying_redis.get_redis_connection()
+    value = lanying_redis.redis_get(redis, preview_callback_key(code))
+    return json.loads(value) if value else None
+
+
+def delete_preview_callback(code):
+    redis = lanying_redis.get_redis_connection()
+    redis.delete(preview_callback_key(code))
+
+
+def consume_preview_callback(code):
+    if not code:
+        return None
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f'lanying-connector-grow-ai-preview-callback-lock:{code}'
+    with redis.lock(lock_key, timeout=30):
+        callback = get_preview_callback(code)
+        if callback is not None:
+            delete_preview_callback(code)
+        return callback
+
+
+def get_preview_github_context(preview):
+    site = get_site(preview['app_id'], preview['site_id'])
+    if site is None:
+        return {'result': 'error', 'message': 'site not found'}
+    parsed = parse_github_url(site.get('github_url', ''))
+    if parsed['result'] == 'error':
+        return parsed
+    repository = f"{parsed['github_owner']}/{parsed['github_repo']}"
+    if site.get('github_hosting') != 'on' or parsed['github_owner'] != get_github_org():
+        return {'result': 'error', 'message': 'preview only supports github hosting site'}
+    return {
+        'result': 'ok',
+        'site': site,
+        'owner': parsed['github_owner'],
+        'repo': parsed['github_repo'],
+        'repository': repository,
+        'api_url': f'https://api.github.com/repos/{repository}',
+        'headers': {
+            'Authorization': f'token {get_github_token()}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+    }
+
+
+def task_run_preview(app_id, task_run_id):
+    logging.info(f'task_run_preview start | app_id:{app_id}, task_run_id:{task_run_id}')
+    task_run = get_task_run(app_id, task_run_id)
+    if task_run is None or 'zip_file' not in task_run:
+        return {'result': 'error', 'message': 'task_run status cannot preview'}
+    task = get_task(app_id, task_run['task_id'])
+    if task is None:
+        return {'result': 'error', 'message': 'task not exist'}
+    sites = get_task_site_list(task)
+    if len(sites) != 1:
+        return {'result': 'error', 'message': 'preview requires exactly one site'}
+    site = sites[0]
+    if site.get('github_hosting') != 'on':
+        return {'result': 'error', 'message': 'preview only supports github hosting site'}
+    preview_id = generate_preview_id()
+    site_id = str(site['site_id'])
+    branch_name = f'growai-preview-{site_id}-{preview_id}'
+    now = int(time.time())
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f'lanying-connector-grow-ai-preview-site-lock:{app_id}:{site_id}'
+    with redis.lock(lock_key, timeout=120):
+        locked_site = get_site(app_id, site_id)
+        old_pending_id = locked_site.get('pending_preview_id', '') if locked_site else ''
+        redis.hmset(preview_key(app_id, preview_id), {
+            'preview_id': preview_id,
+            'app_id': app_id,
+            'site_id': site_id,
+            'task_run_id': task_run_id,
+            'branch_name': branch_name,
+            'status': 'building',
+            'error': '',
+            'create_time': now
+        })
+        update_site_field(app_id, site_id, 'pending_preview_id', preview_id)
+        update_task_run_field(app_id, task_run_id, 'preview_id', preview_id)
+        if old_pending_id and old_pending_id != preview_id:
+            cancel_pending_preview(app_id, old_pending_id)
+    from lanying_tasks import grow_ai_preview_task
+    grow_ai_preview_task.apply_async(args=[app_id, preview_id])
+    logging.info(f'task_run_preview scheduled | app_id:{app_id}, task_run_id:{task_run_id}, preview_id:{preview_id}, branch:{branch_name}')
+    return {'result': 'ok', 'data': {'preview_id': preview_id}}
+
+
+def do_preview_task(app_id, preview_id):
+    logging.info(f'do_preview_task start | app_id:{app_id}, preview_id:{preview_id}')
+    preview = get_preview(app_id, preview_id)
+    if preview is not None and preview.get('status') == 'clearing':
+        cleanup_preview_without_site(app_id, preview_id)
+        return {'result': 'ok', 'data': {'cancelled': True}}
+    if preview is None or preview.get('status') != 'building':
+        return {'result': 'error', 'message': 'preview cannot build'}
+    result = do_deploy_task_run_internal(app_id, preview['task_run_id'], False, preview['branch_name'])
+    if result['result'] == 'error':
+        update_preview_field(app_id, preview_id, 'status', 'error')
+        update_preview_field(app_id, preview_id, 'error', result['message'])
+        return result
+    data = result['data']
+    update_preview_field(app_id, preview_id, 'base_commit_sha', data['base_commit_sha'])
+    update_preview_field(app_id, preview_id, 'preview_commit_sha', data['commit_sha'])
+    preview = get_preview(app_id, preview_id)
+    if preview is None or preview.get('status') == 'clearing':
+        cleanup_preview_without_site(app_id, preview_id)
+        return {'result': 'ok', 'data': {'cancelled': True}}
+    dispatch_result = dispatch_preview_workflow(preview)
+    if dispatch_result['result'] == 'error':
+        update_preview_field(app_id, preview_id, 'status', 'error')
+        update_preview_field(app_id, preview_id, 'error', dispatch_result['message'])
+    return dispatch_result
+
+
+def dispatch_preview_workflow(preview):
+    context = get_preview_github_context(preview)
+    if context['result'] == 'error':
+        return context
+    site = context['site']
+    maybe_add_site_url(site)
+    site_name = site.get('site_name', '')
+    if not re.fullmatch(r'[A-Za-z0-9-]+', site_name):
+        return {'result': 'error', 'message': 'site_name is bad'}
+    check_code = uuid.uuid4().hex
+    callback_code = uuid.uuid4().hex
+    callback_info = {
+        'app_id': preview['app_id'], 'preview_id': preview['preview_id']
+    }
+    set_preview_callback(check_code, {
+        **callback_info, 'type': 'deploy_check'
+    })
+    set_preview_callback(callback_code, {
+        **callback_info, 'type': 'deploy_finish'
+    })
+    connector_server = lanying_utils.get_internet_connector_server()
+    workflow_url = f'https://api.github.com/repos/maxim-top/im.gitbook/actions/workflows/{PREVIEW_DEPLOY_WORKFLOW}/dispatches'
+    payload = {
+        'ref': 'master',
+        'inputs': {
+            'repository': context['repository'],
+            'commit_sha': preview['preview_commit_sha'],
+            'site_name': site_name,
+            'check_url': f'{connector_server}/grow_ai/check_preview_deploy?code={check_code}',
+            'callback_url': f'{connector_server}/grow_ai/preview_deploy_finish?code={callback_code}'
+        }
+    }
+    response = requests.post(workflow_url, headers=context['headers'], json=payload)
+    if response.status_code != 204:
+        logging.info(f'preview workflow dispatch failed | code:{response.status_code}, text:{response.text}')
+        delete_preview_callback(check_code)
+        delete_preview_callback(callback_code)
+        return {'result': 'error', 'message': 'preview workflow dispatch failed'}
+    return {'result': 'ok', 'data': {'success': True}}
+
+
+def preview_retry(app_id, preview_id):
+    preview = get_preview(app_id, preview_id)
+    if preview is None or not preview.get('retryable') or not preview.get('preview_commit_sha'):
+        return {'result': 'error', 'message': 'preview cannot retry'}
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
+    with redis.lock(lock_key, timeout=120):
+        site = get_site(app_id, preview['site_id'])
+        if site is None:
+            return {'result': 'error', 'message': 'site not found'}
+        if site.get('pending_preview_id', '') not in ['', preview_id]:
+            return {'result': 'error', 'message': 'another preview is building'}
+        update_site_field(app_id, preview['site_id'], 'pending_preview_id', preview_id)
+        update_preview_field(app_id, preview_id, 'status', 'building')
+        update_preview_field(app_id, preview_id, 'error', '')
+    result = dispatch_preview_workflow(get_preview(app_id, preview_id))
+    if result['result'] == 'error':
+        update_preview_field(app_id, preview_id, 'status', 'error')
+        update_preview_field(app_id, preview_id, 'error', result['message'])
+    return result
+
+
+def check_preview_deploy(code, release_size):
+    callback = consume_preview_callback(code)
+    if callback is None or callback.get('type') != 'deploy_check':
+        return {'result': 'error', 'message': 'code not found'}
+    preview = get_preview(callback['app_id'], callback['preview_id'])
+    if preview is None:
+        return {'result': 'error', 'message': 'preview not found'}
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f"lanying-connector-grow-ai-preview-site-lock:{preview['app_id']}:{preview['site_id']}"
+    with redis.lock(lock_key, timeout=120):
+        site = get_site(preview['app_id'], preview['site_id'])
+        current_preview = get_preview(preview['app_id'], preview['preview_id'])
+        if site is None or current_preview is None or current_preview.get('status') == 'clearing' or site.get('pending_preview_id', '') != preview['preview_id']:
+            return {'result': 'error', 'message': 'preview superseded'}
+        update_preview_field(preview['app_id'], preview['preview_id'], 'status', 'deploying')
+        update_preview_field(preview['app_id'], preview['preview_id'], 'release_size', int(release_size))
+    return {'result': 'ok', 'data': {'success': True}}
+
+
+def preview_deploy_finish(code, status):
+    logging.info(f'preview_deploy_finish | status:{status}')
+    callback = consume_preview_callback(code)
+    if callback is None or callback.get('type') != 'deploy_finish':
+        return {'result': 'error', 'message': 'code not found'}
+    app_id = callback['app_id']
+    preview_id = callback['preview_id']
+    preview = get_preview(app_id, preview_id)
+    if preview is None:
+        return {'result': 'error', 'message': 'preview not found'}
+    if status != 'ok':
+        if preview.get('status') == 'clearing':
+            cleanup_preview_without_site(app_id, preview_id)
+            return {'result': 'ok', 'data': {'success': True}}
+        redis = lanying_redis.get_redis_connection()
+        lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
+        with redis.lock(lock_key, timeout=120):
+            update_preview_field(app_id, preview_id, 'status', 'error')
+            update_preview_field(app_id, preview_id, 'error', 'preview deploy failed')
+            site = get_site(app_id, preview['site_id'])
+            if site and site.get('pending_preview_id', '') == preview_id:
+                update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
+        restore_active_preview(preview)
+        return {'result': 'ok', 'data': {'success': False}}
+    if preview.get('status') == 'clearing':
+        cleanup_preview_without_site(app_id, preview_id)
+        return {'result': 'ok', 'data': {'success': True}}
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
+    with redis.lock(lock_key, timeout=120):
+        site = get_site(app_id, preview['site_id'])
+        if site is None or site.get('pending_preview_id', '') != preview_id:
+            update_preview_field(app_id, preview_id, 'status', 'error')
+            update_preview_field(app_id, preview_id, 'error', 'preview superseded')
+            return {'result': 'error', 'message': 'preview superseded'}
+        old_preview_id = site.get('active_preview_id', '')
+        update_site_field(app_id, preview['site_id'], 'active_preview_id', preview_id)
+        update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
+        restored_status = preview.get('restore_status', '')
+        update_preview_field(app_id, preview_id, 'status', restored_status or 'ready')
+        if restored_status:
+            redis.hdel(preview_key(app_id, preview_id), 'restore_status')
+        if old_preview_id and old_preview_id != preview_id:
+            old_preview = get_preview(app_id, old_preview_id)
+            if old_preview and old_preview.get('status') not in ['publishing', 'pr_open']:
+                cleanup_preview_without_site(app_id, old_preview_id)
+    return {'result': 'ok', 'data': {'success': True}}
+
+
+def restore_active_preview(failed_preview):
+    site = get_site(failed_preview['app_id'], failed_preview['site_id'])
+    if site is None:
+        return
+    active_preview_id = site.get('active_preview_id', '')
+    if not active_preview_id or active_preview_id == failed_preview['preview_id']:
+        return
+    active_preview = get_preview(failed_preview['app_id'], active_preview_id)
+    if active_preview is None or not active_preview.get('preview_commit_sha'):
+        return
+    update_site_field(failed_preview['app_id'], failed_preview['site_id'], 'pending_preview_id', active_preview_id)
+    update_preview_field(failed_preview['app_id'], active_preview_id, 'restore_status', active_preview.get('status', 'ready'))
+    update_preview_field(failed_preview['app_id'], active_preview_id, 'status', 'building')
+    result = dispatch_preview_workflow(get_preview(failed_preview['app_id'], active_preview_id))
+    if result['result'] == 'error':
+        update_site_field(failed_preview['app_id'], failed_preview['site_id'], 'pending_preview_id', '')
+        update_preview_field(failed_preview['app_id'], active_preview_id, 'status', active_preview.get('status', 'ready'))
+        redis = lanying_redis.get_redis_connection()
+        redis.hdel(preview_key(failed_preview['app_id'], active_preview_id), 'restore_status')
+        logging.error(f"restore active preview failed | app_id:{failed_preview['app_id']}, preview_id:{active_preview_id}, result:{result}")
+
+
+def preview_publish(app_id, preview_id):
+    logging.info(f'preview_publish start | app_id:{app_id}, preview_id:{preview_id}')
+    preview = get_preview(app_id, preview_id)
+    if preview is None or preview.get('status') != 'ready':
+        return {'result': 'error', 'message': 'preview cannot publish'}
+    context = get_preview_github_context(preview)
+    if context['result'] == 'error':
+        return context
+    site = context['site']
+    base_branch = site.get('github_base_branch', 'master')
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f"lanying-connector-deploy-task-lock:{context['repository']}"
+    with redis.lock(lock_key, timeout=1200):
+        base_response = requests.get(f"{context['api_url']}/git/refs/heads/{base_branch}", headers=context['headers'])
+        branch_response = requests.get(f"{context['api_url']}/git/refs/heads/{preview['branch_name']}", headers=context['headers'])
+        if base_response.status_code != 200 or branch_response.status_code != 200:
+            return {'result': 'error', 'message': 'github get branch info failed'}
+        if base_response.json()['object']['sha'] != preview.get('base_commit_sha'):
+            update_preview_field(app_id, preview_id, 'status', 'error')
+            update_preview_field(app_id, preview_id, 'error', 'base branch changed')
+            return {'result': 'error', 'message': 'base branch changed'}
+        if branch_response.json()['object']['sha'] != preview.get('preview_commit_sha'):
+            return {'result': 'error', 'message': 'preview branch changed'}
+        if site.get('commit_type', 'branch') == 'pull_request':
+            payload = {
+                'title': f"Grow AI preview: {preview['task_run_id']}",
+                'body': f"Grow AI preview: {preview_id}",
+                'head': preview['branch_name'],
+                'base': base_branch
+            }
+            response = requests.post(f"{context['api_url']}/pulls", headers=context['headers'], json=payload)
+            if response.status_code != 201:
+                return {'result': 'error', 'message': 'github fail to commit PR'}
+            pr = response.json()
+            update_preview_field(app_id, preview_id, 'status', 'pr_open')
+            update_preview_field(app_id, preview_id, 'pr_url', pr.get('html_url', ''))
+            update_preview_field(app_id, preview_id, 'pr_number', pr['number'])
+            redis.sadd(preview_pr_set_key(), f'{app_id}:{preview_id}')
+            return {'result': 'ok', 'data': {'pr_url': pr.get('html_url', '')}}
+        response = requests.patch(
+            f"{context['api_url']}/git/refs/heads/{base_branch}", headers=context['headers'],
+            json={'sha': preview['preview_commit_sha'], 'force': False})
+        if response.status_code != 200:
+            return {'result': 'error', 'message': 'github fail to move commit'}
+        update_preview_field(app_id, preview_id, 'status', 'publishing')
+        update_preview_field(app_id, preview_id, 'publish_commit_sha', preview['preview_commit_sha'])
+        redis.set(preview_publish_commit_key(context['repository'], preview['preview_commit_sha']), f'{app_id}:{preview_id}')
+        return {'result': 'ok', 'data': {'success': True}}
+
+
+def preview_discard(app_id, preview_id):
+    logging.info(f'preview_discard start | app_id:{app_id}, preview_id:{preview_id}')
+    preview = get_preview(app_id, preview_id)
+    if preview is None:
+        return {'result': 'ok', 'data': {'success': True}}
+    context = get_preview_github_context(preview)
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
+    with redis.lock(lock_key, timeout=120):
+        site = get_site(app_id, preview['site_id'])
+        is_active = site is not None and site.get('active_preview_id', '') == preview_id
+        pending_preview_id = site.get('pending_preview_id', '') if site else ''
+        if is_active and pending_preview_id and pending_preview_id != preview_id:
+            return {'result': 'error', 'message': 'another preview is building'}
+        if context['result'] == 'ok' and preview.get('status') == 'pr_open' and preview.get('pr_number'):
+            close_response = requests.patch(f"{context['api_url']}/pulls/{preview['pr_number']}", headers=context['headers'], json={'state': 'closed'})
+            if close_response.status_code != 200:
+                return {'result': 'error', 'message': 'github fail to close PR'}
+            redis.srem(preview_pr_set_key(), f'{app_id}:{preview_id}')
+        if is_active:
+            return dispatch_clear_preview(preview)
+        if preview.get('status') in ['building', 'deploying']:
+            cancel_pending_preview(app_id, preview_id)
+            active_id = site.get('active_preview_id', '') if site else ''
+            active_preview = get_preview(app_id, active_id) if active_id else None
+            if preview.get('status') == 'deploying':
+                if active_preview:
+                    restore_active_preview(preview)
+                else:
+                    dispatch_clear_preview(preview)
+            return {'result': 'ok', 'data': {'success': True}}
+    cleanup_preview_without_site(app_id, preview_id)
+    return {'result': 'ok', 'data': {'success': True}}
+
+
+def dispatch_clear_preview(preview):
+    context = get_preview_github_context(preview)
+    if context['result'] == 'error':
+        return context
+    site = context['site']
+    maybe_add_site_url(site)
+    code = uuid.uuid4().hex
+    set_preview_callback(code, {'type': 'clear', 'app_id': preview['app_id'], 'preview_id': preview['preview_id']})
+    connector_server = lanying_utils.get_internet_connector_server()
+    workflow_url = f'https://api.github.com/repos/maxim-top/im.gitbook/actions/workflows/{PREVIEW_CLEAR_WORKFLOW}/dispatches'
+    response = requests.post(workflow_url, headers=context['headers'], json={
+        'ref': 'master',
+        'inputs': {
+            'site_name': site['site_name'],
+            'callback_url': f'{connector_server}/grow_ai/preview_clear_finish?code={code}'
+        }
+    })
+    if response.status_code != 204:
+        delete_preview_callback(code)
+        return {'result': 'error', 'message': 'preview clear workflow dispatch failed'}
+    update_preview_field(preview['app_id'], preview['preview_id'], 'status', 'clearing')
+    return {'result': 'ok', 'data': {'success': True}}
+
+
+def preview_clear_finish(code, status):
+    logging.info(f'preview_clear_finish | status:{status}')
+    callback = consume_preview_callback(code)
+    if callback is None or callback.get('type') != 'clear':
+        return {'result': 'error', 'message': 'code not found'}
+    if status != 'ok':
+        update_preview_field(callback['app_id'], callback['preview_id'], 'status', 'error')
+        update_preview_field(callback['app_id'], callback['preview_id'], 'error', 'preview clear failed')
+        return {'result': 'ok', 'data': {'success': False}}
+    if not cleanup_preview_without_site(callback['app_id'], callback['preview_id']):
+        return {'result': 'error', 'message': 'preview branch cleanup failed'}
+    return {'result': 'ok', 'data': {'success': True}}
+
+
+def cleanup_preview_without_site(app_id, preview_id):
+    preview = get_preview(app_id, preview_id)
+    if preview is None:
+        return True
+    context = get_preview_github_context(preview)
+    if context['result'] == 'error' and preview.get('branch_name'):
+        update_preview_field(app_id, preview_id, 'status', 'error')
+        update_preview_field(app_id, preview_id, 'error', context['message'])
+        return False
+    if context['result'] == 'ok' and preview.get('branch_name'):
+        response = requests.get(f"{context['api_url']}/git/refs/heads/{preview['branch_name']}", headers=context['headers'])
+        if response.status_code == 200:
+            if preview.get('preview_commit_sha') and response.json()['object']['sha'] != preview.get('preview_commit_sha'):
+                update_preview_field(app_id, preview_id, 'status', 'error')
+                update_preview_field(app_id, preview_id, 'error', 'preview branch changed')
+                return False
+            delete_response = requests.delete(f"{context['api_url']}/git/refs/heads/{preview['branch_name']}", headers=context['headers'])
+            if delete_response.status_code != 204:
+                update_preview_field(app_id, preview_id, 'status', 'error')
+                update_preview_field(app_id, preview_id, 'error', 'preview branch cleanup failed')
+                return False
+        elif response.status_code != 404:
+            update_preview_field(app_id, preview_id, 'status', 'error')
+            update_preview_field(app_id, preview_id, 'error', 'preview branch cleanup failed')
+            return False
+    redis = lanying_redis.get_redis_connection()
+    site = get_site(app_id, preview['site_id'])
+    if site:
+        if site.get('active_preview_id', '') == preview_id:
+            update_site_field(app_id, preview['site_id'], 'active_preview_id', '')
+        if site.get('pending_preview_id', '') == preview_id:
+            update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
+    task_run = get_task_run(app_id, preview['task_run_id'])
+    if task_run and task_run.get('preview_id') == preview_id:
+        update_task_run_field(app_id, preview['task_run_id'], 'preview_id', '')
+    redis.srem(preview_pr_set_key(), f'{app_id}:{preview_id}')
+    if context['result'] == 'ok' and preview.get('publish_commit_sha'):
+        redis.delete(preview_publish_commit_key(context['repository'], preview['publish_commit_sha']))
+    redis.delete(preview_key(app_id, preview_id))
+    return True
+
+
+def cancel_pending_preview(app_id, preview_id):
+    preview = get_preview(app_id, preview_id)
+    if preview is None:
+        return
+    update_preview_field(app_id, preview_id, 'status', 'clearing')
+    site = get_site(app_id, preview['site_id'])
+    if site and site.get('pending_preview_id', '') == preview_id:
+        update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
+    if preview.get('status') not in ['building', 'deploying']:
+        cleanup_preview_without_site(app_id, preview_id)
+
+
+def reconcile_preview_pull_requests():
+    redis = lanying_redis.get_redis_connection()
+    for item in list(redis.smembers(preview_pr_set_key())):
+        if isinstance(item, bytes):
+            item = item.decode()
+        app_id, preview_id = item.split(':', 1)
+        preview = get_preview(app_id, preview_id)
+        if preview is None:
+            redis.srem(preview_pr_set_key(), item)
+            continue
+        context = get_preview_github_context(preview)
+        if context['result'] == 'error':
+            continue
+        response = requests.get(f"{context['api_url']}/pulls/{preview['pr_number']}", headers=context['headers'])
+        if response.status_code != 200:
+            continue
+        pr = response.json()
+        if pr.get('merged'):
+            commit_sha = pr.get('merge_commit_sha', '')
+            merge_tree_sha = get_github_commit_tree_sha(context, commit_sha)
+            preview_tree_sha = get_github_commit_tree_sha(context, preview.get('preview_commit_sha', ''))
+            if not merge_tree_sha or merge_tree_sha != preview_tree_sha:
+                update_preview_field(app_id, preview_id, 'status', 'error')
+                update_preview_field(app_id, preview_id, 'error', 'published content changed')
+                redis.srem(preview_pr_set_key(), item)
+                logging.info(f'preview PR content changed | app_id:{app_id}, preview_id:{preview_id}, merge_commit:{commit_sha}')
+                continue
+            update_preview_field(app_id, preview_id, 'status', 'publishing')
+            update_preview_field(app_id, preview_id, 'publish_commit_sha', commit_sha)
+            redis.set(preview_publish_commit_key(context['repository'], commit_sha), f'{app_id}:{preview_id}')
+            redis.srem(preview_pr_set_key(), item)
+        elif pr.get('state') == 'closed':
+            site = context['site']
+            redis.srem(preview_pr_set_key(), item)
+            if site.get('active_preview_id', '') == preview_id:
+                update_preview_field(app_id, preview_id, 'status', 'ready')
+                update_preview_field(app_id, preview_id, 'pr_url', '')
+            else:
+                cleanup_preview_without_site(app_id, preview_id)
+
+
+def get_github_commit_tree_sha(context, commit_sha):
+    if not re.fullmatch(r'[0-9a-fA-F]{40}', commit_sha or ''):
+        return ''
+    response = requests.get(f"{context['api_url']}/git/commits/{commit_sha}", headers=context['headers'])
+    if response.status_code != 200:
+        return ''
+    return response.json().get('tree', {}).get('sha', '')
+
 
 def task_run_retry(app_id, task_run_id):
     logging.info(f"task_run_retry start | app_id:{app_id}, task_run_id:{task_run_id}")
@@ -1698,9 +2319,18 @@ def get_task_run_list(app_id, task_id):
     redis = lanying_redis.get_redis_connection()
     task_run_ids = reversed(lanying_redis.redis_lrange(redis, get_task_run_list_key(app_id, task_id), 0, -1))
     task_run_list = []
+    task = get_task(app_id, task_id)
+    sites = get_task_site_list(task) if task else []
+    site_has_preview = any(site.get('active_preview_id', '') or site.get('pending_preview_id', '') for site in sites)
     for task_run_id in task_run_ids:
         task_run_info = get_task_run(app_id, task_run_id)
         if task_run_info:
+            task_run_info['site_has_preview'] = site_has_preview
+            preview_id = task_run_info.get('preview_id', '')
+            if preview_id:
+                preview = get_preview(app_id, preview_id)
+                if preview:
+                    task_run_info['preview'] = preview
             task_run_list.append(task_run_info)
     return {
         'result': 'ok',
@@ -1778,6 +2408,7 @@ def release_finish(repository, release):
     github_repo = fields[1]
     site_id_list = get_github_site_id_list(github_owner, github_repo)
     owner_site_id = None
+    owner_app_id = None
     owner_time = 0
     for site_id, app_id in site_id_list.items():
         site = get_site(app_id, site_id)
@@ -1791,11 +2422,40 @@ def release_finish(repository, release):
                 if update_time > owner_time:
                     owner_time = update_time
                     owner_site_id = site_id
+                    owner_app_id = app_id
     if owner_site_id is not None:
-        return start_deploy_github_action(app_id, '', owner_site_id, github_owner, github_repo, release)
+        preview_id = ''
+        commit_sha = resolve_release_commit(repository, release)
+        if commit_sha:
+            redis = lanying_redis.get_redis_connection()
+            mapping = lanying_redis.redis_get(redis, preview_publish_commit_key(repository, commit_sha))
+            if not mapping:
+                reconcile_preview_pull_requests()
+                mapping = lanying_redis.redis_get(redis, preview_publish_commit_key(repository, commit_sha))
+            if mapping:
+                mapped_app_id, preview_id = mapping.split(':', 1)
+                if mapped_app_id != owner_app_id:
+                    preview_id = ''
+        return start_deploy_github_action(owner_app_id, '', owner_site_id, github_owner, github_repo, release, preview_id)
     return {'result': 'error', 'message': 'deploy not found'}
 
-def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release):
+def resolve_release_commit(repository, release):
+    headers = {
+        'Authorization': f'token {get_github_token()}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
+    response = requests.get(f'https://api.github.com/repos/{repository}/releases/tags/{release}', headers=headers)
+    if response.status_code != 200:
+        logging.info(f'resolve release commit failed | repository:{repository}, release:{release}, code:{response.status_code}')
+        return ''
+    target = response.json().get('target_commitish', '')
+    if re.fullmatch(r'[0-9a-fA-F]{40}', target):
+        return target
+    response = requests.get(f'https://api.github.com/repos/{repository}/commits/{target}', headers=headers)
+    return response.json().get('sha', '') if response.status_code == 200 else ''
+
+
+def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release, preview_id=''):
     logging.info(f"start_deploy_github_action start | app_id:{app_id}, task_id:{task_id}, site_id:{site_id}, github_owner:{github_owner}, github_repo:{github_repo}, release:{release}")
     deploy_repo_owner = 'maxim-top'
     deploy_repo_name = 'im.gitbook'
@@ -1814,7 +2474,8 @@ def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_re
         'task_id': task_id,
         'site_id': site_id,
         'github_owner': github_owner,
-        'github_repo': github_repo
+        'github_repo': github_repo,
+        'preview_id': preview_id
     })
     connector_server = lanying_utils.get_internet_connector_server()
     # 构建请求头和请求URL
@@ -1926,7 +2587,31 @@ def deploy_finish(deploy_code, deploy_result):
     site = get_site(app_id, site_id)
     if site is None:
         return {'result': 'error', 'message': 'site not found'}
+    if deploy_result != 'ok':
+        update_site_field(app_id, site_id, "deploy_result", "failed")
+        update_site_field(app_id, site_id, "deploy_failed_reason", "deploy workflow failed")
+        return {'result':'ok', 'data':{'success': False}}
     update_site_field(app_id, site_id, "deploy_result", "success")
+    update_site_field(app_id, site_id, "deploy_failed_reason", "")
+    preview_id = code_info.get('preview_id', '')
+    if preview_id:
+        preview = get_preview(app_id, preview_id)
+        if preview:
+            redis = lanying_redis.get_redis_connection()
+            lock_key = f'lanying-connector-grow-ai-preview-site-lock:{app_id}:{site_id}'
+            with redis.lock(lock_key, timeout=120):
+                current_site = get_site(app_id, site_id)
+                if current_site.get('active_preview_id', '') == preview_id:
+                    pending_preview_id = current_site.get('pending_preview_id', '')
+                    if pending_preview_id and pending_preview_id != preview_id:
+                        update_preview_field(app_id, preview_id, 'status', 'published')
+                    else:
+                        clear_result = dispatch_clear_preview(preview)
+                        if clear_result['result'] == 'error':
+                            update_preview_field(app_id, preview_id, 'status', 'error')
+                            update_preview_field(app_id, preview_id, 'error', clear_result['message'])
+                else:
+                    cleanup_preview_without_site(app_id, preview_id)
     return {'result':'ok', 'data':{'success': True}}
 
 def get_github_site(github_owner, github_repo):

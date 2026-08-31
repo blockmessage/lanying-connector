@@ -44,6 +44,10 @@ slow_queue.conf.beat_schedule = {
     'lanying_daily_task': {
         'task': 'lanying_tasks.lanying_daily_task',
         'schedule': crontab(hour=2, minute=0)
+    },
+    'grow_ai_preview_reconcile_task': {
+        'task': 'lanying_tasks.grow_ai_preview_reconcile_task',
+        'schedule': crontab(minute='*/10')
     }
 }
 # normal_queue.conf.update(
@@ -475,6 +479,24 @@ def grow_ai_deply_task_run(self, app_id, task_run_id):
         lanying_grow_ai.do_deploy_task_run(app_id, task_run_id, has_retry_times)
     except Exception as e:
         raise self.retry(exc=e, countdown=10)
+
+@slow_queue.task
+def grow_ai_preview_task(app_id, preview_id):
+    try:
+        lanying_grow_ai.do_preview_task(app_id, preview_id)
+    except Exception as e:
+        logging.exception(e)
+        preview = lanying_grow_ai.get_preview(app_id, preview_id)
+        if preview:
+            if preview.get('status') == 'clearing':
+                lanying_grow_ai.cleanup_preview_without_site(app_id, preview_id)
+            else:
+                lanying_grow_ai.update_preview_field(app_id, preview_id, 'status', 'error')
+                lanying_grow_ai.update_preview_field(app_id, preview_id, 'error', str(e)[:100])
+
+@slow_queue.task
+def grow_ai_preview_reconcile_task():
+    lanying_grow_ai.reconcile_preview_pull_requests()
 
 global_grow_ai_cdn_config_task_run_max_retries=60
 @normal_queue.task(bind=True, max_retries=global_grow_ai_cdn_config_task_run_max_retries)

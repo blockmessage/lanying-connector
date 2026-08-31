@@ -330,6 +330,38 @@ def deploy_task_run():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/grow_ai/task_run_preview", methods=["POST"])
+def task_run_preview():
+    if not check_access_token_valid():
+        return make_response({'code':401, 'message':'bad authorization'})
+    data = json.loads(request.get_data(as_text=True))
+    result = lanying_grow_ai.task_run_preview(str(data['app_id']), str(data['task_run_id']))
+    return make_response({'code':400, 'message':result['message']}) if result['result'] == 'error' else make_response({'code':200, 'data':result['data']})
+
+@bp.route("/service/grow_ai/preview_retry", methods=["POST"])
+def preview_retry():
+    if not check_access_token_valid():
+        return make_response({'code':401, 'message':'bad authorization'})
+    data = json.loads(request.get_data(as_text=True))
+    result = lanying_grow_ai.preview_retry(str(data['app_id']), str(data['preview_id']))
+    return make_response({'code':400, 'message':result['message']}) if result['result'] == 'error' else make_response({'code':200, 'data':result['data']})
+
+@bp.route("/service/grow_ai/preview_publish", methods=["POST"])
+def preview_publish():
+    if not check_access_token_valid():
+        return make_response({'code':401, 'message':'bad authorization'})
+    data = json.loads(request.get_data(as_text=True))
+    result = lanying_grow_ai.preview_publish(str(data['app_id']), str(data['preview_id']))
+    return make_response({'code':400, 'message':result['message']}) if result['result'] == 'error' else make_response({'code':200, 'data':result['data']})
+
+@bp.route("/service/grow_ai/preview_discard", methods=["POST"])
+def preview_discard():
+    if not check_access_token_valid():
+        return make_response({'code':401, 'message':'bad authorization'})
+    data = json.loads(request.get_data(as_text=True))
+    result = lanying_grow_ai.preview_discard(str(data['app_id']), str(data['preview_id']))
+    return make_response({'code':400, 'message':result['message']}) if result['result'] == 'error' else make_response({'code':200, 'data':result['data']})
+
 @bp.route("/service/grow_ai/delete_task_run", methods=["POST"])
 def delete_task_run():
     if not check_access_token_valid():
@@ -428,6 +460,24 @@ def deploy_finish():
     else:
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
+
+@bp.route("/grow_ai/check_preview_deploy", methods=["POST"])
+def check_preview_deploy():
+    data = json.loads(request.get_data(as_text=True))
+    result = lanying_grow_ai.check_preview_deploy(request.args.get('code'), int(data['release_size']))
+    return make_response({'code':400, 'message':result['message']}) if result['result'] == 'error' else make_response({'code':200, 'data':result['data']})
+
+@bp.route("/grow_ai/preview_deploy_finish", methods=["POST"])
+def preview_deploy_finish():
+    data = json.loads(request.get_data(as_text=True))
+    result = lanying_grow_ai.preview_deploy_finish(request.args.get('code'), str(data['status']))
+    return make_response({'code':400, 'message':result['message']}) if result['result'] == 'error' else make_response({'code':200, 'data':result['data']})
+
+@bp.route("/grow_ai/preview_clear_finish", methods=["POST"])
+def preview_clear_finish():
+    data = json.loads(request.get_data(as_text=True))
+    result = lanying_grow_ai.preview_clear_finish(request.args.get('code'), str(data['status']))
+    return make_response({'code':400, 'message':result['message']}) if result['result'] == 'error' else make_response({'code':200, 'data':result['data']})
 
 
 @bp.route("/service/grow_ai/create_site", methods=["POST"])
