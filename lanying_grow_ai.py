@@ -1579,13 +1579,24 @@ def dispatch_preview_workflow(preview):
             'callback_url': f'{connector_server}/grow_ai/preview_deploy_finish?code={callback_code}'
         }
     }
-    response = requests.post(workflow_url, headers=get_grow_ai_workflow_headers(), json=payload)
-    if response.status_code != 204:
-        logging.info(f'preview workflow dispatch failed | code:{response.status_code}, text:{response.text}')
-        delete_preview_callback(check_code)
-        delete_preview_callback(callback_code)
-        return {'result': 'error', 'message': 'preview workflow dispatch failed'}
-    return {'result': 'ok', 'data': {'success': True}}
+    retry_status_codes = {403, 409, 429, 500, 502, 503, 504}
+    for attempt in range(3):
+        try:
+            response = requests.post(workflow_url, headers=get_grow_ai_workflow_headers(), json=payload)
+            if response.status_code == 204:
+                return {'result': 'ok', 'data': {'success': True}}
+            logging.info(
+                f'preview workflow dispatch failed | attempt:{attempt + 1}, '
+                f'code:{response.status_code}, text:{response.text}')
+            if response.status_code not in retry_status_codes:
+                break
+        except requests.RequestException as e:
+            logging.info(f'preview workflow dispatch failed | attempt:{attempt + 1}, error:{e}')
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    delete_preview_callback(check_code)
+    delete_preview_callback(callback_code)
+    return {'result': 'error', 'message': 'preview workflow dispatch failed'}
 
 
 def preview_retry(app_id, preview_id):

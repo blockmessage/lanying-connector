@@ -59,6 +59,29 @@ class GrowAIPreviewTest(unittest.TestCase):
 
         self.assertEqual('token workflow-token', headers['Authorization'])
 
+    def test_preview_workflow_dispatch_retries_transient_failure(self):
+        failed_response = MagicMock(status_code=503, text='temporarily unavailable')
+        success_response = MagicMock(status_code=204, text='')
+        preview = {
+            'app_id': 'app', 'site_id': 'site', 'preview_id': 'p1',
+            'preview_commit_sha': 'a' * 40
+        }
+        context = {
+            'result': 'ok', 'repository': 'maxim-top/site',
+            'site': {'site_name': 'example'}
+        }
+        with patch.object(lanying_grow_ai, 'get_preview_github_context', return_value=context), \
+                patch.object(lanying_grow_ai, 'maybe_add_site_url'), \
+                patch.object(lanying_grow_ai, 'set_preview_callback'), \
+                patch.object(lanying_grow_ai.lanying_utils, 'get_internet_connector_server', return_value='https://connector.test'), \
+                patch.object(lanying_grow_ai.requests, 'post', side_effect=[failed_response, success_response]) as post, \
+                patch.object(lanying_grow_ai.time, 'sleep') as sleep:
+            result = lanying_grow_ai.dispatch_preview_workflow(preview)
+
+        self.assertEqual('ok', result['result'])
+        self.assertEqual(2, post.call_count)
+        sleep.assert_called_once_with(1)
+
     def test_preview_uses_first_site_like_direct_deploy(self):
         redis = MagicMock()
         redis.lock.return_value = DummyLock()
