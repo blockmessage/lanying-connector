@@ -1873,8 +1873,6 @@ def cancel_pending_preview(app_id, preview_id):
     site = get_site(app_id, preview['site_id'])
     if site and site.get('pending_preview_id', '') == preview_id:
         update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
-    if preview.get('status') not in ['building', 'deploying']:
-        cleanup_preview_without_site(app_id, preview_id)
 
 
 def reconcile_preview_pull_requests():
