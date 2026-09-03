@@ -40,7 +40,9 @@ class GrowAIPreviewTest(unittest.TestCase):
         task_setting = MagicMock()
         with app.test_request_context(json=payload), \
                 patch.object(grow_ai_service, 'check_access_token_valid', return_value=True), \
-                patch.object(lanying_grow_ai, 'get_task', return_value={'auto_deploy': 'off'}), \
+                patch.object(lanying_grow_ai, 'get_task', return_value={
+                    'auto_deploy': 'off', 'article_prompt': 'keep this prompt'
+                }), \
                 patch.object(lanying_grow_ai, 'TaskSetting', return_value=task_setting) as setting_class, \
                 patch.object(lanying_grow_ai, 'configure_task', return_value={
                     'result': 'ok', 'data': {'success': True}
@@ -49,6 +51,30 @@ class GrowAIPreviewTest(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual('off', setting_class.call_args.kwargs['auto_deploy'])
+        self.assertEqual('keep this prompt', setting_class.call_args.kwargs['article_prompt'])
+
+    def test_generate_article_uses_task_article_prompt(self):
+        task = {
+            'task_id': 'task', 'image_count': 0, 'word_count_min': 500,
+            'word_count_max': 1200, 'embedding_condition': {},
+            'prompt': 'product subject', 'article_prompt': 'Use a conversational tone.'
+        }
+        task_run = {'task_run_id': 'run', 'user_id': 'user'}
+        with patch.object(lanying_grow_ai, 'get_task_site_list', return_value=[]), \
+                patch.object(lanying_grow_ai, 'clean_user_message_count'), \
+                patch.object(lanying_grow_ai, 'generate_article', return_value={
+                    'result': 'error'
+                }) as generate_article, \
+                patch.object(lanying_grow_ai, 'handle_ai_response_error', return_value={
+                    'result': 'error'
+                }):
+            lanying_grow_ai.do_run_task_article(
+                'app', task_run, task, 'article', 'chatbot', 'Article title'
+            )
+
+        text_prompt = generate_article.call_args.args[6]
+        self.assertIn('生成文章时还需要遵循以下要求：\nUse a conversational tone.\n', text_prompt)
+        self.assertIn('文章标题必须为：Article title\n', text_prompt)
 
     def test_preview_workflow_uses_deploy_token(self):
         with patch.dict('os.environ', {

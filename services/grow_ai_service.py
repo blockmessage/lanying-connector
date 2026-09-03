@@ -99,6 +99,7 @@ def create_task():
     note = str(data['note'])
     chatbot_id = str(data['chatbot_id'])
     prompt = str(data['prompt'])
+    article_prompt = str(data.get('article_prompt', ''))
     keywords = str(data['keywords'])
     word_count_min = int(data['word_count_min'])
     word_count_max = int(data['word_count_max'])
@@ -130,6 +131,7 @@ def create_task():
         note = note,
         chatbot_id = chatbot_id,
         prompt = prompt,
+        article_prompt = article_prompt,
         keywords = keywords,
         word_count_min = word_count_min,
         word_count_max = word_count_max,
@@ -167,6 +169,8 @@ def configure_task():
     note = str(data['note'])
     chatbot_id = str(data['chatbot_id'])
     prompt = str(data['prompt'])
+    task = lanying_grow_ai.get_task(app_id, task_id)
+    article_prompt = str(data.get('article_prompt', task.get('article_prompt', '') if task else ''))
     keywords = str(data['keywords'])
     word_count_min = int(data['word_count_min'])
     word_count_max = int(data['word_count_max'])
@@ -184,7 +188,6 @@ def configure_task():
     if 'auto_deploy' in data:
         auto_deploy = 'on' if str(data['auto_deploy']) == 'on' else 'off'
     else:
-        task = lanying_grow_ai.get_task(app_id, task_id)
         auto_deploy = task.get('auto_deploy', 'on' if site_id_list else 'off') if task else ('on' if site_id_list else 'off')
     if 'target_dir' in data:
         target_dir = str(data.get('target_dir')).strip()
@@ -202,6 +205,7 @@ def configure_task():
         note = note,
         chatbot_id = chatbot_id,
         prompt = prompt,
+        article_prompt = article_prompt,
         keywords = keywords,
         word_count_min = word_count_min,
         word_count_max = word_count_max,

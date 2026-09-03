@@ -35,12 +35,13 @@ import lanying_oss
 from github import Github
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition, auto_deploy):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition, auto_deploy, article_prompt=''):
         self.app_id = app_id
         self.name = name
         self.note = note
         self.chatbot_id = chatbot_id
         self.prompt = prompt
+        self.article_prompt = article_prompt
         self.keywords = keywords
         self.word_count_min = word_count_min
         self.word_count_max = word_count_max
@@ -65,6 +66,7 @@ class TaskSetting:
             'note': self.note,
             'chatbot_id': self.chatbot_id,
             'prompt': self.prompt,
+            'article_prompt': self.article_prompt,
             'keywords': self.keywords,
             'word_count_min': self.word_count_min,
             'word_count_max': self.word_count_max,
@@ -357,7 +359,10 @@ def configure_task(task_id, task_setting: TaskSetting):
     redis.hmset(get_task_key(app_id, task_id), fields)
     set_task_schedule(app_id, task_id, "on")
     new_task_info = get_task(app_id, task_id)
-    if new_task_info['prompt'] != task_info['prompt'] or new_task_info['keywords'] != task_info['keywords'] or new_task_info['file_list'] != task_info['file_list']:
+    if (new_task_info['prompt'] != task_info['prompt']
+            or new_task_info['article_prompt'] != task_info.get('article_prompt', '')
+            or new_task_info['keywords'] != task_info['keywords']
+            or new_task_info['file_list'] != task_info['file_list']):
         if new_task_info['title_reuse'] == 'off':
             update_task_field(app_id, task_id, "article_cursor", 0)
     if new_task_info['cycle_type'] != task_info['cycle_type'] or new_task_info['cycle_interval'] != task_info['cycle_interval']:
@@ -510,6 +515,8 @@ def get_task(app_id, task_id):
             dto['target_summary_dir'] = ''
         if 'embedding_condition' not in dto:
             dto['embedding_condition'] = {}
+        if 'article_prompt' not in dto:
+            dto['article_prompt'] = ''
         return dto
     return None
 
@@ -2153,6 +2160,7 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     if site_language == 'en':
         action_language = '英文'
     task_prompt = task['prompt']
+    article_prompt = task.get('article_prompt', '').strip()
     action_prompt = f"请生成一篇markdown格式的{action_language}文章，不要生成图片，第一行需要是文章标题：\n"
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'
@@ -2162,12 +2170,13 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
                    '2. keywords: 搜索引擎SEO关键词, 最多 2 个关键词, 字符串类型，多个关键词请以英文逗号连接。\n'
                    f'3. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n{meta_keywords_prompt_2}')
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
+    article_prompt_text = '' if article_prompt == '' else f'生成文章时还需要遵循以下要求：\n{article_prompt}\n'
     keyword_prompt = f'文章标题必须为：{keyword}\n'
     if site_language == 'en':
         extra_prompt = f'注意：一定不要生成图片。一定要使用英文，不要使用中文。\n'
     else:
         extra_prompt = f'注意：一定不要生成图片, 如果未指定中英文等语言，请默认使用中文。\n'
-    text_prompt = f'{action_prompt}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_prompt}'
+    text_prompt = f'{action_prompt}{article_prompt_text}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
         logging.info(f"dry_run generate_article text: app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, article_id:{article_id}")
