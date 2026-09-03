@@ -16,6 +16,92 @@ class DummyLock:
 
 
 class GrowAIPreviewTest(unittest.TestCase):
+    def create_grow_ai_app(self):
+        app = Flask(__name__)
+        app.register_blueprint(grow_ai_service.bp)
+        return app
+
+    def test_download_file_allows_configured_origin(self):
+        app = self.create_grow_ai_app()
+        with patch.object(lanying_grow_ai, 'get_download_file', return_value={
+                'result': 'ok', 'data': {
+                    'file_path': '/tmp/article.zip', 'object_name': 'article.zip'
+                }
+        }), patch.object(
+                grow_ai_service, 'send_file',
+                side_effect=lambda *args, **kwargs: app.response_class(
+                    b'zip content', mimetype='application/zip'
+                )):
+            for origin in grow_ai_service.GROW_AI_DOWNLOAD_ALLOWED_ORIGINS:
+                with self.subTest(origin=origin):
+                    response = app.test_client().get(
+                        '/service/grow_ai/file/download?file_sign=sign',
+                        headers={'Origin': origin}
+                    )
+
+                    self.assertEqual(200, response.status_code)
+                    self.assertEqual(
+                        origin, response.headers['Access-Control-Allow-Origin']
+                    )
+                    self.assertEqual('Origin', response.headers['Vary'])
+                    self.assertIn(
+                        'Content-Disposition',
+                        response.headers['Access-Control-Expose-Headers']
+                    )
+                    self.assertNotIn(
+                        'Access-Control-Allow-Credentials', response.headers
+                    )
+
+    def test_download_file_preflight_does_not_load_file(self):
+        app = self.create_grow_ai_app()
+        with patch.object(lanying_grow_ai, 'get_download_file') as get_download_file:
+            response = app.test_client().options(
+                '/service/grow_ai/file/download?file_sign=sign',
+                headers={
+                    'Origin': 'http://localhost:1024',
+                    'Access-Control-Request-Method': 'GET',
+                    'Access-Control-Request-Headers': 'Range'
+                }
+            )
+
+        self.assertEqual(204, response.status_code)
+        self.assertEqual(
+            'http://localhost:1024',
+            response.headers['Access-Control-Allow-Origin']
+        )
+        self.assertEqual('Range', response.headers['Access-Control-Allow-Headers'])
+        get_download_file.assert_not_called()
+
+    def test_download_file_rejects_unconfigured_origin(self):
+        app = self.create_grow_ai_app()
+        with patch.object(lanying_grow_ai, 'get_download_file', return_value={
+                'result': 'error', 'message': 'file not exist'
+        }):
+            response = app.test_client().get(
+                '/service/grow_ai/file/download?file_sign=bad',
+                headers={'Origin': 'https://example.com'}
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertNotIn('Access-Control-Allow-Origin', response.headers)
+        self.assertEqual('Origin', response.headers['Vary'])
+
+    def test_download_file_error_allows_configured_origin(self):
+        app = self.create_grow_ai_app()
+        with patch.object(lanying_grow_ai, 'get_download_file', return_value={
+                'result': 'error', 'message': 'file not exist'
+        }):
+            response = app.test_client().get(
+                '/service/grow_ai/file/download?file_sign=expired',
+                headers={'Origin': 'https://console.seenical.ai'}
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            'https://console.seenical.ai',
+            response.headers['Access-Control-Allow-Origin']
+        )
+
     def test_auto_deploy_uses_latest_task_setting(self):
         with patch.object(lanying_grow_ai, 'get_task', return_value={
             'app_id': 'app', 'task_id': 'task', 'site_id_list': ['site'],

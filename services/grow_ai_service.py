@@ -9,6 +9,26 @@ from datetime import timedelta as datetime_timedelta
 service = 'grow_ai'
 bp = Blueprint(service, __name__)
 
+GROW_AI_DOWNLOAD_ALLOWED_ORIGINS = {
+    'https://console.seenical.ai',
+    'https://localhost:1024',
+    'http://localhost:1024'
+}
+
+
+def add_download_cors_headers(resp):
+    origin = request.headers.get('Origin', '')
+    resp.vary.add('Origin')
+    if origin in GROW_AI_DOWNLOAD_ALLOWED_ORIGINS:
+        resp.headers['Access-Control-Allow-Origin'] = origin
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Range'
+        resp.headers['Access-Control-Expose-Headers'] = (
+            'Content-Disposition, Content-Length, Content-Range, Accept-Ranges'
+        )
+        resp.headers['Access-Control-Max-Age'] = '3600'
+    return resp
+
 
 @bp.route("/.well-known/acme-challenge/<string:key>", methods=["GET"])
 def acme_challenge(key):
@@ -406,17 +426,20 @@ def get_task_run_result_list():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
-@bp.route('/service/grow_ai/file/download', methods=['GET'])
+@bp.route('/service/grow_ai/file/download', methods=['GET', 'OPTIONS'])
 def download_file():
+    if request.method == 'OPTIONS':
+        return add_download_cors_headers(make_response('', 204))
     file_sign = request.args.get('file_sign')
     result = lanying_grow_ai.get_download_file(file_sign)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
-        return resp
+        return add_download_cors_headers(resp)
     else:
         file_path = result['data']['file_path']
         object_name = result['data']['object_name']
-        return send_file(file_path, as_attachment=True, download_name=object_name)
+        resp = send_file(file_path, as_attachment=True, download_name=object_name)
+        return add_download_cors_headers(resp)
 
 @bp.route("/service/grow_ai/download_task_run_result", methods=["POST"])
 def download_task_run_result():
