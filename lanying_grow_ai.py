@@ -34,8 +34,11 @@ import lanying_google
 import lanying_oss
 from github import Github
 
+ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
+
+
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition, auto_deploy, article_prompt=''):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition, auto_deploy, article_prompt='', article_language='auto'):
         self.app_id = app_id
         self.name = name
         self.note = note
@@ -58,6 +61,7 @@ class TaskSetting:
         self.target_summary_dir = target_summary_dir
         self.embedding_condition = embedding_condition
         self.auto_deploy = auto_deploy
+        self.article_language = article_language if article_language in ARTICLE_LANGUAGE_VALUES else 'auto'
 
     def to_hmset_fields(self):
         return {
@@ -67,6 +71,8 @@ class TaskSetting:
             'chatbot_id': self.chatbot_id,
             'prompt': self.prompt,
             'article_prompt': self.article_prompt,
+            'article_language': self.article_language,
+            'article_language_scoped': 'on',
             'keywords': self.keywords,
             'word_count_min': self.word_count_min,
             'word_count_max': self.word_count_max,
@@ -355,16 +361,30 @@ def configure_task(task_id, task_setting: TaskSetting):
         return result
     redis = lanying_redis.get_redis_connection()
     fields = task_setting.to_hmset_fields()
+    # Old tasks stored title usage without a language suffix. Keep those titles
+    # associated with the language they used before enabling scoped tracking.
+    if task_info.get('article_language_scoped', 'off') != 'on':
+        legacy_language = resolve_article_language(task_info)
+        fields['article_title_legacy_language'] = legacy_language
+        fields[article_cursor_field(legacy_language, 'on')] = task_info.get(
+            'article_cursor', 0
+        )
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
     redis.hmset(get_task_key(app_id, task_id), fields)
     set_task_schedule(app_id, task_id, "on")
     new_task_info = get_task(app_id, task_id)
     if (new_task_info['prompt'] != task_info['prompt']
             or new_task_info['article_prompt'] != task_info.get('article_prompt', '')
+            or new_task_info['article_language'] != task_info.get('article_language', 'auto')
             or new_task_info['keywords'] != task_info['keywords']
             or new_task_info['file_list'] != task_info['file_list']):
         if new_task_info['title_reuse'] == 'off':
-            update_task_field(app_id, task_id, "article_cursor", 0)
+            article_language = resolve_article_language(new_task_info)
+            cursor_field = article_cursor_field(
+                article_language,
+                new_task_info.get('article_language_scoped', 'off')
+            )
+            update_task_field(app_id, task_id, cursor_field, 0)
     if new_task_info['cycle_type'] != task_info['cycle_type'] or new_task_info['cycle_interval'] != task_info['cycle_interval']:
         schedule_id = new_task_info.get('schedule_id', '')
         if new_task_info['cycle_type'] != 'cycle':
@@ -483,7 +503,8 @@ def get_task(app_id, task_id):
         dto = {}
         for key,value in info.items():
             if key in ['word_count_min', 'word_count_max', 'image_count', 'article_count',
-                       'cycle_interval', 'create_time', 'article_cursor', "total_article_num"]:
+                       'cycle_interval', 'create_time', 'article_cursor', "total_article_num"] \
+                    or key.startswith('article_cursor_'):
                 dto[key] = int(value)
             elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
                 dto[key] = float(value)
@@ -517,6 +538,10 @@ def get_task(app_id, task_id):
             dto['embedding_condition'] = {}
         if 'article_prompt' not in dto:
             dto['article_prompt'] = ''
+        if 'article_language_scoped' not in dto:
+            dto['article_language_scoped'] = 'off'
+        if 'article_language' not in dto:
+            dto['article_language'] = 'auto'
         return dto
     return None
 
@@ -581,6 +606,7 @@ def run_task(app_id, task_id, countdown=0):
         redis = lanying_redis.get_redis_connection()
         article_count = task_info['article_count']
         cycle_type = task_info['cycle_type']
+        article_language = resolve_article_language(task_info)
         task_run_id = generate_task_run_id(task_id)
         user_id = generate_dummy_user_id()
         redis.hmset(get_task_run_key(app_id, task_run_id),{
@@ -590,7 +616,10 @@ def run_task(app_id, task_id, countdown=0):
             'task_id': task_id,
             'user_id': user_id,
             'article_count': article_count,
-            'cycle_type': cycle_type
+            'cycle_type': cycle_type,
+            'article_language': article_language,
+            'article_language_scoped': task_info.get('article_language_scoped', 'off'),
+            'article_title_legacy_language': task_info.get('article_title_legacy_language', '')
         })
         redis.rpush(get_task_run_list_key(app_id, task_id), task_run_id)
         set_admin_token(app_id)
@@ -677,16 +706,28 @@ def get_website_traffic_limit(app_id):
 def is_deduct_failed(app_id):
     return lanying_config.get_app_config_boolean_from_redis(app_id, 'lanying_connector.new_deduct_failed', False)
 
-def find_title(app_id, task_id, task_run_id, keywords, title_reuse):
-    article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 0)
+def find_title(app_id, task_id, task_run_id, keywords, title_reuse,
+               article_language='', article_language_scoped='off',
+               article_title_legacy_language=''):
+    cursor_field = article_cursor_field(
+        article_language, article_language_scoped
+    )
+    article_cursor = increase_task_field(app_id, task_id, cursor_field, 0)
     max = len(keywords)
     if title_reuse == 'off':
         while article_cursor < max:
             title = keywords[article_cursor]
-            if is_article_title_used(app_id, task_id, title):
-                article_cursor = increase_task_field(app_id, task_id, 'article_cursor', 1)
+            if is_article_title_used(
+                    app_id, task_id, title, article_language,
+                    article_language_scoped, article_title_legacy_language):
+                article_cursor = increase_task_field(
+                    app_id, task_id, cursor_field, 1
+                )
             else:
-                set_article_title_used(app_id, task_id, title, task_run_id)
+                set_article_title_used(
+                    app_id, task_id, title, task_run_id,
+                    article_language, article_language_scoped
+                )
                 return {
                     'result': 'ok',
                     'data':{
@@ -700,11 +741,14 @@ def find_title(app_id, task_id, task_run_id, keywords, title_reuse):
         }
     else:
         if article_cursor >= max:
-            update_task_field(app_id, task_id, "article_cursor", 0)
+            update_task_field(app_id, task_id, cursor_field, 0)
             article_cursor = 0
         title = keywords[article_cursor]
-        set_article_title_used(app_id, task_id, title, task_run_id)
-        increase_task_field(app_id, task_id, 'article_cursor', 1)
+        set_article_title_used(
+            app_id, task_id, title, task_run_id,
+            article_language, article_language_scoped
+        )
+        increase_task_field(app_id, task_id, cursor_field, 1)
         return {
                 'result': 'ok',
                 'data':{
@@ -712,37 +756,69 @@ def find_title(app_id, task_id, task_run_id, keywords, title_reuse):
                 }
             }
 
-def set_article_title_used(app_id, task_id, title, task_run_id):
+
+def article_cursor_field(article_language='', article_language_scoped='off'):
+    if article_language_scoped != 'on' or not article_language:
+        return 'article_cursor'
+    return f"article_cursor_{article_language.replace('-', '_')}"
+
+
+def set_article_title_used(app_id, task_id, title, task_run_id,
+                           article_language='', article_language_scoped='off'):
     redis = lanying_redis.get_redis_connection()
-    key = article_title_used_key(app_id, task_id)
+    key = article_title_used_key(
+        app_id, task_id,
+        article_language if article_language_scoped == 'on' else ''
+    )
     redis.hset(key, title, task_run_id)
 
-def del_article_title_used(app_id, task_id, title):
+def del_article_title_used(app_id, task_id, title,
+                           article_language='', article_language_scoped='off'):
     redis = lanying_redis.get_redis_connection()
-    key = article_title_used_key(app_id, task_id)
+    key = article_title_used_key(
+        app_id, task_id,
+        article_language if article_language_scoped == 'on' else ''
+    )
     redis.hdel(key, title)
 
-def is_article_title_used(app_id, task_id, title):
+def is_article_title_used(app_id, task_id, title, article_language='',
+                          article_language_scoped='off',
+                          article_title_legacy_language=''):
     redis = lanying_redis.get_redis_connection()
-    key = article_title_used_key(app_id, task_id)
-    return redis.hexists(key, title)
+    if article_language_scoped != 'on':
+        return redis.hexists(article_title_used_key(app_id, task_id), title)
+    if redis.hexists(article_title_used_key(app_id, task_id, article_language), title):
+        return True
+    # Preserve the deduplication history written before language selection.
+    if article_language == article_title_legacy_language:
+        return redis.hexists(article_title_used_key(app_id, task_id), title)
+    return False
 
-def get_article_used(app_id, task_id):
+def get_article_used(app_id, task_id, article_language=''):
     redis = lanying_redis.get_redis_connection()
-    key = article_title_used_key(app_id, task_id)
+    key = article_title_used_key(app_id, task_id, article_language)
     return lanying_redis.redis_hgetall(redis, key)
 
-def article_title_used_key(app_id, task_id):
-    return f'lanying_connector:grow_ai:article_title_used:{app_id}:{task_id}'
+def article_title_used_key(app_id, task_id, article_language=''):
+    key = f'lanying_connector:grow_ai:article_title_used:{app_id}:{task_id}'
+    return f'{key}:{article_language}' if article_language else key
 
-def set_article_title_statistic(app_id, task_id, type, title, value):
+def set_article_title_statistic(app_id, task_id, type, title, value,
+                                article_language='', article_language_scoped='off'):
     redis = lanying_redis.get_redis_connection()
-    key = article_title_statistic_key(app_id, task_id, type)
+    key = article_title_statistic_key(
+        app_id, task_id, type,
+        article_language if article_language_scoped == 'on' else ''
+    )
     redis.hset(key, title, value)
 
-def incr_article_title_statistic(app_id, task_id, type, title, value):
+def incr_article_title_statistic(app_id, task_id, type, title, value,
+                                 article_language='', article_language_scoped='off'):
     redis = lanying_redis.get_redis_connection()
-    key = article_title_statistic_key(app_id, task_id, type)
+    key = article_title_statistic_key(
+        app_id, task_id, type,
+        article_language if article_language_scoped == 'on' else ''
+    )
     return redis.hincrby(key, title, value)
 
 def del_article_title_statistic(app_id, task_id, type, title):
@@ -755,8 +831,9 @@ def get_article_title_statistic(app_id, task_id, type, title):
     key = article_title_statistic_key(app_id, task_id, type)
     return lanying_redis.redis_hget(redis, key, title)
 
-def article_title_statistic_key(app_id, task_id, type):
-    return f'lanying_connector:grow_ai:article_title_{type}:{app_id}:{task_id}'
+def article_title_statistic_key(app_id, task_id, type, article_language=''):
+    key = f'lanying_connector:grow_ai:article_title_{type}:{app_id}:{task_id}'
+    return f'{key}:{article_language}' if article_language else key
 
 def parse_file_keywords(app_id, task_id, file_list):
     keywords = []
@@ -814,6 +891,15 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     if chatbot_info is None:
         return {'result': 'error', 'message': 'chatbot not exist'}
     chatbot_user_id = chatbot_info['user_id']
+    article_language = task_run.get('article_language')
+    if article_language not in ['zh-hans', 'en']:
+        article_language = resolve_article_language(task)
+    article_language_scoped = task_run.get(
+        'article_language_scoped', task.get('article_language_scoped', 'off')
+    )
+    article_title_legacy_language = task_run.get(
+        'article_title_legacy_language', task.get('article_title_legacy_language', '')
+    )
     redis = lanying_redis.get_redis_connection()
     keywords = parse_keywords(task['keywords'])
     file_keywords = parse_file_keywords(app_id, task_id, task['file_list'])
@@ -836,7 +922,11 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
         article_id = f'{task_run_id}_{i+1}'
         if redis.hexists(run_result_key, article_id):
             continue
-        result = find_title(app_id, task_id, task_run_id, keywords, task['title_reuse'])
+        result = find_title(
+            app_id, task_id, task_run_id, keywords, task['title_reuse'],
+            article_language, article_language_scoped,
+            article_title_legacy_language
+        )
         if result['result'] == 'error':
             if result['message'] == 'article titles are exhausted':
                 if cycle_type == 'none' and i > 0:
@@ -846,7 +936,10 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
             make_task_run_result_zip_file(app_id, task_run_id)
             return result
         keyword = result['data']['title']
-        result = do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword)
+        result = do_run_task_article(
+            app_id, task_run, task, article_id, chatbot_user_id, keyword,
+            article_language, article_language_scoped
+        )
         if result['result'] == 'error':
             logging.info(f"do_run_task error | app_id:{app_id}, task_run_id:{task_run_id}, article_id:{article_id}, keyword:{keyword}, result:{result}")
             if result['message'] == 'quota_not_enough':
@@ -1059,6 +1152,21 @@ def get_task_site_list(task):
         if site:
             site_list.append(site)
     return site_list
+
+
+def resolve_article_language(task, site_list=None):
+    configured_language = task.get('article_language', 'auto')
+    if configured_language not in ARTICLE_LANGUAGE_VALUES:
+        configured_language = 'auto'
+    if configured_language != 'auto':
+        return configured_language
+    if site_list is None:
+        site_list = get_task_site_list(task)
+    if site_list:
+        site_language = site_list[0].get('language', 'zh-hans')
+        if site_language in ['zh-hans', 'en']:
+            return site_language
+    return 'zh-hans'
 
 def parse_dir(dir, base_dir):
     new_dir = dir.strip('').rstrip('/')
@@ -2004,17 +2112,28 @@ def parse_keywords(keywords):
             keyword_list.append(keyword)
     return keyword_list
 
-def handle_ai_response_error(result, default_error_message, app_id, task_id, title):
+def handle_ai_response_error(result, default_error_message, app_id, task_id, title,
+                             article_language='', article_language_scoped='off'):
     message = result['message']
     if message in ["rate_limit_reached", "no_quota", "quota_not_enough", "message_per_month_per_user_limit_reached", "deduct_failed", "service_is_expired"]:
-        del_article_title_used(app_id, task_id, title)
+        del_article_title_used(
+            app_id, task_id, title, article_language, article_language_scoped
+        )
     elif 'http_request_fail' in result and result['http_request_fail']:
-        del_article_title_used(app_id, task_id, title)
+        del_article_title_used(
+            app_id, task_id, title, article_language, article_language_scoped
+        )
     else:
-        failed_times = incr_article_title_statistic(app_id, task_id, "failed_times", title, 1)
+        failed_times = incr_article_title_statistic(
+            app_id, task_id, "failed_times", title, 1,
+            article_language, article_language_scoped
+        )
         if failed_times <= 3:
             logging.info(f"handle_ai_response_error | failed_times:{failed_times}, app_id:{app_id}, task_id:{task_id}, title:{title}, so retry title")
-            del_article_title_used(app_id, task_id, title)
+            del_article_title_used(
+                app_id, task_id, title, article_language,
+                article_language_scoped
+            )
         else:
             logging.info(f"handle_ai_response_error | failed_times:{failed_times}, app_id:{app_id}, task_id:{task_id}, title:{title}, so delete title")
     retry = True
@@ -2130,7 +2249,9 @@ def make_clean_url(url):
     
     return url
 
-def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, keyword):
+def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id,
+                        keyword, article_language=None,
+                        article_language_scoped='off'):
     dry_run = task.get('dry_run', 'off')
     task_run_id = task_run['task_run_id']
     task_id = task['task_id']
@@ -2155,10 +2276,11 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     else:
         meta_keywords_prompt_1 = ''
         meta_keywords_prompt_2 = ''
-    logging.info(f"use site language:{site_language}")
-    action_language = ''
-    if site_language == 'en':
-        action_language = '英文'
+    configured_article_language = task.get('article_language', 'auto')
+    if article_language is None:
+        article_language = resolve_article_language(task, site_list)
+    logging.info(f"use article language:{article_language}, configured language:{configured_article_language}, site language:{site_language}")
+    action_language = '英文' if article_language == 'en' else '简体中文'
     task_prompt = task['prompt']
     article_prompt = task.get('article_prompt', '').strip()
     action_prompt = f"请生成一篇markdown格式的{action_language}文章，不要生成图片，第一行需要是文章标题：\n"
@@ -2171,11 +2293,18 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
                    f'3. url: 标题的英文URL路径表示,建议的URL需要根据标题生成，形式是三到五个英文单词，使用连字符而不是下划线，使用小写字母,请尽量不要多于5个英文单词，为减少单词数量可以适当考虑缩写。\n{meta_keywords_prompt_2}')
     subject_prompt = '' if task_prompt == '' else f'如果文章内容涉及以下公司或产品，可在适当的时机引用说明并推荐：{task_prompt}\n'
     article_prompt_text = '' if article_prompt == '' else f'生成文章时还需要遵循以下要求：\n{article_prompt}\n'
-    keyword_prompt = f'文章标题必须为：{keyword}\n'
-    if site_language == 'en':
-        extra_prompt = f'注意：一定不要生成图片。一定要使用英文，不要使用中文。\n'
+    if article_language == 'en':
+        keyword_prompt = (f'原始文章标题为：{keyword}\n'
+                          '如果原始标题不是英文，请将其翻译成自然、准确的英文；如果已是英文则保持原文。'
+                          '产品名、品牌名和不需翻译的专有名词保持不变。'
+                          '文章第一行和 metadata.title 必须使用处理后的英文标题。\n')
+        extra_prompt = '注意：一定不要生成图片。文章标题、正文及元数据中除 url 外的文本一定要使用英文。\n'
     else:
-        extra_prompt = f'注意：一定不要生成图片, 如果未指定中英文等语言，请默认使用中文。\n'
+        keyword_prompt = (f'原始文章标题为：{keyword}\n'
+                          '如果原始标题不是简体中文，请将其翻译成自然、准确的简体中文；如果已是简体中文则保持原文。'
+                          '产品名、品牌名和不需翻译的专有名词保持不变。'
+                          '文章第一行和 metadata.title 必须使用处理后的简体中文标题。\n')
+        extra_prompt = '注意：一定不要生成图片。文章标题、正文及元数据中除 url 外的文本一定要使用简体中文。\n'
     text_prompt = f'{action_prompt}{article_prompt_text}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':
@@ -2189,8 +2318,15 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
     else:
         text_result = generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbot_user_id, text_prompt, word_count_min, word_count_max, embedding_condition)
     if text_result['result'] == 'error':
-        return handle_ai_response_error(text_result, 'failed to generate article text', app_id, task_id, keyword)
+        return handle_ai_response_error(
+            text_result, 'failed to generate article text', app_id, task_id,
+            keyword, article_language, article_language_scoped
+        )
     article_url_prefix = text_result['article_url_prefix']
+    article_text = text_result['article_text']
+    generated_title = find_title_from_content(article_text)
+    if generated_title == '无标题':
+        generated_title = keyword
     article_info = {
         'create_time': now,
         'article_id': article_id,
@@ -2198,9 +2334,8 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         'to_user_id': chatbot_user_id,
         'text_message_quota_usage': text_result['message_quota_usage'],
         'article_url_prefix': text_result['article_url_prefix'],
-        'title': keyword
+        'title': generated_title
     }
-    article_text = text_result['article_text']
     if image_count > 0:
         image_prompt = '请为这篇文章生成一幅精美的插图。'
         if dry_run == 'on':
@@ -2223,7 +2358,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
             }
             image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, image_prompt_ext)
         if image_result['result'] == 'error':
-            return handle_ai_response_error(image_result, 'failed to generate image', app_id, task_id, keyword)
+            return handle_ai_response_error(
+                image_result, 'failed to generate image', app_id, task_id,
+                keyword, article_language, article_language_scoped
+            )
         article_image_message_quota_usage = image_result['data']['message_quota_usage']
         increase_task_run_field_by_float(app_id, task_run_id, "image_message_quota_usage", article_image_message_quota_usage)
         increase_task_field_by_float(app_id, task_id, "image_message_quota_usage", article_image_message_quota_usage)
@@ -2264,7 +2402,10 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id, key
         return result
     article_info['markdown_file'] = markdown_object_name
     article_info['summary'] = article_text[:100]
-    incr_article_title_statistic(app_id, task_id, "success_times", keyword, 1)
+    incr_article_title_statistic(
+        app_id, task_id, "success_times", keyword, 1,
+        article_language, article_language_scoped
+    )
     logging.info(f"do_run_task_article success | app_id:{app_id}, task_id:{task_run['task_id']}, task_run_id:{task_run['task_run_id']}, article_id:{article_id}, chatbot_user_id:{chatbot_user_id}, keyword:{keyword}, article_info:{article_info}")
     return {'result': 'ok', 'article_info': article_info}
 

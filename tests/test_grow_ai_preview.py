@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, call, mock_open, patch
 
 from flask import Flask
 
@@ -127,7 +127,8 @@ class GrowAIPreviewTest(unittest.TestCase):
         with app.test_request_context(json=payload), \
                 patch.object(grow_ai_service, 'check_access_token_valid', return_value=True), \
                 patch.object(lanying_grow_ai, 'get_task', return_value={
-                    'auto_deploy': 'off', 'article_prompt': 'keep this prompt'
+                    'auto_deploy': 'off', 'article_prompt': 'keep this prompt',
+                    'article_language': 'en'
                 }), \
                 patch.object(lanying_grow_ai, 'TaskSetting', return_value=task_setting) as setting_class, \
                 patch.object(lanying_grow_ai, 'configure_task', return_value={
@@ -138,12 +139,14 @@ class GrowAIPreviewTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual('off', setting_class.call_args.kwargs['auto_deploy'])
         self.assertEqual('keep this prompt', setting_class.call_args.kwargs['article_prompt'])
+        self.assertEqual('en', setting_class.call_args.kwargs['article_language'])
 
     def test_generate_article_uses_task_article_prompt(self):
         task = {
             'task_id': 'task', 'image_count': 0, 'word_count_min': 500,
             'word_count_max': 1200, 'embedding_condition': {},
-            'prompt': 'product subject', 'article_prompt': 'Use a conversational tone.'
+            'prompt': 'product subject', 'article_prompt': 'Use a conversational tone.',
+            'article_language': 'en'
         }
         task_run = {'task_run_id': 'run', 'user_id': 'user'}
         with patch.object(lanying_grow_ai, 'get_task_site_list', return_value=[]), \
@@ -155,12 +158,109 @@ class GrowAIPreviewTest(unittest.TestCase):
                     'result': 'error'
                 }):
             lanying_grow_ai.do_run_task_article(
-                'app', task_run, task, 'article', 'chatbot', 'Article title'
+                'app', task_run, task, 'article', 'chatbot', '人工智能趋势'
             )
 
         text_prompt = generate_article.call_args.args[6]
         self.assertIn('生成文章时还需要遵循以下要求：\nUse a conversational tone.\n', text_prompt)
-        self.assertIn('文章标题必须为：Article title\n', text_prompt)
+        self.assertIn('原始文章标题为：人工智能趋势\n', text_prompt)
+        self.assertIn('如果原始标题不是英文，请将其翻译', text_prompt)
+        self.assertIn('metadata.title 必须使用处理后的英文标题', text_prompt)
+        self.assertIn('一定要使用英文', text_prompt)
+
+    def test_generate_article_records_translated_title(self):
+        task = {
+            'task_id': 'task', 'image_count': 0, 'word_count_min': 500,
+            'word_count_max': 1200, 'embedding_condition': {},
+            'prompt': 'product subject', 'article_prompt': '',
+            'article_language': 'en'
+        }
+        task_run = {'task_run_id': 'run', 'user_id': 'user'}
+        with patch.object(lanying_grow_ai, 'get_task_site_list', return_value=[]), \
+                patch.object(lanying_grow_ai, 'clean_user_message_count'), \
+                patch.object(lanying_grow_ai, 'generate_article', return_value={
+                    'result': 'ok', 'article_url_prefix': 'ai-trends',
+                    'article_text': '# Artificial Intelligence Trends\nArticle body',
+                    'message_quota_usage': 1.0
+                }), patch('builtins.open', mock_open()), \
+                patch.object(lanying_grow_ai.lanying_file_storage, 'upload', return_value={
+                    'result': 'ok'
+                }), patch.object(lanying_grow_ai, 'incr_article_title_statistic'):
+            result = lanying_grow_ai.do_run_task_article(
+                'app', task_run, task, 'article', 'chatbot', '人工智能趋势'
+            )
+
+        self.assertEqual('ok', result['result'])
+        self.assertEqual(
+            'Artificial Intelligence Trends', result['article_info']['title']
+        )
+
+    def test_used_title_is_scoped_by_article_language(self):
+        redis = MagicMock()
+        chinese_key = lanying_grow_ai.article_title_used_key(
+            'app', 'task', 'zh-hans'
+        )
+        redis.hexists.side_effect = lambda key, title: key == chinese_key
+
+        with patch.object(
+                lanying_grow_ai.lanying_redis, 'get_redis_connection',
+                return_value=redis):
+            chinese_used = lanying_grow_ai.is_article_title_used(
+                'app', 'task', '人工智能趋势', 'zh-hans', 'on'
+            )
+            english_used = lanying_grow_ai.is_article_title_used(
+                'app', 'task', '人工智能趋势', 'en', 'on'
+            )
+
+        self.assertTrue(chinese_used)
+        self.assertFalse(english_used)
+        self.assertNotEqual(
+            lanying_grow_ai.article_cursor_field('zh-hans', 'on'),
+            lanying_grow_ai.article_cursor_field('en', 'on')
+        )
+
+    def test_legacy_used_title_only_blocks_its_original_language(self):
+        redis = MagicMock()
+        legacy_key = lanying_grow_ai.article_title_used_key('app', 'task')
+        redis.hexists.side_effect = lambda key, title: key == legacy_key
+
+        with patch.object(
+                lanying_grow_ai.lanying_redis, 'get_redis_connection',
+                return_value=redis):
+            chinese_used = lanying_grow_ai.is_article_title_used(
+                'app', 'task', '人工智能趋势', 'zh-hans', 'on', 'zh-hans'
+            )
+            english_used = lanying_grow_ai.is_article_title_used(
+                'app', 'task', '人工智能趋势', 'en', 'on', 'zh-hans'
+            )
+
+        self.assertTrue(chinese_used)
+        self.assertFalse(english_used)
+
+    def test_auto_article_language_follows_site(self):
+        task = {'article_language': 'auto'}
+
+        self.assertEqual(
+            'en',
+            lanying_grow_ai.resolve_article_language(
+                task, [{'language': 'en'}]
+            )
+        )
+        self.assertEqual(
+            'zh-hans', lanying_grow_ai.resolve_article_language(task, [])
+        )
+
+    def test_old_task_keeps_legacy_title_usage_until_configured(self):
+        redis = MagicMock()
+        with patch.object(
+                lanying_grow_ai.lanying_redis, 'get_redis_connection',
+                return_value=redis), patch.object(
+                    lanying_grow_ai.lanying_redis, 'redis_hgetall',
+                    return_value={'create_time': '1'}):
+            task = lanying_grow_ai.get_task('app', 'task')
+
+        self.assertEqual('auto', task['article_language'])
+        self.assertEqual('off', task['article_language_scoped'])
 
     def test_preview_workflow_uses_deploy_token(self):
         with patch.dict('os.environ', {

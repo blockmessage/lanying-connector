@@ -120,6 +120,7 @@ def create_task():
     chatbot_id = str(data['chatbot_id'])
     prompt = str(data['prompt'])
     article_prompt = str(data.get('article_prompt', ''))
+    article_language = str(data.get('article_language', 'auto'))
     keywords = str(data['keywords'])
     word_count_min = int(data['word_count_min'])
     word_count_max = int(data['word_count_max'])
@@ -152,6 +153,7 @@ def create_task():
         chatbot_id = chatbot_id,
         prompt = prompt,
         article_prompt = article_prompt,
+        article_language = article_language,
         keywords = keywords,
         word_count_min = word_count_min,
         word_count_max = word_count_max,
@@ -191,6 +193,7 @@ def configure_task():
     prompt = str(data['prompt'])
     task = lanying_grow_ai.get_task(app_id, task_id)
     article_prompt = str(data.get('article_prompt', task.get('article_prompt', '') if task else ''))
+    article_language = str(data.get('article_language', task.get('article_language', 'auto') if task else 'auto'))
     keywords = str(data['keywords'])
     word_count_min = int(data['word_count_min'])
     word_count_max = int(data['word_count_max'])
@@ -226,6 +229,7 @@ def configure_task():
         chatbot_id = chatbot_id,
         prompt = prompt,
         article_prompt = article_prompt,
+        article_language = article_language,
         keywords = keywords,
         word_count_min = word_count_min,
         word_count_max = word_count_max,
