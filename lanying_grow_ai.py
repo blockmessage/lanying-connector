@@ -2295,16 +2295,20 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id,
     article_prompt_text = '' if article_prompt == '' else f'生成文章时还需要遵循以下要求：\n{article_prompt}\n'
     if article_language == 'en':
         keyword_prompt = (f'原始文章标题为：{keyword}\n'
-                          '如果原始标题不是英文，请将其翻译成自然、准确的英文；如果已是英文则保持原文。'
-                          '产品名、品牌名和不需翻译的专有名词保持不变。'
-                          '文章第一行和 metadata.title 必须使用处理后的英文标题。\n')
-        extra_prompt = '注意：一定不要生成图片。文章标题、正文及元数据中除 url 外的文本一定要使用英文。\n'
+                          '请根据英文文章的语境处理标题。普通描述性文字应翻译为自然、准确的英文；'
+                          '产品名、品牌名、专有名词、技术术语、缩写、型号、代码、官方名称及需要保留的SEO词保持原文。'
+                          '如果完整或部分保留原始标题更自然、准确，或更有利于识别和搜索，则不要强制翻译。'
+                          '如果生成计划的额外要求明确指定了标题语言或形式，优先遵循额外要求。'
+                          '文章第一行和 metadata.title 必须使用处理后的标题。\n')
+        extra_prompt = '注意：一定不要生成图片。正文及元数据中除 url 和标题中需要保留的原文外，文本一定要使用英文。\n'
     else:
         keyword_prompt = (f'原始文章标题为：{keyword}\n'
-                          '如果原始标题不是简体中文，请将其翻译成自然、准确的简体中文；如果已是简体中文则保持原文。'
-                          '产品名、品牌名和不需翻译的专有名词保持不变。'
-                          '文章第一行和 metadata.title 必须使用处理后的简体中文标题。\n')
-        extra_prompt = '注意：一定不要生成图片。文章标题、正文及元数据中除 url 外的文本一定要使用简体中文。\n'
+                          '请根据简体中文文章的语境处理标题。普通描述性文字应翻译为自然、准确的简体中文；'
+                          '产品名、品牌名、专有名词、技术术语、缩写、型号、代码、官方名称及需要保留的SEO词保持原文。'
+                          '如果完整或部分保留原始标题更自然、准确，或更有利于识别和搜索，则不要强制翻译。'
+                          '如果生成计划的额外要求明确指定了标题语言或形式，优先遵循额外要求。'
+                          '文章第一行和 metadata.title 必须使用处理后的标题。\n')
+        extra_prompt = '注意：一定不要生成图片。正文及元数据中除 url 和标题中需要保留的原文外，文本一定要使用简体中文。\n'
     text_prompt = f'{action_prompt}{article_prompt_text}{word_prompt}{image_placeholder_prompt}{meta_prompt}{keyword_prompt}{subject_prompt}{extra_prompt}'
     clean_user_message_count(app_id, from_user_id)
     if dry_run == 'on':

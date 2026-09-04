@@ -164,9 +164,37 @@ class GrowAIPreviewTest(unittest.TestCase):
         text_prompt = generate_article.call_args.args[6]
         self.assertIn('生成文章时还需要遵循以下要求：\nUse a conversational tone.\n', text_prompt)
         self.assertIn('原始文章标题为：人工智能趋势\n', text_prompt)
-        self.assertIn('如果原始标题不是英文，请将其翻译', text_prompt)
-        self.assertIn('metadata.title 必须使用处理后的英文标题', text_prompt)
-        self.assertIn('一定要使用英文', text_prompt)
+        self.assertIn('普通描述性文字应翻译为自然、准确的英文', text_prompt)
+        self.assertIn('技术术语、缩写、型号、代码、官方名称', text_prompt)
+        self.assertIn('不要强制翻译', text_prompt)
+        self.assertIn('额外要求明确指定了标题语言或形式', text_prompt)
+        self.assertIn('metadata.title 必须使用处理后的标题', text_prompt)
+        self.assertIn('文本一定要使用英文', text_prompt)
+
+    def test_chinese_article_prompt_can_keep_original_title_terms(self):
+        task = {
+            'task_id': 'task', 'image_count': 0, 'word_count_min': 500,
+            'word_count_max': 1200, 'embedding_condition': {},
+            'prompt': '', 'article_prompt': '', 'article_language': 'zh-hans'
+        }
+        task_run = {'task_run_id': 'run', 'user_id': 'user'}
+        with patch.object(lanying_grow_ai, 'get_task_site_list', return_value=[]), \
+                patch.object(lanying_grow_ai, 'clean_user_message_count'), \
+                patch.object(lanying_grow_ai, 'generate_article', return_value={
+                    'result': 'error'
+                }) as generate_article, \
+                patch.object(lanying_grow_ai, 'handle_ai_response_error', return_value={
+                    'result': 'error'
+                }):
+            lanying_grow_ai.do_run_task_article(
+                'app', task_run, task, 'article', 'chatbot', 'WebRTC'
+            )
+
+        text_prompt = generate_article.call_args.args[6]
+        self.assertIn('原始文章标题为：WebRTC\n', text_prompt)
+        self.assertIn('普通描述性文字应翻译为自然、准确的简体中文', text_prompt)
+        self.assertIn('技术术语、缩写、型号、代码、官方名称', text_prompt)
+        self.assertIn('不要强制翻译', text_prompt)
 
     def test_generate_article_records_translated_title(self):
         task = {
