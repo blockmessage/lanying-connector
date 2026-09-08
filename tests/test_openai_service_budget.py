@@ -1098,6 +1098,260 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual(model, 'expert-model')
         get_chatbot.assert_called_once_with('app-1', ['bot-default', 'bot-expert'], 'expert')
 
+    def test_build_chat_prompt_preserves_group_tools_and_stream_contract(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        preset = {'model': 'model-a'}
+        messages = [{'role': 'user', 'content': 'hello'}]
+        system_functions = [{'name': 'system-tool'}]
+        user_functions = [{'name': 'user-tool'}]
+        with mock.patch.object(
+            m.lanying_openai_compat,
+            'functions_to_tools',
+            return_value=['normalized-tools'],
+            create=True,
+        ):
+            prompt = m.build_chat_prompt(
+                {'send_from': '100'}, 'GROUPCHAT', preset, messages,
+                system_functions, user_functions, {'force_stream': True})
+
+        self.assertIs(prompt.preset, preset)
+        self.assertEqual(prompt.preset['messages'], messages)
+        self.assertEqual(prompt.preset['user'], '100')
+        self.assertEqual(prompt.preset['functions'], system_functions)
+        self.assertEqual(prompt.preset['tools'], ['normalized-tools'])
+        self.assertTrue(prompt.preset['stream'])
+        self.assertTrue(prompt.is_force_stream)
+        self.assertEqual(prompt.oper_msg_config, {'force_callback': True})
+
+        numeric_prompt = m.build_chat_prompt(
+            {'send_from': '100'}, 'GROUPCHAT', {'model': 'model-a'}, [],
+            [], [], {'force_stream': 1})
+        self.assertTrue(numeric_prompt.is_force_stream)
+
+    def test_invoke_chat_model_preserves_rate_limit_error_contract(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        prompt = m.Prompt({'model': 'model-a'}, False, {'force_callback': True})
+        with (
+            mock.patch.object(
+                m, 'maybe_transform_preset_to_vision_preset',
+                return_value={'model': 'vision-model'}) as transform,
+            mock.patch.object(m, 'chat_or_force_function_call', return_value={'raw': True}),
+            mock.patch.object(
+                m.lanying_openai_compat,
+                'normalize_vendor_response',
+                return_value={
+                    'result': 'error',
+                    'code': 'rate_limit_reached_error',
+                    'message': 'vendor detail',
+                },
+                create=True,
+            ),
+        ):
+            result = m.invoke_chat_model(
+                'app-1', {}, 'openai', {}, {'token_limit': 1024}, prompt)
+
+        transform.assert_called_once()
+        self.assertEqual(result.preset, {'model': 'vision-model'})
+        self.assertEqual(result.error, {
+            'result': 'error',
+            'code': 'rate_limit_reached_error',
+            'msg': '请求过快，请稍后再试。',
+        })
+
+    def test_group_ai_callback_records_history_without_triggering_reply(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {'ext': '{"ai":{"role":"ai"}}'}
+        msg = {
+            'msgId': 'bot-reply-1',
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'ctype': 'TEXT',
+            'content': 'bot reply',
+            'from': {'uid': '101'},
+            'to': {'uid': 'group-1'},
+            'config': '{}',
+            'ext': '{"ai":{"role":"ai","stream":false,"request_msg_id":"user-1"}}',
+        }
+        with (
+            mock.patch.object(m, 'maybe_sync_to_openclaw'),
+            mock.patch.object(
+                m.lanying_redis, 'get_redis_connection', return_value=None, create=True),
+            mock.patch.object(m.group_history_repository, 'record_received_message') as record,
+            mock.patch.object(m, 'maybe_save_image_msg') as save_image,
+            mock.patch.object(m, 'route_group_chatbot_message') as route,
+            mock.patch.object(m, 'handle_chat_message_try') as handle_try,
+        ):
+            result = m.handle_chat_message(config, msg)
+
+        self.assertEqual(result, '')
+        record.assert_called_once_with(config, msg)
+        save_image.assert_called_once_with(config, msg)
+        route.assert_not_called()
+        handle_try.assert_not_called()
+
+    def test_group_ai_history_records_only_final_stream_message(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        base_msg = {
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'content': 'reply',
+            'from': {'uid': '101'},
+            'to': {'uid': 'group-1'},
+        }
+        intermediate = dict(
+            base_msg,
+            ctype='TEXT',
+            ext='{"ai":{"role":"ai","stream":true,"finish":false}}',
+        )
+        final = dict(
+            base_msg,
+            ctype='REPLACE',
+            ext='{"ai":{"role":"ai","stream":true,"finish":true}}',
+        )
+
+        self.assertFalse(m.need_add_history({}, intermediate))
+        self.assertTrue(m.need_add_history({}, final))
+
+        image = dict(
+            base_msg,
+            ctype='IMAGE',
+            content='',
+            ext='{"ai":{"role":"ai","stream":false,"finish":true}}',
+        )
+        self.assertTrue(m.need_add_history({}, image))
+
+    def test_async_group_image_uses_callback_as_only_history_source(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        self.assertFalse(m.should_add_image_subsequent_message({
+            'reply_msg_type': 'GROUPCHAT',
+        }))
+        self.assertTrue(m.should_add_image_subsequent_message({
+            'reply_msg_type': 'GROUPCHAT',
+            'is_sync_mode': True,
+        }))
+        self.assertTrue(m.should_add_image_subsequent_message({
+            'reply_msg_type': 'CHAT',
+        }))
+
+    def test_group_history_callback_merges_pending_private_context(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        redis = mock.Mock()
+        redis.get.return_value = json.dumps({
+            'function_messages': [{'role': 'tool', 'content': 'result'}],
+            'function_messages_owner': '100',
+        }).encode('utf-8')
+        redis.rpush.return_value = 1
+        msg = {
+            'msgId': 'bot-reply-1',
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'ctype': 'TEXT',
+            'content': 'bot reply',
+            'from': {'uid': '101'},
+            'to': {'uid': 'group-1'},
+            'config': '{}',
+            'ext': '{"ai":{"role":"ai","request_msg_id":"user-1"}}',
+        }
+        with (
+            mock.patch.object(
+                m.lanying_redis, 'get_redis_connection', return_value=redis, create=True),
+            mock.patch.object(
+                m.lanying_redis,
+                'redis_get',
+                side_effect=lambda client, key: client.get(key).decode('utf-8'),
+                create=True,
+            ),
+        ):
+            m.group_history_repository.record_received_message({}, msg)
+
+        history = json.loads(redis.rpush.call_args.args[1])
+        self.assertEqual(history['content'], 'bot reply')
+        self.assertEqual(history['function_messages'], [{'role': 'tool', 'content': 'result'}])
+        self.assertEqual(history['function_messages_owner'], '100')
+        redis.delete.assert_called_once_with(
+            'lanying:connector:history:pending:group:app-1:group-1:101:user-1')
+
+    def test_group_history_callback_normalizes_numeric_group_id(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        redis = mock.Mock()
+        redis.rpush.return_value = 1
+        msg = {
+            'msgId': 'bot-reply-2',
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'ctype': 'TEXT',
+            'content': 'bot reply',
+            'from': {'uid': 101},
+            'to': {'uid': 200},
+            'config': '{}',
+            'ext': '{"ai":{"role":"ai"}}',
+        }
+        with mock.patch.object(
+            m.lanying_redis, 'get_redis_connection', return_value=redis, create=True):
+            m.group_history_repository.record_received_message({}, msg)
+
+        self.assertEqual(
+            redis.rpush.call_args.args[0],
+            'lanying:connector:history:list:group:app-1:200')
+
+    def test_async_group_error_reply_waits_for_callback_before_shared_history(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'reply_msg_type': 'GROUPCHAT',
+            'reply_from': '101',
+            'reply_to': 'group-1',
+            'send_from': '100',
+            'request_msg_id': 'user-1',
+            'ext': '',
+        }
+        msg = {'appId': 'app-1', 'type': 'GROUPCHAT'}
+        result = m.ChatHandlerResult(['error reply'], 'internal_error', 'error reply')
+        with (
+            mock.patch.object(m.group_history_repository, 'save_pending_reply') as save_pending,
+            mock.patch.object(m, 'replyMessageAsync') as send_reply,
+            mock.patch.object(m, 'add_group_reply_history') as add_history,
+            mock.patch.object(m, 'add_debug_message'),
+            mock.patch.object(m.time, 'sleep'),
+        ):
+            m.emit_chat_handler_result(config, msg, result)
+
+        save_pending.assert_called_once()
+        send_reply.assert_called_once()
+        add_history.assert_not_called()
+        self.assertEqual(config['app_id'], 'app-1')
+
     def test_group_mention_all_without_member_does_not_resolve_twice(self):
         try:
             m = importlib.import_module('openai_service')

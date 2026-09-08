@@ -45,6 +45,22 @@ import lanying_slack
 import lanying_openclaw
 import lanying_openai_compat
 import lanying_pgvector
+from lanying_ai_chat_pipeline import (
+    ChatHandlerResult, ModelResponse, PresetResolution, Prompt, ReplyResult,
+    ToolRunResult,
+    build_chat_prompt as build_pipeline_prompt,
+    build_reply_result as build_pipeline_reply_result,
+    invoke_chat_model as invoke_pipeline_model,
+    resolve_chat_preset as resolve_pipeline_preset,
+)
+from lanying_ai_group_history import GroupHistoryRepository
+from lanying_ai_group_bot import (
+    BotTask, GroupChatbotRouteResult, TargetResolver,
+)
+from lanying_ai_reply_sender import (
+    ReplySender, ReplySenderDependencies,
+    normalize_chat_handler_result,
+)
 
 service = 'openai_service'
 bp = Blueprint(service, __name__)
@@ -1145,16 +1161,6 @@ def build_openclaw_reply_ext(msg):
 def is_ai_generate_disabled_msg(msg):
     return get_message_ai_ext(msg).get('ai_generate') == False
 
-def handle_group_chatbot_target(config, msg, chatbot_user_id):
-    handle_chat_message(
-        config, msg, chatbot_user_id,
-        skip_openclaw_sync=True, skip_group_shared_steps=True,
-        chatbot_config_initialized=True)
-    return {
-        'history_order': config.get('_group_reply_history_order', time.monotonic_ns()),
-        'messages': get_sync_mode_messages(config),
-    }
-
 def group_chatbot_model_signature(models_by_user_id):
     normalized_models = {
         str(user_id): str(model)
@@ -1206,6 +1212,152 @@ def resolve_group_chatbot_final_model(config, app_id):
                 logging.exception(error)
     return str(preset.get('model', '')).strip() if isinstance(preset, dict) else ''
 
+def process_bot_task(task, msg):
+    handle_chat_message(
+        task.config, msg, task.chatbot_user_id,
+        skip_openclaw_sync=True, skip_group_shared_steps=True,
+        chatbot_config_initialized=True)
+    return {
+        'history_order': task.config.get('_group_reply_history_order', time.monotonic_ns()),
+        'messages': get_sync_mode_messages(task.config),
+    }
+
+def resolve_group_target_user_ids(config, msg):
+    return resolve_group_chatbot_user_ids(config, msg)
+
+def initialize_group_target_config(config, msg, chatbot_user_id):
+    return init_chatbot_config(config, msg, chatbot_user_id)
+
+def resolve_group_target_model(config, app_id):
+    return resolve_group_chatbot_final_model(config, app_id)
+
+target_resolver = TargetResolver(
+    resolve_group_target_user_ids,
+    initialize_group_target_config,
+    resolve_group_target_model,
+    lanying_utils.safe_json_loads,
+)
+
+def build_group_chatbot_targets(config, msg, chatbot_user_ids):
+    return target_resolver.build_bot_tasks(config, msg, chatbot_user_ids)
+
+def dispatch_group_chatbot_fanout(config, msg, targets):
+    app_id = msg['appId']
+    maybe_reply_message_read_ack(config, msg)
+    maybe_transcription_audio_msg(config, msg)
+    maybe_save_image_msg(config, msg)
+    history_list_key = historyListGroupKey(app_id, str(msg['to']['uid']))
+    maybe_delete_old_model_history(
+        history_list_key,
+        group_chatbot_model_signature({target.chatbot_user_id: target.model for target in targets}),
+    )
+    maybe_add_history(config, msg)
+
+    history_order_tracker = {
+        'lock': threading.Lock(),
+        'sequence': itertools.count(),
+    }
+    futures = []
+    for target in targets:
+        target.config['_group_fanout_model_history_prepared'] = True
+        target.config['_group_reply_history_order_tracker'] = history_order_tracker
+        if get_is_sync_mode(config):
+            target.config['sync_mode_messages'] = []
+        futures.append(group_chatbot_executor.submit(
+            process_bot_task,
+            target,
+            copy.deepcopy(msg),
+        ))
+
+    if get_is_sync_mode(config):
+        target_results = [future.result() for future in as_completed(futures)]
+        for target_result in sorted(target_results, key=lambda item: item['history_order']):
+            config['sync_mode_messages'].extend(target_result['messages'])
+    else:
+        for future in as_completed(futures):
+            future.result()
+
+def route_group_chatbot_message(config, msg):
+    resolution = target_resolver.resolve_group(config, msg)
+    chatbot_user_ids = resolution.chatbot_user_ids
+    mention_all = resolution.mention_all
+    if len(chatbot_user_ids) > 1:
+        targets = build_group_chatbot_targets(config, msg, chatbot_user_ids)
+        dispatch_group_chatbot_fanout(config, msg, targets)
+        return GroupChatbotRouteResult(True, None, mention_all)
+    if len(chatbot_user_ids) == 1:
+        return GroupChatbotRouteResult(False, chatbot_user_ids[0], mention_all)
+    if mention_all:
+        # Empty string records that MentionAll resolution completed with no group chatbot.
+        # It avoids repeating the remote membership query in the reply check below.
+        return GroupChatbotRouteResult(False, '', True)
+    return GroupChatbotRouteResult(False, None, False)
+
+reply_sender = ReplySender()
+
+def emit_chat_handler_result(config, msg, result):
+    dependencies = ReplySenderDependencies(
+        build_openclaw_reply_ext=build_openclaw_reply_ext,
+        add_group_history_metadata=add_group_history_metadata,
+        make_metadata_for_text=make_metadata_for_text,
+        get_is_sync_mode=get_is_sync_mode,
+        save_pending_reply=group_history_repository.save_pending_reply,
+        reply_message_async=replyMessageAsync,
+        redis_provider=get_group_history_redis_connection,
+        group_history_key=historyListGroupKey,
+        add_group_reply_history=add_group_reply_history,
+        add_debug_message=add_debug_message,
+        sleep=time.sleep,
+    )
+    return reply_sender.emit(config, msg, result, dependencies)
+
+def route_group_openclaw_context(config, msg, chatbot_user_id, mention_all):
+    app_id = msg['appId']
+    group_id = msg['to']['uid']
+    if chatbot_user_id is not None or mention_all:
+        targets = []
+    else:
+        targets = list_group_openclaw_router_context_targets(config, msg)
+    if len(targets) > 0:
+        content, _ = preprocess_openclaw_group_message(msg)
+        if content != msg.get('content', ''):
+            msg = copy.deepcopy(msg)
+            msg['content'] = content
+        delivered_target_count = 0
+        skipped_self_target_count = 0
+        for target in targets:
+            if is_openclaw_self_group_message_for_target(msg, target):
+                skipped_self_target_count += 1
+                logging.info(
+                    f"skip router_context target | app_id:{app_id}, group_id:{group_id}, "
+                    f"chatbot_id:{target['chatbot_id']}, node_id:{target['node_id']}, "
+                    f"reason:self_message_for_target"
+                )
+                continue
+            delivered_target_count += 1
+            logging.info(
+                f"redirect_to_openclaw early router_context fanout | app_id:{app_id}, "
+                f"group_id:{group_id}, chatbot_id:{target['chatbot_id']}, node_id:{target['node_id']}"
+            )
+            lanying_openclaw.redirect_to_openclaw(
+                target['openclaw_node_info'],
+                copy.deepcopy(msg),
+                '',
+                router_type='router_context',
+                cold_start=False,
+            )
+        if delivered_target_count > 0 or skipped_self_target_count > 0:
+            logging.info(
+                f"router_context fanout summary | app_id:{app_id}, group_id:{group_id}, "
+                f"delivered_target_count:{delivered_target_count}, "
+                f"skipped_self_target_count:{skipped_self_target_count}"
+            )
+            return True
+    logging.info(
+        f"skip router_context fanout | app_id:{app_id}, group_id:{group_id}, target_count:0"
+    )
+    return False
+
 def handle_chat_message(config, msg, chatbot_user_id=None, skip_openclaw_sync=False,
                         skip_group_shared_steps=False, chatbot_config_initialized=False):
     if not skip_openclaw_sync:
@@ -1220,60 +1372,18 @@ def handle_chat_message(config, msg, chatbot_user_id=None, skip_openclaw_sync=Fa
         return ''
     try:
         no_reentry = is_openclaw_internal_control_msg(msg)
+        if (msg_type == 'GROUPCHAT' and not no_reentry
+                and get_message_ai_ext(msg).get('role') == 'ai'):
+            maybe_save_image_msg(config, msg)
+            maybe_add_history(config, msg)
+            return ''
         group_mention_all = False
         if msg_type == 'GROUPCHAT' and chatbot_user_id is None and not no_reentry:
-            msg_config = lanying_utils.safe_json_loads(msg.get('config')) or {}
-            group_mention_all = msg_config.get('mentionAll', msg_config.get('mention_all', False)) is True
-            chatbot_user_ids = resolve_group_chatbot_user_ids(config, msg)
-            if len(chatbot_user_ids) > 1:
-                target_configs = []
-                models_by_user_id = {}
-                for target_user_id in chatbot_user_ids:
-                    target_config = copy.deepcopy(config)
-                    init_chatbot_config(target_config, msg, target_user_id)
-                    target_configs.append(target_config)
-                    models_by_user_id[str(target_user_id)] = resolve_group_chatbot_final_model(
-                        target_config, app_id)
-                maybe_reply_message_read_ack(config, msg)
-                maybe_transcription_audio_msg(config, msg)
-                maybe_save_image_msg(config, msg)
-                history_list_key = historyListGroupKey(app_id, str(msg['to']['uid']))
-                maybe_delete_old_model_history(
-                    history_list_key, group_chatbot_model_signature(models_by_user_id))
-                maybe_add_history(config, msg)
-                history_order_tracker = {
-                    'lock': threading.Lock(),
-                    'sequence': itertools.count(),
-                }
-                for target_config in target_configs:
-                    target_config['_group_fanout_model_history_prepared'] = True
-                    target_config['_group_reply_history_order_tracker'] = history_order_tracker
-                futures = []
-                for target_user_id, target_config in zip(chatbot_user_ids, target_configs):
-                    if get_is_sync_mode(config):
-                        target_config['sync_mode_messages'] = []
-                    futures.append(group_chatbot_executor.submit(
-                        handle_group_chatbot_target,
-                        target_config,
-                        copy.deepcopy(msg),
-                        target_user_id,
-                    ))
-                if get_is_sync_mode(config):
-                    target_results = []
-                    for future in as_completed(futures):
-                        target_results.append(future.result())
-                    for target_result in sorted(target_results, key=lambda item: item['history_order']):
-                        config['sync_mode_messages'].extend(target_result['messages'])
-                else:
-                    for future in as_completed(futures):
-                        future.result()
+            group_route = route_group_chatbot_message(config, msg)
+            if group_route.handled:
                 return ''
-            if len(chatbot_user_ids) == 1:
-                chatbot_user_id = chatbot_user_ids[0]
-            elif group_mention_all:
-                # Empty string records that MentionAll resolution completed with no group chatbot.
-                # It avoids repeating the remote membership query in the reply check below.
-                chatbot_user_id = ''
+            chatbot_user_id = group_route.chatbot_user_id
+            group_mention_all = group_route.mention_all
         if not chatbot_config_initialized:
             init_chatbot_config(config, msg, chatbot_user_id)
         if not skip_group_shared_steps:
@@ -1300,44 +1410,9 @@ def handle_chat_message(config, msg, chatbot_user_id=None, skip_openclaw_sync=Fa
             if skip_group_router_context_fanout:
                 logging.info(f"skip group router_context fanout for ai_generate false | msgId: {msg.get('msgId', '')}")
                 return ''
-        if msg_type == 'GROUPCHAT':
-            if chatbot_user_id is not None or group_mention_all:
-                group_context_targets = []
-            else:
-                group_context_targets = list_group_openclaw_router_context_targets(config, msg)
-            if len(group_context_targets) > 0:
-                content, _ = preprocess_openclaw_group_message(msg)
-                if content != msg.get('content', ''):
-                    msg = copy.deepcopy(msg)
-                    msg['content'] = content
-                delivered_target_count = 0
-                skipped_self_target_count = 0
-                for target in group_context_targets:
-                    if is_openclaw_self_group_message_for_target(msg, target):
-                        skipped_self_target_count += 1
-                        logging.info(
-                            f"skip router_context target | app_id:{app_id}, group_id:{msg['to']['uid']}, chatbot_id:{target['chatbot_id']}, node_id:{target['node_id']}, reason:self_message_for_target"
-                        )
-                        continue
-                    delivered_target_count += 1
-                    logging.info(
-                        f"redirect_to_openclaw early router_context fanout | app_id:{app_id}, group_id:{msg['to']['uid']}, chatbot_id:{target['chatbot_id']}, node_id:{target['node_id']}"
-                    )
-                    lanying_openclaw.redirect_to_openclaw(
-                        target['openclaw_node_info'],
-                        copy.deepcopy(msg),
-                        '',
-                        router_type='router_context',
-                        cold_start=False,
-                    )
-                if delivered_target_count > 0 or skipped_self_target_count > 0:
-                    logging.info(
-                        f"router_context fanout summary | app_id:{app_id}, group_id:{msg['to']['uid']}, delivered_target_count:{delivered_target_count}, skipped_self_target_count:{skipped_self_target_count}"
-                    )
-                    return ''
-            logging.info(
-                f"skip router_context fanout | app_id:{app_id}, group_id:{msg['to']['uid']}, target_count:0"
-            )
+        if msg_type == 'GROUPCHAT' and route_group_openclaw_context(
+                config, msg, chatbot_user_id, group_mention_all):
+            return ''
         if chatbot_user_id is None:
             reply = handle_chat_message_try(config, msg, 3)
         else:
@@ -1350,70 +1425,7 @@ def handle_chat_message(config, msg, chatbot_user_id=None, skip_openclaw_sync=Fa
             'code': 'internal_error',
             'message': lanying_config.get_message_404(app_id)
         }
-    error_code = ''
-    error_message = ''
-    if isinstance(reply, list):
-        logging.info(f"got list reply | {reply}")
-        reply_list = reply
-    elif isinstance(reply, dict):
-        if 'result' in reply and reply['result'] == 'error':
-            error_code = reply.get('code', '')
-            error_message = reply.get('msg', '')
-            if error_message == '':
-                error_message = reply.get('message', '')
-            if 'msg_list' in reply:
-                reply_list = reply['msg_list']
-            else:
-                reply_list = [error_message]
-        else:
-            reply_list = []
-    else:
-        reply_list = [reply]
-    cnt = 0
-    for now_reply in reply_list:
-        if len(now_reply) > 0:
-            cnt += 1
-            lcExt = {}
-            try:
-                ext = json.loads(config['ext'])
-                if 'ai' in ext:
-                    lcExt = ext['ai']
-                elif 'lanying_connector' in ext:
-                    lcExt = ext['lanying_connector']
-            except Exception as e:
-                pass
-            reply_ext = {
-                'ai': {
-                    'stream': False,
-                    'role': 'ai',
-                    'result': 'error',
-                    'error_code': error_code,
-                    'error_message': now_reply if error_message == '' else error_message
-                }
-            }
-            reply_ext.update(build_openclaw_reply_ext(msg))
-            if 'feedback' in lcExt:
-                reply_ext['ai']['feedback'] = lcExt['feedback']
-            replyMessageAsync(config, now_reply, reply_ext)
-            if cnt == 1 and msg_type == 'GROUPCHAT' and 'reply_msg_type' in config:
-                logging.info(f"ADD HISTORY CONFIG:{config}")
-                now = int(time.time())
-                redis = lanying_redis.get_redis_connection()
-                history = {'time':now}
-                history['type'] = 'group'
-                history['content'] = now_reply
-                history['group_id'] = config['reply_to']
-                history['from'] =  config['reply_from']
-                if 'send_from' in config:
-                    history['mention_list'] = [int(config['send_from'])]
-                add_group_history_metadata(history, make_metadata_for_text())
-                historyListKey = historyListGroupKey(app_id, config['reply_to'])
-                add_group_reply_history(config, redis, historyListKey, history)
-            if len(reply_list) > 0:
-                time.sleep(0.5)
-    time.sleep(0.5)
-    if not config.get('defer_debug_finish_to_openclaw', False):
-        add_debug_message(config, "处理完成", {'is_last_msg': True})
+    emit_chat_handler_result(config, msg, normalize_chat_handler_result(reply))
 
 def handle_chat_message_try(config, msg, retry_times, chatbot_user_id=None):
     app_id = msg['appId']
@@ -1486,95 +1498,33 @@ def handle_chat_message_try(config, msg, retry_times, chatbot_user_id=None):
     checkres = check_message_per_month_per_user(msg, config)
     if checkres['result'] == 'error':
         return checkres
-    lcExt = {}
-    presetExt = {}
-    redis = lanying_redis.get_redis_connection()
-    try:
-        ext = json.loads(config['ext'])
-        if 'ai' in ext:
-            lcExt = ext['ai']
-        elif 'lanying_connector' in ext:
-            lcExt = ext['lanying_connector']
-    except Exception as e:
-        pass
-    preset_name = ""
-    if preset_name == "":
-        try:
-            if "preset_name" in command_ext:
-                if command_ext['preset_name'] != "default":
-                    if is_chatbot_mode:
-                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], command_ext['preset_name'])
-                        if sub_chatbot:
-                            chatbot = sub_chatbot
-                            preset = sub_chatbot['preset']
-                            preset_name = command_ext['preset_name']
-                            logging.info(f"using preset_name from command:{preset_name}")
-                    else:
-                        preset = preset['presets'][command_ext['preset_name']]
-                        preset_name = command_ext['preset_name']
-                        logging.info(f"using preset_name from command:{preset_name}")
-        except Exception as e:
-            logging.exception(e)
-    if preset_name == "":
-        try:
-            if 'preset_name' in lcExt:
-                if lcExt['preset_name'] != "default":
-                    if is_chatbot_mode:
-                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lcExt['preset_name'])
-                        if sub_chatbot:
-                            chatbot = sub_chatbot
-                            preset = sub_chatbot['preset']
-                            preset_name = lcExt['preset_name']
-                            logging.info(f"using preset_name from lc_ext:{preset_name}")
-                    else:
-                        preset = preset['presets'][lcExt['preset_name']]
-                        preset_name = lcExt['preset_name']
-                        logging.info(f"using preset_name from lc_ext:{preset_name}")
-        except Exception as e:
-            logging.exception(e)
-    if preset_name == "":
-        lastChoosePresetName = get_preset_name(redis, fromUserId, toUserId)
-        logging.info(f"lastChoosePresetName:{lastChoosePresetName}")
-        if lastChoosePresetName:
-            try:
-                if lastChoosePresetName != "default":
-                    if is_chatbot_mode:
-                        sub_chatbot = lanying_chatbot.get_chatbot_by_name(app_id, chatbot['chatbot_ids'], lastChoosePresetName)
-                        if sub_chatbot:
-                            chatbot = sub_chatbot
-                            preset = json.loads(sub_chatbot['preset'])
-                            preset_name = lastChoosePresetName
-                            logging.info(f"using preset_name from last_choose_preset:{preset_name}")
-                    else:
-                        preset = preset['presets'][lastChoosePresetName]
-                        preset_name = lastChoosePresetName
-                        logging.info(f"using preset_name from last_choose_preset:{preset_name}")
-            except Exception as e:
-                logging.exception(e)
-    if preset_name == "":
-        if is_chatbot_mode:
-            preset_name = chatbot['name']
-        else:
-            preset_name = "default"
-    if 'presets' in preset:
-        del preset['presets']
-    if 'ext' in preset:
-        presetExt = copy.deepcopy(preset['ext'])
-        del preset['ext']
-    add_debug_message(config, f"当前预设为: {preset_name}")
-    logging.info(f"lanying-connector:ext={json.dumps(lcExt, ensure_ascii=False)},presetExt:{presetExt}")
-    vendor = config.get('vendor', 'openai')
-    if 'vendor' in preset:
-        vendor = preset['vendor']
-    model_config = lanying_vendor.get_chat_model_config(app_id, vendor, preset['model'])
-    if model_config:
-        return handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times)
+    preset_resolution = resolve_chat_preset(
+        config, app_id, preset, is_chatbot_mode, chatbot, command_ext,
+        fromUserId, toUserId)
+    if preset_resolution.model_config:
+        return handle_chat_message_with_config(
+            config, preset_resolution.model_config, preset_resolution.vendor,
+            msg, preset_resolution.preset, preset_resolution.lc_ext,
+            preset_resolution.preset_ext, preset_resolution.preset_name,
+            command_ext, retry_times)
     else:
         return {
             'result': 'error',
             'code': 'model_not_support',
-            'msg': f'不支持模型：{preset["model"]}'
+            'msg': f'不支持模型：{preset_resolution.preset["model"]}'
         }
+
+def resolve_chat_preset(config, app_id, preset, is_chatbot_mode, chatbot,
+                        command_ext, from_user_id, to_user_id):
+    return resolve_pipeline_preset(
+        config, app_id, preset, is_chatbot_mode, chatbot, command_ext,
+        from_user_id, to_user_id,
+        lanying_redis.get_redis_connection,
+        get_preset_name,
+        lanying_chatbot.get_chatbot_by_name,
+        add_debug_message,
+        lanying_vendor.get_chat_model_config,
+    )
 
 def get_completion_budget_tokens(preset):
     if not isinstance(preset, dict):
@@ -1586,6 +1536,163 @@ def get_completion_budget_tokens(preset):
         return int(value)
     except Exception:
         return 1024
+
+def build_chat_prompt(config, msg_type, preset, messages, system_functions,
+                      user_functions, lc_ext):
+    return build_pipeline_prompt(
+        config, msg_type, preset, messages, system_functions, user_functions,
+        lc_ext, convert_functions_to_tools)
+
+def convert_functions_to_tools(functions):
+    return lanying_openai_compat.functions_to_tools(functions)
+
+def invoke_chat_model(app_id, config, vendor, prepare_info, model_config,
+                      prompt):
+    return invoke_pipeline_model(
+        app_id, config, vendor, prepare_info, model_config, prompt,
+        maybe_transform_preset_to_vision_preset,
+        chat_or_force_function_call,
+        lanying_openai_compat.normalize_vendor_response,
+    )
+
+def run_chat_tools(app_id, config, vendor, prepare_info, model_config, prompt,
+                   model_response, preset_ext, lc_ext, api_key_type,
+                   function_names, msg):
+    response = model_response.response
+    stream_msg_id = 0
+    reply_ext = {'ai': {'stream': False, 'role': 'ai'}}
+    reply_ext.update(build_openclaw_reply_ext(msg))
+    if 'feedback' in lc_ext:
+        reply_ext['ai']['feedback'] = lc_ext['feedback']
+    function_call_times = 5
+    is_stream = False
+    stream_msg_last_send_time = 0
+    function_messages = []
+    subsequent_messages = []
+    while True:
+        is_stream = 'reply_generator' in response
+        if is_stream:
+            reply_generator = response.get('reply_generator')
+            reply = response['reply']
+            stream_interval_default = 1 if prompt.is_force_stream else 3
+            stream_interval = max(
+                1, preset_ext.get('stream_interval', stream_interval_default))
+            stream_collect_count = preset_ext.get('stream_collect_count', 10)
+            content_collect = []
+            content_count = 0
+            collect_start_time = time.time()
+            reply_ext['ai']['stream'] = True
+            reply_ext['ai']['stream_interval'] = stream_interval
+            reply_ext['ai']['seq'] = 0
+            reply_ext['ai']['finish'] = False
+            stream_usage = {}
+            stream_tool_calls = {}
+            stream_finish_reason = ""
+            reasoning_content_count = 0
+            reasoning_content_collect = []
+            reason_finish = False
+            try:
+                for delta in reply_generator:
+                    delta = lanying_openai_compat.normalize_stream_delta(delta)
+                    delta_content = delta.get('content', '') or ''
+                    delta_reasoning_content = delta.get('reasoning_content', '') or ''
+                    if 'usage' in delta:
+                        stream_usage = delta['usage']
+                    if 'tool_calls' in delta:
+                        lanying_openai_compat.merge_stream_tool_calls(
+                            stream_tool_calls, delta.get('tool_calls', []),
+                            delta.get('arguments_merge_type', 'append'))
+                    if delta.get('finish_reason'):
+                        stream_finish_reason = delta['finish_reason']
+                    content_count += len(delta_content)
+                    content_collect.append(delta_content)
+                    reasoning_content_count += len(delta_reasoning_content)
+                    reasoning_content_collect.append(delta_reasoning_content)
+                    collect_now = time.time()
+                    delta_time = collect_now - collect_start_time
+                    if delta_time >= stream_interval and content_count >= stream_collect_count:
+                        reason_finish = True
+                        message_to_send = ''.join(content_collect)
+                        if stream_msg_id > 0:
+                            reply_ext['ai']['seq'] += 1
+                            replyMessageOperAsync(
+                                config, stream_msg_id, 11, message_to_send,
+                                reply_ext, prompt.oper_msg_config, True)
+                        else:
+                            try:
+                                reply_ext['ai']['seq'] += 1
+                                stream_msg_id = replyMessageSync(
+                                    config, message_to_send, reply_ext)
+                                if stream_msg_id is None:
+                                    stream_msg_id = 0
+                            except Exception:
+                                pass
+                        reply += message_to_send
+                        content_count = 0
+                        content_collect = []
+                        collect_start_time = collect_now
+                        stream_msg_last_send_time = collect_now
+                    if ((delta_time >= stream_interval and
+                         reasoning_content_count >= stream_collect_count) or
+                            (reason_finish and reasoning_content_count > 0)):
+                        message_to_send = ''.join(reasoning_content_collect)
+                        reasoning_content_count = 0
+                        reasoning_content_collect = []
+                        collect_start_time = collect_now
+                        add_debug_message(config, message_to_send, {
+                            'stream_interval': stream_interval,
+                            'is_reasoning_msg': True,
+                            'need_antispam_check': True,
+                        })
+            except Exception as error:
+                logging.info("stream got error")
+                logging.exception(error)
+            reply += ''.join(content_collect)
+            stream_response = stream_lines_to_response(
+                app_id, model_response.preset, reply, vendor, stream_usage,
+                lanying_openai_compat.sorted_stream_tool_calls(stream_tool_calls))
+            response['reply'] = reply
+            response['finish_reason'] = stream_finish_reason
+            response['usage'] = stream_response['usage']
+            if 'tool_calls' in stream_response:
+                response['tool_calls'] = stream_response['tool_calls']
+        add_message_statistic(
+            app_id, config, prompt.preset, response, model_config)
+        tool_calls = response.get('tool_calls', [])
+        if not (isinstance(tool_calls, list) and len(tool_calls) > 0 and
+                function_call_times > 0):
+            break
+        current_response = response
+        for idx, tool_call in enumerate(tool_calls):
+            if function_call_times <= 0:
+                break
+            function_call_debug = copy.deepcopy(tool_call)
+            if isinstance(function_call_debug, dict) and 'function' in function_call_debug:
+                function_name_debug = function_call_debug.get(
+                    'function', {}).get('name', '')
+                if function_name_debug in function_names:
+                    function_call_debug['function']['name'] = function_names[
+                        function_name_debug]
+            add_debug_message(
+                config, f"触发函数：{function_call_debug}",
+                {'need_antispam_check': True})
+            current_response = handle_function_call(
+                app_id, config, tool_call, prompt.preset, api_key_type,
+                model_config, vendor, prepare_info, function_messages,
+                subsequent_messages, reply_ext,
+                continue_chat=(idx == len(tool_calls) - 1))
+            function_call_times -= 1
+        response = current_response
+    return ToolRunResult(
+        response, reply_ext, stream_msg_id, is_stream,
+        stream_msg_last_send_time, function_messages, subsequent_messages)
+
+def build_reply_result(config, vendor, model, tool_result):
+    return build_pipeline_reply_result(
+        config, vendor, model, tool_result,
+        lanying_vendor.async_send_message_with_filter,
+        add_debug_message,
+    )
 
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
@@ -1865,28 +1972,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             for userHistory in userHistoryList:
                 logging.info(f'GroupHistory:{userHistory}')
                 messages.append(userHistory)
-    preset['messages'] = messages
-    if msg_type == 'GROUPCHAT':
-        preset['user'] = config['send_from']
-    functions = system_functions
-    functions.extend(user_functions)
-    if len(functions) > 0:
-        preset['functions'] = functions
-        preset['tools'] = lanying_openai_compat.functions_to_tools(functions)
-    else:
-        if 'functions' in preset:
-            del preset['functions']
-        if 'tools' in preset:
-            del preset['tools']
-    preset_message_lines = "\n".join([f"{message.get('role','')}:{message.get('content','')}" for message in messages])
-    logging.info(f"==========final preset messages/functions============\n{preset_message_lines}\n{functions}")
-    is_force_stream = ('force_stream' in lcExt and lcExt['force_stream'] == True)
-    if is_force_stream:
-        logging.info("force use stream")
-        preset['stream'] = True
-    oper_msg_config = {
-        'force_callback': True
-    }
+    prompt = build_chat_prompt(
+        config, msg_type, preset, messages, system_functions, user_functions,
+        lcExt)
+    is_force_stream = prompt.is_force_stream
+    oper_msg_config = prompt.oper_msg_config
     if 'openclaw_node_info' in config:
         openclaw_node_info = config['openclaw_node_info']
         router_type = 'router_request'
@@ -1929,164 +2019,23 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if redirect_result == '':
             config['defer_debug_finish_to_openclaw'] = True
         return redirect_result
-    preset_maybe_vision = maybe_transform_preset_to_vision_preset(config, app_id, model_config, preset)
-    response = chat_or_force_function_call(app_id, config, vendor, prepare_info, preset_maybe_vision)
-    response = lanying_openai_compat.normalize_vendor_response(response)
-    logging.info(f"vendor response | vendor:{vendor}, response:{response}")
-    if 'result' in response and response['result'] == 'error':
-        error_code = response.get('code', response.get('reason', ''))
-        error_message = response.get('msg', '')
-        if error_message == '':
-            error_message = response.get('message', '')
-        if error_message == '':
-            error_message = response.get('reason', '')
-        if error_code in ['engine_overloaded_error', 'rate_limit_reached_error']:
-            return {
-                'result': 'error',
-                'code': error_code,
-                'msg': '请求过快，请稍后再试。'
-            }
-        return {
-            'result': 'error',
-            'code': error_code,
-            'msg': error_message
-        }
-    stream_msg_id = 0
-    reply_ext = {
-            'ai': {
-                'stream': False,
-                'role': 'ai'
-            }
-        }
-    reply_ext.update(build_openclaw_reply_ext(msg))
-    if 'feedback' in lcExt:
-        reply_ext['ai']['feedback'] = lcExt['feedback']
-    function_call_times = 5
-    is_stream = False
-    stream_msg_last_send_time = 0
-    function_messages = []
-    subsequent_messages = []
-    while True:
-        is_stream = ('reply_generator' in response)
-        if is_stream:
-            reply_generator = response.get('reply_generator')
-            reply = response['reply']
-            stream_interval_default = 1 if is_force_stream else 3
-            stream_interval = max(1, presetExt.get('stream_interval', stream_interval_default))
-            stream_collect_count = presetExt.get('stream_collect_count', 10)
-            content_collect = []
-            content_count = 0
-            collect_start_time = time.time()
-            reply_ext['ai']['stream'] = True
-            reply_ext['ai']['stream_interval'] = stream_interval
-            reply_ext['ai']['seq'] = 0
-            reply_ext['ai']['finish'] = False
-            stream_usage = {}
-            stream_tool_calls = {}
-            stream_finish_reason = ""
-            reasoning_content = ""
-            reasoning_content_count = 0
-            reasoning_content_collect = []
-            reason_finish = False
-            try:
-                for delta in reply_generator:
-                    delta = lanying_openai_compat.normalize_stream_delta(delta)
-                    # logging.info(f"KKK:delta:{delta}")
-                    delta_content = delta.get('content', '')
-                    if not delta_content:
-                        delta_content = ''
-                    delta_reasoning_content = delta.get('reasoning_content', '')
-                    if not delta_reasoning_content:
-                        delta_reasoning_content = ''
-                    if 'usage' in delta:
-                        stream_usage = delta['usage']
-                    if "tool_calls" in delta:
-                        lanying_openai_compat.merge_stream_tool_calls(stream_tool_calls, delta.get("tool_calls", []), delta.get('arguments_merge_type', 'append'))
-                    if 'finish_reason' in delta and delta['finish_reason'] is not None and len(delta['finish_reason']) > 0:
-                        stream_finish_reason = delta['finish_reason']
-                    content_count += len(delta_content)
-                    content_collect.append(delta_content)
-                    reasoning_content_count += len(delta_reasoning_content)
-                    reasoning_content_collect.append(delta_reasoning_content)
-                    collect_now = time.time()
-                    delta_time = collect_now - collect_start_time
-                    if delta_time >= stream_interval and content_count >= stream_collect_count:
-                        reason_finish = True
-                        message_to_send = ''.join(content_collect)
-                        if stream_msg_id > 0:
-                            reply_ext['ai']['seq'] += 1
-                            replyMessageOperAsync(config, stream_msg_id, 11, message_to_send, reply_ext, oper_msg_config, True)
-                        else:
-                            try:
-                                reply_ext['ai']['seq'] += 1
-                                stream_msg_id = replyMessageSync(config, message_to_send, reply_ext)
-                                if stream_msg_id is None:
-                                    stream_msg_id = 0
-                            except Exception as e:
-                                pass
-                        reply += message_to_send
-                        content_count = 0
-                        content_collect = []
-                        collect_start_time = collect_now
-                        stream_msg_last_send_time = collect_now
-                    if (delta_time >= stream_interval and reasoning_content_count >= stream_collect_count) or (reason_finish and reasoning_content_count > 0):
-                        message_to_send = ''.join(reasoning_content_collect)
-                        reasoning_content_count = 0
-                        reasoning_content_collect = []
-                        collect_start_time = collect_now
-                        add_debug_message(config, message_to_send, {'stream_interval': stream_interval, 'is_reasoning_msg': True, 'need_antispam_check': True})
-            except Exception as e:
-                logging.info("stream got error")
-                logging.exception(e)
-            reply += ''.join(content_collect)
-            stream_reponse = stream_lines_to_response(app_id, preset_maybe_vision, reply, vendor, stream_usage, lanying_openai_compat.sorted_stream_tool_calls(stream_tool_calls))
-            response['reply'] = reply
-            response['finish_reason'] = stream_finish_reason
-            response['usage'] = stream_reponse['usage']
-            if 'tool_calls' in stream_reponse:
-                response['tool_calls'] = stream_reponse['tool_calls']
-        add_message_statistic(app_id, config, preset, response, model_config)
-        tool_calls = response.get('tool_calls', [])
-        if isinstance(tool_calls, list) and len(tool_calls) > 0 and function_call_times > 0:
-            current_response = response
-            for idx, tool_call in enumerate(tool_calls):
-                if function_call_times <= 0:
-                    break
-                function_call_debug = copy.deepcopy(tool_call)
-                if isinstance(function_call_debug, dict) and 'function' in function_call_debug:
-                    function_name_debug = function_call_debug.get('function', {}).get('name', '')
-                    if function_name_debug in function_names:
-                        function_call_debug['function']['name'] = function_names[function_name_debug]
-                add_debug_message(config, f"触发函数：{function_call_debug}", {'need_antispam_check': True})
-                continue_chat = (idx == len(tool_calls) - 1)
-                current_response = handle_function_call(app_id, config, tool_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext, continue_chat=continue_chat)
-                function_call_times -= 1
-            response = current_response
-        else:
-            break
-    reply = response['reply']
-    audio_reply = response.get('audio')
-    if reply == '' and vendor == 'deepseek':
-        lanying_vendor.async_send_message_with_filter(f'【蓝莺Connector】AI Chat 返回空白内容, vendor:{vendor}, model:{model}', f'ai_chat_resp_failed_{vendor}')
-        reply = '抱歉，我暂时无法回答你的问题。'
-    finish_reason = response.get('finish_reason', '')
-    reply_ext['ai']['finish_reason'] = finish_reason
-    command = None
-    try:
-        command = json.loads(reply)['ai']
-        pass
-    except Exception as e:
-        pass
-    if command is None:
-        try:
-            command = json.loads(reply)['lanying-connector']
-            pass
-        except Exception as e:
-            pass
-    if command:
-        add_debug_message(config, f"收到如下JSON:\n{reply}", {'need_antispam_check': True})
-        if 'preset_welcome' in command:
-            reply = command['preset_welcome']
+    model_response = invoke_chat_model(
+        app_id, config, vendor, prepare_info, model_config, prompt)
+    if model_response.error:
+        return model_response.error
+    tool_result = run_chat_tools(
+        app_id, config, vendor, prepare_info, model_config, prompt,
+        model_response, presetExt, lcExt, api_key_type, function_names, msg)
+    reply_result = build_reply_result(config, vendor, model, tool_result)
+    reply = reply_result.reply
+    audio_reply = reply_result.audio_reply
+    reply_ext = reply_result.reply_ext
+    command = reply_result.command
+    stream_msg_id = reply_result.stream_msg_id
+    is_stream = reply_result.is_stream
+    stream_msg_last_send_time = reply_result.stream_msg_last_send_time
+    function_messages = reply_result.function_messages
+    subsequent_messages = reply_result.subsequent_messages
     if command and 'ai_generate' in command and command['ai_generate'] == True:
         pass
     else:
@@ -2110,7 +2059,10 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['subsequent_messages'] = subsequent_messages
             history['subsequent_messages_owner'] = config['send_from']
             add_group_history_metadata(history, make_metadata_for_text())
-            add_group_reply_history(config, redis, historyListKey, history)
+            if get_is_sync_mode(config):
+                add_group_reply_history(config, redis, historyListKey, history)
+            else:
+                group_history_repository.save_pending_reply(config, history)
     if msg_type == 'CHAT' and command:
         if 'reset_prompt' in command:
             removeAllHistory(redis, historyListKey)
@@ -2365,13 +2317,14 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
                     result = send_image_to_client(config, image_reply_ext, function_response)
                     if result['result'] == 'success':
                         reply_ext['ai']['is_image_description'] = True
-                        subsequent_message_metadata = make_metadata_for_image_from_client_msg_id(client_msg_id)
-                        subsequent_message_new_content, _ = format_content_and_metadata('', subsequent_message_metadata)
-                        subsequent_message = {
-                            'role': 'assistant',
-                            'content': subsequent_message_new_content
-                        }
-                        subsequent_messages.append(subsequent_message)
+                        if should_add_image_subsequent_message(config):
+                            subsequent_message_metadata = make_metadata_for_image_from_client_msg_id(client_msg_id)
+                            subsequent_message_new_content, _ = format_content_and_metadata('', subsequent_message_metadata)
+                            subsequent_message = {
+                                'role': 'assistant',
+                                'content': subsequent_message_new_content
+                            }
+                            subsequent_messages.append(subsequent_message)
                     function_content = json.dumps(result, ensure_ascii=False)
                 elif 'send_audio_to_client' in response_rules:
                     audio_reply_ext = copy.deepcopy(reply_ext)
@@ -2477,6 +2430,12 @@ def maybe_update_plugin_error_msg(reply_ext, function_response):
                 reply_ext['ai']['error_message'] = error_message
     except Exception as e:
         pass
+
+def should_add_image_subsequent_message(config):
+    return not (
+        config.get('reply_msg_type') == 'GROUPCHAT'
+        and not get_is_sync_mode(config)
+    )
 
 def send_image_to_client(config, reply_ext, response):
     try:
@@ -3142,6 +3101,23 @@ def make_metadata_for_text():
     return {
         'ctype': 'TEXT'
     }
+
+def get_group_history_redis_connection():
+    return lanying_redis.get_redis_connection()
+
+def get_group_history_redis_value(redis, key):
+    return lanying_redis.redis_get(redis, key)
+
+group_history_repository = GroupHistoryRepository(
+    get_group_history_redis_connection,
+    get_group_history_redis_value,
+    lanying_utils.safe_json_loads,
+    get_message_ai_ext,
+    add_group_history_metadata,
+    make_metadata_from_msg,
+    addHistory,
+    historyListGroupKey,
+)
 
 def format_content_and_metadata(content, metadata):
     if metadata is None:
@@ -4640,19 +4616,7 @@ def maybe_add_history(config, msg):
             add_user_history_metadata(history, make_metadata_for_text(), make_metadata_from_msg(msg))
             addHistory(redis, historyListKey, history)
         elif msg_type == 'GROUPCHAT':
-            from_user_id = msg['from']['uid']
-            group_id = msg['to']['uid']
-            historyListKey = historyListGroupKey(app_id, group_id)
-            history['type'] = 'group'
-            history['content'] = content
-            history['group_id'] = group_id
-            history['from'] = from_user_id
-            msg_config = lanying_utils.safe_json_loads(msg.get('config')) or {}
-            mention_list = msg_config.get('mentionList', [])
-            history['mention_list'] = mention_list
-            history['mention_all'] = msg_config.get('mentionAll', msg_config.get('mention_all', False)) is True
-            add_group_history_metadata(history, make_metadata_from_msg(msg))
-            addHistory(redis, historyListKey, history)
+            group_history_repository.record_received_message(config, msg)
 
 def is_chatbot_audio_to_text_on(config):
     if 'chatbot' in config:
@@ -4781,6 +4745,16 @@ def need_add_history(config, msg):
         type = msg['type']
         app_id = msg['appId']
         ctype = msg.get('ctype')
+        ext_json = get_message_ext(msg)
+        ai_ext = ext_json.get('ai', {}) if isinstance(ext_json, dict) else {}
+        if type == 'GROUPCHAT' and isinstance(ai_ext, dict) and ai_ext.get('role') == 'ai':
+            if ai_ext.get('is_debug_msg', False) is True:
+                return False
+            if ai_ext.get('stream', False) is True and ai_ext.get('finish', False) is not True:
+                return False
+            if ctype == 'IMAGE':
+                return True
+            return ctype in ['TEXT', 'AUDIO', 'REPLACE'] and msg.get('content', '') != ''
         allow_ctypes = ['TEXT']
         if is_chatbot_audio_to_text_on(config):
             allow_ctypes.append('AUDIO')
@@ -4793,11 +4767,6 @@ def need_add_history(config, msg):
         if type == 'CHAT':
             is_chatbot = is_chatbot_user_id(app_id, fromUserId, config)
             if is_chatbot and toUserId != fromUserId:
-                ext = msg.get('ext','')
-                try:
-                    ext_json = json.loads(ext)
-                except Exception as e:
-                    ext_json = {}
                 try:
                     role = ext_json.get('ai', {}).get('role', 'none')
                     if role == 'ai':
@@ -4806,17 +4775,6 @@ def need_add_history(config, msg):
                     pass
                 return True
         elif type == 'GROUPCHAT':
-            ext = msg.get('ext','')
-            try:
-                ext_json = json.loads(ext)
-            except Exception as e:
-                ext_json = {}
-            try:
-                role = ext_json.get('ai', {}).get('role', 'none')
-                if role == 'ai':
-                    return False
-            except Exception as e:
-                pass
             try:
                 is_debug_msg = ext_json.get('ai', {}).get('is_debug_msg', False)
                 if is_debug_msg == True:
