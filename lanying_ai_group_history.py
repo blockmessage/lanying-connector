@@ -6,11 +6,10 @@ import time
 class GroupHistoryRepository:
     pending_reply_expire_seconds = 3600
 
-    def __init__(self, redis_provider, redis_get, safe_json_loads,
+    def __init__(self, redis_provider, safe_json_loads,
                  get_message_ai_ext, add_group_history_metadata,
                  make_metadata_from_msg, add_history, history_key):
         self.redis_provider = redis_provider
-        self.redis_get = redis_get
         self.safe_json_loads = safe_json_loads
         self.get_message_ai_ext = get_message_ai_ext
         self.add_group_history_metadata = add_group_history_metadata
@@ -43,23 +42,23 @@ class GroupHistoryRepository:
         }
         redis = self.redis_provider()
         if redis:
-            redis.setex(
-                key,
-                self.pending_reply_expire_seconds,
-                json.dumps(pending, ensure_ascii=False),
-            )
+            pipeline = redis.pipeline(transaction=True)
+            pipeline.delete(key)
+            pipeline.rpush(key, json.dumps(pending, ensure_ascii=False))
+            pipeline.expire(key, self.pending_reply_expire_seconds)
+            pipeline.execute()
 
     def load_pending_reply(self, redis, msg):
         if not redis:
-            return {}, None
+            return {}
         ai_ext = self.get_message_ai_ext(msg)
         request_msg_id = str(ai_ext.get('request_msg_id', '')).strip()
         if request_msg_id == '':
-            return {}, None
+            return {}
         key = self.pending_reply_key(
             msg['appId'], msg['to']['uid'], msg['from']['uid'], request_msg_id)
-        pending = self.safe_json_loads(self.redis_get(redis, key), {})
-        return pending if isinstance(pending, dict) else {}, key
+        pending = self.safe_json_loads(redis.lpop(key), {})
+        return pending if isinstance(pending, dict) else {}
 
     def record_received_message(self, config, msg):
         app_id = msg['appId']
@@ -78,11 +77,8 @@ class GroupHistoryRepository:
         self.add_group_history_metadata(
             history, self.make_metadata_from_msg(msg))
         redis = self.redis_provider()
-        pending_key = None
         if self.get_message_ai_ext(msg).get('role') == 'ai':
-            pending, pending_key = self.load_pending_reply(redis, msg)
+            pending = self.load_pending_reply(redis, msg)
             history.update(pending)
         self.add_history(
             redis, self.history_key(str(app_id), str(group_id)), history)
-        if redis and pending_key:
-            redis.delete(pending_key)

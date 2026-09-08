@@ -1253,17 +1253,49 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'reply_msg_type': 'CHAT',
         }))
 
-    def test_group_history_callback_merges_pending_private_context(self):
+    def test_group_history_pending_reply_is_saved_as_expiring_list(self):
         try:
             m = importlib.import_module('openai_service')
         except ModuleNotFoundError as exc:
             raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
 
         redis = mock.Mock()
-        redis.get.return_value = json.dumps({
+        pipeline = redis.pipeline.return_value
+        config = {
+            'app_id': 'app-1',
+            'reply_to': 'group-1',
+            'reply_from': '101',
+            'request_msg_id': 'user-1',
+        }
+        history = {
             'function_messages': [{'role': 'tool', 'content': 'result'}],
             'function_messages_owner': '100',
-        }).encode('utf-8')
+        }
+        with mock.patch.object(
+            m.lanying_redis, 'get_redis_connection', return_value=redis, create=True):
+            m.group_history_repository.save_pending_reply(config, history)
+
+        key = 'lanying:connector:history:pending:group:app-1:group-1:101:user-1'
+        redis.pipeline.assert_called_once_with(transaction=True)
+        pipeline.delete.assert_called_once_with(key)
+        pipeline.rpush.assert_called_once()
+        self.assertEqual(pipeline.rpush.call_args.args[0], key)
+        self.assertEqual(
+            json.loads(pipeline.rpush.call_args.args[1]), history)
+        pipeline.expire.assert_called_once_with(key, 3600)
+        pipeline.execute.assert_called_once_with()
+
+    def test_group_history_callback_consumes_pending_private_context_once(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        redis = mock.Mock()
+        redis.lpop.side_effect = [json.dumps({
+            'function_messages': [{'role': 'tool', 'content': 'result'}],
+            'function_messages_owner': '100',
+        }).encode('utf-8'), None]
         redis.rpush.return_value = 1
         msg = {
             'msgId': 'bot-reply-1',
@@ -1276,24 +1308,25 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'config': '{}',
             'ext': '{"ai":{"role":"ai","request_msg_id":"user-1"}}',
         }
-        with (
-            mock.patch.object(
-                m.lanying_redis, 'get_redis_connection', return_value=redis, create=True),
-            mock.patch.object(
-                m.lanying_redis,
-                'redis_get',
-                side_effect=lambda client, key: client.get(key).decode('utf-8'),
-                create=True,
-            ),
-        ):
+        with mock.patch.object(
+            m.lanying_redis, 'get_redis_connection', return_value=redis, create=True):
             m.group_history_repository.record_received_message({}, msg)
+            second_msg = dict(msg, msgId='bot-reply-2', content='second reply')
+            m.group_history_repository.record_received_message({}, second_msg)
 
-        history = json.loads(redis.rpush.call_args.args[1])
-        self.assertEqual(history['content'], 'bot reply')
-        self.assertEqual(history['function_messages'], [{'role': 'tool', 'content': 'result'}])
-        self.assertEqual(history['function_messages_owner'], '100')
-        redis.delete.assert_called_once_with(
+        first_history = json.loads(redis.rpush.call_args_list[0].args[1])
+        second_history = json.loads(redis.rpush.call_args_list[1].args[1])
+        self.assertEqual(first_history['content'], 'bot reply')
+        self.assertEqual(
+            first_history['function_messages'],
+            [{'role': 'tool', 'content': 'result'}])
+        self.assertEqual(first_history['function_messages_owner'], '100')
+        self.assertEqual(second_history['content'], 'second reply')
+        self.assertNotIn('function_messages', second_history)
+        self.assertEqual(redis.lpop.call_count, 2)
+        redis.lpop.assert_called_with(
             'lanying:connector:history:pending:group:app-1:group-1:101:user-1')
+        redis.delete.assert_not_called()
 
     def test_group_history_callback_normalizes_numeric_group_id(self):
         try:

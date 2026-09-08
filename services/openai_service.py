@@ -3105,12 +3105,8 @@ def make_metadata_for_text():
 def get_group_history_redis_connection():
     return lanying_redis.get_redis_connection()
 
-def get_group_history_redis_value(redis, key):
-    return lanying_redis.redis_get(redis, key)
-
 group_history_repository = GroupHistoryRepository(
     get_group_history_redis_connection,
-    get_group_history_redis_value,
     lanying_utils.safe_json_loads,
     get_message_ai_ext,
     add_group_history_metadata,
