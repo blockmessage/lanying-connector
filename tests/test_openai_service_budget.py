@@ -1,6 +1,8 @@
 import importlib
 import json
 import sys
+import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -912,6 +914,224 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
 
         self.assertEqual(out['result'], 'error')
         self.assertEqual(out['code'], 'bad_authorization')
+
+    def test_group_mention_returns_all_explicit_chatbots(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        msg_config = {'mentionAll': False, 'mentionList': [101, '102', 101, 999]}
+        with (
+            mock.patch.object(m, 'is_chatbot_user_id', side_effect=lambda _app, uid, _config: uid in {'101', '102'}),
+            mock.patch.object(
+                m.lanying_im_api, 'filter_group_member_ids', return_value=['101', '102'], create=True) as filter_ids,
+        ):
+            result = m.find_chatbot_user_ids_in_group_mention({}, 'app-1', 'group-1', '100', msg_config)
+
+        self.assertEqual(result, ['101', '102'])
+        filter_ids.assert_called_once_with('app-1', 'group-1', ['101', '102'])
+
+    def test_group_explicit_mentions_exclude_chatbots_outside_group(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        with (
+            mock.patch.object(m, 'is_chatbot_user_id', return_value=True),
+            mock.patch.object(m.lanying_im_api, 'filter_group_member_ids', return_value=['101'], create=True),
+        ):
+            result = m.find_chatbot_user_ids_in_group_mention(
+                {}, 'app-1', 'group-1', '100', {'mentionAll': False, 'mentionList': [101, 102]})
+
+        self.assertEqual(result, ['101'])
+
+    def test_group_mention_resolution_caches_empty_result_for_same_message(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {}
+        msg = {
+            'msgId': 'mid-empty-target',
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'from': {'uid': '100'},
+            'to': {'uid': 'group-1'},
+            'config': '{"mentionAll":false,"mentionList":[101]}',
+        }
+        with mock.patch.object(m, 'find_chatbot_user_ids_in_group_mention', return_value=[]) as find_targets:
+            self.assertEqual(m.resolve_group_chatbot_user_ids(config, msg), [])
+            self.assertEqual(m.resolve_group_chatbot_user_ids(config, msg), [])
+
+        find_targets.assert_called_once()
+
+    def test_group_mention_all_filters_chatbots_by_group_membership(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        with (
+            mock.patch.object(m.lanying_chatbot, 'is_chatbot_mode', return_value=True, create=True),
+            mock.patch.object(m.lanying_chatbot, 'get_chatbot_user_ids', return_value=['101', '102', '103'], create=True),
+            mock.patch.object(m.lanying_im_api, 'filter_group_member_ids', return_value=['102', '103'], create=True) as filter_ids,
+        ):
+            result = m.find_chatbot_user_ids_in_group_mention(
+                {}, 'app-1', 'group-1', '101', {'mentionAll': True, 'mentionList': []})
+
+        self.assertEqual(result, ['102', '103'])
+        filter_ids.assert_called_once_with('app-1', 'group-1', ['102', '103'])
+
+    def test_group_multiple_mentions_fan_out_and_share_message_side_effects(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'from_user_id': '100',
+            'to_user_id': 'group-1',
+            'ext': '',
+            'is_sync_mode': True,
+            'sync_mode_messages': [],
+        }
+        msg = {
+            'msgId': 'mid-multi-mention',
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'ctype': 'TEXT',
+            'content': '@a @b hello',
+            'from': {'uid': '100'},
+            'to': {'uid': 'group-1'},
+            'config': '{"mentionAll":false,"mentionList":[101,102]}',
+            'ext': '',
+        }
+        target_barrier = threading.Barrier(2)
+
+        def init_target(child_config, _msg, target):
+            child_config['chatbot'] = {
+                'preset': {'model': 'model-a' if target == '101' else 'model-b'},
+            }
+
+        def handle_target(child_config, _msg, _retry, target):
+            target_barrier.wait(timeout=1)
+            if target == '101':
+                time.sleep(0.1)
+            m.add_group_reply_history(child_config, None, 'history-key', {'target': target})
+            child_config['sync_mode_messages'].append(target)
+            return ''
+
+        with (
+            mock.patch.object(m, 'maybe_sync_to_openclaw') as maybe_sync,
+            mock.patch.object(m, 'find_chatbot_user_ids_in_group_mention', return_value=['101', '102']),
+            mock.patch.object(m, 'init_chatbot_config', side_effect=init_target),
+            mock.patch.object(
+                m,
+                'resolve_group_chatbot_final_model',
+                side_effect=lambda child_config, _app_id: child_config['chatbot']['preset']['model'],
+            ),
+            mock.patch.object(m, 'maybe_delete_old_model_history') as reset_group_history,
+            mock.patch.object(m, 'maybe_reply_message_read_ack') as read_ack,
+            mock.patch.object(m, 'maybe_transcription_audio_msg') as transcribe,
+            mock.patch.object(m, 'maybe_save_image_msg') as save_image,
+            mock.patch.object(m, 'maybe_add_history') as add_history,
+            mock.patch.object(
+                m,
+                'handle_chat_message_try',
+                side_effect=handle_target,
+            ) as handle_try,
+            mock.patch.object(m, 'add_debug_message'),
+        ):
+            result = m.handle_chat_message(config, msg)
+
+        self.assertEqual(result, '')
+        maybe_sync.assert_called_once_with(msg)
+        self.assertCountEqual([call.args[3] for call in handle_try.call_args_list], ['101', '102'])
+        self.assertEqual(config['sync_mode_messages'], ['102', '101'])
+        read_ack.assert_called_once()
+        transcribe.assert_called_once()
+        save_image.assert_called_once()
+        add_history.assert_called_once()
+        reset_group_history.assert_called_once_with(
+            'lanying:connector:history:list:group:app-1:group-1',
+            'group-fanout:{"101":"model-a","102":"model-b"}',
+        )
+
+    def test_group_chatbot_model_signature_distinguishes_model_assignment(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        first = m.group_chatbot_model_signature({'101': 'model-a', '102': 'model-b'})
+        swapped = m.group_chatbot_model_signature({'101': 'model-b', '102': 'model-a'})
+
+        self.assertNotEqual(first, swapped)
+        self.assertEqual(first, 'group-fanout:{"101":"model-a","102":"model-b"}')
+
+    def test_group_chatbot_final_model_uses_message_selected_sub_preset(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {
+            'chatbot': {
+                'chatbot_ids': ['bot-default', 'bot-expert'],
+                'preset': {'model': 'default-model'},
+            },
+            'ext': '{"ai":{"preset_name":"expert"}}',
+            'from_user_id': '100',
+            'to_user_id': 'group-1',
+        }
+        with mock.patch.object(
+            m.lanying_chatbot,
+            'get_chatbot_by_name',
+            return_value={'preset': {'model': 'expert-model'}},
+            create=True,
+        ) as get_chatbot:
+            model = m.resolve_group_chatbot_final_model(config, 'app-1')
+
+        self.assertEqual(model, 'expert-model')
+        get_chatbot.assert_called_once_with('app-1', ['bot-default', 'bot-expert'], 'expert')
+
+    def test_group_mention_all_without_member_does_not_resolve_twice(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        config = {'from_user_id': '100', 'to_user_id': 'group-1', 'ext': ''}
+        msg = {
+            'msgId': 'mid-mention-all-empty',
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'ctype': 'TEXT',
+            'content': '@all hello',
+            'from': {'uid': '100'},
+            'to': {'uid': 'group-1'},
+            'config': '{"mentionAll":true,"mentionList":[]}',
+            'ext': '',
+        }
+        with (
+            mock.patch.object(m, 'maybe_sync_to_openclaw'),
+            mock.patch.object(m, 'find_chatbot_user_ids_in_group_mention', return_value=[]) as find_targets,
+            mock.patch.object(m, 'init_chatbot_config'),
+            mock.patch.object(m, 'maybe_reply_message_read_ack'),
+            mock.patch.object(m, 'maybe_transcription_audio_msg'),
+            mock.patch.object(m, 'maybe_save_image_msg'),
+            mock.patch.object(m, 'maybe_add_history'),
+            mock.patch.object(m, 'handle_chat_message_try', return_value='') as handle_try,
+            mock.patch.object(m, 'add_debug_message'),
+        ):
+            result = m.handle_chat_message(config, msg)
+
+        self.assertIsNone(result)
+        find_targets.assert_called_once()
+        self.assertEqual(handle_try.call_args.args[3], '')
 
 
 if __name__ == '__main__':

@@ -512,6 +512,10 @@ def get_user_chatbot_id(app_id, user_id):
     redis = lanying_redis.get_redis_connection()
     return lanying_redis.redis_hget(redis, user_chatbot_id_key(app_id), user_id)
 
+def get_chatbot_user_ids(app_id):
+    redis = lanying_redis.get_redis_connection()
+    return lanying_redis.redis_hkeys(redis, user_chatbot_id_key(app_id))
+
 def set_user_chatbot_id(app_id, user_id, chatbot_id):
     redis = lanying_redis.get_redis_connection()
     redis.hset(user_chatbot_id_key(app_id), user_id, chatbot_id)

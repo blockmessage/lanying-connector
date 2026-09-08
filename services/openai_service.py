@@ -12,6 +12,8 @@ from dateutil.relativedelta import relativedelta
 import requests
 import os
 import copy
+import itertools
+import threading
 from lanying_tasks import add_embedding_file, delete_doc_data, re_run_doc_to_embedding_by_doc_ids, prepare_site,continue_site_task
 import lanying_embedding
 import re
@@ -36,7 +38,7 @@ import math
 import lanying_image
 from lanying_async import executor
 import lanying_message_quota_usage
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import base64
 import lanying_grow_ai
 import lanying_slack
@@ -59,6 +61,7 @@ openclaw_cold_start_history_max_messages = 12
 openclaw_cold_start_history_max_chars = 4096
 openclaw_group_active_key_expire_seconds = 8 * 24 * 3600
 openclaw_min_api_version = int(os.getenv('OPENCLAW_MIN_API_VERSION', '2'))
+group_chatbot_executor = ThreadPoolExecutor(max_workers=16)
 
 def openclaw_active_group_key(app_id, group_id):
     return f"lanying:connector:openclaw:active_group:{app_id}:{group_id}"
@@ -753,9 +756,9 @@ def check_embedding_authorization(request):
         logging.exception(e)
     return {'result':'error', 'msg':'bad_authorization', 'code':'bad_authorization'}
 
-def init_chatbot_config(config, msg):
+def init_chatbot_config(config, msg, chatbot_user_id=None):
     app_id = msg['appId']
-    check_res = check_message_chatbot_id(config, msg)
+    check_res = check_message_chatbot_id(config, msg, chatbot_user_id)
     if check_res['result'] == 'ok':
         chatbot_user_id = check_res['chatbot_user_id']
         chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
@@ -801,7 +804,7 @@ def init_chatbot_config(config, msg):
         else:
             logging.warning(f"cannot get chatbot info: app_id={app_id}, chatbot_user_id:{chatbot_user_id}, chatbot_id:{chatbot_id}")
 
-def check_message_chatbot_id(config, msg):
+def check_message_chatbot_id(config, msg, chatbot_user_id=None):
     app_id = msg['appId']
     to_user_id = str(msg['to']['uid'])
     msg_type = msg['type']
@@ -810,13 +813,14 @@ def check_message_chatbot_id(config, msg):
         if is_chatbot:
             return {'result': 'ok', 'chatbot_user_id': to_user_id}
     elif msg_type == 'GROUPCHAT':
-        router_target = resolve_group_openclaw_router_request_target(config, msg)
-        chatbot_user_id = router_target['chatbot_user_id'] if router_target else None
+        if chatbot_user_id is None:
+            router_target = resolve_group_openclaw_router_request_target(config, msg)
+            chatbot_user_id = router_target['chatbot_user_id'] if router_target else None
         if chatbot_user_id:
             return {'result': 'ok', 'chatbot_user_id': chatbot_user_id}
     return {'result': 'error', 'message': 'no chatbot'}
 
-def check_message_need_reply(config, msg):
+def check_message_need_reply(config, msg, chatbot_user_id=None):
     fromUserId = str(msg['from']['uid'])
     toUserId = str(msg['to']['uid'])
     app_id = msg['appId']
@@ -847,8 +851,9 @@ def check_message_need_reply(config, msg):
             return {'result':'ok', 'chatbot_user_id': toUserId}
     elif msg_type == 'GROUPCHAT':
         group_id = toUserId
-        router_target = resolve_group_openclaw_router_request_target(config, msg)
-        chatbot_user_id = router_target['chatbot_user_id'] if router_target else None
+        if chatbot_user_id is None:
+            router_target = resolve_group_openclaw_router_request_target(config, msg)
+            chatbot_user_id = router_target['chatbot_user_id'] if router_target else None
         if chatbot_user_id:
             try:
                 ext = json.loads(msg['ext'])
@@ -873,20 +878,70 @@ def check_message_need_reply(config, msg):
             return {'result':'ok', 'chatbot_user_id': chatbot_user_id}
     return {'result':'error', 'msg':''}
 
-def find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, msg_config):
-    mention_list = msg_config.get('mentionList', [])
+def find_chatbot_user_ids_in_group_mention(config, app_id, group_id, from_user_id, msg_config):
+    mention_list = msg_config.get('mentionList', msg_config.get('mention_list', []))
+    if not isinstance(mention_list, list):
+        mention_list = []
+    candidates = []
+    seen = set()
     for user_id in mention_list:
         user_id = str(user_id)
-        if fromUserId != user_id and is_chatbot_user_id(app_id, user_id, config):
-            return user_id
-    return None
+        if user_id != from_user_id and user_id not in seen and is_chatbot_user_id(app_id, user_id, config):
+            seen.add(user_id)
+            candidates.append(user_id)
+
+    mention_all = msg_config.get('mentionAll', msg_config.get('mention_all', False)) is True
+    if mention_all:
+        if lanying_chatbot.is_chatbot_mode(app_id):
+            all_chatbot_user_ids = lanying_chatbot.get_chatbot_user_ids(app_id)
+        else:
+            all_chatbot_user_ids = [config.get('lanying_user_id')]
+        for user_id in all_chatbot_user_ids:
+            user_id = str(user_id) if user_id is not None else ''
+            if user_id and user_id != from_user_id and user_id not in seen:
+                seen.add(user_id)
+                candidates.append(user_id)
+
+    member_ids = []
+    for offset in range(0, len(candidates), 1000):
+        member_ids.extend(lanying_im_api.filter_group_member_ids(
+            app_id, group_id, candidates[offset:offset + 1000]))
+    member_id_set = set(member_ids)
+    return [user_id for user_id in candidates if user_id in member_id_set]
+
+def find_chatbot_user_id_in_group_mention(config, app_id, group_id, fromUserId, msg_config):
+    user_ids = find_chatbot_user_ids_in_group_mention(
+        config, app_id, group_id, fromUserId, msg_config)
+    return user_ids[0] if user_ids else None
+
+def resolve_group_chatbot_user_ids(config, msg):
+    cache_key = (
+        str(msg.get('msgId', '')),
+        str(msg.get('from', {}).get('uid', '')),
+        str(msg.get('to', {}).get('uid', '')),
+        str(msg.get('config', '')),
+    )
+    cached = config.get('_group_chatbot_user_ids_cache')
+    if isinstance(cached, dict) and cached.get('key') == cache_key:
+        return list(cached.get('user_ids', []))
+    msg_config = lanying_utils.safe_json_loads(msg.get('config')) or {}
+    user_ids = find_chatbot_user_ids_in_group_mention(
+        config,
+        msg['appId'],
+        str(msg['to']['uid']),
+        str(msg['from']['uid']),
+        msg_config,
+    )
+    config['_group_chatbot_user_ids_cache'] = {
+        'key': cache_key,
+        'user_ids': list(user_ids),
+    }
+    return user_ids
 
 def resolve_group_openclaw_router_request_target(config, msg):
     app_id = msg['appId']
-    from_user_id = str(msg['from']['uid'])
-    group_id = str(msg['to']['uid'])
-    msg_config = lanying_utils.safe_json_loads(msg.get('config'))
-    chatbot_user_id = find_chatbot_user_id_in_group_mention(config, app_id, group_id, from_user_id, msg_config)
+    user_ids = resolve_group_chatbot_user_ids(config, msg)
+    chatbot_user_id = user_ids[0] if user_ids else None
     if not chatbot_user_id:
         return None
     chatbot_id = lanying_chatbot.get_user_chatbot_id(app_id, chatbot_user_id)
@@ -932,9 +987,7 @@ def extract_history_item_msg_id(item):
 def list_group_openclaw_router_context_targets(config, msg):
     app_id = msg['appId']
     group_id = str(msg['to']['uid'])
-    from_user_id = str(msg['from']['uid'])
-    msg_config = lanying_utils.safe_json_loads(msg.get('config'))
-    if find_chatbot_user_id_in_group_mention(config, app_id, group_id, from_user_id, msg_config):
+    if resolve_group_chatbot_user_ids(config, msg):
         return []
     targets = []
     for target in list_openclaw_active_group_targets(app_id, group_id):
@@ -1092,8 +1145,71 @@ def build_openclaw_reply_ext(msg):
 def is_ai_generate_disabled_msg(msg):
     return get_message_ai_ext(msg).get('ai_generate') == False
 
-def handle_chat_message(config, msg):
-    maybe_sync_to_openclaw(msg)
+def handle_group_chatbot_target(config, msg, chatbot_user_id):
+    handle_chat_message(
+        config, msg, chatbot_user_id,
+        skip_openclaw_sync=True, skip_group_shared_steps=True,
+        chatbot_config_initialized=True)
+    return {
+        'history_order': config.get('_group_reply_history_order', time.monotonic_ns()),
+        'messages': get_sync_mode_messages(config),
+    }
+
+def group_chatbot_model_signature(models_by_user_id):
+    normalized_models = {
+        str(user_id): str(model)
+        for user_id, model in models_by_user_id.items()
+    }
+    return 'group-fanout:' + json.dumps(
+        normalized_models, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+def resolve_group_chatbot_final_model(config, app_id):
+    chatbot = config.get('chatbot')
+    if not isinstance(chatbot, dict):
+        return ''
+    preset = chatbot.get('preset')
+    if not isinstance(preset, dict):
+        return ''
+
+    lc_ext = {}
+    try:
+        ext = json.loads(config.get('ext', ''))
+        if 'ai' in ext:
+            lc_ext = ext['ai']
+        elif 'lanying_connector' in ext:
+            lc_ext = ext['lanying_connector']
+    except Exception:
+        pass
+
+    requested_preset_name = lc_ext.get('preset_name') if isinstance(lc_ext, dict) else None
+    selected_preset = False
+    if requested_preset_name and requested_preset_name != 'default':
+        try:
+            sub_chatbot = lanying_chatbot.get_chatbot_by_name(
+                app_id, chatbot['chatbot_ids'], requested_preset_name)
+            if sub_chatbot:
+                preset = sub_chatbot['preset']
+                selected_preset = True
+        except Exception as error:
+            logging.exception(error)
+    if not selected_preset:
+        redis = lanying_redis.get_redis_connection()
+        last_preset_name = get_preset_name(
+            redis, config['from_user_id'], config['to_user_id'])
+        if last_preset_name and last_preset_name != 'default':
+            try:
+                sub_chatbot = lanying_chatbot.get_chatbot_by_name(
+                    app_id, chatbot['chatbot_ids'], last_preset_name)
+                if sub_chatbot:
+                    preset = json.loads(sub_chatbot['preset'])
+            except Exception as error:
+                logging.exception(error)
+    return str(preset.get('model', '')).strip() if isinstance(preset, dict) else ''
+
+def handle_chat_message(config, msg, chatbot_user_id=None, skip_openclaw_sync=False,
+                        skip_group_shared_steps=False, chatbot_config_initialized=False):
+    if not skip_openclaw_sync:
+        maybe_sync_to_openclaw(msg)
     app_id = msg['appId']
     msg_type = msg['type']
     if msg_type not in ["CHAT", "GROUPCHAT"]:
@@ -1104,11 +1220,67 @@ def handle_chat_message(config, msg):
         return ''
     try:
         no_reentry = is_openclaw_internal_control_msg(msg)
-        init_chatbot_config(config, msg)
-        maybe_reply_message_read_ack(config, msg)
-        maybe_transcription_audio_msg(config, msg)
-        maybe_save_image_msg(config, msg)
-        maybe_add_history(config, msg)
+        group_mention_all = False
+        if msg_type == 'GROUPCHAT' and chatbot_user_id is None and not no_reentry:
+            msg_config = lanying_utils.safe_json_loads(msg.get('config')) or {}
+            group_mention_all = msg_config.get('mentionAll', msg_config.get('mention_all', False)) is True
+            chatbot_user_ids = resolve_group_chatbot_user_ids(config, msg)
+            if len(chatbot_user_ids) > 1:
+                target_configs = []
+                models_by_user_id = {}
+                for target_user_id in chatbot_user_ids:
+                    target_config = copy.deepcopy(config)
+                    init_chatbot_config(target_config, msg, target_user_id)
+                    target_configs.append(target_config)
+                    models_by_user_id[str(target_user_id)] = resolve_group_chatbot_final_model(
+                        target_config, app_id)
+                maybe_reply_message_read_ack(config, msg)
+                maybe_transcription_audio_msg(config, msg)
+                maybe_save_image_msg(config, msg)
+                history_list_key = historyListGroupKey(app_id, str(msg['to']['uid']))
+                maybe_delete_old_model_history(
+                    history_list_key, group_chatbot_model_signature(models_by_user_id))
+                maybe_add_history(config, msg)
+                history_order_tracker = {
+                    'lock': threading.Lock(),
+                    'sequence': itertools.count(),
+                }
+                for target_config in target_configs:
+                    target_config['_group_fanout_model_history_prepared'] = True
+                    target_config['_group_reply_history_order_tracker'] = history_order_tracker
+                futures = []
+                for target_user_id, target_config in zip(chatbot_user_ids, target_configs):
+                    if get_is_sync_mode(config):
+                        target_config['sync_mode_messages'] = []
+                    futures.append(group_chatbot_executor.submit(
+                        handle_group_chatbot_target,
+                        target_config,
+                        copy.deepcopy(msg),
+                        target_user_id,
+                    ))
+                if get_is_sync_mode(config):
+                    target_results = []
+                    for future in as_completed(futures):
+                        target_results.append(future.result())
+                    for target_result in sorted(target_results, key=lambda item: item['history_order']):
+                        config['sync_mode_messages'].extend(target_result['messages'])
+                else:
+                    for future in as_completed(futures):
+                        future.result()
+                return ''
+            if len(chatbot_user_ids) == 1:
+                chatbot_user_id = chatbot_user_ids[0]
+            elif group_mention_all:
+                # Empty string records that MentionAll resolution completed with no group chatbot.
+                # It avoids repeating the remote membership query in the reply check below.
+                chatbot_user_id = ''
+        if not chatbot_config_initialized:
+            init_chatbot_config(config, msg, chatbot_user_id)
+        if not skip_group_shared_steps:
+            maybe_reply_message_read_ack(config, msg)
+            maybe_transcription_audio_msg(config, msg)
+            maybe_save_image_msg(config, msg)
+            maybe_add_history(config, msg)
         if no_reentry:
             try:
                 lanying_openclaw.maybe_finish_im_reply_delivery_ai_dynamic(msg)
@@ -1129,7 +1301,10 @@ def handle_chat_message(config, msg):
                 logging.info(f"skip group router_context fanout for ai_generate false | msgId: {msg.get('msgId', '')}")
                 return ''
         if msg_type == 'GROUPCHAT':
-            group_context_targets = list_group_openclaw_router_context_targets(config, msg)
+            if chatbot_user_id is not None or group_mention_all:
+                group_context_targets = []
+            else:
+                group_context_targets = list_group_openclaw_router_context_targets(config, msg)
             if len(group_context_targets) > 0:
                 content, _ = preprocess_openclaw_group_message(msg)
                 if content != msg.get('content', ''):
@@ -1163,7 +1338,10 @@ def handle_chat_message(config, msg):
             logging.info(
                 f"skip router_context fanout | app_id:{app_id}, group_id:{msg['to']['uid']}, target_count:0"
             )
-        reply = handle_chat_message_try(config, msg, 3)
+        if chatbot_user_id is None:
+            reply = handle_chat_message_try(config, msg, 3)
+        else:
+            reply = handle_chat_message_try(config, msg, 3, chatbot_user_id)
     except Exception as e:
         logging.error("fail to handle_chat_message:")
         logging.exception(e)
@@ -1230,17 +1408,17 @@ def handle_chat_message(config, msg):
                     history['mention_list'] = [int(config['send_from'])]
                 add_group_history_metadata(history, make_metadata_for_text())
                 historyListKey = historyListGroupKey(app_id, config['reply_to'])
-                addHistory(redis, historyListKey, history)
+                add_group_reply_history(config, redis, historyListKey, history)
             if len(reply_list) > 0:
                 time.sleep(0.5)
     time.sleep(0.5)
     if not config.get('defer_debug_finish_to_openclaw', False):
         add_debug_message(config, "处理完成", {'is_last_msg': True})
 
-def handle_chat_message_try(config, msg, retry_times):
+def handle_chat_message_try(config, msg, retry_times, chatbot_user_id=None):
     app_id = msg['appId']
     msg_type = msg['type']
-    checkres = check_message_need_reply(config, msg)
+    checkres = check_message_need_reply(config, msg, chatbot_user_id)
     if checkres['result'] == 'error':
         logging.info(f"stop reply message | msg:{msg}")
         return checkres
@@ -1455,7 +1633,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         maybe_delete_old_model_history(historyListKey, model)
     elif msg_type == 'GROUPCHAT':
         historyListKey = historyListGroupKey(app_id, toUserId)
-        maybe_delete_old_model_history(historyListKey, model)
+        if not config.get('_group_fanout_model_history_prepared', False):
+            maybe_delete_old_model_history(historyListKey, model)
     redis = lanying_redis.get_redis_connection()
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
         removeAllHistory(redis, historyListKey)
@@ -1931,7 +2110,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             history['subsequent_messages'] = subsequent_messages
             history['subsequent_messages_owner'] = config['send_from']
             add_group_history_metadata(history, make_metadata_for_text())
-            addHistory(redis, historyListKey, history)
+            add_group_reply_history(config, redis, historyListKey, history)
     if msg_type == 'CHAT' and command:
         if 'reset_prompt' in command:
             removeAllHistory(redis, historyListKey)
@@ -1956,7 +2135,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if retry_times > 0:
             if 'preset_welcome' in command:
                 replyMessageAsync(config, command['preset_welcome'],{'ai':{'role': 'ai'}})
-            return handle_chat_message_try(config, msg, retry_times - 1)
+            return handle_chat_message_try(
+                config, msg, retry_times - 1, config.get('chatbot_user_id'))
         else:
             return ''
     if reference:
@@ -2634,18 +2814,19 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         message_from = str(history.get('from', ''))
         message_content = history.get('content', '')
         mention_list = history.get('mention_list', [])
+        mention_all = history.get('mention_all', False) is True
         if group_history_use_mode == 'mention':
             if message_from == ai_user_id:
-                if int(ask_user_id) in mention_list:
+                if mention_all or int(ask_user_id) in mention_list:
                     pass
                 else:
-                    logging.info(f"group_history_use_mode skip assistant not mention message:{message_from}, {mention_list}")
+                    logging.info(f"group_history_use_mode skip assistant not mention message:{message_from}, {mention_list}, mention_all:{mention_all}")
                     continue
             elif message_from == ask_user_id:
-                if int(ai_user_id) in mention_list:
+                if mention_all or int(ai_user_id) in mention_list:
                     pass
                 else:
-                    logging.info(f"group_history_use_mode skip user not mention message:{message_from}, {mention_list}")
+                    logging.info(f"group_history_use_mode skip user not mention message:{message_from}, {mention_list}, mention_all:{mention_all}")
                     continue
             else:
                 logging.info(f"group_history_use_mode skip other user message:{message_from}")
@@ -2920,6 +3101,15 @@ def addHistory(redis, historyListKey, history):
         redis.expire(historyListKey, expireSeconds)
         if Count > maxUserHistoryLen:
             redis.lpop(historyListKey)
+
+def add_group_reply_history(config, redis, history_list_key, history):
+    tracker = config.get('_group_reply_history_order_tracker')
+    if isinstance(tracker, dict):
+        with tracker['lock']:
+            config['_group_reply_history_order'] = next(tracker['sequence'])
+            addHistory(redis, history_list_key, history)
+    else:
+        addHistory(redis, history_list_key, history)
 
 def add_group_history_metadata(history, metadata):
     history['metadata'] = metadata
@@ -4457,9 +4647,10 @@ def maybe_add_history(config, msg):
             history['content'] = content
             history['group_id'] = group_id
             history['from'] = from_user_id
-            msg_config = lanying_utils.safe_json_loads(msg.get('config'))
+            msg_config = lanying_utils.safe_json_loads(msg.get('config')) or {}
             mention_list = msg_config.get('mentionList', [])
             history['mention_list'] = mention_list
+            history['mention_all'] = msg_config.get('mentionAll', msg_config.get('mention_all', False)) is True
             add_group_history_metadata(history, make_metadata_from_msg(msg))
             addHistory(redis, historyListKey, history)
 

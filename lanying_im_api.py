@@ -380,6 +380,38 @@ def get_group_info(app_id, group_id):
         logging.info(f"get_group_info, app_id={app_id} group_id={group_id}, result:{result}")
         return result
 
+def filter_group_member_ids(app_id, group_id, user_id_list):
+    config = lanying_config.get_lanying_connector(app_id)
+    if not config or not user_id_list:
+        return []
+    admin_token = config.get('lanying_admin_token', '')
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    try:
+        response = requests.post(
+            api_endpoint + '/group/members/ids',
+            headers={'app_id': app_id, 'access-token': admin_token, 'group_id': str(group_id)},
+            json={'group_id': int(group_id), 'user_id_list': [int(user_id) for user_id in user_id_list]},
+            timeout=(3.0, 5.0),
+        )
+    except Exception:
+        logging.exception(
+            f"filter_group_member_ids request failed | app_id:{app_id}, group_id:{group_id}, "
+            f"candidate_count:{len(user_id_list)}"
+        )
+        return []
+    try:
+        result = response.json()
+    except Exception as e:
+        logging.exception(e)
+        result = {}
+    if response.status_code != 200 or result.get('code') != 200 or not isinstance(result.get('data'), list):
+        logging.warning(
+            f"filter_group_member_ids failed | app_id:{app_id}, group_id:{group_id}, "
+            f"candidate_count:{len(user_id_list)}, status_code:{response.status_code}, code:{result.get('code')}"
+        )
+        return []
+    return [str(user_id) for user_id in result['data']]
+
 def admin_join_group_direct(app_id, group_id, user_ids):
     config = lanying_config.get_lanying_connector(app_id)
     if config:

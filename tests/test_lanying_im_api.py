@@ -110,6 +110,27 @@ class LanyingImApiTests(unittest.TestCase):
             params={"group_id": "9"},
         )
 
+    def test_filter_group_member_ids_returns_only_ratel_matches(self):
+        fake_response = mock.Mock(status_code=200)
+        fake_response.json.return_value = {"code": 200, "data": [102, 103]}
+
+        with mock.patch.object(lanying_im_api.requests, "post", return_value=fake_response) as mocked_post:
+            result = lanying_im_api.filter_group_member_ids("app-id", "9", [101, "102", 103])
+
+        self.assertEqual(result, ["102", "103"])
+        mocked_post.assert_called_once_with(
+            "https://api.example.com/group/members/ids",
+            headers={"app_id": "app-id", "access-token": "admin-token", "group_id": "9"},
+            json={"group_id": 9, "user_id_list": [101, 102, 103]},
+            timeout=(3.0, 5.0),
+        )
+
+    def test_filter_group_member_ids_degrades_to_empty_when_ratel_is_unavailable(self):
+        with mock.patch.object(lanying_im_api.requests, "post", side_effect=RuntimeError("unavailable")):
+            result = lanying_im_api.filter_group_member_ids("app-id", "9", [101])
+
+        self.assertEqual(result, [])
+
     def test_group_owner_transfer_uses_current_owner_header_and_new_owner_body(self):
         fake_response = mock.Mock()
         fake_response.json.return_value = {"code": 200}
