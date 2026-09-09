@@ -2778,7 +2778,8 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         nowHistoryList = []
         last_tool_call_id = ''
         if 'function_messages' in history and 'function_messages_owner' in history:
-            if history['function_messages_owner'] == config['send_from']:
+            if (history['function_messages_owner'] == config['send_from']
+                    and message_from == ai_user_id):
                 for function_message in history['function_messages']:
                     new_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(function_message, last_tool_call_id)
                     if new_message is not None:
@@ -2786,7 +2787,8 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
         if len(now_message['content']) > 0:
             nowHistoryList.append(now_message)
         if 'subsequent_messages' in history  and 'subsequent_messages_owner' in history:
-            if history['subsequent_messages_owner'] == config['send_from']:
+            if (history['subsequent_messages_owner'] == config['send_from']
+                    and message_from == ai_user_id):
                 for subsequent_message in history['subsequent_messages']:
                     new_message, last_tool_call_id = lanying_openai_compat.normalize_chat_message(subsequent_message, last_tool_call_id)
                     if new_message is not None:

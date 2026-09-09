@@ -1209,6 +1209,56 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual(messages[0]['tool_calls'][0]['id'], 'call-old')
         self.assertEqual(messages[1]['tool_call_id'], 'call-old')
 
+    def test_group_history_does_not_load_other_chatbot_tool_trace(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        other_chatbot_history = {
+            'from': '102',
+            'content': 'other chatbot answer',
+            'function_messages_owner': '100',
+            'function_messages': [
+                {
+                    'role': 'assistant',
+                    'content': '',
+                    'tool_calls': [{
+                        'id': 'call-other',
+                        'type': 'function',
+                        'function': {'name': 'lookup', 'arguments': '{}'},
+                    }],
+                },
+                {
+                    'role': 'tool',
+                    'tool_call_id': 'call-other',
+                    'content': '{"ok":true}',
+                },
+            ],
+            'subsequent_messages_owner': '100',
+            'subsequent_messages': [
+                {'role': 'assistant', 'content': 'other private follow-up'},
+            ],
+        }
+        config = {'send_from': '100', 'reply_from': '101'}
+        with (
+            mock.patch.object(
+                m, 'reversed_group_history_generator',
+                return_value=iter([other_chatbot_history])),
+            mock.patch.object(m, 'calcMessagesTokens', return_value=0),
+            mock.patch.object(m, 'calcMessageTokens', return_value=1),
+        ):
+            result = m.loadGroupHistory(
+                config, 'app-1', None, 'history-key', 'current question', [], 1,
+                {'model': 'new-model', 'max_tokens': 64}, {},
+                {'token_limit': 4096}, 'openai')
+
+        self.assertEqual(list(result['data']), [{
+            'role': 'user',
+            'content': 'other chatbot answer',
+            'name': '102',
+        }])
+
     def test_build_chat_prompt_preserves_group_tools_and_stream_contract(self):
         try:
             m = importlib.import_module('openai_service')
