@@ -2258,7 +2258,14 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
                 headers['message-quota-trace-id'] = config['message_quota_trace_id']
             if lanying_utils.is_valid_public_url(url):
                 auth_type = auth.get('type', 'none')
-                logging.info(f"start request function callback | app_id:{app_id},owner_app_id:{owner_app_id}, function_name:{function_name}, auth_type:{auth_type}, url:{url}, params:{params}, headers: {headers}, body: {body}")
+                logging.info(
+                    f"start request function callback | app_id:{app_id},"
+                    f"owner_app_id:{owner_app_id}, function_name:{function_name}, "
+                    f"auth_type:{auth_type}, "
+                    f"url:{lanying_utils.url_for_log(url)}, "
+                    f"param_keys:{sorted(params.keys())}, "
+                    f"header_keys:{sorted(headers.keys())}, "
+                    f"body_keys:{sorted(body.keys()) if isinstance(body, dict) else []}")
                 auth_username = auth.get('username', '')
                 auth_password = auth.get('password', '')
                 if auth_type == 'basic' and len(auth_username) > 0 and len(auth_password) > 0:
@@ -2340,7 +2347,11 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
                     except Exception as e:
                         logging.exception(e)
                         pass
-                logging.info(f"finish request function callback | app_id:{app_id}, function_name:{function_name}, function_content: {function_content}")
+                logging.info(
+                    f"finish request function callback | app_id:{app_id}, "
+                    f"function_name:{function_name}, "
+                    f"status_code:{function_response.status_code}, "
+                    f"response_length:{len(str(function_content))}")
                 add_debug_message(config, f"函数调用结果：{function_content}", {'need_antispam_check': True})
                 function_message = {
                     "role": "tool",

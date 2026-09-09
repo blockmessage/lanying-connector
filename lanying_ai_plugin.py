@@ -12,6 +12,7 @@ import lanying_vendor
 import lanying_ai_capsule
 from lanying_chatbot import get_chatbot
 import lanying_utils
+import lanying_logging
 
 def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor, model):
     embedding_name = maybe_create_function_embedding(app_id)
@@ -238,7 +239,10 @@ def fill_parameters_to_function_call(function_call, parameters):
     params = function_call.get('params', {})
     headers = function_call.get('headers', {})
     body = function_call.get('body', {})
-    logging.info(f"processing function: start, function_call:{function_call}, parameters:{parameters}")
+    logging.info(
+        f"processing function: start, function_call:"
+        f"{lanying_logging.redact_sensitive_log_value(function_call)}, "
+        f"parameters:{parameters}")
     for property,_ in parameters.get('properties',{}).items():
         if property not in headers and property not in params and property not in body:
             if method == 'get':
@@ -253,7 +257,9 @@ def fill_parameters_to_function_call(function_call, parameters):
                 }
     function_call['params'] = params
     function_call['body'] = body
-    logging.info(f"processing function: finish, function_call:{function_call}")
+    logging.info(
+        f"processing function: finish, function_call:"
+        f"{lanying_logging.redact_sensitive_log_value(function_call)}")
     return function_call
 
 def delete_ai_function_from_ai_plugin(app_id, plugin_id, function_id):
@@ -576,7 +582,9 @@ def fill_function_info(app_id, function_info, doc_id, system_envs):
     function_call['body'] = maybe_format_function_call_body(parameters, fill_function_sys_envs(system_envs, fill_function_envs(envs, function_call_body)))
     function_call['auth'] = auth
     function_info["function_call"] = function_call
-    logging.info(f"function_info:{function_info}")
+    logging.info(
+        f"function_info:"
+        f"{lanying_logging.redact_sensitive_log_value(function_info)}")
     return function_info
 
 def remove_parameters_without_function_call_reference(parameters, function_call):
@@ -764,7 +772,10 @@ def plugin_import_from_config(app_id, plugin_config, source, source_detail):
             force_call = function_info.get('force_call', False)
             add_ai_function_to_ai_plugin(app_id, plugin_id, function_name, description, parameters, function_call, priority, force_call)
         except Exception as e:
-            logging.info(f"fail to add_ai_function_to_ai_plugin:app_id:{app_id}, plugin_id:{plugin_id}, function_info:{function_info}")
+            logging.info(
+                f"fail to add_ai_function_to_ai_plugin:app_id:{app_id}, "
+                f"plugin_id:{plugin_id}, function_info:"
+                f"{lanying_logging.redact_sensitive_log_value(function_info)}")
             logging.exception(e)
             pass
     return {'result': 'ok', 'data':{'success':True}}

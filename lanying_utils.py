@@ -12,26 +12,36 @@ import string
 from datetime import datetime
 
 def is_valid_public_url(url):
+    log_url = url_for_log(url)
     if url.startswith('http://') or url.startswith('https://'):
         try:
             parse_url= urlparse(url.strip(' '))
             domain = parse_url.netloc
             ip_addresses = get_ip_addresses(domain)
             if not ip_addresses:
-                logging.info(f"check is public url:{url} | no address")
+                logging.info(f"check is public url:{log_url} | no address")
                 return False
             for ip in ip_addresses:
                 if is_public_ip(ip):
-                    logging.info(f"check is public url:{url} | {ip} is a public IP address.")
+                    logging.info(f"check is public url:{log_url} | {ip} is a public IP address.")
                     return True
                 else:
-                    logging.info(f"check is public url:{url} | {ip} is a private IP address.")
+                    logging.info(f"check is public url:{log_url} | {ip} is a private IP address.")
             return False
         except Exception as e:
-            logging.info(f"check is public url:{url} | exception")
+            logging.info(f"check is public url:{log_url} | exception")
             return False
-    logging.info(f"check is public url:{url} | is not url")
+    logging.info(f"check is public url:{log_url} | is not url")
     return False
+
+def url_for_log(url):
+    try:
+        parsed_url = urlparse(str(url))
+        netloc = parsed_url.netloc.rsplit('@', 1)[-1]
+        return parsed_url._replace(
+            netloc=netloc, query='', fragment='').geturl()
+    except (TypeError, ValueError):
+        return '[invalid url]'
 
 def is_public_ip(ip_address):
     try:
