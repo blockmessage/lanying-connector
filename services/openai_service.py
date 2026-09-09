@@ -55,7 +55,7 @@ from lanying_ai_chat_pipeline import (
 )
 from lanying_ai_group_history import GroupHistoryRepository
 from lanying_ai_group_bot import (
-    BotTask, GroupChatbotRouteResult, TargetResolver,
+    GroupChatbotRouteResult, TargetResolver,
 )
 from lanying_ai_reply_sender import (
     ReplySender, ReplySenderDependencies,
@@ -1161,56 +1161,18 @@ def build_openclaw_reply_ext(msg):
 def is_ai_generate_disabled_msg(msg):
     return get_message_ai_ext(msg).get('ai_generate') == False
 
-def group_chatbot_model_signature(models_by_user_id):
-    normalized_models = {
-        str(user_id): str(model)
-        for user_id, model in models_by_user_id.items()
-    }
-    return 'group-fanout:' + json.dumps(
-        normalized_models, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
-
-def resolve_group_chatbot_final_model(config, app_id):
-    chatbot = config.get('chatbot')
-    if not isinstance(chatbot, dict):
-        return ''
-    preset = chatbot.get('preset')
-    if not isinstance(preset, dict):
-        return ''
-
-    lc_ext = {}
-    try:
-        ext = json.loads(config.get('ext', ''))
-        if 'ai' in ext:
-            lc_ext = ext['ai']
-        elif 'lanying_connector' in ext:
-            lc_ext = ext['lanying_connector']
-    except Exception:
-        pass
-
-    requested_preset_name = lc_ext.get('preset_name') if isinstance(lc_ext, dict) else None
-    selected_preset = False
-    if requested_preset_name and requested_preset_name != 'default':
-        try:
-            sub_chatbot = lanying_chatbot.get_chatbot_by_name(
-                app_id, chatbot['chatbot_ids'], requested_preset_name)
-            if sub_chatbot:
-                preset = sub_chatbot['preset']
-                selected_preset = True
-        except Exception as error:
-            logging.exception(error)
-    if not selected_preset:
-        redis = lanying_redis.get_redis_connection()
-        last_preset_name = get_preset_name(
-            redis, config['from_user_id'], config['to_user_id'])
-        if last_preset_name and last_preset_name != 'default':
-            try:
-                sub_chatbot = lanying_chatbot.get_chatbot_by_name(
-                    app_id, chatbot['chatbot_ids'], last_preset_name)
-                if sub_chatbot:
-                    preset = json.loads(sub_chatbot['preset'])
-            except Exception as error:
-                logging.exception(error)
-    return str(preset.get('model', '')).strip() if isinstance(preset, dict) else ''
+def reset_group_history_once(config, msg, redis, history_list_key):
+    tracker = config.get('_group_history_reset_tracker')
+    if not isinstance(tracker, dict):
+        removeAllHistory(redis, history_list_key)
+        maybe_add_history(config, msg)
+        return
+    with tracker['lock']:
+        if tracker['done']:
+            return
+        removeAllHistory(redis, history_list_key)
+        maybe_add_history(config, msg)
+        tracker['done'] = True
 
 def process_bot_task(task, msg):
     handle_chat_message(
@@ -1228,13 +1190,9 @@ def resolve_group_target_user_ids(config, msg):
 def initialize_group_target_config(config, msg, chatbot_user_id):
     return init_chatbot_config(config, msg, chatbot_user_id)
 
-def resolve_group_target_model(config, app_id):
-    return resolve_group_chatbot_final_model(config, app_id)
-
 target_resolver = TargetResolver(
     resolve_group_target_user_ids,
     initialize_group_target_config,
-    resolve_group_target_model,
     lanying_utils.safe_json_loads,
 )
 
@@ -1242,24 +1200,22 @@ def build_group_chatbot_targets(config, msg, chatbot_user_ids):
     return target_resolver.build_bot_tasks(config, msg, chatbot_user_ids)
 
 def dispatch_group_chatbot_fanout(config, msg, targets):
-    app_id = msg['appId']
     maybe_reply_message_read_ack(config, msg)
     maybe_transcription_audio_msg(config, msg)
     maybe_save_image_msg(config, msg)
-    history_list_key = historyListGroupKey(app_id, str(msg['to']['uid']))
-    maybe_delete_old_model_history(
-        history_list_key,
-        group_chatbot_model_signature({target.chatbot_user_id: target.model for target in targets}),
-    )
     maybe_add_history(config, msg)
 
     history_order_tracker = {
         'lock': threading.Lock(),
         'sequence': itertools.count(),
     }
+    history_reset_tracker = {
+        'lock': threading.Lock(),
+        'done': False,
+    }
     futures = []
     for target in targets:
-        target.config['_group_fanout_model_history_prepared'] = True
+        target.config['_group_history_reset_tracker'] = history_reset_tracker
         target.config['_group_reply_history_order_tracker'] = history_order_tracker
         if get_is_sync_mode(config):
             target.config['sync_mode_messages'] = []
@@ -1390,6 +1346,11 @@ def handle_chat_message(config, msg, chatbot_user_id=None, skip_openclaw_sync=Fa
             maybe_reply_message_read_ack(config, msg)
             maybe_transcription_audio_msg(config, msg)
             maybe_save_image_msg(config, msg)
+            if msg_type == 'GROUPCHAT':
+                config['_group_history_reset_tracker'] = {
+                    'lock': threading.Lock(),
+                    'done': False,
+                }
             maybe_add_history(config, msg)
         if no_reentry:
             try:
@@ -1735,16 +1696,19 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     fromUserId = config['from_user_id']
     toUserId = config['to_user_id']
     msg_type = msg['type']
+    # Conversation and completed tool-call history is normalized when loaded,
+    # so changing models must not erase the user's context. Explicit reset_prompt
+    # remains the only model-processing path that clears the conversation.
     if msg_type == 'CHAT':
         historyListKey = historyListChatGPTKey(app_id, fromUserId, toUserId)
-        maybe_delete_old_model_history(historyListKey, model)
     elif msg_type == 'GROUPCHAT':
         historyListKey = historyListGroupKey(app_id, toUserId)
-        if not config.get('_group_fanout_model_history_prepared', False):
-            maybe_delete_old_model_history(historyListKey, model)
     redis = lanying_redis.get_redis_connection()
     if 'reset_prompt' in lcExt and lcExt['reset_prompt'] == True:
-        removeAllHistory(redis, historyListKey)
+        if msg_type == 'GROUPCHAT':
+            reset_group_history_once(config, msg, redis, historyListKey)
+        else:
+            removeAllHistory(redis, historyListKey)
         del_preset_name(redis, fromUserId, toUserId)
         del_embedding_info(redis, fromUserId, toUserId)
     if 'history_msg_size_max' in lcExt:
@@ -3028,18 +2992,6 @@ def historyListChatGPTKey(app_id, fromUserId, toUserId):
 
 def historyListGroupKey(app_id, groupId):
     return "lanying:connector:history:list:group:" + app_id + ":" + groupId
-
-def maybe_delete_old_model_history(history_key, model):
-    key = f'{history_key}:model'
-    redis = lanying_redis.get_redis_connection()
-    old_model = lanying_redis.redis_get(redis, key)
-    if old_model:
-        if old_model != model:
-            logging.info(f"maybe_delete_old_model_history delete old history | history_key = {history_key}, old_model:{old_model}, new_model:{model}")
-            redis.delete(history_key)
-            redis.set(key, model)
-    else:
-        redis.set(key, model)
 
 # KEYS:
 

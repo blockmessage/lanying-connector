@@ -9,6 +9,15 @@ from unittest import mock
 from pathlib import Path
 
 
+def _load_real_openai_compat():
+    module_path = Path(__file__).resolve().parents[1] / 'lanying_openai_compat.py'
+    spec = importlib.util.spec_from_file_location(
+        'lanying_openai_compat_for_history_test', module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _install_fake_tiktoken_if_needed():
     if 'tiktoken' in sys.modules:
         return
@@ -1010,13 +1019,15 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'ext': '',
         }
         target_barrier = threading.Barrier(2)
+        reset_tracker_ids = []
 
         def init_target(child_config, _msg, target):
-            child_config['chatbot'] = {
-                'preset': {'model': 'model-a' if target == '101' else 'model-b'},
-            }
+            child_config['initialized_target'] = target
 
         def handle_target(child_config, _msg, _retry, target):
+            self.assertEqual(child_config['initialized_target'], target)
+            self.assertIsInstance(child_config['_group_history_reset_tracker'], dict)
+            reset_tracker_ids.append(id(child_config['_group_history_reset_tracker']))
             target_barrier.wait(timeout=1)
             if target == '101':
                 time.sleep(0.1)
@@ -1028,12 +1039,6 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             mock.patch.object(m, 'maybe_sync_to_openclaw') as maybe_sync,
             mock.patch.object(m, 'find_chatbot_user_ids_in_group_mention', return_value=['101', '102']),
             mock.patch.object(m, 'init_chatbot_config', side_effect=init_target),
-            mock.patch.object(
-                m,
-                'resolve_group_chatbot_final_model',
-                side_effect=lambda child_config, _app_id: child_config['chatbot']['preset']['model'],
-            ),
-            mock.patch.object(m, 'maybe_delete_old_model_history') as reset_group_history,
             mock.patch.object(m, 'maybe_reply_message_read_ack') as read_ack,
             mock.patch.object(m, 'maybe_transcription_audio_msg') as transcribe,
             mock.patch.object(m, 'maybe_save_image_msg') as save_image,
@@ -1051,52 +1056,158 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         maybe_sync.assert_called_once_with(msg)
         self.assertCountEqual([call.args[3] for call in handle_try.call_args_list], ['101', '102'])
         self.assertEqual(config['sync_mode_messages'], ['102', '101'])
+        self.assertEqual(len(set(reset_tracker_ids)), 1)
         read_ack.assert_called_once()
         transcribe.assert_called_once()
         save_image.assert_called_once()
         add_history.assert_called_once()
-        reset_group_history.assert_called_once_with(
-            'lanying:connector:history:list:group:app-1:group-1',
-            'group-fanout:{"101":"model-a","102":"model-b"}',
-        )
 
-    def test_group_chatbot_model_signature_distinguishes_model_assignment(self):
-        try:
-            m = importlib.import_module('openai_service')
-        except ModuleNotFoundError as exc:
-            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
-
-        first = m.group_chatbot_model_signature({'101': 'model-a', '102': 'model-b'})
-        swapped = m.group_chatbot_model_signature({'101': 'model-b', '102': 'model-a'})
-
-        self.assertNotEqual(first, swapped)
-        self.assertEqual(first, 'group-fanout:{"101":"model-a","102":"model-b"}')
-
-    def test_group_chatbot_final_model_uses_message_selected_sub_preset(self):
+    def test_group_history_reset_keeps_current_message_and_runs_once(self):
         try:
             m = importlib.import_module('openai_service')
         except ModuleNotFoundError as exc:
             raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
 
         config = {
-            'chatbot': {
-                'chatbot_ids': ['bot-default', 'bot-expert'],
-                'preset': {'model': 'default-model'},
+            '_group_history_reset_tracker': {
+                'lock': threading.Lock(),
+                'done': False,
             },
-            'ext': '{"ai":{"preset_name":"expert"}}',
-            'from_user_id': '100',
-            'to_user_id': 'group-1',
         }
-        with mock.patch.object(
-            m.lanying_chatbot,
-            'get_chatbot_by_name',
-            return_value={'preset': {'model': 'expert-model'}},
-            create=True,
-        ) as get_chatbot:
-            model = m.resolve_group_chatbot_final_model(config, 'app-1')
+        msg = {
+            'appId': 'app-1',
+            'type': 'GROUPCHAT',
+            'from': {'uid': '100'},
+            'to': {'uid': 'group-1'},
+            'ext': '{"ai":{"reset_prompt":true}}',
+        }
+        redis = mock.Mock()
+        history_events = []
+        with (
+            mock.patch.object(
+                m, 'removeAllHistory',
+                side_effect=lambda *_args: history_events.append('reset')) as remove_history,
+            mock.patch.object(
+                m, 'maybe_add_history',
+                side_effect=lambda *_args: history_events.append('add')) as add_history,
+        ):
+            m.reset_group_history_once(config, msg, redis, 'history-key')
+            m.reset_group_history_once(config, msg, redis, 'history-key')
 
-        self.assertEqual(model, 'expert-model')
-        get_chatbot.assert_called_once_with('app-1', ['bot-default', 'bot-expert'], 'expert')
+        remove_history.assert_called_once_with(redis, 'history-key')
+        add_history.assert_called_once_with(config, msg)
+        self.assertEqual(history_events, ['reset', 'add'])
+
+    def test_chat_history_normalizes_completed_tool_trace_for_new_model(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        real_compat = _load_real_openai_compat()
+        old_history = {
+            'user': 'old question',
+            'assistant': 'old answer',
+            'function_messages': [
+                {
+                    'role': 'assistant',
+                    'content': '',
+                    'function_call': {
+                        'id': 'call-old',
+                        'name': 'lookup',
+                        'arguments': '{}',
+                    },
+                },
+                {'role': 'function', 'name': 'lookup', 'content': '{"ok":true}'},
+            ],
+        }
+        with (
+            mock.patch.object(m, 'reversed_history_generator', return_value=iter([old_history])),
+            mock.patch.object(m, 'calcMessagesTokens', return_value=0),
+            mock.patch.object(m, 'calcMessageTokens', return_value=1),
+            mock.patch.object(
+                m.lanying_openai_compat, 'normalize_chat_message',
+                side_effect=real_compat.normalize_chat_message, create=True),
+        ):
+            result = m.loadHistory(
+                {}, 'app-1', None, 'history-key', 'current question', [], 1,
+                {'model': 'new-model', 'max_tokens': 64}, {},
+                {'token_limit': 4096}, 'openai')
+
+        messages = list(result['data'])
+        self.assertEqual([message['role'] for message in messages], [
+            'user', 'assistant', 'tool', 'assistant'])
+        self.assertEqual(messages[1]['tool_calls'][0]['id'], 'call-old')
+        self.assertEqual(messages[2]['tool_call_id'], 'call-old')
+
+        messages.append({'role': 'user', 'content': 'current question'})
+        prompt = m.build_chat_prompt(
+            {}, 'CHAT', {'model': 'new-model'}, messages, [], [], {})
+        sent_presets = []
+        with (
+            mock.patch.object(
+                m, 'maybe_transform_preset_to_vision_preset',
+                side_effect=lambda _config, _app_id, _model_config, preset: preset),
+            mock.patch.object(
+                m, 'chat_or_force_function_call',
+                side_effect=lambda _app_id, _config, _vendor, _prepare, preset:
+                sent_presets.append(preset) or {'reply': 'ok'}),
+            mock.patch.object(
+                m.lanying_openai_compat, 'normalize_vendor_response',
+                side_effect=lambda response: response, create=True),
+        ):
+            model_result = m.invoke_chat_model(
+                'app-1', {}, 'new-vendor', {}, {'token_limit': 4096}, prompt)
+
+        self.assertIsNone(model_result.error)
+        self.assertEqual(len(sent_presets), 1)
+        self.assertEqual(
+            [message['role'] for message in sent_presets[0]['messages']],
+            ['user', 'assistant', 'tool', 'assistant', 'user'])
+
+    def test_group_history_normalizes_completed_tool_trace_for_new_model(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        real_compat = _load_real_openai_compat()
+        old_history = {
+            'from': '101',
+            'content': 'old answer',
+            'function_messages_owner': '100',
+            'function_messages': [
+                {
+                    'role': 'assistant',
+                    'content': '',
+                    'tool_calls': [{
+                        'id': 'call-old',
+                        'type': 'function',
+                        'function': {'name': 'lookup', 'arguments': '{}'},
+                    }],
+                },
+                {'role': 'tool', 'tool_call_id': 'call-old', 'content': '{"ok":true}'},
+            ],
+        }
+        config = {'send_from': '100', 'reply_from': '101'}
+        with (
+            mock.patch.object(m, 'reversed_group_history_generator', return_value=iter([old_history])),
+            mock.patch.object(m, 'calcMessagesTokens', return_value=0),
+            mock.patch.object(m, 'calcMessageTokens', return_value=1),
+            mock.patch.object(
+                m.lanying_openai_compat, 'normalize_chat_message',
+                side_effect=real_compat.normalize_chat_message, create=True),
+        ):
+            result = m.loadGroupHistory(
+                config, 'app-1', None, 'history-key', 'current question', [], 1,
+                {'model': 'new-model', 'max_tokens': 64}, {},
+                {'token_limit': 4096}, 'openai')
+
+        messages = list(result['data'])
+        self.assertEqual([message['role'] for message in messages], [
+            'assistant', 'tool', 'assistant'])
+        self.assertEqual(messages[0]['tool_calls'][0]['id'], 'call-old')
+        self.assertEqual(messages[1]['tool_call_id'], 'call-old')
 
     def test_build_chat_prompt_preserves_group_tools_and_stream_contract(self):
         try:

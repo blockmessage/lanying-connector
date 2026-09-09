@@ -7,7 +7,6 @@ from typing import Optional
 class BotTask:
     chatbot_user_id: str
     config: dict
-    model: str
 
 
 @dataclass(frozen=True)
@@ -24,11 +23,9 @@ class GroupTargetResolution:
 
 
 class TargetResolver:
-    def __init__(self, resolve_user_ids, init_chatbot_config, resolve_model,
-                 safe_json_loads):
+    def __init__(self, resolve_user_ids, init_chatbot_config, safe_json_loads):
         self.resolve_user_ids = resolve_user_ids
         self.init_chatbot_config = init_chatbot_config
-        self.resolve_model = resolve_model
         self.safe_json_loads = safe_json_loads
 
     def resolve_group(self, config, msg):
@@ -41,7 +38,6 @@ class TargetResolver:
         )
 
     def build_bot_tasks(self, config, msg, chatbot_user_ids):
-        app_id = msg['appId']
         tasks = []
         for chatbot_user_id in chatbot_user_ids:
             target_config = copy.deepcopy(config)
@@ -49,6 +45,5 @@ class TargetResolver:
             tasks.append(BotTask(
                 chatbot_user_id=str(chatbot_user_id),
                 config=target_config,
-                model=self.resolve_model(target_config, app_id),
             ))
         return tasks
