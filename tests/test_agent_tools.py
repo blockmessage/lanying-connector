@@ -100,6 +100,29 @@ class AgentToolsTest(unittest.TestCase):
             self.module.filter_supported_client_functions("app", {"chatbot_id": "1"}, functions),
         )
 
+    def test_active_skill_injects_builtin_registry_tool(self):
+        repository = {
+            "revision": "rev-1",
+            "skills": [{
+                "name": "Writer", "instructions": "Use the plan Tool.",
+                "required_tools": ["seenical.plan.list"],
+            }],
+        }
+        config = {"chatbot_id": "bot-1"}
+        messages = [{"role": "user", "content": "List plans"}]
+        with mock.patch.object(self.module, "get_active_skills", return_value=[repository]), mock.patch.object(
+                self.module, "find_capability", return_value={"client_instance_id": "tab-1"}), mock.patch.object(
+                self.module, "_active_skill_authorizations",
+                return_value=[{"skill_id": "writer", "revision": "rev-1"}]):
+            messages, functions = self.module.apply_active_skills(
+                "app", config, messages, [])
+            functions = self.module.filter_supported_client_functions(
+                "app", config, functions)
+
+        self.assertEqual("Seenical Skill: Writer", messages[0]["content"].splitlines()[0])
+        self.assertEqual(["seenical_plan_list"], [item["name"] for item in functions])
+        self.assertTrue(functions[0]["seenical_builtin_tool"])
+
     def test_public_site_repository_config_tools_are_not_registered(self):
         for tool_id in [
                 "seenical.repo.sync", "seenical.repo.config.get",
@@ -226,6 +249,21 @@ class AgentToolsTest(unittest.TestCase):
                 inner_self.values[key] = value
                 return True
 
+            def pipeline(inner_self, transaction=True):
+                return inner_self
+
+            def watch(inner_self, *keys):
+                return None
+
+            def unwatch(inner_self):
+                return None
+
+            def multi(inner_self):
+                return None
+
+            def execute(inner_self):
+                return []
+
         fake = FakeRedis()
         skill = {
             "skill_id": "writer", "revision": "rev-1",
@@ -242,6 +280,25 @@ class AgentToolsTest(unittest.TestCase):
             self.assertEqual(1, len(module.get_active_skills("app-a", "bot-a")))
             self.assertEqual([], module.get_active_skills("app-a", "bot-b"))
             self.assertEqual([], module.get_active_skills("app-b", "bot-a"))
+
+            stale = module.sync_authorization_projection("app-a", {
+                "enabled": False, "authorization_revision": 3, "skills": []
+            })
+            self.assertEqual("stale_authorization_revision", stale["code"])
+
+    def test_plan_create_does_not_start_generation_implicitly(self):
+        create_task = mock.Mock(return_value={"result": "ok", "data": {"task_id": "task"}})
+        self.module.lanying_grow_ai.TaskSetting = lambda **kwargs: kwargs
+        self.module.lanying_grow_ai.create_task = create_task
+        result = self.module._plan_create(
+            "app", {"name": "Plan", "prompt": "Topic"}, {"chatbot_id": "bot"})
+        self.assertEqual("ok", result["result"])
+        self.assertFalse(create_task.call_args.kwargs["run_immediately"])
+
+    def test_deployment_rollback_is_a_registered_destructive_tool(self):
+        tool = self.module.TOOL_REGISTRY["seenical.deploy.rollback"]
+        self.assertEqual("destructive", tool["risk"])
+        self.assertEqual("console_action", tool["execution"])
 
     def test_public_catalog_notification_has_ip_and_global_limits(self):
         class FakePipeline:
@@ -325,6 +382,24 @@ class AgentToolsTest(unittest.TestCase):
 
             def setex(inner_self, key, ttl, value):
                 inner_self.values[key] = value
+
+            def pipeline(inner_self, transaction=True):
+                return inner_self
+
+            def watch(inner_self, *keys):
+                return None
+
+            def unwatch(inner_self):
+                return None
+
+            def multi(inner_self):
+                return None
+
+            def delete(inner_self, key):
+                inner_self.values.pop(key, None)
+
+            def execute(inner_self):
+                return []
 
         fake = FakeRedis()
         actor = {"subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"}

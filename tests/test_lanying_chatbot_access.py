@@ -19,6 +19,9 @@ class FakeRedis:
     def hset(self, key, field, value):
         self.hashes.setdefault(key, {})[str(field)] = value
 
+    def hget(self, key, field):
+        return self.hashes.get(key, {}).get(str(field), 0)
+
     def hsetnx(self, key, field, value):
         bucket = self.hashes.setdefault(key, {})
         if str(field) not in bucket:
@@ -54,6 +57,21 @@ class FakeRedis:
 
     def set(self, key, value):
         self.values[key] = value
+
+    def pipeline(self, transaction=True):
+        return self
+
+    def watch(self, *keys):
+        return None
+
+    def unwatch(self):
+        return None
+
+    def multi(self):
+        return None
+
+    def execute(self):
+        return []
 
 
 def _safe_json_loads(raw, default=None):
@@ -94,6 +112,7 @@ def _load_lanying_chatbot():
             safe_json_loads=_safe_json_loads,
         ),
         "lanying_oss": types.SimpleNamespace(),
+        "lanying_pgvector": types.SimpleNamespace(is_enabled=lambda: False),
         "lanying_openclaw": types.SimpleNamespace(
             get_chatbot_node_id=lambda *args, **kwargs: "",
         ),

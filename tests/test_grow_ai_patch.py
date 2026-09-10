@@ -68,6 +68,7 @@ def load_grow_ai():
         "lanying_google": empty,
         "lanying_oss": empty,
         "lanying_pgvector": types.SimpleNamespace(
+            is_enabled=lambda: True,
             save_seenical_config_revision=lambda *args, **kwargs: {"result": "ok"},
             get_seenical_config_revision=lambda *args, **kwargs: None,
             list_seenical_config_revisions=lambda *args, **kwargs: []),
@@ -158,6 +159,77 @@ class GrowAIPatchTest(unittest.TestCase):
         self.assertNotIn("file_list", snapshot)
         self.assertNotIn("deploy", snapshot)
         self.assertEqual("Old article prompt", snapshot["article_prompt"])
+
+    def test_deployment_rollback_requires_unchanged_branch_and_rotates_versions(self):
+        current = "a" * 40
+        previous = "b" * 40
+        site = {
+            "site_id": "site-1", "github_base_branch": "main",
+            "current_deploy_commit_sha": current,
+            "previous_deploy_commit_sha": previous,
+        }
+
+        class Lock:
+            def __enter__(inner_self):
+                return inner_self
+
+            def __exit__(inner_self, *args):
+                return False
+
+        response = types.SimpleNamespace(
+            status_code=200, json=lambda: {"object": {"sha": current}})
+        redis = types.SimpleNamespace(lock=lambda *args, **kwargs: Lock())
+        context = {
+            "result": "ok", "site": site, "repository": "owner/repo",
+            "api_url": "https://api.github.test/repos/owner/repo", "headers": {},
+        }
+        with mock.patch.object(self.module, "get_site_github_context", return_value=context), mock.patch.object(
+                self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
+                self.module.requests, "get", return_value=response, create=True), mock.patch.object(
+                self.module.requests, "patch", return_value=response, create=True) as patch_ref, mock.patch.object(
+                self.module, "update_site_field") as update_field:
+            result = self.module.rollback_site_deployment("app", "site-1")
+
+        self.assertEqual("ok", result["result"])
+        self.assertEqual({"sha": previous, "force": True}, patch_ref.call_args.kwargs["json"])
+        update_field.assert_any_call("app", "site-1", "current_deploy_commit_sha", previous)
+        update_field.assert_any_call("app", "site-1", "previous_deploy_commit_sha", current)
+
+    def test_deployment_rollback_recovers_publish_interrupted_after_branch_move(self):
+        pending = "c" * 40
+        previous = "d" * 40
+        site = {
+            "site_id": "site-1", "github_base_branch": "main",
+            "current_deploy_commit_sha": "",
+            "pending_deploy_commit_sha": pending,
+            "previous_deploy_commit_sha": previous,
+        }
+
+        class Lock:
+            def __enter__(inner_self):
+                return inner_self
+
+            def __exit__(inner_self, *args):
+                return False
+
+        response = types.SimpleNamespace(
+            status_code=200, json=lambda: {"object": {"sha": pending}})
+        redis = types.SimpleNamespace(lock=lambda *args, **kwargs: Lock())
+        context = {
+            "result": "ok", "site": site, "repository": "owner/repo",
+            "api_url": "https://api.github.test/repos/owner/repo", "headers": {},
+        }
+        with mock.patch.object(self.module, "get_site_github_context", return_value=context), mock.patch.object(
+                self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
+                self.module.requests, "get", return_value=response, create=True), mock.patch.object(
+                self.module.requests, "patch", return_value=response, create=True), mock.patch.object(
+                self.module, "update_site_field") as update_field:
+            result = self.module.rollback_site_deployment("app", "site-1")
+
+        self.assertEqual("ok", result["result"])
+        self.assertEqual(pending, result["data"]["rolled_back_from"])
+        update_field.assert_any_call("app", "site-1", "current_deploy_commit_sha", previous)
+        update_field.assert_any_call("app", "site-1", "previous_deploy_commit_sha", pending)
 
 
 if __name__ == "__main__":

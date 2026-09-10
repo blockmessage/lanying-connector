@@ -172,10 +172,11 @@ def set_task_schedule(app_id, task_id, schedule, message='manual'):
     logging.info(f"change task schedule {schedule} | app_id:{app_id}, task_id:{task_id}, message:{message}")
     task_info = get_task(app_id, task_id)
     if task_info and schedule in ["on", "off"]:
-        update_task_field(app_id, task_id, "schedule", schedule)
-        update_task_field(app_id, task_id, "schedule_message", message)
         if task_info.get('schedule') != schedule:
-            increase_task_field(app_id, task_id, 'revision', 1)
+            return set_task_schedule_revisioned(
+                app_id, task_id, schedule,
+                int(task_info.get('revision', 0) or 0), '', message)
+        update_task_field(app_id, task_id, "schedule_message", message)
     return {'result': "ok", "data": {"success": True}}
 
 def open_service(app_id, product_id, price, website_storage_limit, website_traffic_limit):
@@ -312,7 +313,7 @@ def get_service_statistic_key_list(app_id, field):
             f'lanying-connector:grow_ai:staistic:{field}:app:{app_id}'
         ]
 
-def create_task(task_setting: TaskSetting):
+def create_task(task_setting: TaskSetting, run_immediately=True):
     now = int(time.time())
     app_id = task_setting.app_id
     result = check_task_content_security(app_id, task_setting)
@@ -343,7 +344,7 @@ def create_task(task_setting: TaskSetting):
         result = lanying_schedule.create_schedule(cycle_interval, 'lanying_grow_ai', {'app_id':app_id, 'task_id':task_id})
         schedule_id = result['data']['schedule_id']
         update_task_field(app_id, task_id, "schedule_id", schedule_id)
-    if task_info['cycle_type'] == 'none':
+    if task_info['cycle_type'] == 'none' and run_immediately:
         executor.submit(run_task, app_id, task_id)
     return {
         'result': 'ok',
@@ -376,9 +377,28 @@ def configure_task(task_id, task_setting: TaskSetting):
             'article_cursor', 0
         )
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
-    redis.hmset(get_task_key(app_id, task_id), fields)
-    redis.hincrby(get_task_key(app_id, task_id), 'revision', 1)
-    set_task_schedule(app_id, task_id, "on")
+    current_revision = int(task_info.get('revision', 0) or 0)
+    snapshot = _task_revision_snapshot(task_info)
+    if lanying_pgvector.is_enabled():
+        saved = _save_task_revision(
+            app_id, task_id, current_revision, snapshot, '')
+        if saved.get('result') != 'ok':
+            return {'result': 'error', 'message': 'configuration revision could not be saved'}
+    task_key = get_task_key(app_id, task_id)
+    pipe = redis.pipeline(transaction=True)
+    try:
+        pipe.watch(task_key)
+        if int(pipe.hget(task_key, 'revision') or 0) != current_revision:
+            pipe.unwatch()
+            return {'result': 'error', 'message': 'task revision changed'}
+        fields['revision'] = current_revision + 1
+        fields['schedule'] = 'on'
+        fields['schedule_message'] = 'manual'
+        pipe.multi()
+        pipe.hmset(task_key, fields)
+        pipe.execute()
+    except Exception:
+        return {'result': 'error', 'message': 'task revision changed'}
     new_task_info = get_task(app_id, task_id)
     if (new_task_info['prompt'] != task_info['prompt']
             or new_task_info['article_prompt'] != task_info.get('article_prompt', '')
@@ -524,39 +544,22 @@ def _normalize_task_patch(changes):
     return {'result': 'ok', 'data': normalized}
 
 
-def get_task_revision_history_key(app_id, task_id):
-    return f"lanying_connector:grow_ai:task_revision_history:{app_id}:{task_id}"
-
-
-def get_task_revision_snapshot_key(app_id, task_id, revision):
-    return f"lanying_connector:grow_ai:task_revision:{app_id}:{task_id}:{revision}"
-
-
 def get_task_revision_snapshot(app_id, task_id, revision):
     try:
-        snapshot = lanying_pgvector.get_seenical_config_revision(
+        return lanying_pgvector.get_seenical_config_revision(
             app_id, 'plan', task_id, revision)
-        if snapshot is not None:
-            return snapshot
     except Exception:
         logging.exception('failed to read Seenical plan revision')
-    raw_snapshot = lanying_redis.redis_get(
-        lanying_redis.get_redis_connection(),
-        get_task_revision_snapshot_key(app_id, task_id, int(revision)))
-    return json.loads(raw_snapshot) if raw_snapshot is not None else None
+        return None
 
 
 def list_task_revisions(app_id, task_id, limit=20):
     try:
-        revisions = lanying_pgvector.list_seenical_config_revisions(
+        return lanying_pgvector.list_seenical_config_revisions(
             app_id, 'plan', task_id, limit)
     except Exception:
         logging.exception('failed to list Seenical plan revisions')
-        revisions = []
-    legacy = lanying_redis.redis_lrange(
-        lanying_redis.get_redis_connection(),
-        get_task_revision_history_key(app_id, task_id), -limit, -1)
-    return sorted(set(int(value) for value in revisions + legacy), reverse=True)[:limit]
+        return []
 
 
 def _task_revision_snapshot(task_info):
@@ -646,8 +649,6 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
         redis_fields[article_cursor_field(legacy_language, 'on')] = task_info.get('article_cursor', 0)
 
     snapshot = _task_revision_snapshot(task_info)
-    snapshot_key = get_task_revision_snapshot_key(app_id, task_id, current_revision)
-    history_key = get_task_revision_history_key(app_id, task_id)
     pipe = redis.pipeline(transaction=True)
     try:
         pipe.watch(task_key)
@@ -671,8 +672,6 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
                 'message': 'configuration revision could not be saved'
             }
         pipe.multi()
-        pipe.setnx(snapshot_key, json.dumps(snapshot, ensure_ascii=False))
-        pipe.rpush(history_key, current_revision)
         pipe.hmset(task_key, redis_fields)
         pipe.execute()
     except Exception as error:
@@ -739,7 +738,8 @@ def rollback_task_revision(app_id, task_id, revision, expected_revision=None, re
 
 
 def set_task_schedule_revisioned(app_id, task_id, schedule,
-                                 expected_revision=None, request_id=''):
+                                 expected_revision=None, request_id='',
+                                 message='agent_tool'):
     if schedule not in ['on', 'off']:
         return {'result': 'error', 'message': 'schedule has an invalid value'}
     task_info = get_task(app_id, task_id)
@@ -785,13 +785,9 @@ def set_task_schedule_revisioned(app_id, task_id, schedule,
                 'message': 'configuration revision could not be saved'
             }
         pipe.multi()
-        pipe.setnx(
-            get_task_revision_snapshot_key(app_id, task_id, current_revision),
-            json.dumps(snapshot, ensure_ascii=False))
-        pipe.rpush(get_task_revision_history_key(app_id, task_id), current_revision)
         pipe.hmset(task_key, {
             'schedule': schedule,
-            'schedule_message': 'agent_tool',
+            'schedule_message': message,
             'revision': current_revision + 1,
             'update_time': int(time.time())
         })
@@ -827,7 +823,6 @@ def archive_task(app_id, task_id, expected_revision=None, request_id=''):
         }
     redis = lanying_redis.get_redis_connection()
     task_key = get_task_key(app_id, task_id)
-    snapshot_key = get_task_revision_snapshot_key(app_id, task_id, current_revision)
     snapshot = _task_revision_snapshot(task_info)
     pipe = redis.pipeline(transaction=True)
     try:
@@ -845,8 +840,6 @@ def archive_task(app_id, task_id, expected_revision=None, request_id=''):
                 'message': 'configuration revision could not be saved'
             }
         pipe.multi()
-        pipe.setnx(snapshot_key, json.dumps(snapshot, ensure_ascii=False))
-        pipe.rpush(get_task_revision_history_key(app_id, task_id), current_revision)
         pipe.hmset(task_key, {
             'status': 'archived', 'schedule': 'off',
             'schedule_message': 'agent_tool_archive',
@@ -2022,7 +2015,11 @@ def consume_preview_callback(code):
 
 
 def get_preview_github_context(preview):
-    site = get_site(preview['app_id'], preview['site_id'])
+    return get_site_github_context(preview['app_id'], preview['site_id'])
+
+
+def get_site_github_context(app_id, site_id):
+    site = get_site(app_id, site_id)
     if site is None:
         return {'result': 'error', 'message': 'site not found'}
     parsed = parse_github_url(site.get('github_url', ''))
@@ -2316,13 +2313,25 @@ def preview_publish(app_id, preview_id):
             update_preview_field(app_id, preview_id, 'status', 'pr_open')
             update_preview_field(app_id, preview_id, 'pr_url', pr.get('html_url', ''))
             update_preview_field(app_id, preview_id, 'pr_number', pr['number'])
+            update_site_field(app_id, preview['site_id'], 'previous_deploy_commit_sha',
+                              preview.get('base_commit_sha', ''))
+            update_site_field(app_id, preview['site_id'], 'pending_deploy_commit_sha',
+                              preview.get('preview_commit_sha', ''))
             redis.sadd(preview_pr_set_key(), f'{app_id}:{preview_id}')
             return {'result': 'ok', 'data': {'pr_url': pr.get('html_url', '')}}
+        update_site_field(app_id, preview['site_id'], 'previous_deploy_commit_sha',
+                          base_response.json()['object']['sha'])
+        update_site_field(app_id, preview['site_id'], 'pending_deploy_commit_sha',
+                          preview['preview_commit_sha'])
         response = requests.patch(
             f"{context['api_url']}/git/refs/heads/{base_branch}", headers=context['headers'],
             json={'sha': preview['preview_commit_sha'], 'force': False})
         if response.status_code != 200:
+            update_site_field(app_id, preview['site_id'], 'pending_deploy_commit_sha', '')
             return {'result': 'error', 'message': 'github fail to move commit'}
+        update_site_field(app_id, preview['site_id'], 'current_deploy_commit_sha',
+                          preview['preview_commit_sha'])
+        update_site_field(app_id, preview['site_id'], 'pending_deploy_commit_sha', '')
         update_preview_field(app_id, preview_id, 'status', 'publishing')
         update_preview_field(app_id, preview_id, 'publish_commit_sha', preview['preview_commit_sha'])
         redis.set(preview_publish_commit_key(context['repository'], preview['preview_commit_sha']), f'{app_id}:{preview_id}')
@@ -2483,10 +2492,16 @@ def reconcile_preview_pull_requests():
                 continue
             update_preview_field(app_id, preview_id, 'status', 'publishing')
             update_preview_field(app_id, preview_id, 'publish_commit_sha', commit_sha)
+            update_site_field(app_id, preview['site_id'], 'previous_deploy_commit_sha',
+                              preview.get('base_commit_sha', ''))
+            update_site_field(app_id, preview['site_id'], 'current_deploy_commit_sha',
+                              commit_sha)
+            update_site_field(app_id, preview['site_id'], 'pending_deploy_commit_sha', '')
             redis.set(preview_publish_commit_key(context['repository'], commit_sha), f'{app_id}:{preview_id}')
             redis.srem(preview_pr_set_key(), item)
         elif pr.get('state') == 'closed':
             site = context['site']
+            update_site_field(app_id, preview['site_id'], 'pending_deploy_commit_sha', '')
             redis.srem(preview_pr_set_key(), item)
             if site.get('active_preview_id', '') == preview_id:
                 update_preview_field(app_id, preview_id, 'status', 'ready')
@@ -2502,6 +2517,53 @@ def get_github_commit_tree_sha(context, commit_sha):
     if response.status_code != 200:
         return ''
     return response.json().get('tree', {}).get('sha', '')
+
+
+def rollback_site_deployment(app_id, site_id):
+    """Move a managed site's branch back to its last recorded deployment."""
+    context = get_site_github_context(app_id, site_id)
+    if context['result'] == 'error':
+        return context
+    site = context['site']
+    current_commit = str(site.get('current_deploy_commit_sha', ''))
+    pending_commit = str(site.get('pending_deploy_commit_sha', ''))
+    previous_commit = str(site.get('previous_deploy_commit_sha', ''))
+    if (not re.fullmatch(r'[0-9a-fA-F]{40}', previous_commit)
+            or not any(re.fullmatch(r'[0-9a-fA-F]{40}', value)
+                       for value in [current_commit, pending_commit])):
+        return {'result': 'error', 'message': 'no recoverable deployment version'}
+    base_branch = site.get('github_base_branch', 'master')
+    lock_key = f"lanying-connector-deploy-task-lock:{context['repository']}"
+    redis = lanying_redis.get_redis_connection()
+    with redis.lock(lock_key, timeout=1200):
+        branch_response = requests.get(
+            f"{context['api_url']}/git/refs/heads/{base_branch}",
+            headers=context['headers'])
+        if branch_response.status_code != 200:
+            return {'result': 'error', 'message': 'github get branch info failed'}
+        branch_commit = branch_response.json()['object']['sha']
+        if pending_commit and branch_commit == pending_commit:
+            current_commit = pending_commit
+        if branch_commit != current_commit:
+            return {
+                'result': 'error',
+                'message': 'base branch changed after the recorded deployment'
+            }
+        response = requests.patch(
+            f"{context['api_url']}/git/refs/heads/{base_branch}",
+            headers=context['headers'],
+            json={'sha': previous_commit, 'force': True})
+        if response.status_code != 200:
+            return {'result': 'error', 'message': 'github deployment rollback failed'}
+        update_site_field(app_id, site_id, 'current_deploy_commit_sha', previous_commit)
+        update_site_field(app_id, site_id, 'previous_deploy_commit_sha', current_commit)
+        update_site_field(app_id, site_id, 'pending_deploy_commit_sha', '')
+        update_site_field(app_id, site_id, 'deploy_result', 'pending')
+    return {'result': 'ok', 'data': {
+        'success': True, 'site_id': site_id,
+        'commit_sha': previous_commit,
+        'rolled_back_from': current_commit
+    }}
 
 
 def task_run_retry(app_id, task_run_id):
@@ -3326,6 +3388,21 @@ def check_site_num_limit(app_id):
         return {'result': 'error', 'message': 'site count limit exceeded'}
     return {'result': "ok"}
 
+
+def _site_revision_snapshot(site_info):
+    fields = {
+        'name', 'footer_note', 'lanying_link', 'title', 'copyright',
+        'canonical_link', 'meta_keywords', 'official_website_url',
+        'max_latest_num', 'language', 'commit_type', 'icp_number',
+        'hook_sentence_slogan', 'hook_sentence_image', 'collaborator',
+        'site_id', 'agent_tools_revision'
+    }
+    return {
+        field: copy.deepcopy(site_info[field])
+        for field in fields if field in site_info
+    }
+
+
 def configure_site(site_id, site_setting: SiteSetting):
     now = int(time.time())
     result = check_site_setting(site_setting)
@@ -3342,8 +3419,30 @@ def configure_site(site_id, site_setting: SiteSetting):
         for field in ['github_url', 'github_token', 'github_base_branch']:
             del fields[field]
     logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
-    redis.hmset(get_site_key(app_id, site_id), fields)
-    redis.hincrby(get_site_key(app_id, site_id), 'agent_tools_revision', 1)
+    current_revision = int(site_info.get('agent_tools_revision', 0) or 0)
+    snapshot = _site_revision_snapshot(site_info)
+    if lanying_pgvector.is_enabled():
+        try:
+            saved = lanying_pgvector.save_seenical_config_revision(
+                app_id, 'site', site_id, current_revision, snapshot, '')
+        except Exception:
+            logging.exception('failed to save Seenical site revision')
+            saved = {'result': 'error'}
+        if saved.get('result') != 'ok':
+            return {'result': 'error', 'message': 'configuration revision could not be saved'}
+    site_key = get_site_key(app_id, site_id)
+    pipe = redis.pipeline(transaction=True)
+    try:
+        pipe.watch(site_key)
+        if int(pipe.hget(site_key, 'agent_tools_revision') or 0) != current_revision:
+            pipe.unwatch()
+            return {'result': 'error', 'message': 'site revision changed'}
+        fields['agent_tools_revision'] = current_revision + 1
+        pipe.multi()
+        pipe.hmset(site_key, fields)
+        pipe.execute()
+    except Exception:
+        return {'result': 'error', 'message': 'site revision changed'}
     new_site_info = get_site(app_id, site_id)
     new_site_info = maybe_init_github_site_repo(app_id, site_info, new_site_info)
     maybe_invite_github_member(app_id, site_info, new_site_info)

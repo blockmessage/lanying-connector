@@ -27,14 +27,12 @@ import lanying_grow_ai
 import lanying_pgvector
 import lanying_redis
 import lanying_vendor
-from lanying_async import executor
 
 
 SCHEMA_VERSION = 1
 CAPABILITY_TTL_SECONDS = 150
 REQUEST_TTL_SECONDS = 600
 RESULT_TTL_SECONDS = 24 * 3600
-SKILL_IMPORT_TTL_SECONDS = 1800
 MAX_SKILL_BYTES = 256 * 1024
 MAX_SKILL_TOTAL_BYTES = 512 * 1024
 MAX_SKILL_COUNT = 32
@@ -158,6 +156,11 @@ TOOL_REGISTRY = {
             'properties': {'preview_id': {'type': 'string'}},
             'required': ['preview_id']
         }, '_preview_discard'),
+        _tool('seenical_deploy_rollback', 'seenical.deploy.rollback', '回退到上一个已发布版本', 'destructive', 'console_action', {
+            **OBJECT_SCHEMA,
+            'properties': {'site_id': {'type': 'string'}},
+            'required': ['site_id']
+        }, '_deploy_rollback'),
         _tool('seenical_plan_archive', 'seenical.plan.archive', '归档生成计划', 'destructive', 'console_action', {
             **OBJECT_SCHEMA,
             'properties': {'task_id': {'type': 'string'}, 'expected_revision': {'type': 'integer'}},
@@ -503,6 +506,13 @@ def filter_supported_client_functions(app_id, config, functions):
         registry_tool = TOOL_REGISTRY.get(tool_id)
         chatbot_id = str(config.get('chatbot_id', ''))
         skill_versions = _active_skill_authorizations(app_id, chatbot_id, tool_id)
+        if function_info.get('seenical_builtin_tool'):
+            if registry_tool and skill_versions and find_capability(app_id, config, tool_id):
+                copied = registry_function(tool_id)
+                copied['seenical_builtin_tool'] = True
+                copied['seenical_skill_versions'] = skill_versions
+                filtered.append(copied)
+            continue
         plugin_id = _bound_plugin_id(app_id, chatbot_id, function_info)
         if registry_tool and skill_versions and plugin_id and find_capability(app_id, config, tool_id):
             # The plugin authorizes a reference to a platform Tool.  It must
@@ -605,16 +615,6 @@ def _safe_agent(chatbot):
     }
 
 
-def _revision_snapshot_key(resource_type, app_id, resource_id, revision):
-    return (f'lanying_connector:agent_tools:{resource_type}_revision:'
-            f'{app_id}:{resource_id}:{revision}')
-
-
-def _revision_history_key(resource_type, app_id, resource_id):
-    return (f'lanying_connector:agent_tools:{resource_type}_revision_history:'
-            f'{app_id}:{resource_id}')
-
-
 def _save_config_revision(app_id, resource_type, resource_id, revision,
                           snapshot, request_id=''):
     try:
@@ -627,28 +627,20 @@ def _save_config_revision(app_id, resource_type, resource_id, revision,
 
 def _get_config_revision(app_id, resource_type, resource_id, revision):
     try:
-        snapshot = lanying_pgvector.get_seenical_config_revision(
+        return lanying_pgvector.get_seenical_config_revision(
             app_id, resource_type, resource_id, revision)
-        if snapshot is not None:
-            return snapshot
     except Exception:
         logging.exception('failed to read Seenical configuration revision')
-    return _load(_redis().get(_revision_snapshot_key(
-        resource_type, app_id, resource_id, revision)), None)
+        return None
 
 
 def _list_config_revisions(app_id, resource_type, resource_id, limit=20):
-    revisions = []
     try:
-        revisions = lanying_pgvector.list_seenical_config_revisions(
+        return lanying_pgvector.list_seenical_config_revisions(
             app_id, resource_type, resource_id, limit)
     except Exception:
         logging.exception('failed to list Seenical configuration revisions')
-    legacy = lanying_redis.redis_lrange(
-        _redis(), _revision_history_key(resource_type, app_id, resource_id),
-        -limit, -1)
-    return sorted(
-        set(int(value) for value in revisions + legacy), reverse=True)[:limit]
+        return []
 
 
 def _plan_list(app_id, arguments, request_info):
@@ -715,7 +707,10 @@ def _plan_create(app_id, arguments, request_info):
         embedding_condition=dict(arguments.get('embedding_condition', {})),
         auto_deploy=str(arguments.get('auto_deploy', 'on' if site_ids else 'off')),
     )
-    return lanying_grow_ai.create_task(setting)
+    # Creating a plan and executing it are separate user-confirmed operations.
+    # Keep the existing Console create API unchanged; conversational Tools use
+    # seenical.plan.run when the user explicitly asks to start generation.
+    return lanying_grow_ai.create_task(setting, run_immediately=False)
 
 
 def _plan_update(app_id, arguments, request_info):
@@ -775,6 +770,11 @@ def _preview_publish(app_id, arguments, request_info):
 def _preview_discard(app_id, arguments, request_info):
     return lanying_grow_ai.preview_discard(
         app_id, str(arguments.get('preview_id', '')))
+
+
+def _deploy_rollback(app_id, arguments, request_info):
+    return lanying_grow_ai.rollback_site_deployment(
+        app_id, str(arguments.get('site_id', '')))
 
 
 def _plan_archive(app_id, arguments, request_info):
@@ -870,13 +870,7 @@ def _agent_update(app_id, arguments, request_info):
                 'result': 'error', 'code': 'revision_store_unavailable',
                 'message': 'configuration revision could not be saved'
             }
-        snapshot_key = _revision_snapshot_key(
-            'agent', app_id, chatbot_id, current_revision)
         pipe.multi()
-        pipe.setnx(snapshot_key, _json(snapshot))
-        pipe.rpush(
-            _revision_history_key('agent', app_id, chatbot_id),
-            current_revision)
         pipe.hset(key, 'preset', _json(preset))
         pipe.hset(key, 'agent_tools_revision', next_revision)
         if plugin_ids is not None:
@@ -982,16 +976,10 @@ def _site_update(app_id, arguments, request_info):
                 'result': 'error', 'code': 'revision_store_unavailable',
                 'message': 'configuration revision could not be saved'
             }
-        snapshot_key = _revision_snapshot_key(
-            'site', app_id, site_id, current_revision)
         fields = dict(normalized)
         fields['agent_tools_revision'] = current_revision + 1
         fields['update_time'] = int(time.time())
         pipe.multi()
-        pipe.setnx(snapshot_key, _json(snapshot))
-        pipe.rpush(
-            _revision_history_key('site', app_id, site_id),
-            current_revision)
         pipe.hmset(key, fields)
         pipe.execute()
     except Exception as error:
@@ -1084,6 +1072,9 @@ def _preview_tool(app_id, tool_id, arguments, request_info):
         return ({'before': _safe_site(current), 'after': _safe_site(after)}
                 if tool_id == 'seenical.site.update'
                 else {'target': _safe_site(current), 'revision': arguments.get('revision')})
+    if tool_id == 'seenical.deploy.rollback':
+        return {'target': _safe_site(lanying_grow_ai.get_site(
+            app_id, str(arguments.get('site_id', ''))))}
     return {'arguments': arguments}
 
 
@@ -1197,7 +1188,8 @@ def create_client_request(app_id, config, tool_call, function_info, arguments, c
     chatbot_id, conversation_type, conversation_id, im_user_id = _conversation_scope(config)
     plugin_id = _bound_plugin_id(app_id, chatbot_id, function_info)
     skill_versions = _active_skill_authorizations(app_id, chatbot_id, tool_id)
-    if not plugin_id or not skill_versions:
+    builtin_tool = bool(function_info.get('seenical_builtin_tool'))
+    if (not builtin_tool and not plugin_id) or not skill_versions:
         return {'result': 'error', 'message': 'client tool authorization changed'}
     request_id = uuid.uuid4().hex
     request_info = {
@@ -1215,6 +1207,7 @@ def create_client_request(app_id, config, tool_call, function_info, arguments, c
         'tool_name': tool['title'],
         'tool_version': tool['version'],
         'plugin_id': plugin_id,
+        'authorization_source': 'builtin' if builtin_tool else 'plugin',
         'skill_versions': skill_versions,
         'execution': tool['execution'],
         'risk': tool['risk'],
@@ -1296,8 +1289,9 @@ def _request_execution_error(app_id, request_info, client_instance_id=''):
     current_skills = _active_skill_authorizations(app_id, chatbot_id, tool_id)
     if current_skills != request_info.get('skill_versions', []):
         return 'Skill authorization changed; please request the operation again'
-    if not _plugin_still_allows_tool(
-            app_id, chatbot_id, str(request_info.get('plugin_id', '')), tool_id):
+    if (request_info.get('authorization_source') != 'builtin'
+            and not _plugin_still_allows_tool(
+                app_id, chatbot_id, str(request_info.get('plugin_id', '')), tool_id)):
         return 'AI plugin authorization changed; please request the operation again'
     return ''
 
@@ -1325,6 +1319,32 @@ def _store_request(request_info):
 
 def decide_request(app_id, request_id, actor, decision,
                    authorization_revision=None):
+    redis = _redis()
+    request_info = _load(redis.get(request_key(request_id)), None)
+    if request_info is None or str(request_info.get('app_id')) != str(app_id):
+        return {'result': 'error', 'message': 'tool request not found'}
+    actor_error = _request_actor_error(request_info, actor)
+    if actor_error:
+        return {'result': 'error', 'message': actor_error}
+    lock_key = f'lanying_connector:agent_tools:decision_lock:{request_id}'
+    lock_value = uuid.uuid4().hex
+    if not redis.set(lock_key, lock_value, ex=300, nx=True):
+        existing = _load(redis.get(result_key(request_id)), None)
+        if existing is not None:
+            return {
+                'result': 'ok', 'data': existing,
+                'request': request_info, 'resume': False
+            }
+        return {'result': 'error', 'message': 'tool request is being decided'}
+    try:
+        return _decide_request_locked(
+            app_id, request_id, actor, decision, authorization_revision)
+    finally:
+        _delete_redis_key_if_value(lock_key, lock_value)
+
+
+def _decide_request_locked(app_id, request_id, actor, decision,
+                           authorization_revision=None):
     redis = _redis()
     request_info = _load(redis.get(request_key(request_id)), None)
     if request_info is None or str(request_info.get('app_id')) != str(app_id):
@@ -1438,6 +1458,25 @@ def decide_request(app_id, request_id, actor, decision,
 
 
 def submit_local_result(app_id, request_id, actor, client_result):
+    redis = _redis()
+    request_info = _load(redis.get(request_key(request_id)), None)
+    if request_info is None or str(request_info.get('app_id')) != str(app_id):
+        return {'result': 'error', 'message': 'tool request not found'}
+    actor_error = _request_actor_error(request_info, actor)
+    if actor_error:
+        return {'result': 'error', 'message': actor_error}
+    lock_key = f'lanying_connector:agent_tools:local_result_lock:{request_id}'
+    lock_value = uuid.uuid4().hex
+    if not redis.set(lock_key, lock_value, ex=60, nx=True):
+        return {'result': 'error', 'message': 'tool result is being submitted'}
+    try:
+        return _submit_local_result_locked(
+            app_id, request_id, actor, client_result)
+    finally:
+        _delete_redis_key_if_value(lock_key, lock_value)
+
+
+def _submit_local_result_locked(app_id, request_id, actor, client_result):
     redis = _redis()
     request_info = _load(redis.get(request_key(request_id)), None)
     if request_info is None or str(request_info.get('app_id')) != str(app_id):
@@ -1833,9 +1872,16 @@ def enqueue_public_catalog_sync(remote_addr='', queue_task=None):
     if not redis.set(PUBLIC_CATALOG_SYNC_LOCK_KEY, lock_value, ex=600, nx=True):
         return {'result': 'ok', 'data': {'status': 'coalesced'}}
     try:
+        recovery_task = None
         if queue_task is None:
-            from lanying_tasks import public_skill_catalog_sync_task
+            from lanying_tasks import (
+                public_skill_catalog_recovery_task,
+                public_skill_catalog_sync_task,
+            )
             queue_task = public_skill_catalog_sync_task
+            recovery_task = public_skill_catalog_recovery_task
+        if recovery_task is not None:
+            recovery_task.apply_async(countdown=610)
         queue_task.apply_async(args=[lock_value])
     except Exception:
         _delete_redis_key_if_value(PUBLIC_CATALOG_SYNC_LOCK_KEY, lock_value)
@@ -1912,7 +1958,39 @@ def sync_authorization_projection(app_id, data):
             'revision': skill_revision,
             'chatbot_ids': sorted(set(str(value) for value in item.get('chatbot_ids', []))),
         })
-    _redis().set(authorization_projection_key(app_id), _json(normalized))
+    normalized['skills'].sort(
+        key=lambda item: (item['skill_id'], item['revision']))
+    redis = _redis()
+    key = authorization_projection_key(app_id)
+    pipe = redis.pipeline(transaction=True)
+    try:
+        pipe.watch(key)
+        current = _load(pipe.get(key), None)
+        if current is not None:
+            current_revision = int(current.get('authorization_revision', 0) or 0)
+            if revision < current_revision:
+                pipe.unwatch()
+                return {
+                    'result': 'error', 'code': 'stale_authorization_revision',
+                    'message': 'authorization revision cannot move backwards'
+                }
+            if revision == current_revision:
+                fields = ['app_id', 'enabled', 'authorization_revision', 'skills']
+                if ({field: normalized.get(field) for field in fields}
+                        != {field: current.get(field) for field in fields}):
+                    pipe.unwatch()
+                    return {
+                        'result': 'error', 'code': 'authorization_revision_conflict',
+                        'message': 'authorization revision content changed'
+                    }
+        pipe.multi()
+        pipe.set(key, _json(normalized))
+        pipe.execute()
+    except Exception:
+        return {
+            'result': 'error', 'code': 'authorization_revision_conflict',
+            'message': 'authorization projection changed concurrently'
+        }
     return {'result': 'ok', 'data': {
         'authorization_revision': revision, 'status': 'synced'}}
 
@@ -1965,11 +2043,15 @@ def is_feature_enabled(app_id, chatbot_id=''):
 
 def apply_active_skills(app_id, config, messages, functions):
     chatbot_id = str(config.get('chatbot_id', ''))
+    active_tool_ids = set()
     insert_at = 0
     while insert_at < len(messages) and messages[insert_at].get('role') in ['system', 'developer']:
         insert_at += 1
     for repository in get_active_skills(app_id, chatbot_id):
         for skill in repository.get('skills', []):
+            active_tool_ids.update(
+                tool_id for tool_id in skill.get('required_tools', [])
+                if tool_id in TOOL_REGISTRY)
             instructions = str(skill.get('instructions', '')).strip()
             if instructions:
                 messages.insert(insert_at, {
@@ -1978,4 +2060,15 @@ def apply_active_skills(app_id, config, messages, functions):
                                 f"Repository revision: {repository.get('revision', '')}\n\n{instructions}")
                 })
                 insert_at += 1
+    existing_tool_ids = {
+        resolve_tool_id(function_info) for function_info in functions
+        if isinstance(function_info, dict)
+    }
+    for tool_id in sorted(active_tool_ids - existing_tool_ids):
+        if find_capability(app_id, config, tool_id):
+            function_info = registry_function(tool_id)
+            function_info['seenical_builtin_tool'] = True
+            function_info['seenical_skill_versions'] = (
+                _active_skill_authorizations(app_id, chatbot_id, tool_id))
+            functions.append(function_info)
     return messages, functions

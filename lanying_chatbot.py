@@ -7,7 +7,35 @@ from datetime import datetime
 import lanying_im_api
 import lanying_utils
 import lanying_oss
+import lanying_pgvector
 import os
+
+
+def _agent_revision_snapshot(app_id, chatbot_info):
+    preset = chatbot_info.get('preset', {})
+    if not isinstance(preset, dict):
+        try:
+            preset = json.loads(preset or '{}')
+        except (TypeError, ValueError):
+            preset = {}
+    system_prompt = ''
+    for message in preset.get('messages', []):
+        if message.get('role') in ['system', 'developer']:
+            system_prompt = str(message.get('content', ''))
+            break
+    from lanying_ai_plugin import get_ai_plugin_bind_relation
+    relation = get_ai_plugin_bind_relation(app_id)
+    return {
+        'chatbot_id': str(chatbot_info.get('chatbot_id', '')),
+        'name': chatbot_info.get('name', ''),
+        'model': preset.get('model', ''),
+        'vendor': preset.get('vendor', ''),
+        'system_prompt': system_prompt,
+        'plugin_ids': [
+            str(value) for value in relation.get(chatbot_info.get('name', ''), [])
+        ],
+        'revision': int(chatbot_info.get('agent_tools_revision', 0) or 0),
+    }
 
 def _check_im_user_setting_result(action, result):
     if isinstance(result, dict) and result.get('code') == 200:
@@ -393,17 +421,40 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         force_content_security_chatbot_ids = get_force_content_security_chatbot_ids(app_id)
         if chatbot_id in force_content_security_chatbot_ids:
             return {'result':'error', 'message': 'content_security closed need custom site'}
+    current_revision = int(chatbot_info.get('agent_tools_revision', 0) or 0)
+    if lanying_pgvector.is_enabled():
+        try:
+            saved = lanying_pgvector.save_seenical_config_revision(
+                app_id, 'agent', chatbot_id, current_revision,
+                _agent_revision_snapshot(app_id, chatbot_info), '')
+        except Exception:
+            logging.exception('failed to save Seenical Agent revision')
+            saved = {'result': 'error'}
+        if saved.get('result') != 'ok':
+            return {'result': 'error', 'message': 'configuration revision could not be saved'}
     show_in_support = normalize_show_in_support(access_type, show_in_support)
-    setting_result = init_chatbot_im_user_setting(app_id, chatbot_info, {
+    redis = lanying_redis.get_redis_connection()
+    chatbot_key = get_chatbot_key(app_id, chatbot_id)
+    pipe = redis.pipeline(transaction=True)
+    try:
+        pipe.watch(chatbot_key)
+        if int(pipe.hget(chatbot_key, 'agent_tools_revision') or 0) != current_revision:
+            pipe.unwatch()
+            return {'result': 'error', 'message': 'chatbot revision changed'}
+    except Exception:
+        return {'result': 'error', 'message': 'chatbot revision changed'}
+    proposed_chatbot = {
         'chatbot_id': chatbot_id,
         'user_id': user_id,
         'access_type': access_type,
         'access_list': access_list,
-    })
+    }
+    setting_result = init_chatbot_im_user_setting(
+        app_id, chatbot_info, proposed_chatbot)
     if setting_result['result'] == 'error':
+        pipe.unwatch()
         return setting_result
-    redis = lanying_redis.get_redis_connection()
-    redis.hmset(get_chatbot_key(app_id, chatbot_id), {
+    fields = {
         "name": name,
         "desc": desc,
         "nickname": nickname,
@@ -427,9 +478,18 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         "content_security": content_security,
         "access_type": access_type,
         "access_list": access_list,
-        "show_in_support": show_in_support
-    })
-    redis.hincrby(get_chatbot_key(app_id, chatbot_id), 'agent_tools_revision', 1)
+        "show_in_support": show_in_support,
+    }
+    try:
+        pipe.multi()
+        pipe.hmset(chatbot_key, fields)
+        pipe.hset(chatbot_key, 'agent_tools_revision', current_revision + 1)
+        pipe.execute()
+    except Exception:
+        latest = get_chatbot(app_id, chatbot_id)
+        if latest:
+            init_chatbot_im_user_setting(app_id, proposed_chatbot, latest)
+        return {'result': 'error', 'message': 'chatbot revision changed'}
     if old_user_id != user_id:
         if old_user_id:
             del_user_chatbot_id(app_id, old_user_id)

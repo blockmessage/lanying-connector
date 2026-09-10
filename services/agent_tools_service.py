@@ -4,7 +4,6 @@ import os
 from flask import Blueprint, make_response, request
 
 import lanying_agent_tools
-from lanying_async import executor
 
 
 service = 'agent_tools'
@@ -163,20 +162,15 @@ def _resume_async(result):
     if not result.get('resume'):
         return
     request_info = result.get('request')
-    tool_result = lanying_agent_tools.tool_result_for_model(result.get('data', {}))
     if not request_info:
         return
-
-    def resume():
-        # Imported lazily to avoid a blueprint import cycle.
-        import openai_service
-        openai_service.resume_client_tool_request(request_info, tool_result)
 
     request_id = str(request_info.get('request_id', ''))
     app_id = str(request_info.get('app_id', ''))
     lanying_agent_tools.record_resume_status(app_id, request_id, 'queued')
     try:
-        executor.submit(resume)
+        from lanying_tasks import resume_agent_tool_request_task
+        resume_agent_tool_request_task.apply_async(args=[app_id, request_id])
     except Exception as error:
         lanying_agent_tools.record_resume_status(
             app_id, request_id, 'failed', str(error))

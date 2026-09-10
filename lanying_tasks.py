@@ -77,6 +77,42 @@ def public_skill_catalog_sync_task(self, lock_value):
                 args=[next_lock], countdown=5)
     return result
 
+
+@normal_queue.task
+def public_skill_catalog_recovery_task():
+    redis = lanying_redis.get_redis_connection()
+    if not redis.get(lanying_agent_tools.PUBLIC_CATALOG_DIRTY_KEY):
+        return {'result': 'ok', 'data': {'status': 'clean'}}
+    next_lock = uuid.uuid4().hex
+    if not redis.set(lanying_agent_tools.PUBLIC_CATALOG_SYNC_LOCK_KEY,
+                     next_lock, ex=600, nx=True):
+        return {'result': 'ok', 'data': {'status': 'running'}}
+    try:
+        public_skill_catalog_sync_task.apply_async(args=[next_lock])
+    except Exception:
+        lanying_agent_tools._release_catalog_lock(next_lock)
+        raise
+    return {'result': 'ok', 'data': {'status': 'requeued'}}
+
+
+@normal_queue.task(acks_late=True)
+def resume_agent_tool_request_task(app_id, request_id):
+    redis = lanying_redis.get_redis_connection()
+    request_info = lanying_agent_tools._load(
+        redis.get(lanying_agent_tools.request_key(request_id)), None)
+    result = lanying_agent_tools._load(
+        redis.get(lanying_agent_tools.result_key(request_id)), None)
+    if request_info is None or str(request_info.get('app_id', '')) != str(app_id):
+        return {'result': 'error', 'message': 'tool request not found'}
+    if result is None:
+        lanying_agent_tools.record_resume_status(
+            app_id, request_id, 'failed', 'tool result not found')
+        return {'result': 'error', 'message': 'tool result not found'}
+    from services import openai_service
+    openai_service.resume_client_tool_request(
+        request_info, lanying_agent_tools.tool_result_for_model(result))
+    return {'result': 'ok'}
+
 @normal_queue.task
 def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file', limit=-1, opts = {}):
     storage_limit = lanying_embedding.get_app_config_int(app_id, "lanying_connector.storage_limit")

@@ -13,6 +13,8 @@ import lanying_ai_capsule
 from lanying_chatbot import get_chatbot
 import lanying_utils
 import lanying_logging
+import lanying_pgvector
+from lanying_chatbot import get_chatbot_key, get_name_chatbot_id
 
 def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor, model):
     embedding_name = maybe_create_function_embedding(app_id)
@@ -335,28 +337,64 @@ def configure_ai_function(app_id, plugin_id, function_id, name, description, par
     process_function_embeddings.apply_async(args = [app_id, plugin_id, [function_id]])
     return {'result':'ok', 'data':{'success': True}}
 
+def _save_plugin_binding_revisions(app_id, relation, preset_names):
+    chatbot_ids = []
+    if not lanying_pgvector.is_enabled():
+        return {'result': 'ok', 'chatbot_ids': chatbot_ids}
+    for preset_name in preset_names:
+        chatbot_id = get_name_chatbot_id(app_id, preset_name)
+        chatbot = get_chatbot(app_id, chatbot_id) if chatbot_id else None
+        if not chatbot:
+            continue
+        preset = chatbot.get('preset', {}) if isinstance(chatbot.get('preset'), dict) else {}
+        system_prompt = ''
+        for message in preset.get('messages', []):
+            if message.get('role') in ['system', 'developer']:
+                system_prompt = str(message.get('content', ''))
+                break
+        revision = int(chatbot.get('agent_tools_revision', 0) or 0)
+        snapshot = {
+            'chatbot_id': str(chatbot_id), 'name': chatbot.get('name', ''),
+            'model': preset.get('model', ''), 'vendor': preset.get('vendor', ''),
+            'system_prompt': system_prompt,
+            'plugin_ids': [str(value) for value in relation.get(preset_name, [])],
+            'revision': revision,
+        }
+        try:
+            saved = lanying_pgvector.save_seenical_config_revision(
+                app_id, 'agent', chatbot_id, revision, snapshot, '')
+        except Exception:
+            logging.exception('failed to save Seenical Agent plugin revision')
+            saved = {'result': 'error'}
+        if saved.get('result') != 'ok':
+            return {'result': 'error', 'message': 'configuration revision could not be saved'}
+        chatbot_ids.append(str(chatbot_id))
+    return {'result': 'ok', 'chatbot_ids': chatbot_ids}
+
+
 def bind_ai_plugin(app_id, type, name, list):
+    relation = get_ai_plugin_bind_relation(app_id)
+    affected_names = set()
     if type == 'plugin_list':
         preset_names = lanying_embedding.get_preset_names(app_id)
         if name not in preset_names:
             return {'result':'error', 'message': 'preset_name not exist'}
-        relation = get_ai_plugin_bind_relation(app_id)
         plugin_id_list = []
         for plugin_id in list:
             ai_plugin_info = get_ai_plugin(app_id, plugin_id)
             if ai_plugin_info:
                 plugin_id_list.append(plugin_id)
+        if relation.get(name, []) != plugin_id_list:
+            affected_names.add(name)
         relation[name] = plugin_id_list
-        set_ai_plugin_bind_relation(app_id, relation)
-        return {'result':'ok', 'data':{}}
     elif type == "preset_name_list":
         plugin_id = name
         ai_plugin_info = get_ai_plugin(app_id, plugin_id)
         if not ai_plugin_info:
             return {'result':'error', 'message':'plugin_id not exist'}
-        relation = get_ai_plugin_bind_relation(app_id)
         preset_names = lanying_embedding.get_preset_names(app_id)
         for preset_name in preset_names:
+            before = list(relation.get(preset_name, []))
             if preset_name in list:
                 if preset_name in relation:
                     if plugin_id not in relation[preset_name]:
@@ -367,10 +405,19 @@ def bind_ai_plugin(app_id, type, name, list):
                 if preset_name in relation:
                     if plugin_id in relation[preset_name]:
                         relation[preset_name].remove(plugin_id)
-        set_ai_plugin_bind_relation(app_id, relation)
-        return {'result':'ok', 'data':{}}
+            if before != relation.get(preset_name, []):
+                affected_names.add(preset_name)
     else:
         return {'result':'error', 'message':'bad argument: type'}
+    old_relation = get_ai_plugin_bind_relation(app_id)
+    saved = _save_plugin_binding_revisions(app_id, old_relation, affected_names)
+    if saved.get('result') != 'ok':
+        return saved
+    set_ai_plugin_bind_relation(app_id, relation)
+    redis = lanying_redis.get_redis_connection()
+    for chatbot_id in saved.get('chatbot_ids', []):
+        redis.hincrby(get_chatbot_key(app_id, chatbot_id), 'agent_tools_revision', 1)
+    return {'result':'ok', 'data':{}}
 
 def delete_chatbot_plugin_bind_relation(app_id, name):
     relation = get_ai_plugin_bind_relation(app_id)
