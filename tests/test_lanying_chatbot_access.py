@@ -24,6 +24,12 @@ class FakeRedis:
         if str(field) not in bucket:
             bucket[str(field)] = value
 
+    def hincrby(self, key, field, amount):
+        bucket = self.hashes.setdefault(key, {})
+        value = int(bucket.get(str(field), 0)) + int(amount)
+        bucket[str(field)] = value
+        return value
+
     def hdel(self, key, field):
         self.hashes.setdefault(key, {}).pop(str(field), None)
 

@@ -19,6 +19,7 @@ import lanying_ai_plugin
 import lanying_grow_ai
 import lanying_schedule
 import lanying_utils
+import lanying_agent_tools
 from celery.schedules import crontab
 
 download_dir = os.getenv("EMBEDDING_DOWNLOAD_DIR", "/data/download")
@@ -53,6 +54,28 @@ slow_queue.conf.beat_schedule = {
 # normal_queue.conf.update(
 #     task_acks_late=True,
 # )
+
+
+@normal_queue.task(bind=True, max_retries=3, default_retry_delay=30)
+def public_skill_catalog_sync_task(self, lock_value):
+    result = lanying_agent_tools.run_public_catalog_sync(
+        lock_value, release_lock=False)
+    if result.get('result') != 'ok':
+        logging.warning('public Skill catalog sync failed: %s',
+                        str(result.get('message', 'unknown error'))[:300])
+        if self.request.retries >= self.max_retries:
+            lanying_agent_tools._release_catalog_lock(lock_value)
+            raise RuntimeError(result.get('message', 'catalog sync failed'))
+        raise self.retry(exc=RuntimeError(result.get('message', 'catalog sync failed')))
+    lanying_agent_tools._release_catalog_lock(lock_value)
+    if result.get('dirty'):
+        redis = lanying_redis.get_redis_connection()
+        next_lock = uuid.uuid4().hex
+        if redis.set(lanying_agent_tools.PUBLIC_CATALOG_SYNC_LOCK_KEY,
+                     next_lock, ex=600, nx=True):
+            public_skill_catalog_sync_task.apply_async(
+                args=[next_lock], countdown=5)
+    return result
 
 @normal_queue.task
 def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file', limit=-1, opts = {}):

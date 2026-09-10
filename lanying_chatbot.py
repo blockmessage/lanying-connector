@@ -169,7 +169,8 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "preset_protect": preset_protect,
         "access_type": access_type,
         "access_list": access_list,
-        "show_in_support": show_in_support
+        "show_in_support": show_in_support,
+        "agent_tools_revision": 0
     })
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
@@ -428,6 +429,7 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         "access_list": access_list,
         "show_in_support": show_in_support
     })
+    redis.hincrby(get_chatbot_key(app_id, chatbot_id), 'agent_tools_revision', 1)
     if old_user_id != user_id:
         if old_user_id:
             del_user_chatbot_id(app_id, old_user_id)

@@ -43,6 +43,8 @@ import tavily_service
 app.register_blueprint(tavily_service.bp)
 import openclaw_service
 app.register_blueprint(openclaw_service.bp)
+import agent_tools_service
+app.register_blueprint(agent_tools_service.bp)
 
 def to_openai_error_response(res):
     internal_code = str(res.get('code', 'invalid_request'))

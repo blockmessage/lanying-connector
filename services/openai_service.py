@@ -45,6 +45,7 @@ import lanying_slack
 import lanying_openclaw
 import lanying_openai_compat
 import lanying_pgvector
+import lanying_agent_tools
 from lanying_ai_chat_pipeline import (
     ChatHandlerResult, ModelResponse, PresetResolution, Prompt, ReplyResult,
     ToolRunResult,
@@ -1641,9 +1642,13 @@ def run_chat_tools(app_id, config, vendor, prepare_info, model_config, prompt,
                 app_id, config, tool_call, prompt.preset, api_key_type,
                 model_config, vendor, prepare_info, function_messages,
                 subsequent_messages, reply_ext,
-                continue_chat=(idx == len(tool_calls) - 1))
+                continue_chat=(idx == len(tool_calls) - 1), msg=msg)
             function_call_times -= 1
+            if current_response.get('deferred_client_tool'):
+                break
         response = current_response
+        if response.get('deferred_client_tool'):
+            break
     return ToolRunResult(
         response, reply_ext, stream_msg_id, is_stream,
         stream_msg_last_send_time, function_messages, subsequent_messages)
@@ -1654,6 +1659,138 @@ def build_reply_result(config, vendor, model, tool_result):
         lanying_vendor.async_send_message_with_filter,
         add_debug_message,
     )
+
+
+def resume_client_tool_request(request_info, execution_result):
+    """Resume a deferred model turn after the Console operation is final.
+
+    Runtime credentials are reloaded from Connector configuration.  The Redis
+    continuation deliberately contains only routing/model context and never a
+    Console access token or provider secret.
+    """
+    request_id = str(request_info.get('request_id', ''))
+    app_id = str(request_info.get('app_id', ''))
+    continuation = request_info.get('continuation', {})
+    try:
+        lanying_agent_tools.record_resume_status(app_id, request_id, 'running')
+        base_config = lanying_config.get_lanying_connector(app_id) or {}
+        config = copy.deepcopy(base_config)
+        config.update(copy.deepcopy(continuation.get('config', {})))
+        config['app_id'] = app_id
+        chatbot_id = str(request_info.get('chatbot_id', ''))
+        chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+        if chatbot:
+            config['chatbot'] = chatbot
+            config['chatbot_id'] = chatbot_id
+        preset = copy.deepcopy(continuation.get('preset', {}))
+        vendor = str(continuation.get('vendor') or preset.get('vendor') or config.get('vendor', 'openai'))
+        model = str(continuation.get('model') or preset.get('model', ''))
+        model_config = lanying_vendor.get_chat_model_config(app_id, vendor, model)
+        if model_config is None:
+            raise ValueError('model configuration no longer exists')
+        auth_info = get_preset_auth_info(config, vendor, model_config)
+        if auth_info is None:
+            raise ValueError('model authorization no longer exists')
+        prepare_info = lanying_vendor.prepare_chat(app_id, vendor, auth_info, preset)
+        tool_call = copy.deepcopy(request_info.get('tool_call', {}))
+        tool_call_id = tool_call.get('id', '')
+        if not tool_call_id:
+            tool_call_id = 'call_' + request_id
+            tool_call['id'] = tool_call_id
+        response_message = {'role': 'assistant', 'content': '', 'tool_calls': [tool_call]}
+        function_message = {
+            'role': 'tool', 'tool_call_id': tool_call_id,
+            'content': json.dumps(execution_result, ensure_ascii=False)
+        }
+        append_message(app_id, preset, model_config, response_message)
+        append_message(app_id, preset, model_config, function_message)
+        # Resumption is asynchronous and cannot safely reuse an earlier stream
+        # message id.  Start a fresh non-streaming response instead.
+        preset['stream'] = False
+        prompt = Prompt(preset, False, {'force_callback': True})
+        check_res = check_message_limit(app_id, config, model_config, True)
+        if check_res.get('result') == 'error':
+            raise ValueError(check_res.get('msg', 'message quota unavailable'))
+        model_response = invoke_chat_model(
+            app_id, config, vendor, prepare_info, model_config, prompt)
+        if model_response.error:
+            raise ValueError(model_response.error.get('msg', 'model continuation failed'))
+        function_names = {}
+        for function in lanying_openai_compat.get_tools_as_functions(preset):
+            function_name = function.get('name', '')
+            if function_name:
+                function_names[function_name] = function.get('short_name', function_name)
+        msg = continuation.get('msg', {})
+        tool_result = run_chat_tools(
+            app_id, config, vendor, prepare_info, model_config, prompt,
+            model_response, preset.get('ext', {}), {},
+            check_res.get('api_key_type', ''), function_names, msg)
+        if tool_result.response.get('deferred_client_tool'):
+            lanying_agent_tools.record_resume_status(app_id, request_id, 'deferred_again')
+            return
+        reply_result = build_reply_result(config, vendor, model, tool_result)
+        reply = reply_result.reply
+        if reply:
+            reply_result.reply_ext['ai']['stream'] = False
+            reply_result.reply_ext['ai']['finish'] = True
+            replyMessageAsync(config, reply, reply_result.reply_ext)
+
+        original_function_messages = [response_message, function_message]
+        original_function_messages.extend(reply_result.function_messages)
+        redis = lanying_redis.get_redis_connection()
+        now = int(time.time())
+        msg_type = str(config.get('reply_msg_type', ''))
+        if msg_type == 'CHAT':
+            history_key = historyListChatGPTKey(
+                app_id, str(config.get('from_user_id', config.get('send_from', ''))),
+                str(config.get('to_user_id', config.get('send_to', ''))))
+            history = {
+                'time': now,
+                'user': str(msg.get('content', '')),
+                'assistant': reply,
+                'uid': str(config.get('from_user_id', config.get('send_from', ''))),
+                'function_messages': original_function_messages,
+                'subsequent_messages': reply_result.subsequent_messages,
+            }
+            if msg:
+                add_user_history_metadata(history, make_metadata_from_msg(msg), make_metadata_for_text())
+            addHistory(redis, history_key, history)
+        elif msg_type == 'GROUPCHAT':
+            history = {
+                'time': now, 'type': 'group', 'content': reply,
+                'group_id': config.get('reply_to', ''),
+                'from': config.get('reply_from', ''),
+                'function_messages': original_function_messages,
+                'function_messages_owner': config.get('send_from', ''),
+                'mention_list': [int(config.get('send_from'))] if str(config.get('send_from', '')).isdigit() else [],
+                'subsequent_messages': reply_result.subsequent_messages,
+                'subsequent_messages_owner': config.get('send_from', ''),
+            }
+            add_group_history_metadata(history, make_metadata_for_text())
+            group_history_repository.save_pending_reply(config, history)
+        lanying_agent_tools.record_resume_status(app_id, request_id, 'completed')
+    except Exception as error:
+        logging.exception(error)
+        lanying_agent_tools.record_resume_status(app_id, request_id, 'failed', str(error))
+        try:
+            base_config = lanying_config.get_lanying_connector(app_id) or {}
+            error_config = copy.deepcopy(base_config)
+            error_config.update(copy.deepcopy(continuation.get('config', {})))
+            error_config['app_id'] = app_id
+            replyMessageAsync(error_config, '操作结果已记录，但 AI 续答失败，请刷新后查看配置。', {
+                'ai': {'role': 'ai', 'stream': False, 'finish': True, 'result': 'error', 'error_code': 'client_tool_resume_failed'},
+                'seenical_tool_request': {
+                    'type': 'seenical_tool_request', 'schema_version': 1,
+                    'request_id': request_id,
+                    'tool_id': str(request_info.get('tool_id', '')),
+                    'tool_name': str(request_info.get('tool_name', '')),
+                    'risk': str(request_info.get('risk', 'write')),
+                    'expires_at': int(request_info.get('expires_at', 0) or 0),
+                    'summary': '业务操作已完成，AI 续答失败'
+                }
+            })
+        except Exception:
+            logging.exception('failed to notify client tool continuation error')
 
 def handle_chat_message_with_config(config, model_config, vendor, msg, preset, lcExt, presetExt, preset_name, command_ext, retry_times):
     app_id = msg['appId']
@@ -1936,6 +2073,16 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             for userHistory in userHistoryList:
                 logging.info(f'GroupHistory:{userHistory}')
                 messages.append(userHistory)
+    messages, user_functions = lanying_agent_tools.apply_active_skills(
+        app_id, config, messages, user_functions)
+    system_functions = lanying_agent_tools.filter_supported_client_functions(
+        app_id, config, system_functions)
+    user_functions = lanying_agent_tools.filter_supported_client_functions(
+        app_id, config, user_functions)
+    for function_info in system_functions + user_functions:
+        function_name = function_info.get('name', '')
+        if function_name and function_name not in function_names:
+            function_names[function_name] = function_info.get('short_name', function_name)
     prompt = build_chat_prompt(
         config, msg_type, preset, messages, system_functions, user_functions,
         lcExt)
@@ -1990,6 +2137,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     tool_result = run_chat_tools(
         app_id, config, vendor, prepare_info, model_config, prompt,
         model_response, presetExt, lcExt, api_key_type, function_names, msg)
+    if tool_result.response.get('deferred_client_tool'):
+        # The original turn is resumed only after the authenticated Console
+        # client approves or rejects the server-owned request.  Do not persist
+        # an incomplete assistant tool call into ordinary chat history.
+        return ''
     reply_result = build_reply_result(config, vendor, model, tool_result)
     reply = reply_result.reply
     audio_reply = reply_result.audio_reply
@@ -2173,7 +2325,7 @@ def is_link_need_ignore(link):
         return True
     return False
 
-def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext, continue_chat=True):
+def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_config, vendor, prepare_info, function_messages, subsequent_messages, reply_ext, continue_chat=True, msg=None):
     function_call = lanying_openai_compat.tool_calls_to_function_call([tool_call]) or {}
     function_name = function_call.get('name')
     function_args = lanying_utils.safe_json_loads(function_call.get('arguments', '{}'), {})
@@ -2185,7 +2337,10 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
     function_config = {}
     for function in functions:
         if function['name'] == function_name:
-            function_config = function
+            # Plugin expansion can inject server credentials into callback
+            # headers.  Work on a copy so a deferred client request never
+            # persists those credentials inside its continuation preset.
+            function_config = copy.deepcopy(function)
     doc_id = function_config.get('doc_id', '')
     owner_app_id = function_config.get('owner_app_id', app_id)
     system_envs = {
@@ -2346,6 +2501,61 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
                         logging.info(f"vendor function response | vendor:{vendor}, response:{response}")
                         return response
                     return {'result': 'ok', 'reply': '', 'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}}
+        elif function_call_type == 'client':
+            tool_id = lanying_agent_tools.resolve_tool_id(function_config)
+            registry_tool = lanying_agent_tools.TOOL_REGISTRY.get(tool_id)
+            if registry_tool is None:
+                return _append_function_result_and_continue(
+                    app_id, config, tool_call, tool_call_id, preset,
+                    model_config, vendor, prepare_info, function_messages,
+                    {'result': 'error', 'message': 'client tool is not registered'},
+                    continue_chat)
+            continuation_config_keys = [
+                'reply_msg_type', 'reply_from', 'reply_to', 'send_from',
+                'send_to', 'request_msg_id', 'from_user_id', 'to_user_id',
+                'chatbot_id', 'chatbot_user_id', 'noreply'
+            ]
+            continuation = {
+                'config': {
+                    key: config[key] for key in continuation_config_keys
+                    if key in config
+                },
+                'preset': copy.deepcopy(preset),
+                'vendor': vendor,
+                'model': model_config.get('model', preset.get('model', '')),
+                'msg': copy.deepcopy(msg) if isinstance(msg, dict) else {},
+            }
+            create_result = lanying_agent_tools.create_client_request(
+                app_id, config, tool_call, function_config, function_args,
+                continuation)
+            if create_result.get('result') != 'ok':
+                return _append_function_result_and_continue(
+                    app_id, config, tool_call, tool_call_id, preset,
+                    model_config, vendor, prepare_info, function_messages,
+                    create_result, continue_chat)
+            request_info = create_result['data']
+            tool_request_ext = copy.deepcopy(reply_ext)
+            tool_request_ext['ai']['stream'] = False
+            tool_request_ext['ai']['finish'] = True
+            tool_request_ext['seenical_tool_request'] = {
+                'type': 'seenical_tool_request',
+                'schema_version': 1,
+                'request_id': request_info['request_id'],
+                'tool_id': request_info['tool_id'],
+                'tool_name': request_info['tool_name'],
+                'risk': request_info['risk'],
+                'expires_at': request_info['expires_at'],
+                'summary': request_info['tool_name'],
+            }
+            message = (f"正在查询：{request_info['tool_name']}"
+                       if registry_tool['risk'] == 'read'
+                       else f"需要确认：{request_info['tool_name']}")
+            replyMessageAsync(config, message, tool_request_ext)
+            return {
+                'result': 'ok', 'reply': '', 'deferred_client_tool': True,
+                'request_id': request_info['request_id'],
+                'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}
+            }
         elif function_call_type == 'system':
             logging.info(f"handle system function call:{function_call}")
             function_response = handle_system_function(config, function_name, function_args)
@@ -2392,6 +2602,34 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
             return response
         return {'result': 'ok', 'reply': '', 'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}}
     raise Exception('bad_preset_function')
+
+
+def _append_function_result_and_continue(app_id, config, tool_call, tool_call_id,
+                                         preset, model_config, vendor,
+                                         prepare_info, function_messages,
+                                         function_response, continue_chat):
+    function_message = {
+        'role': 'tool',
+        'tool_call_id': tool_call_id,
+        'content': json.dumps(function_response, ensure_ascii=False)
+    }
+    response_message = {
+        'role': 'assistant', 'content': '', 'tool_calls': [tool_call]
+    }
+    append_message(app_id, preset, model_config, response_message)
+    append_message(app_id, preset, model_config, function_message)
+    function_messages.append(response_message)
+    function_messages.append(function_message)
+    if continue_chat:
+        preset_for_model = maybe_transform_preset_to_vision_preset(
+            config, app_id, model_config, preset)
+        response = chat_or_force_function_call(
+            app_id, config, vendor, prepare_info, preset_for_model)
+        return lanying_openai_compat.normalize_vendor_response(response)
+    return {
+        'result': 'ok', 'reply': '',
+        'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}
+    }
 
 def maybe_update_plugin_error_msg(reply_ext, function_response):
     try:

@@ -11,6 +11,10 @@ openclaw_session_map_log_table_ready = False
 openclaw_session_map_log_table_lock = threading.Lock()
 message_quota_usage_log_table_ready = False
 message_quota_usage_log_table_lock = threading.Lock()
+agent_tool_audit_log_table_ready = False
+agent_tool_audit_log_table_lock = threading.Lock()
+public_skill_catalog_table_ready = False
+public_skill_catalog_table_lock = threading.Lock()
 
 def get_connection():
     if connection_pool:
@@ -389,6 +393,207 @@ def list_message_quota_usage_logs(app_id='', limit=100):
             'extra_metadata': row[15] or {},
         })
     return results
+
+
+def ensure_agent_tool_audit_log_table():
+    global agent_tool_audit_log_table_ready
+    if not is_enabled():
+        return False
+    if agent_tool_audit_log_table_ready:
+        return True
+    with agent_tool_audit_log_table_lock:
+        if agent_tool_audit_log_table_ready:
+            return True
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS agent_tool_audit_log (
+                    id bigserial PRIMARY KEY,
+                    created_at timestamptz NOT NULL DEFAULT NOW(),
+                    app_id varchar(100) NOT NULL DEFAULT '',
+                    request_id varchar(128) NOT NULL DEFAULT '',
+                    event varchar(100) NOT NULL DEFAULT '',
+                    chatbot_id varchar(100) NOT NULL DEFAULT '',
+                    conversation_type varchar(32) NOT NULL DEFAULT '',
+                    conversation_id varchar(100) NOT NULL DEFAULT '',
+                    actor_subject_id varchar(100) NOT NULL DEFAULT '',
+                    tool_id varchar(255) NOT NULL DEFAULT '',
+                    tool_version integer NOT NULL DEFAULT 0,
+                    skill_versions jsonb NOT NULL DEFAULT '[]'::jsonb,
+                    arguments_hash varchar(128) NOT NULL DEFAULT '',
+                    result_status varchar(100) NOT NULL DEFAULT '',
+                    diff_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+                    extra_metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS agent_tool_audit_log_idx_request_created_at
+                ON agent_tool_audit_log (request_id, created_at ASC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS agent_tool_audit_log_idx_app_created_at
+                ON agent_tool_audit_log (app_id, created_at DESC);
+            """)
+            conn.commit()
+            cursor.close()
+            put_connection(conn)
+        agent_tool_audit_log_table_ready = True
+        return True
+
+
+def append_agent_tool_audit_log(entry):
+    if not isinstance(entry, dict):
+        return {'result': 'ignored', 'message': 'bad log entry'}
+    if not is_enabled():
+        return {'result': 'ignored', 'message': 'pgvector disabled'}
+    ensure_agent_tool_audit_log_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO agent_tool_audit_log (
+                app_id, request_id, event, chatbot_id, conversation_type,
+                conversation_id, actor_subject_id, tool_id, tool_version,
+                skill_versions, arguments_hash, result_status, diff_summary,
+                extra_metadata
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(entry.get('app_id', '')),
+                str(entry.get('request_id', '')),
+                str(entry.get('event', '')),
+                str(entry.get('chatbot_id', '')),
+                str(entry.get('conversation_type', '')),
+                str(entry.get('conversation_id', '')),
+                str(entry.get('actor_subject_id', '')),
+                str(entry.get('tool_id', '')),
+                int(entry.get('tool_version', 0) or 0),
+                Json(entry.get('skill_versions', [])),
+                str(entry.get('arguments_hash', '')),
+                str(entry.get('result_status', '')),
+                Json(entry.get('diff_summary', {})),
+                Json(entry.get('extra_metadata', {})),
+            )
+        )
+        conn.commit()
+        cursor.close()
+        put_connection(conn)
+    return {'result': 'ok'}
+
+
+def ensure_public_skill_catalog_table():
+    global public_skill_catalog_table_ready
+    if not is_enabled():
+        return False
+    if public_skill_catalog_table_ready:
+        return True
+    with public_skill_catalog_table_lock:
+        if public_skill_catalog_table_ready:
+            return True
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS public_skill_catalog_revision (
+                    revision varchar(128) PRIMARY KEY,
+                    source_commit varchar(64) NOT NULL,
+                    manifest_sha varchar(128) NOT NULL,
+                    catalog jsonb NOT NULL,
+                    created_at timestamptz NOT NULL DEFAULT NOW()
+                );
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS public_skill_catalog_state (
+                    state_key varchar(32) PRIMARY KEY,
+                    active_revision varchar(128) NOT NULL,
+                    source_commit varchar(64) NOT NULL,
+                    updated_at timestamptz NOT NULL DEFAULT NOW()
+                );
+            """)
+            conn.commit()
+            cursor.close()
+            put_connection(conn)
+        public_skill_catalog_table_ready = True
+        return True
+
+
+def save_public_skill_catalog(catalog):
+    if not isinstance(catalog, dict) or not is_enabled():
+        return {'result': 'error', 'message': 'pgvector disabled'}
+    ensure_public_skill_catalog_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO public_skill_catalog_revision (
+                revision, source_commit, manifest_sha, catalog
+            ) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (revision) DO NOTHING
+            """,
+            (str(catalog.get('revision', '')),
+             str(catalog.get('source_commit', '')),
+             str(catalog.get('manifest_sha', '')),
+             Json(catalog)))
+        cursor.execute(
+            """
+            INSERT INTO public_skill_catalog_state (
+                state_key, active_revision, source_commit
+            ) VALUES ('active', %s, %s)
+            ON CONFLICT (state_key) DO UPDATE SET
+                active_revision=EXCLUDED.active_revision,
+                source_commit=EXCLUDED.source_commit,
+                updated_at=NOW()
+            """,
+            (str(catalog.get('revision', '')),
+             str(catalog.get('source_commit', ''))))
+        conn.commit()
+        cursor.close()
+        put_connection(conn)
+    return {'result': 'ok'}
+
+
+def get_active_public_skill_catalog():
+    if not is_enabled():
+        return None
+    ensure_public_skill_catalog_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT r.catalog
+            FROM public_skill_catalog_state s
+            JOIN public_skill_catalog_revision r
+              ON r.revision=s.active_revision
+            WHERE s.state_key='active'
+        """)
+        row = cursor.fetchone()
+        cursor.close()
+        put_connection(conn)
+    return row[0] if row else None
+
+
+def get_public_skill_revision(skill_id, revision):
+    catalog = get_active_public_skill_catalog()
+    if not catalog:
+        return None
+    for skill in catalog.get('skills', []):
+        if (str(skill.get('skill_id', '')) == str(skill_id)
+                and str(skill.get('revision', '')) == str(revision)):
+            return skill
+    if not is_enabled():
+        return None
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT skill
+            FROM public_skill_catalog_revision r,
+                 jsonb_array_elements(r.catalog->'skills') skill
+            WHERE skill->>'skill_id'=%s AND skill->>'revision'=%s
+            ORDER BY r.created_at DESC LIMIT 1
+            """, (str(skill_id), str(revision)))
+        row = cursor.fetchone()
+        cursor.close()
+        put_connection(conn)
+    return row[0] if row else None
 
 sql_pool_host = os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')
 if sql_pool_host:

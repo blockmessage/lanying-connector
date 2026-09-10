@@ -173,6 +173,8 @@ def set_task_schedule(app_id, task_id, schedule, message='manual'):
     if task_info and schedule in ["on", "off"]:
         update_task_field(app_id, task_id, "schedule", schedule)
         update_task_field(app_id, task_id, "schedule_message", message)
+        if task_info.get('schedule') != schedule:
+            increase_task_field(app_id, task_id, 'revision', 1)
     return {'result': "ok", "data": {"success": True}}
 
 def open_service(app_id, product_id, price, website_storage_limit, website_traffic_limit):
@@ -326,6 +328,9 @@ def create_task(task_setting: TaskSetting):
     fields['create_time'] = now
     fields['task_id'] = task_id
     fields['schedule'] = 'on'
+    # Additive revision metadata used by the conversational patch API.  Old
+    # readers ignore this field and old tasks lazily default to revision 0.
+    fields['revision'] = 0
     logging.info(f"create task start | app_id:{app_id}, task_info:{fields}")
     redis.hmset(get_task_key(app_id, task_id), fields)
     redis.rpush(get_task_list_key(app_id), task_id)
@@ -371,6 +376,7 @@ def configure_task(task_id, task_setting: TaskSetting):
         )
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
     redis.hmset(get_task_key(app_id, task_id), fields)
+    redis.hincrby(get_task_key(app_id, task_id), 'revision', 1)
     set_task_schedule(app_id, task_id, "on")
     new_task_info = get_task(app_id, task_id)
     if (new_task_info['prompt'] != task_info['prompt']
@@ -410,6 +416,382 @@ def configure_task(task_id, task_setting: TaskSetting):
         'data': {
             'success': True,
             'changed_chatbot_ids': []
+        }
+    }
+
+
+TASK_PATCH_STRING_FIELDS = {
+    'name', 'note', 'chatbot_id', 'prompt', 'article_prompt', 'keywords',
+    'target_dir', 'commit_type', 'target_summary_dir'
+}
+TASK_PATCH_INTEGER_FIELDS = {
+    'word_count_min', 'word_count_max', 'image_count', 'article_count',
+    'cycle_interval'
+}
+TASK_PATCH_JSON_FIELDS = {
+    'file_list', 'deploy', 'site_id_list', 'embedding_condition'
+}
+TASK_PATCH_ENUM_FIELDS = {
+    'article_language': ARTICLE_LANGUAGE_VALUES,
+    'cycle_type': {'none', 'cycle'},
+    'title_reuse': {'on', 'off'},
+    'auto_deploy': {'on', 'off'},
+}
+TASK_PATCH_FIELDS = (
+    TASK_PATCH_STRING_FIELDS | TASK_PATCH_INTEGER_FIELDS |
+    TASK_PATCH_JSON_FIELDS | set(TASK_PATCH_ENUM_FIELDS.keys())
+)
+
+
+def _task_setting_from_info(app_id, task_info):
+    return TaskSetting(
+        app_id=app_id,
+        name=str(task_info.get('name', '')),
+        note=str(task_info.get('note', '')),
+        chatbot_id=str(task_info.get('chatbot_id', '')),
+        prompt=str(task_info.get('prompt', '')),
+        article_prompt=str(task_info.get('article_prompt', '')),
+        article_language=str(task_info.get('article_language', 'auto')),
+        keywords=str(task_info.get('keywords', '')),
+        word_count_min=int(task_info.get('word_count_min', 0)),
+        word_count_max=int(task_info.get('word_count_max', 0)),
+        image_count=int(task_info.get('image_count', 0)),
+        article_count=int(task_info.get('article_count', 1)),
+        cycle_type=str(task_info.get('cycle_type', 'none')),
+        cycle_interval=int(task_info.get('cycle_interval', 3600)),
+        file_list=list(task_info.get('file_list', [])),
+        deploy=dict(task_info.get('deploy', {'type': 'none'})),
+        title_reuse=str(task_info.get('title_reuse', 'off')),
+        site_id_list=list(task_info.get('site_id_list', [])),
+        target_dir=str(task_info.get('target_dir', '/articles')),
+        commit_type=str(task_info.get('commit_type', 'branch')),
+        target_summary_dir=str(task_info.get('target_summary_dir', '')),
+        embedding_condition=dict(task_info.get('embedding_condition', {})),
+        auto_deploy=str(task_info.get('auto_deploy', 'off')),
+    )
+
+
+def _normalize_task_patch(changes):
+    if not isinstance(changes, dict) or len(changes) == 0:
+        return {'result': 'error', 'message': 'changes must be a non-empty object'}
+    unknown_fields = sorted(set(changes.keys()) - TASK_PATCH_FIELDS)
+    if unknown_fields:
+        return {
+            'result': 'error',
+            'message': 'unsupported task fields: ' + ','.join(unknown_fields)
+        }
+    normalized = {}
+    try:
+        for field, value in changes.items():
+            if field in TASK_PATCH_STRING_FIELDS:
+                normalized[field] = str(value)
+            elif field in TASK_PATCH_INTEGER_FIELDS:
+                normalized[field] = int(value)
+            elif field in TASK_PATCH_JSON_FIELDS:
+                if field in ['file_list', 'site_id_list']:
+                    if not isinstance(value, list):
+                        raise ValueError(f'{field} must be an array')
+                    normalized[field] = value
+                else:
+                    if not isinstance(value, dict):
+                        raise ValueError(f'{field} must be an object')
+                    normalized[field] = value
+            elif field in TASK_PATCH_ENUM_FIELDS:
+                value = str(value)
+                if value not in TASK_PATCH_ENUM_FIELDS[field]:
+                    raise ValueError(f'{field} has an invalid value')
+                normalized[field] = value
+    except (TypeError, ValueError) as error:
+        return {'result': 'error', 'message': str(error)}
+
+    if 'article_count' in normalized:
+        normalized['article_count'] = min(100000, max(1, normalized['article_count']))
+    if 'cycle_interval' in normalized:
+        normalized['cycle_interval'] = max(3600, normalized['cycle_interval'])
+    if 'word_count_min' in normalized and normalized['word_count_min'] < 0:
+        return {'result': 'error', 'message': 'word_count_min must not be negative'}
+    if 'word_count_max' in normalized and normalized['word_count_max'] < 0:
+        return {'result': 'error', 'message': 'word_count_max must not be negative'}
+    if 'image_count' in normalized and normalized['image_count'] < 0:
+        return {'result': 'error', 'message': 'image_count must not be negative'}
+    if 'name' in normalized and (not normalized['name'].strip() or len(normalized['name']) > 200):
+        return {'result': 'error', 'message': 'invalid plan name'}
+    if 'prompt' in normalized and len(normalized['prompt']) > 20000:
+        return {'result': 'error', 'message': 'prompt is too long'}
+    if 'article_prompt' in normalized and len(normalized['article_prompt']) > 5000:
+        return {'result': 'error', 'message': 'article_prompt is too long'}
+    return {'result': 'ok', 'data': normalized}
+
+
+def get_task_revision_history_key(app_id, task_id):
+    return f"lanying_connector:grow_ai:task_revision_history:{app_id}:{task_id}"
+
+
+def get_task_revision_snapshot_key(app_id, task_id, revision):
+    return f"lanying_connector:grow_ai:task_revision:{app_id}:{task_id}:{revision}"
+
+
+def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
+               operational_changes=None):
+    """Patch a task without changing omitted fields or enabling its schedule.
+
+    The existing configure_task API intentionally keeps its historical full
+    replacement behaviour.  Conversational tools use this additive API so an
+    incomplete model payload cannot erase settings that it did not read.
+    """
+    task_info = get_task(app_id, task_id)
+    if task_info is None:
+        return {'result': 'error', 'message': 'task_id not exist'}
+    normalized_result = _normalize_task_patch(changes)
+    if normalized_result['result'] == 'error':
+        return normalized_result
+    normalized = normalized_result['data']
+    current_revision = int(task_info.get('revision', 0))
+    if expected_revision is not None and int(expected_revision) != current_revision:
+        return {
+            'result': 'error',
+            'code': 'revision_conflict',
+            'message': 'task revision changed',
+            'data': {'task': task_info, 'revision': current_revision}
+        }
+
+    merged = dict(task_info)
+    merged.update(normalized)
+    if ('site_id_list' in normalized and any(
+            get_site(app_id, str(site_id)) is None
+            for site_id in normalized['site_id_list'])):
+        return {'result': 'error', 'message': 'site_id_list contains an invalid site'}
+    if int(merged.get('word_count_max', 0)) < int(merged.get('word_count_min', 0)):
+        return {'result': 'error', 'message': 'word_count_max must be greater than or equal to word_count_min'}
+    task_setting = _task_setting_from_info(app_id, merged)
+    security_result = check_task_content_security(app_id, task_setting)
+    if security_result['result'] == 'error':
+        return security_result
+    if 'file_list' in normalized:
+        file_result = handle_task_file_list(app_id, task_id, normalized['file_list'])
+        if file_result['result'] == 'error':
+            return file_result
+
+    redis = lanying_redis.get_redis_connection()
+    task_key = get_task_key(app_id, task_id)
+    next_revision = current_revision + 1
+    redis_fields = {}
+    all_fields = task_setting.to_hmset_fields()
+    for field in normalized:
+        redis_fields[field] = all_fields[field]
+    redis_fields['revision'] = next_revision
+    redis_fields['update_time'] = int(time.time())
+    if operational_changes:
+        redis_fields.update(operational_changes)
+
+    # Preserve the legacy title cursor once when article language becomes
+    # scoped, matching configure_task without rewriting unrelated fields.
+    if ('article_language' in normalized and
+            task_info.get('article_language_scoped', 'off') != 'on'):
+        legacy_language = resolve_article_language(task_info)
+        redis_fields['article_language_scoped'] = 'on'
+        redis_fields['article_title_legacy_language'] = legacy_language
+        redis_fields[article_cursor_field(legacy_language, 'on')] = task_info.get('article_cursor', 0)
+
+    snapshot = dict(task_info)
+    snapshot.pop('site_cdn_token', None)
+    snapshot_key = get_task_revision_snapshot_key(app_id, task_id, current_revision)
+    history_key = get_task_revision_history_key(app_id, task_id)
+    pipe = redis.pipeline(transaction=True)
+    try:
+        pipe.watch(task_key)
+        stored_revision = pipe.hget(task_key, 'revision')
+        stored_revision = int(stored_revision or 0)
+        if stored_revision != current_revision:
+            pipe.unwatch()
+            latest = get_task(app_id, task_id)
+            return {
+                'result': 'error',
+                'code': 'revision_conflict',
+                'message': 'task revision changed',
+                'data': {'task': latest, 'revision': int((latest or {}).get('revision', 0))}
+            }
+        pipe.multi()
+        pipe.setnx(snapshot_key, json.dumps(snapshot, ensure_ascii=False))
+        pipe.rpush(history_key, current_revision)
+        pipe.hmset(task_key, redis_fields)
+        pipe.execute()
+    except Exception as error:
+        logging.exception(error)
+        return {'result': 'error', 'message': 'task update conflict', 'code': 'revision_conflict'}
+
+    new_task_info = get_task(app_id, task_id)
+    title_inputs = {'prompt', 'article_prompt', 'article_language', 'keywords', 'file_list'}
+    if title_inputs.intersection(normalized.keys()) and new_task_info.get('title_reuse') == 'off':
+        language = resolve_article_language(new_task_info)
+        update_task_field(
+            app_id, task_id,
+            article_cursor_field(language, new_task_info.get('article_language_scoped', 'off')),
+            0
+        )
+
+    if {'cycle_type', 'cycle_interval'}.intersection(normalized.keys()):
+        schedule_id = new_task_info.get('schedule_id', '')
+        if new_task_info['cycle_type'] != 'cycle':
+            if schedule_id:
+                schedule_info = lanying_schedule.get_schedule(schedule_id)
+                if schedule_info:
+                    lanying_schedule.delete_schedule(schedule_id)
+                update_task_field(app_id, task_id, 'schedule_id', '')
+        else:
+            schedule_info = lanying_schedule.get_schedule(schedule_id) if schedule_id else None
+            if schedule_info:
+                lanying_schedule.update_schedule_field(schedule_id, 'interval', new_task_info['cycle_interval'])
+                lanying_schedule.update_schedule_field(schedule_id, 'last_time', int(time.time()))
+            else:
+                schedule_result = lanying_schedule.create_schedule(
+                    new_task_info['cycle_interval'], 'lanying_grow_ai',
+                    {'app_id': app_id, 'task_id': task_id}
+                )
+                update_task_field(app_id, task_id, 'schedule_id', schedule_result['data']['schedule_id'])
+
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True,
+            'request_id': str(request_id or ''),
+            'previous_revision': current_revision,
+            'revision': next_revision,
+            'task': get_task(app_id, task_id)
+        }
+    }
+
+
+def rollback_task_revision(app_id, task_id, revision, expected_revision=None, request_id=''):
+    redis = lanying_redis.get_redis_connection()
+    raw_snapshot = lanying_redis.redis_get(
+        redis, get_task_revision_snapshot_key(app_id, task_id, int(revision)))
+    if raw_snapshot is None:
+        return {'result': 'error', 'message': 'task revision snapshot not found'}
+    snapshot = json.loads(raw_snapshot)
+    changes = {field: snapshot[field] for field in TASK_PATCH_FIELDS if field in snapshot}
+    schedule = snapshot.get('schedule', 'off')
+    if schedule not in ['on', 'off']:
+        schedule = 'off'
+    return patch_task(
+        app_id, task_id, changes, expected_revision, request_id,
+        operational_changes={
+            'status': snapshot.get('status', 'normal'),
+            'schedule': schedule,
+            'schedule_message': 'agent_tool_rollback'
+        })
+
+
+def set_task_schedule_revisioned(app_id, task_id, schedule,
+                                 expected_revision=None, request_id=''):
+    if schedule not in ['on', 'off']:
+        return {'result': 'error', 'message': 'schedule has an invalid value'}
+    task_info = get_task(app_id, task_id)
+    if task_info is None:
+        return {'result': 'error', 'message': 'task_id not exist'}
+    current_revision = int(task_info.get('revision', 0))
+    if expected_revision is not None and int(expected_revision) != current_revision:
+        return {
+            'result': 'error', 'code': 'revision_conflict',
+            'message': 'task revision changed',
+            'data': {'task': task_info, 'revision': current_revision}
+        }
+    if task_info.get('schedule') == schedule:
+        return {
+            'result': 'ok',
+            'data': {
+                'success': True, 'request_id': str(request_id or ''),
+                'previous_revision': current_revision, 'revision': current_revision,
+                'task': task_info
+            }
+        }
+    redis = lanying_redis.get_redis_connection()
+    task_key = get_task_key(app_id, task_id)
+    snapshot = dict(task_info)
+    snapshot.pop('site_cdn_token', None)
+    pipe = redis.pipeline(transaction=True)
+    try:
+        pipe.watch(task_key)
+        stored_revision = int(pipe.hget(task_key, 'revision') or 0)
+        if stored_revision != current_revision:
+            pipe.unwatch()
+            latest = get_task(app_id, task_id)
+            return {
+                'result': 'error', 'code': 'revision_conflict',
+                'message': 'task revision changed',
+                'data': {'task': latest, 'revision': int((latest or {}).get('revision', 0))}
+            }
+        pipe.multi()
+        pipe.setnx(
+            get_task_revision_snapshot_key(app_id, task_id, current_revision),
+            json.dumps(snapshot, ensure_ascii=False))
+        pipe.rpush(get_task_revision_history_key(app_id, task_id), current_revision)
+        pipe.hmset(task_key, {
+            'schedule': schedule,
+            'schedule_message': 'agent_tool',
+            'revision': current_revision + 1,
+            'update_time': int(time.time())
+        })
+        pipe.execute()
+    except Exception as error:
+        logging.exception(error)
+        return {'result': 'error', 'code': 'revision_conflict', 'message': 'task update conflict'}
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True, 'request_id': str(request_id or ''),
+            'previous_revision': current_revision, 'revision': current_revision + 1,
+            'task': get_task(app_id, task_id)
+        }
+    }
+
+
+def archive_task(app_id, task_id, expected_revision=None, request_id=''):
+    task_info = get_task(app_id, task_id)
+    if task_info is None:
+        return {'result': 'error', 'message': 'task_id not exist'}
+    current_revision = int(task_info.get('revision', 0))
+    if expected_revision is not None and int(expected_revision) != current_revision:
+        return {
+            'result': 'error', 'code': 'revision_conflict',
+            'message': 'task revision changed',
+            'data': {'task': task_info, 'revision': current_revision}
+        }
+    if task_info.get('status') == 'archived':
+        return {
+            'result': 'ok',
+            'data': {'success': True, 'request_id': str(request_id or ''), 'task': task_info}
+        }
+    redis = lanying_redis.get_redis_connection()
+    task_key = get_task_key(app_id, task_id)
+    snapshot_key = get_task_revision_snapshot_key(app_id, task_id, current_revision)
+    snapshot = dict(task_info)
+    snapshot.pop('site_cdn_token', None)
+    pipe = redis.pipeline(transaction=True)
+    try:
+        pipe.watch(task_key)
+        stored_revision = int(pipe.hget(task_key, 'revision') or 0)
+        if stored_revision != current_revision:
+            pipe.unwatch()
+            return {'result': 'error', 'code': 'revision_conflict', 'message': 'task revision changed'}
+        pipe.multi()
+        pipe.setnx(snapshot_key, json.dumps(snapshot, ensure_ascii=False))
+        pipe.rpush(get_task_revision_history_key(app_id, task_id), current_revision)
+        pipe.hmset(task_key, {
+            'status': 'archived', 'schedule': 'off',
+            'schedule_message': 'agent_tool_archive',
+            'revision': current_revision + 1, 'update_time': int(time.time())
+        })
+        pipe.execute()
+    except Exception as error:
+        logging.exception(error)
+        return {'result': 'error', 'code': 'revision_conflict', 'message': 'task update conflict'}
+    return {
+        'result': 'ok',
+        'data': {
+            'success': True, 'request_id': str(request_id or ''),
+            'previous_revision': current_revision, 'revision': current_revision + 1,
+            'task': get_task(app_id, task_id)
         }
     }
 
@@ -503,7 +885,8 @@ def get_task(app_id, task_id):
         dto = {}
         for key,value in info.items():
             if key in ['word_count_min', 'word_count_max', 'image_count', 'article_count',
-                       'cycle_interval', 'create_time', 'article_cursor', "total_article_num"] \
+                       'cycle_interval', 'create_time', 'update_time', 'revision',
+                       'article_cursor', "total_article_num"] \
                     or key.startswith('article_cursor_'):
                 dto[key] = int(value)
             elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
@@ -2845,6 +3228,7 @@ def create_site(site_setting: SiteSetting):
     fields['status'] = 'normal'
     fields['create_time'] = now
     fields['site_id'] = site_id
+    fields['agent_tools_revision'] = 0
     logging.info(f"create site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
     redis.rpush(get_site_list_key(app_id), site_id)
@@ -2889,6 +3273,7 @@ def configure_site(site_id, site_setting: SiteSetting):
             del fields[field]
     logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
+    redis.hincrby(get_site_key(app_id, site_id), 'agent_tools_revision', 1)
     new_site_info = get_site(app_id, site_id)
     new_site_info = maybe_init_github_site_repo(app_id, site_info, new_site_info)
     maybe_invite_github_member(app_id, site_info, new_site_info)
