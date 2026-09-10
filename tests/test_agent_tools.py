@@ -19,6 +19,9 @@ def load_agent_tools():
             append_agent_tool_audit_log=lambda value: {"result": "ok"},
             get_active_public_skill_catalog=lambda: None,
             get_public_skill_revision=lambda skill_id, revision: None,
+            get_seenical_config_revision=lambda *args, **kwargs: None,
+            list_seenical_config_revisions=lambda *args, **kwargs: [],
+            save_seenical_config_revision=lambda *args, **kwargs: {"result": "ok"},
             save_public_skill_catalog=lambda value: {"result": "ok"}),
         "lanying_redis": types.SimpleNamespace(),
         "lanying_vendor": types.SimpleNamespace(),
@@ -96,6 +99,12 @@ class AgentToolsTest(unittest.TestCase):
             functions,
             self.module.filter_supported_client_functions("app", {"chatbot_id": "1"}, functions),
         )
+
+    def test_public_site_repository_config_tools_are_not_registered(self):
+        for tool_id in [
+                "seenical.repo.sync", "seenical.repo.config.get",
+                "seenical.repo.config.apply"]:
+            self.assertNotIn(tool_id, self.module.TOOL_REGISTRY)
 
     def test_repository_paths_reject_absolute_and_traversal_values(self):
         for value in ["/etc/passwd", "../SKILL.md", "skills/../../secret", "skills\\secret"]:

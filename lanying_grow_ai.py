@@ -32,6 +32,7 @@ from urllib.parse import urlparse,urlunparse
 import lanying_baidu
 import lanying_google
 import lanying_oss
+import lanying_pgvector
 from github import Github
 
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
@@ -531,6 +532,57 @@ def get_task_revision_snapshot_key(app_id, task_id, revision):
     return f"lanying_connector:grow_ai:task_revision:{app_id}:{task_id}:{revision}"
 
 
+def get_task_revision_snapshot(app_id, task_id, revision):
+    try:
+        snapshot = lanying_pgvector.get_seenical_config_revision(
+            app_id, 'plan', task_id, revision)
+        if snapshot is not None:
+            return snapshot
+    except Exception:
+        logging.exception('failed to read Seenical plan revision')
+    raw_snapshot = lanying_redis.redis_get(
+        lanying_redis.get_redis_connection(),
+        get_task_revision_snapshot_key(app_id, task_id, int(revision)))
+    return json.loads(raw_snapshot) if raw_snapshot is not None else None
+
+
+def list_task_revisions(app_id, task_id, limit=20):
+    try:
+        revisions = lanying_pgvector.list_seenical_config_revisions(
+            app_id, 'plan', task_id, limit)
+    except Exception:
+        logging.exception('failed to list Seenical plan revisions')
+        revisions = []
+    legacy = lanying_redis.redis_lrange(
+        lanying_redis.get_redis_connection(),
+        get_task_revision_history_key(app_id, task_id), -limit, -1)
+    return sorted(set(int(value) for value in revisions + legacy), reverse=True)[:limit]
+
+
+def _task_revision_snapshot(task_info):
+    # File URLs and deploy payloads may contain temporary or provider-specific
+    # authorization data. They remain in the live task but are deliberately
+    # outside the durable configuration history.
+    fields = TASK_PATCH_FIELDS - {'file_list', 'deploy'}
+    snapshot = {
+        field: copy.deepcopy(task_info[field])
+        for field in fields if field in task_info
+    }
+    for field in ['status', 'schedule', 'revision']:
+        if field in task_info:
+            snapshot[field] = copy.deepcopy(task_info[field])
+    return snapshot
+
+
+def _save_task_revision(app_id, task_id, revision, snapshot, request_id):
+    try:
+        return lanying_pgvector.save_seenical_config_revision(
+            app_id, 'plan', task_id, revision, snapshot, request_id)
+    except Exception:
+        logging.exception('failed to save Seenical plan revision')
+        return {'result': 'error'}
+
+
 def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
                operational_changes=None):
     """Patch a task without changing omitted fields or enabling its schedule.
@@ -593,8 +645,7 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
         redis_fields['article_title_legacy_language'] = legacy_language
         redis_fields[article_cursor_field(legacy_language, 'on')] = task_info.get('article_cursor', 0)
 
-    snapshot = dict(task_info)
-    snapshot.pop('site_cdn_token', None)
+    snapshot = _task_revision_snapshot(task_info)
     snapshot_key = get_task_revision_snapshot_key(app_id, task_id, current_revision)
     history_key = get_task_revision_history_key(app_id, task_id)
     pipe = redis.pipeline(transaction=True)
@@ -610,6 +661,14 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
                 'code': 'revision_conflict',
                 'message': 'task revision changed',
                 'data': {'task': latest, 'revision': int((latest or {}).get('revision', 0))}
+            }
+        saved = _save_task_revision(
+            app_id, task_id, current_revision, snapshot, request_id)
+        if saved.get('result') != 'ok':
+            pipe.unwatch()
+            return {
+                'result': 'error', 'code': 'revision_store_unavailable',
+                'message': 'configuration revision could not be saved'
             }
         pipe.multi()
         pipe.setnx(snapshot_key, json.dumps(snapshot, ensure_ascii=False))
@@ -663,12 +722,9 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
 
 
 def rollback_task_revision(app_id, task_id, revision, expected_revision=None, request_id=''):
-    redis = lanying_redis.get_redis_connection()
-    raw_snapshot = lanying_redis.redis_get(
-        redis, get_task_revision_snapshot_key(app_id, task_id, int(revision)))
-    if raw_snapshot is None:
+    snapshot = get_task_revision_snapshot(app_id, task_id, int(revision))
+    if snapshot is None:
         return {'result': 'error', 'message': 'task revision snapshot not found'}
-    snapshot = json.loads(raw_snapshot)
     changes = {field: snapshot[field] for field in TASK_PATCH_FIELDS if field in snapshot}
     schedule = snapshot.get('schedule', 'off')
     if schedule not in ['on', 'off']:
@@ -707,8 +763,7 @@ def set_task_schedule_revisioned(app_id, task_id, schedule,
         }
     redis = lanying_redis.get_redis_connection()
     task_key = get_task_key(app_id, task_id)
-    snapshot = dict(task_info)
-    snapshot.pop('site_cdn_token', None)
+    snapshot = _task_revision_snapshot(task_info)
     pipe = redis.pipeline(transaction=True)
     try:
         pipe.watch(task_key)
@@ -720,6 +775,14 @@ def set_task_schedule_revisioned(app_id, task_id, schedule,
                 'result': 'error', 'code': 'revision_conflict',
                 'message': 'task revision changed',
                 'data': {'task': latest, 'revision': int((latest or {}).get('revision', 0))}
+            }
+        saved = _save_task_revision(
+            app_id, task_id, current_revision, snapshot, request_id)
+        if saved.get('result') != 'ok':
+            pipe.unwatch()
+            return {
+                'result': 'error', 'code': 'revision_store_unavailable',
+                'message': 'configuration revision could not be saved'
             }
         pipe.multi()
         pipe.setnx(
@@ -765,8 +828,7 @@ def archive_task(app_id, task_id, expected_revision=None, request_id=''):
     redis = lanying_redis.get_redis_connection()
     task_key = get_task_key(app_id, task_id)
     snapshot_key = get_task_revision_snapshot_key(app_id, task_id, current_revision)
-    snapshot = dict(task_info)
-    snapshot.pop('site_cdn_token', None)
+    snapshot = _task_revision_snapshot(task_info)
     pipe = redis.pipeline(transaction=True)
     try:
         pipe.watch(task_key)
@@ -774,6 +836,14 @@ def archive_task(app_id, task_id, expected_revision=None, request_id=''):
         if stored_revision != current_revision:
             pipe.unwatch()
             return {'result': 'error', 'code': 'revision_conflict', 'message': 'task revision changed'}
+        saved = _save_task_revision(
+            app_id, task_id, current_revision, snapshot, request_id)
+        if saved.get('result') != 'ok':
+            pipe.unwatch()
+            return {
+                'result': 'error', 'code': 'revision_store_unavailable',
+                'message': 'configuration revision could not be saved'
+            }
         pipe.multi()
         pipe.setnx(snapshot_key, json.dumps(snapshot, ensure_ascii=False))
         pipe.rpush(get_task_revision_history_key(app_id, task_id), current_revision)

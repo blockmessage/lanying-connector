@@ -15,6 +15,8 @@ agent_tool_audit_log_table_ready = False
 agent_tool_audit_log_table_lock = threading.Lock()
 public_skill_catalog_table_ready = False
 public_skill_catalog_table_lock = threading.Lock()
+seenical_config_revision_table_ready = False
+seenical_config_revision_table_lock = threading.Lock()
 
 def get_connection():
     if connection_pool:
@@ -594,6 +596,126 @@ def get_public_skill_revision(skill_id, revision):
         cursor.close()
         put_connection(conn)
     return row[0] if row else None
+
+
+def ensure_seenical_config_revision_table():
+    global seenical_config_revision_table_ready
+    if not is_enabled():
+        return False
+    if seenical_config_revision_table_ready:
+        return True
+    with seenical_config_revision_table_lock:
+        if seenical_config_revision_table_ready:
+            return True
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS seenical_config_revision (
+                    app_id varchar(100) NOT NULL,
+                    resource_type varchar(32) NOT NULL,
+                    resource_id varchar(128) NOT NULL,
+                    revision bigint NOT NULL,
+                    snapshot jsonb NOT NULL,
+                    request_id varchar(128) NOT NULL DEFAULT '',
+                    created_at timestamptz NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (app_id, resource_type, resource_id, revision)
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS seenical_config_revision_history_idx
+                ON seenical_config_revision
+                    (app_id, resource_type, resource_id, revision DESC);
+            """)
+            conn.commit()
+            cursor.close()
+            put_connection(conn)
+        seenical_config_revision_table_ready = True
+        return True
+
+
+def save_seenical_config_revision(app_id, resource_type, resource_id,
+                                  revision, snapshot, request_id=''):
+    if not is_enabled():
+        return {'result': 'error', 'message': 'pgvector disabled'}
+    if resource_type not in ['agent', 'plan', 'site'] or not isinstance(snapshot, dict):
+        return {'result': 'error', 'message': 'invalid configuration revision'}
+    ensure_seenical_config_revision_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO seenical_config_revision (
+                app_id, resource_type, resource_id, revision, snapshot,
+                request_id
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (app_id, resource_type, resource_id, revision)
+            DO NOTHING
+            """,
+            (str(app_id), str(resource_type), str(resource_id), int(revision),
+             Json(snapshot), str(request_id or '')))
+        if cursor.rowcount == 0:
+            cursor.execute(
+                """
+                SELECT snapshot
+                FROM seenical_config_revision
+                WHERE app_id=%s AND resource_type=%s AND resource_id=%s
+                  AND revision=%s
+                """,
+                (str(app_id), str(resource_type), str(resource_id),
+                 int(revision)))
+            row = cursor.fetchone()
+            if not row or row[0] != snapshot:
+                conn.rollback()
+                cursor.close()
+                put_connection(conn)
+                return {'result': 'error',
+                        'message': 'configuration revision is inconsistent'}
+        conn.commit()
+        cursor.close()
+        put_connection(conn)
+    return {'result': 'ok'}
+
+
+def get_seenical_config_revision(app_id, resource_type, resource_id, revision):
+    if not is_enabled():
+        return None
+    ensure_seenical_config_revision_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT snapshot
+            FROM seenical_config_revision
+            WHERE app_id=%s AND resource_type=%s AND resource_id=%s
+              AND revision=%s
+            """,
+            (str(app_id), str(resource_type), str(resource_id), int(revision)))
+        row = cursor.fetchone()
+        cursor.close()
+        put_connection(conn)
+    return row[0] if row else None
+
+
+def list_seenical_config_revisions(app_id, resource_type, resource_id,
+                                   limit=20):
+    if not is_enabled():
+        return []
+    ensure_seenical_config_revision_table()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT revision
+            FROM seenical_config_revision
+            WHERE app_id=%s AND resource_type=%s AND resource_id=%s
+            ORDER BY revision DESC LIMIT %s
+            """,
+            (str(app_id), str(resource_type), str(resource_id),
+             min(100, max(1, int(limit)))))
+        rows = cursor.fetchall()
+        cursor.close()
+        put_connection(conn)
+    return [int(row[0]) for row in rows]
 
 sql_pool_host = os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')
 if sql_pool_host:

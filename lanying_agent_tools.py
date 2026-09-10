@@ -228,30 +228,6 @@ TOOL_REGISTRY = {
             },
             'required': ['site_id', 'revision', 'expected_revision']
         }, '_site_rollback'),
-        _tool('seenical_repo_sync', 'seenical.repo.sync', '同步 Console 配置到站点仓库', 'write', 'console_action', {
-            **OBJECT_SCHEMA,
-            'properties': {'site_id': {'type': 'string'}},
-            'required': ['site_id']
-        }, '_repo_sync'),
-        _tool('seenical_repo_config_get', 'seenical.repo.config.get', '查看仓库 Console 配置差异', 'read', 'console_action', {
-            **OBJECT_SCHEMA,
-            'properties': {
-                'site_id': {'type': 'string'},
-                'resource_type': {'type': 'string', 'enum': ['agent', 'plan', 'site']},
-                'resource_id': {'type': 'string'}
-            },
-            'required': ['site_id', 'resource_type', 'resource_id']
-        }, '_repo_config_get'),
-        _tool('seenical_repo_config_apply', 'seenical.repo.config.apply', '应用仓库 Console 配置', 'write', 'console_action', {
-            **OBJECT_SCHEMA,
-            'properties': {
-                'site_id': {'type': 'string'},
-                'resource_type': {'type': 'string', 'enum': ['agent', 'plan', 'site']},
-                'resource_id': {'type': 'string'},
-                'expected_revision': {'type': 'integer'}
-            },
-            'required': ['site_id', 'resource_type', 'resource_id', 'expected_revision']
-        }, '_repo_config_apply'),
         _tool('seenical_console_navigate', 'seenical.console.navigate', '打开 Console 配置页面', 'local', 'local_action', {
             **OBJECT_SCHEMA,
             'properties': {
@@ -276,28 +252,6 @@ SECRET_FIELD_NAMES = {
     'access_token', 'access-token', 'token', 'github_token', 'api_key',
     'secret_key', 'password', 'authorization', 'baidu_token', 'google_token'
 }
-TASK_EXPORT_FIELDS = {
-    'task_id', 'name', 'note', 'chatbot_id', 'prompt', 'article_prompt',
-    'article_language', 'keywords', 'word_count_min', 'word_count_max',
-    'image_count', 'article_count', 'cycle_type', 'cycle_interval',
-    'title_reuse', 'site_id_list', 'target_dir', 'commit_type',
-    'target_summary_dir', 'embedding_condition', 'auto_deploy', 'schedule',
-    'revision'
-}
-SITE_EXPORT_FIELDS = {
-    'site_id', 'name', 'type', 'github_url', 'github_base_branch',
-    'github_base_dir', 'footer_note', 'lanying_link', 'title', 'copyright',
-    'canonical_link', 'meta_keywords', 'official_website_url',
-    'max_latest_num', 'language', 'commit_type', 'icp_number',
-    'hook_sentence_slogan', 'hook_sentence_image', 'github_hosting',
-    'collaborator', 'agent_tools_revision'
-}
-AGENT_EXPORT_FIELDS = {
-    'chatbot_id', 'name', 'model', 'vendor', 'system_prompt',
-    'plugin_ids', 'revision'
-}
-
-
 def _redis():
     return lanying_redis.get_redis_connection()
 
@@ -602,6 +556,15 @@ def _safe_site(site):
     return result
 
 
+def _site_revision_snapshot(site):
+    safe = _safe_site(site) or {}
+    fields = SITE_PATCH_FIELDS | {'site_id', 'agent_tools_revision'}
+    return {
+        field: copy.deepcopy(safe[field])
+        for field in fields if field in safe
+    }
+
+
 def _safe_preview(preview):
     if not isinstance(preview, dict):
         return preview
@@ -642,6 +605,52 @@ def _safe_agent(chatbot):
     }
 
 
+def _revision_snapshot_key(resource_type, app_id, resource_id, revision):
+    return (f'lanying_connector:agent_tools:{resource_type}_revision:'
+            f'{app_id}:{resource_id}:{revision}')
+
+
+def _revision_history_key(resource_type, app_id, resource_id):
+    return (f'lanying_connector:agent_tools:{resource_type}_revision_history:'
+            f'{app_id}:{resource_id}')
+
+
+def _save_config_revision(app_id, resource_type, resource_id, revision,
+                          snapshot, request_id=''):
+    try:
+        return lanying_pgvector.save_seenical_config_revision(
+            app_id, resource_type, resource_id, revision, snapshot, request_id)
+    except Exception:
+        logging.exception('failed to save Seenical configuration revision')
+        return {'result': 'error', 'message': 'configuration revision store unavailable'}
+
+
+def _get_config_revision(app_id, resource_type, resource_id, revision):
+    try:
+        snapshot = lanying_pgvector.get_seenical_config_revision(
+            app_id, resource_type, resource_id, revision)
+        if snapshot is not None:
+            return snapshot
+    except Exception:
+        logging.exception('failed to read Seenical configuration revision')
+    return _load(_redis().get(_revision_snapshot_key(
+        resource_type, app_id, resource_id, revision)), None)
+
+
+def _list_config_revisions(app_id, resource_type, resource_id, limit=20):
+    revisions = []
+    try:
+        revisions = lanying_pgvector.list_seenical_config_revisions(
+            app_id, resource_type, resource_id, limit)
+    except Exception:
+        logging.exception('failed to list Seenical configuration revisions')
+    legacy = lanying_redis.redis_lrange(
+        _redis(), _revision_history_key(resource_type, app_id, resource_id),
+        -limit, -1)
+    return sorted(
+        set(int(value) for value in revisions + legacy), reverse=True)[:limit]
+
+
 def _plan_list(app_id, arguments, request_info):
     result = lanying_grow_ai.get_task_list(app_id)
     if result.get('result') == 'ok':
@@ -657,11 +666,10 @@ def _plan_get(app_id, arguments, request_info):
     task = lanying_grow_ai.get_task(app_id, task_id)
     if task is None:
         return {'result': 'error', 'message': 'task_id not exist'}
-    history = lanying_redis.redis_lrange(
-        _redis(), lanying_grow_ai.get_task_revision_history_key(app_id, task_id), -20, -1)
     return {'result': 'ok', 'data': {
         'task': _safe_task(task),
-        'available_revisions': [int(value) for value in history]
+        'available_revisions': lanying_grow_ai.list_task_revisions(
+            app_id, task_id, 20)
     }}
 
 
@@ -790,11 +798,10 @@ def _agent_get(app_id, arguments, request_info):
     chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
     if chatbot is None:
         return {'result': 'error', 'message': 'chatbot not exist'}
-    history = lanying_redis.redis_lrange(
-        _redis(), f'lanying_connector:agent_tools:agent_revision_history:{app_id}:{chatbot_id}', -20, -1)
     return {'result': 'ok', 'data': {
         'agent': _safe_agent(chatbot),
-        'available_revisions': [int(value) for value in history]
+        'available_revisions': _list_config_revisions(
+            app_id, 'agent', chatbot_id, 20)
     }}
 
 
@@ -853,11 +860,22 @@ def _agent_update(app_id, arguments, request_info):
                 target['content'] = str(changes['system_prompt'])
             preset['messages'] = messages
         next_revision = current_revision + 1
-        snapshot_key = f'lanying_connector:agent_tools:agent_revision:{app_id}:{chatbot_id}:{current_revision}'
+        snapshot = _safe_agent(chatbot)
+        saved = _save_config_revision(
+            app_id, 'agent', chatbot_id, current_revision, snapshot,
+            request_info.get('request_id', ''))
+        if saved.get('result') != 'ok':
+            pipe.unwatch()
+            return {
+                'result': 'error', 'code': 'revision_store_unavailable',
+                'message': 'configuration revision could not be saved'
+            }
+        snapshot_key = _revision_snapshot_key(
+            'agent', app_id, chatbot_id, current_revision)
         pipe.multi()
-        pipe.setnx(snapshot_key, _json(_safe_agent(chatbot)))
+        pipe.setnx(snapshot_key, _json(snapshot))
         pipe.rpush(
-            f'lanying_connector:agent_tools:agent_revision_history:{app_id}:{chatbot_id}',
+            _revision_history_key('agent', app_id, chatbot_id),
             current_revision)
         pipe.hset(key, 'preset', _json(preset))
         pipe.hset(key, 'agent_tools_revision', next_revision)
@@ -874,8 +892,8 @@ def _agent_update(app_id, arguments, request_info):
 def _agent_rollback(app_id, arguments, request_info):
     chatbot_id = str(arguments.get('chatbot_id') or request_info.get('chatbot_id', ''))
     revision = int(arguments.get('revision'))
-    snapshot = _load(_redis().get(
-        f'lanying_connector:agent_tools:agent_revision:{app_id}:{chatbot_id}:{revision}'), None)
+    snapshot = _get_config_revision(
+        app_id, 'agent', chatbot_id, revision)
     if snapshot is None:
         return {'result': 'error', 'message': 'Agent revision snapshot not found'}
     return _agent_update(app_id, {
@@ -899,11 +917,10 @@ def _site_get(app_id, arguments, request_info):
     site = lanying_grow_ai.get_site(app_id, str(arguments.get('site_id', '')))
     if site is None:
         return {'result': 'error', 'message': 'site_id not exist'}
-    history = lanying_redis.redis_lrange(
-        _redis(), f'lanying_connector:agent_tools:site_revision_history:{app_id}:{arguments.get("site_id", "")}', -20, -1)
     return {'result': 'ok', 'data': {
         'site': _safe_site(site),
-        'available_revisions': [int(value) for value in history]
+        'available_revisions': _list_config_revisions(
+            app_id, 'site', str(arguments.get('site_id', '')), 20)
     }}
 
 
@@ -955,14 +972,25 @@ def _site_update(app_id, arguments, request_info):
         if collaborator and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', collaborator):
             pipe.unwatch()
             return {'result': 'error', 'message': 'collaborator has an invalid value'}
-        snapshot_key = f'lanying_connector:agent_tools:site_revision:{app_id}:{site_id}:{current_revision}'
+        snapshot = _site_revision_snapshot(old_site)
+        saved = _save_config_revision(
+            app_id, 'site', site_id, current_revision, snapshot,
+            request_info.get('request_id', ''))
+        if saved.get('result') != 'ok':
+            pipe.unwatch()
+            return {
+                'result': 'error', 'code': 'revision_store_unavailable',
+                'message': 'configuration revision could not be saved'
+            }
+        snapshot_key = _revision_snapshot_key(
+            'site', app_id, site_id, current_revision)
         fields = dict(normalized)
         fields['agent_tools_revision'] = current_revision + 1
         fields['update_time'] = int(time.time())
         pipe.multi()
-        pipe.setnx(snapshot_key, _json(_safe_site(old_site)))
+        pipe.setnx(snapshot_key, _json(snapshot))
         pipe.rpush(
-            f'lanying_connector:agent_tools:site_revision_history:{app_id}:{site_id}',
+            _revision_history_key('site', app_id, site_id),
             current_revision)
         pipe.hmset(key, fields)
         pipe.execute()
@@ -978,8 +1006,8 @@ def _site_update(app_id, arguments, request_info):
 def _site_rollback(app_id, arguments, request_info):
     site_id = str(arguments.get('site_id', ''))
     revision = int(arguments.get('revision'))
-    snapshot = _load(_redis().get(
-        f'lanying_connector:agent_tools:site_revision:{app_id}:{site_id}:{revision}'), None)
+    snapshot = _get_config_revision(
+        app_id, 'site', site_id, revision)
     if snapshot is None:
         return {'result': 'error', 'message': 'site revision snapshot not found'}
     return _site_update(app_id, {
@@ -990,246 +1018,6 @@ def _site_rollback(app_id, arguments, request_info):
         }
     }, request_info)
 
-
-def _export_fields(value, allowed):
-    if not isinstance(value, dict):
-        return {}
-    return {field: copy.deepcopy(value[field]) for field in allowed if field in value}
-
-
-def _console_snapshot(app_id, site_id):
-    task_result = lanying_grow_ai.get_task_list(app_id)
-    plans = [
-        item for item in task_result.get('data', {}).get('list', [])
-        if str(site_id) in set(str(value) for value in item.get('site_id_list', []))
-    ]
-    chatbot_ids = set(str(item.get('chatbot_id', '')) for item in plans)
-    chatbots = [
-        item for item in lanying_chatbot.list_chatbots(app_id)
-        if str(item.get('chatbot_id', '')) in chatbot_ids
-    ]
-    site = lanying_grow_ai.get_site(app_id, str(site_id))
-    snapshot = {
-        'schema_version': SCHEMA_VERSION,
-        'app_id': str(app_id),
-        'agents': [_safe_agent(item) for item in chatbots],
-        'plans': [_export_fields(item, TASK_EXPORT_FIELDS) for item in plans],
-        'sites': [_export_fields(site, SITE_EXPORT_FIELDS)] if site else [],
-    }
-    snapshot['configuration_version'] = hashlib.sha256(
-        _json(snapshot).encode('utf-8')).hexdigest()
-    return snapshot
-
-
-def _github_write_file(site, relative_path, content, commit_message):
-    parsed = lanying_grow_ai.parse_github_url(str(site.get('github_url', '')))
-    if parsed.get('result') != 'ok':
-        return {'result': 'error', 'message': 'site GitHub repository is invalid'}
-    token = str(site.get('github_token', ''))
-    if site.get('github_hosting') == 'on' and str(site.get('github_url', '')).startswith(
-            'https://github.com/' + lanying_grow_ai.get_github_org() + '/'):
-        token = lanying_grow_ai.get_github_token()
-    if not token:
-        return {'result': 'error', 'message': 'site GitHub credential is unavailable'}
-    base_dir = str(site.get('github_base_dir', '')).strip('/')
-    path = '/'.join(item for item in [base_dir, _validate_repo_path(relative_path)] if item)
-    url = (f"https://api.github.com/repos/{parsed['github_owner']}/"
-           f"{parsed['github_repo']}/contents/{path}")
-    branch = str(site.get('github_base_branch', 'master'))
-    headers = _github_headers(token)
-    current = requests.get(url, params={'ref': branch}, headers=headers, timeout=(10, 30))
-    if current.status_code not in [200, 404]:
-        return {'result': 'error', 'message': 'failed to read repository snapshot'}
-    body = {
-        'message': commit_message,
-        'content': base64.b64encode(content.encode('utf-8')).decode('ascii'),
-        'branch': branch,
-    }
-    if current.status_code == 200:
-        body['sha'] = current.json().get('sha')
-        old_content = base64.b64decode(current.json().get('content', '')).decode('utf-8')
-        if old_content == content:
-            return {'result': 'ok', 'data': {'path': path, 'unchanged': True}}
-    updated = requests.put(url, headers=headers, json=body, timeout=(10, 30))
-    if updated.status_code not in [200, 201]:
-        return {'result': 'error', 'message': 'failed to write repository snapshot'}
-    return {
-        'result': 'ok',
-        'data': {'path': path, 'commit_sha': updated.json().get('commit', {}).get('sha', '')}
-    }
-
-
-def _github_read_site_file(site, relative_path):
-    parsed = lanying_grow_ai.parse_github_url(str(site.get('github_url', '')))
-    if parsed.get('result') != 'ok':
-        return None
-    token = str(site.get('github_token', ''))
-    if site.get('github_hosting') == 'on' and str(site.get('github_url', '')).startswith(
-            'https://github.com/' + lanying_grow_ai.get_github_org() + '/'):
-        token = lanying_grow_ai.get_github_token()
-    base_dir = str(site.get('github_base_dir', '')).strip('/')
-    path = '/'.join(item for item in [base_dir, _validate_repo_path(relative_path)] if item)
-    url = (f"https://api.github.com/repos/{parsed['github_owner']}/"
-           f"{parsed['github_repo']}/contents/{path}")
-    response = requests.get(
-        url, params={'ref': str(site.get('github_base_branch', 'master'))},
-        headers=_github_headers(token), timeout=(10, 30))
-    if response.status_code == 404:
-        return None
-    if response.status_code != 200:
-        raise ValueError('failed to read repository manifest')
-    return base64.b64decode(response.json().get('content', '')).decode('utf-8')
-
-
-def _repo_sync(app_id, arguments, request_info):
-    site_id = str(arguments.get('site_id', ''))
-    site = lanying_grow_ai.get_site(app_id, site_id)
-    if site is None:
-        return {'result': 'error', 'message': 'site_id not exist'}
-    try:
-        old_manifest_text = _github_read_site_file(site, '.seenical/manifest.json')
-        manifest = json.loads(old_manifest_text) if old_manifest_text else {}
-        if manifest and int(manifest.get('schema_version', 0)) != SCHEMA_VERSION:
-            return {'result': 'error', 'message': 'existing Seenical manifest version is unsupported'}
-    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        return {'result': 'error', 'message': str(error)}
-    snapshot = _console_snapshot(app_id, site_id)
-    config_text = json.dumps(snapshot, ensure_ascii=False, indent=2) + '\n'
-    config_result = _github_write_file(
-        site, '.seenical/console.json', config_text,
-        'Update Seenical Console configuration snapshot')
-    if config_result.get('result') != 'ok':
-        return config_result
-    manifest['schema_version'] = SCHEMA_VERSION
-    manifest['console_config'] = '.seenical/console.json'
-    manifest_result = _github_write_file(
-        site, '.seenical/manifest.json',
-        json.dumps(manifest, ensure_ascii=False, indent=2) + '\n',
-        'Add Seenical repository manifest')
-    if manifest_result.get('result') != 'ok':
-        return {
-            'result': 'error',
-            'message': 'configuration snapshot was written but manifest update failed',
-            'data': {'config': config_result.get('data', {})}
-        }
-    return {
-        'result': 'ok',
-        'data': {'config': config_result.get('data', {}), 'manifest': manifest_result.get('data', {})}
-    }
-
-
-def _normalize_console_snapshot(app_id, value):
-    if not isinstance(value, dict) or int(value.get('schema_version', 0) or 0) != SCHEMA_VERSION:
-        raise ValueError('console config has an unsupported schema_version')
-    if str(value.get('app_id', '')) != str(app_id):
-        raise ValueError('console config belongs to another application')
-    allowed_top_level = {
-        'schema_version', 'app_id', 'agents', 'plans', 'sites',
-        'configuration_version'
-    }
-    if set(value) - allowed_top_level:
-        raise ValueError('console config contains unsupported fields')
-    normalized = {'schema_version': SCHEMA_VERSION, 'app_id': str(app_id)}
-    for name, allowed in {
-            'agents': AGENT_EXPORT_FIELDS,
-            'plans': TASK_EXPORT_FIELDS,
-            'sites': SITE_EXPORT_FIELDS}.items():
-        collection = value.get(name, [])
-        if not isinstance(collection, list) or len(collection) > 1000:
-            raise ValueError('invalid console config collection: ' + name)
-        normalized[name] = []
-        for item in collection:
-            if not isinstance(item, dict) or set(item) - allowed:
-                raise ValueError('invalid console config resource: ' + name)
-            normalized[name].append(copy.deepcopy(item))
-    expected = hashlib.sha256(_json(normalized).encode('utf-8')).hexdigest()
-    if str(value.get('configuration_version', '')) != expected:
-        raise ValueError('console config version does not match its contents')
-    normalized['configuration_version'] = expected
-    return normalized
-
-
-def _repo_config_values(app_id, arguments, request_info):
-    site_id = str(arguments.get('site_id', ''))
-    site = lanying_grow_ai.get_site(app_id, site_id)
-    if site is None:
-        return {'result': 'error', 'message': 'site_id not exist'}
-    try:
-        text = _github_read_site_file(site, '.seenical/console.json')
-        if not text:
-            return {'result': 'error', 'message': 'site repository has no Console config'}
-        config = _normalize_console_snapshot(app_id, json.loads(text))
-    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        return {'result': 'error', 'message': str(error)}
-    resource_type = str(arguments.get('resource_type', ''))
-    resource_id = str(arguments.get('resource_id', ''))
-    collection_name, id_field = {
-        'agent': ('agents', 'chatbot_id'),
-        'plan': ('plans', 'task_id'),
-        'site': ('sites', 'site_id'),
-    }.get(resource_type, ('', ''))
-    if not collection_name:
-        return {'result': 'error', 'message': 'unsupported repository resource type'}
-    imported = next((
-        item for item in config.get(collection_name, [])
-        if isinstance(item, dict) and str(item.get(id_field, '')) == resource_id
-    ), None)
-    if imported is None:
-        return {'result': 'error', 'message': 'repository resource not found'}
-    if resource_type == 'agent':
-        current_result = _agent_get(app_id, {'chatbot_id': resource_id}, request_info)
-        current = current_result.get('data', {}).get('agent')
-        fields = ['model', 'vendor', 'system_prompt', 'plugin_ids']
-    elif resource_type == 'plan':
-        current = _safe_task(lanying_grow_ai.get_task(app_id, resource_id))
-        fields = sorted(lanying_grow_ai.TASK_PATCH_FIELDS - {'file_list', 'deploy'})
-    else:
-        current = _safe_site(lanying_grow_ai.get_site(app_id, resource_id))
-        fields = sorted(SITE_PATCH_FIELDS)
-    if current is None:
-        return {'result': 'error', 'message': 'Console resource not found'}
-    changes = {
-        field: copy.deepcopy(imported[field]) for field in fields
-        if field in imported and _json(imported[field]) != _json(current.get(field))
-    }
-    return {'result': 'ok', 'data': {
-        'site_id': site_id,
-        'resource_type': resource_type,
-        'resource_id': resource_id,
-        'current': current,
-        'imported': {field: copy.deepcopy(imported[field]) for field in fields if field in imported},
-        'changes': changes,
-    }}
-
-
-def _repo_config_get(app_id, arguments, request_info):
-    return _repo_config_values(app_id, arguments, request_info)
-
-
-def _repo_config_apply(app_id, arguments, request_info):
-    if 'expected_revision' not in arguments:
-        return {'result': 'error', 'message': 'expected_revision is required'}
-    values_result = _repo_config_values(app_id, arguments, request_info)
-    if values_result.get('result') != 'ok':
-        return values_result
-    values = values_result['data']
-    changes = values['changes']
-    if not changes:
-        return {'result': 'ok', 'data': {'unchanged': True, **values}}
-    common = {
-        'expected_revision': arguments.get('expected_revision'),
-    }
-    if values['resource_type'] == 'agent':
-        return _agent_update(app_id, {
-            **common, 'chatbot_id': values['resource_id'], 'changes': changes
-        }, request_info)
-    if values['resource_type'] == 'plan':
-        return _plan_update(app_id, {
-            **common, 'task_id': values['resource_id'], 'changes': changes
-        }, request_info)
-    return _site_update(app_id, {
-        **common, 'site_id': values['resource_id'], 'changes': changes
-    }, request_info)
 
 
 def _safe_execution_result(value):
@@ -1296,32 +1084,6 @@ def _preview_tool(app_id, tool_id, arguments, request_info):
         return ({'before': _safe_site(current), 'after': _safe_site(after)}
                 if tool_id == 'seenical.site.update'
                 else {'target': _safe_site(current), 'revision': arguments.get('revision')})
-    if tool_id == 'seenical.repo.sync':
-        site_id = str(arguments.get('site_id', ''))
-        snapshot = _console_snapshot(app_id, site_id)
-        return {
-            'target': _safe_site(lanying_grow_ai.get_site(app_id, site_id)),
-            'export_summary': {
-                'agent_count': len(snapshot.get('agents', [])),
-                'plan_count': len(snapshot.get('plans', [])),
-                'site_count': len(snapshot.get('sites', [])),
-                'content_hash': hashlib.sha256(
-                    _json(snapshot).encode('utf-8')).hexdigest()
-            }
-        }
-    if tool_id == 'seenical.repo.config.apply':
-        values_result = _repo_config_values(app_id, arguments, request_info)
-        if values_result.get('result') != 'ok':
-            return {'arguments': arguments, 'validation_error': values_result.get('message', '')}
-        values = values_result.get('data', {})
-        before = values.get('current', {})
-        after = copy.deepcopy(before)
-        after.update(values.get('changes', {}))
-        return {
-            'before': before,
-            'after': after,
-            'site_id': values.get('site_id', ''),
-        }
     return {'arguments': arguments}
 
 

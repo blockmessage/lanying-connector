@@ -67,6 +67,10 @@ def load_grow_ai():
         "lanying_baidu": empty,
         "lanying_google": empty,
         "lanying_oss": empty,
+        "lanying_pgvector": types.SimpleNamespace(
+            save_seenical_config_revision=lambda *args, **kwargs: {"result": "ok"},
+            get_seenical_config_revision=lambda *args, **kwargs: None,
+            list_seenical_config_revisions=lambda *args, **kwargs: []),
         "github": types.SimpleNamespace(Github=object),
         "dateutil": types.SimpleNamespace(),
         "dateutil.relativedelta": types.SimpleNamespace(relativedelta=object),
@@ -133,6 +137,27 @@ class GrowAIPatchTest(unittest.TestCase):
         self.assertEqual("error", result["result"])
         self.assertEqual("revision_conflict", result["code"])
         self.assertEqual(7, result["data"]["revision"])
+
+    def test_patch_does_not_write_when_revision_snapshot_cannot_be_saved(self):
+        current = task()
+        redis = FakeRedis(4)
+        with mock.patch.object(self.module, "get_task", return_value=current), mock.patch.object(
+                self.module, "check_task_content_security", return_value={"result": "ok"}), mock.patch.object(
+                self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
+                self.module.lanying_pgvector, "save_seenical_config_revision",
+                return_value={"result": "error"}):
+            result = self.module.patch_task(
+                "app", "task", {"article_prompt": "New article prompt"},
+                expected_revision=4, request_id="request-1")
+
+        self.assertEqual("revision_store_unavailable", result["code"])
+        self.assertEqual([], redis.pipeline_value.hmset_calls)
+
+    def test_durable_revision_excludes_file_urls_and_deploy_payload(self):
+        snapshot = self.module._task_revision_snapshot(task())
+        self.assertNotIn("file_list", snapshot)
+        self.assertNotIn("deploy", snapshot)
+        self.assertEqual("Old article prompt", snapshot["article_prompt"])
 
 
 if __name__ == "__main__":
