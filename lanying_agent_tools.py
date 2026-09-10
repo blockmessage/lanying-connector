@@ -35,7 +35,7 @@ REQUEST_TTL_SECONDS = 600
 RESULT_TTL_SECONDS = 24 * 3600
 MAX_SKILL_BYTES = 256 * 1024
 MAX_SKILL_TOTAL_BYTES = 512 * 1024
-MAX_SKILL_COUNT = 32
+MAX_SKILL_REPOSITORY_FILES = 256
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_LOCAL_RESULT_BYTES = 4096
 MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
@@ -1591,7 +1591,13 @@ def _github_tree(owner, repo, revision, token):
     for raw in tree:
         item = raw if isinstance(raw, dict) else {}
         path = str(item.get('path', ''))
-        if not (path == '.seenical' or path.startswith('.seenical/')):
+        relevant = (
+            path == '.seenical' or path.startswith('.seenical/')
+            or path == 'SKILL.md' or path == 'agents'
+            or path.startswith('agents/') or path == 'references'
+            or path.startswith('references/') or path == 'scripts'
+            or path.startswith('scripts/'))
+        if not relevant:
             continue
         entry_type = str(item.get('type', ''))
         mode = str(item.get('mode', ''))
@@ -1602,7 +1608,7 @@ def _github_tree(owner, repo, revision, token):
         if int(item.get('size', 0) or 0) > MAX_SKILL_BYTES:
             raise ValueError('public Skill repository file is too large')
         public_files.add(_validate_repo_path(path))
-    if len(public_files) > MAX_SKILL_COUNT + 1:
+    if len(public_files) > MAX_SKILL_REPOSITORY_FILES:
         raise ValueError('public Skill repository contains too many files')
     return public_files
 
@@ -1664,6 +1670,36 @@ def _parse_skill_markdown(text):
     return metadata, instructions.strip()
 
 
+def _skill_resource_paths(repository_files, skill_dir):
+    prefix = '' if skill_dir == '.' else skill_dir + '/'
+    result = []
+    for path in sorted(repository_files or []):
+        if skill_dir == '.':
+            if path == 'SKILL.md' or not path.startswith(
+                    ('agents/', 'references/', 'scripts/')):
+                continue
+            relative = path
+        else:
+            if not path.startswith(prefix) or path == prefix + 'SKILL.md':
+                continue
+            relative = path[len(prefix):]
+        allowed = (
+            relative == 'agents/openai.yaml'
+            or (relative.startswith('references/')
+                and PurePosixPath(relative).suffix.lower()
+                in ['.md', '.json', '.yaml', '.yml'])
+        )
+        if not allowed:
+            raise ValueError(
+                'public Skill repository contains unsupported files: ' + path)
+        result.append((path, relative))
+    return result
+
+
+def _skill_file_path(skill_dir, relative_path):
+    return relative_path if skill_dir == '.' else skill_dir + '/' + relative_path
+
+
 # Public Skill catalog -----------------------------------------------------
 
 def _public_repository_config():
@@ -1693,8 +1729,8 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
     if unknown:
         raise ValueError('unsupported manifest fields: ' + ','.join(sorted(unknown)))
     descriptors = manifest.get('skills', [])
-    if not isinstance(descriptors, list) or not descriptors or len(descriptors) > MAX_SKILL_COUNT:
-        raise ValueError('invalid Skill list')
+    if not isinstance(descriptors, list) or len(descriptors) != 1:
+        raise ValueError('public Skill repository must contain exactly one Skill')
     skills = []
     seen_ids = set()
     total_bytes = 0
@@ -1714,11 +1750,10 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
             raise ValueError('invalid or duplicate skill_id')
         seen_ids.add(skill_id)
         skill_dir = _validate_repo_path(descriptor.get('path'))
-        expected_dir = '.seenical/skills/' + skill_id
-        if skill_dir != expected_dir:
-            raise ValueError('Skill path must match skill_id: ' + skill_id)
+        if skill_dir != '.':
+            raise ValueError('single-repository Skill path must be the repository root')
         skill_text, skill_sha = _github_file(
-            config['owner'], config['repo'], skill_dir + '/SKILL.md',
+            config['owner'], config['repo'], _skill_file_path(skill_dir, 'SKILL.md'),
             source_commit, '', MAX_SKILL_BYTES)
         total_bytes += len(skill_text.encode('utf-8'))
         if total_bytes > MAX_SKILL_TOTAL_BYTES:
@@ -1726,6 +1761,22 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
         metadata, instructions = _parse_skill_markdown(skill_text)
         if set(metadata) - {'name', 'description'}:
             raise ValueError('SKILL.md can only contain descriptive frontmatter')
+        resources = {}
+        for resource_path, relative_path in _skill_resource_paths(
+                repository_files, skill_dir):
+            resource_text, _ = _github_file(
+                config['owner'], config['repo'], resource_path,
+                source_commit, '', MAX_SKILL_BYTES)
+            total_bytes += len(resource_text.encode('utf-8'))
+            if total_bytes > MAX_SKILL_TOTAL_BYTES:
+                raise ValueError('Skill content is too large')
+            if relative_path.endswith(('.json', '.yaml', '.yml')):
+                parsed_resource = (json.loads(resource_text)
+                                   if relative_path.endswith('.json')
+                                   else yaml.safe_load(resource_text))
+                if not isinstance(parsed_resource, dict):
+                    raise ValueError('invalid structured Skill resource: ' + resource_path)
+            resources[relative_path] = resource_text
         tool_requirements = _normalize_tool_requirements(
             descriptor.get('tools', []))
         scopes = descriptor.get('scopes', [])
@@ -1746,6 +1797,7 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
             'tool_requirements': tool_requirements,
             'scopes': sorted(set(str(value) for value in scopes)),
             'sha': skill_sha,
+            'resources': resources,
         }
         normalized['security_digest'] = hashlib.sha256(_json({
             'skill_id': skill_id,
@@ -1769,8 +1821,11 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
         _json(catalog).encode('utf-8')).hexdigest()
     if repository_files is not None:
         expected_files = {config['manifest_path']}
-        expected_files.update(
-            skill['path'] + '/SKILL.md' for skill in skills)
+        for skill in skills:
+            expected_files.add(_skill_file_path(skill['path'], 'SKILL.md'))
+            expected_files.update(
+                _skill_file_path(skill['path'], path)
+                for path in skill.get('resources', {}))
         if set(repository_files) != expected_files:
             raise ValueError(
                 'public Skill repository contains unsupported files')

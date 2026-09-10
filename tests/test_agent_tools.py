@@ -184,7 +184,7 @@ class AgentToolsTest(unittest.TestCase):
                 "skill_id": "writer",
                 "name": "Writer",
                 "description": "Writes content",
-                "path": ".seenical/skills/writer",
+                "path": ".",
                 "tools": [{"id": "seenical.plan.list", "min_version": 1}],
                 "scopes": ["plans:read"],
             }],
@@ -204,7 +204,7 @@ class AgentToolsTest(unittest.TestCase):
         self.assertNotIn("handler", catalog["skills"][0])
 
         bad = json.loads(manifest)
-        bad["skills"][0]["path"] = ".seenical/skills/another"
+        bad["skills"][0]["path"] = "skills/writer"
         with self.assertRaises(ValueError):
             self.module._normalize_public_skill_catalog(
                 config, "a" * 40, json.dumps(bad), "manifest-sha")
@@ -215,7 +215,7 @@ class AgentToolsTest(unittest.TestCase):
             "skills": [{
                 "skill_id": "writer", "name": "Writer",
                 "description": "Writes content",
-                "path": ".seenical/skills/writer",
+                "path": ".",
                 "tools": [], "scopes": [],
             }],
         })
@@ -231,9 +231,45 @@ class AgentToolsTest(unittest.TestCase):
                 self.module._normalize_public_skill_catalog(
                     config, "a" * 40, manifest, "manifest-sha", {
                         ".seenical/manifest.json",
-                        ".seenical/skills/writer/SKILL.md",
-                        ".seenical/skills/writer/run.sh",
+                        "SKILL.md",
+                        "scripts/run.sh",
                     })
+
+    def test_public_catalog_loads_standard_skill_references(self):
+        manifest = json.dumps({
+            "schema_version": 1,
+            "skills": [{
+                "skill_id": "writer", "name": "Writer",
+                "description": "Writes content",
+                "path": ".",
+                "tools": [], "scopes": [],
+            }],
+        })
+        config = {
+            "repository_url": "https://github.com/seenical/skills",
+            "owner": "seenical", "repo": "skills", "ref": "main",
+            "manifest_path": ".seenical/manifest.json",
+        }
+        files = {
+            "SKILL.md": (
+                "---\nname: writer\ndescription: Write content.\n---\n\nRead the API.",
+                "skill-sha"),
+            "references/api.json": (
+                '{"schema_version":1}', "api-sha"),
+            "agents/openai.yaml": (
+                'interface:\n  display_name: "Writer"\n', "agent-sha"),
+        }
+        with mock.patch.object(
+                self.module, "_github_file",
+                side_effect=lambda owner, repo, path, ref, token, limit: files[path]):
+            catalog = self.module._normalize_public_skill_catalog(
+                config, "a" * 40, manifest, "manifest-sha", {
+                    ".seenical/manifest.json", *files.keys(),
+                })
+
+        resources = catalog["skills"][0]["resources"]
+        self.assertIn("references/api.json", resources)
+        self.assertIn("agents/openai.yaml", resources)
 
     def test_authorization_projection_is_app_and_agent_scoped(self):
         module = self.module
