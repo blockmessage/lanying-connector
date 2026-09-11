@@ -9,6 +9,7 @@ changing arguments after the user has reviewed them.
 import base64
 import copy
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -39,8 +40,10 @@ MAX_SKILL_REPOSITORY_FILES = 256
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_LOCAL_RESULT_BYTES = 64 * 1024
 MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
+MAX_TOOL_SCHEMA_BYTES = 256 * 1024
 MAX_NOTIFY_BYTES = 4096
 OFFICIAL_SKILL_ID = 'seenical-console'
+PUBLIC_SKILL_BUILTIN_TOOL_IDS = {'seenical.console.navigate'}
 SUPPORTED_CLIENT_RUNTIMES = {('butler_api', 1)}
 PUBLIC_CATALOG_CACHE_KEY = 'lanying_connector:agent_tools:public_catalog:active'
 PUBLIC_CATALOG_DIRTY_KEY = 'lanying_connector:agent_tools:public_catalog:dirty'
@@ -63,6 +66,7 @@ def _tool(function_name, tool_id, title, risk, execution, parameters, handler=No
 OBJECT_SCHEMA = {'type': 'object', 'additionalProperties': False}
 PLAN_CHANGE_PROPERTIES = {
     'name': {'type': 'string'}, 'note': {'type': 'string'},
+    'chatbot_id': {'type': 'string'},
     'prompt': {'type': 'string'}, 'article_prompt': {'type': 'string'},
     'article_language': {'type': 'string', 'enum': ['auto', 'zh-hans', 'en']},
     'keywords': {'type': 'string'},
@@ -76,6 +80,7 @@ PLAN_CHANGE_PROPERTIES = {
     'commit_type': {'type': 'string', 'enum': ['branch', 'pull_request']},
     'target_summary_dir': {'type': 'string'},
     'auto_deploy': {'type': 'string', 'enum': ['on', 'off']},
+    'embedding_condition': {'type': 'object'},
 }
 SITE_CHANGE_PROPERTIES = {
     field: {'type': 'string'} for field in [
@@ -111,22 +116,17 @@ TOOL_REGISTRY = {
             **OBJECT_SCHEMA,
             'properties': {
                 'task_id': {'type': 'string'},
-                'changes': {
-                    'type': 'object', 'properties': PLAN_CHANGE_PROPERTIES,
-                    'additionalProperties': False
-                },
-                'expected_revision': {'type': 'integer'}
+                **PLAN_CHANGE_PROPERTIES,
             },
-            'required': ['task_id', 'changes', 'expected_revision']
+            'required': ['task_id']
         }, '_plan_update'),
         _tool('seenical_plan_schedule', 'seenical.plan.schedule', '修改计划调度状态', 'write', 'console_action', {
             **OBJECT_SCHEMA,
             'properties': {
                 'task_id': {'type': 'string'},
-                'schedule': {'type': 'string', 'enum': ['on', 'off']},
-                'expected_revision': {'type': 'integer'}
+                'schedule': {'type': 'string', 'enum': ['on', 'off']}
             },
-            'required': ['task_id', 'schedule', 'expected_revision']
+            'required': ['task_id', 'schedule']
         }, '_plan_schedule'),
         _tool('seenical_plan_run', 'seenical.plan.run', '立即运行生成计划', 'execute', 'console_action', {
             **OBJECT_SCHEMA,
@@ -184,18 +184,11 @@ TOOL_REGISTRY = {
             **OBJECT_SCHEMA,
             'properties': {
                 'chatbot_id': {'type': 'string'},
-                'changes': {
-                    'type': 'object',
-                    'properties': {
-                        'model': {'type': 'string'}, 'vendor': {'type': 'string'},
-                        'system_prompt': {'type': 'string'},
-                        'plugin_ids': {'type': 'array', 'items': {'type': 'string'}}
-                    },
-                    'additionalProperties': False
-                },
-                'expected_revision': {'type': 'integer'}
+                'model': {'type': 'string'}, 'vendor': {'type': 'string'},
+                'system_prompt': {'type': 'string'},
+                'plugin_ids': {'type': 'array', 'items': {'type': 'string'}}
             },
-            'required': ['changes', 'expected_revision']
+            'required': ['chatbot_id']
         }, '_agent_update'),
         _tool('seenical_agent_rollback', 'seenical.agent.rollback', '回退 Agent 创作配置', 'destructive', 'console_action', {
             **OBJECT_SCHEMA,
@@ -217,13 +210,9 @@ TOOL_REGISTRY = {
             **OBJECT_SCHEMA,
             'properties': {
                 'site_id': {'type': 'string'},
-                'changes': {
-                    'type': 'object', 'properties': SITE_CHANGE_PROPERTIES,
-                    'additionalProperties': False
-                },
-                'expected_revision': {'type': 'integer'}
+                **SITE_CHANGE_PROPERTIES
             },
-            'required': ['site_id', 'changes', 'expected_revision']
+            'required': ['site_id']
         }, '_site_update'),
         _tool('seenical_site_rollback', 'seenical.site.rollback', '回退网站非敏感配置', 'destructive', 'console_action', {
             **OBJECT_SCHEMA,
@@ -255,7 +244,111 @@ SITE_PATCH_FIELDS = {
 }
 SECRET_FIELD_NAMES = {
     'access_token', 'access-token', 'token', 'github_token', 'api_key',
-    'secret_key', 'password', 'authorization', 'baidu_token', 'google_token'
+    'secret_key', 'password', 'authorization', 'baidu_token', 'google_token',
+    'headers', 'envs', 'auth', 'cookie', 'cookies', 'credential', 'credentials'
+}
+RISK_ORDER = {'read': 0, 'write': 1, 'execute': 2, 'destructive': 3}
+
+# Public Skills may describe Tools dynamically, but they may only point at an
+# existing Console contract reviewed here.  This keeps the repository easy to
+# update without making it an arbitrary authenticated HTTP client.
+BUTLER_API_POLICY = {
+    ('GET', '/app/config/lanying_connector'): ('read', set()),
+    ('GET', '/app/list_models'): ('read', set()),
+    ('GET', '/app/list_chatbots'): ('read', set()),
+    ('POST', '/app/create_chatbot'): ('write', {'name', 'desc', 'nickname'}),
+    ('POST', '/app/configure_chatbot'): ('write', {'chatbot_id', 'model', 'vendor', 'system_prompt', 'plugin_ids'}),
+    ('GET', '/app/list_ai_plugins'): ('read', set()),
+    ('GET', '/app/list_ai_functions'): ('read', {'plugin_id', 'start', 'end'}),
+    ('POST', '/app/create_ai_plugin'): ('write', {'plugin_name'}),
+    ('POST', '/app/configure_ai_plugin'): ('write', {'plugin_id', 'name', 'endpoint'}),
+    ('POST', '/app/configure_ai_function'): ('write', {'plugin_id', 'function_id', 'name', 'description', 'parameters', 'function_call', 'priority', 'force_call'}),
+    ('GET', '/app/get_ai_plugin_bind_relation'): ('read', set()),
+    ('POST', '/app/bind_ai_plugin'): ('write', {'type', 'name', 'list'}),
+    ('GET', '/app/get_ai_plugin_embedding'): ('read', set()),
+    ('POST', '/app/configure_ai_plugin_embedding'): ('write', {'embedding_max_tokens', 'embedding_max_blocks', 'vendor', 'model'}),
+    ('GET', '/app/list_embeddings'): ('read', set()),
+    ('GET', '/app/list_embedding_docs'): ('read', {'embedding_name', 'start', 'end'}),
+    ('GET', '/app/list_embedding_tasks'): ('read', {'embedding_name'}),
+    ('POST', '/app/create_embedding'): ('write', {'embedding_name', 'algo', 'admin_user_ids', 'max_block_size', 'overlapping_size', 'preset_name', 'vendor', 'model'}),
+    ('POST', '/app/configure_embedding'): ('write', {'embedding_name', 'admin_user_ids', 'preset_name', 'embedding_max_tokens', 'embedding_max_blocks', 'embedding_content', 'new_embedding_name', 'max_block_size', 'overlapping_size', 'vendor', 'model', 'tags'}),
+    ('POST', '/app/add_doc_to_embedding'): ('write', {'embedding_name', 'type', 'url', 'limit', 'urls', 'filters', 'max_depth', 'generate_lanying_links', 'tags'}),
+    ('POST', '/app/continue_embedding_task'): ('execute', {'embedding_name', 'task_id'}),
+    ('POST', '/app/re_run_doc_to_embedding'): ('execute', {'embedding_name', 'doc_id'}),
+    ('POST', '/app/re_run_all_doc_to_embedding'): ('execute', {'embedding_name'}),
+    ('GET', '/app/grow_ai/usage'): ('read', set()),
+    ('GET', '/app/grow_ai/get_task_list'): ('read', set()),
+    ('POST', '/app/grow_ai/create_task'): ('write', set(PLAN_CHANGE_PROPERTIES) | {'chatbot_id', 'run_immediately'}),
+    ('POST', '/app/grow_ai/configure_task'): ('write', set(PLAN_CHANGE_PROPERTIES) | {'task_id'}),
+    ('POST', '/app/grow_ai/set_task_schedule'): ('write', {'task_id', 'schedule'}),
+    ('POST', '/app/grow_ai/run_task'): ('execute', {'task_id'}),
+    ('GET', '/app/grow_ai/get_task_run_list'): ('read', {'task_id'}),
+    ('GET', '/app/grow_ai/get_task_run_result_list'): ('read', {'task_run_id'}),
+    ('POST', '/app/grow_ai/task_run_retry'): ('execute', {'task_run_id'}),
+    ('POST', '/app/grow_ai/task_run_preview'): ('execute', {'task_run_id'}),
+    ('POST', '/app/grow_ai/preview_retry'): ('execute', {'preview_id'}),
+    ('POST', '/app/grow_ai/preview_publish'): ('destructive', {'preview_id'}),
+    ('POST', '/app/grow_ai/preview_discard'): ('destructive', {'preview_id'}),
+    ('POST', '/app/grow_ai/task_run_deploy'): ('execute', {'task_run_id', 'site_id'}),
+    ('GET', '/app/grow_ai/get_site_list'): ('read', set()),
+    ('POST', '/app/grow_ai/create_site'): ('write', set(SITE_CHANGE_PROPERTIES)),
+    ('POST', '/app/grow_ai/configure_site'): ('write', set(SITE_CHANGE_PROPERTIES) | {'site_id'}),
+    ('GET', '/app/grow_ai/site_statistics'): ('read', {'site_id', 'start_date', 'end_date', 'targets'}),
+    ('GET', '/app/grow_ai/get_site_custom_domain_info'): ('read', {'site_id'}),
+    ('GET', '/app/grow_ai/site_custom_domain_check_cname'): ('read', {'site_id'}),
+    ('GET', '/app/grow_ai/get_site_custom_domain_info_list'): ('read', set()),
+    ('POST', '/app/grow_ai/create_custom_domain'): ('write', {'site_id', 'domain'}),
+}
+BUTLER_API_RESULT_FIELDS = {
+    ('GET', '/app/config/lanying_connector'): {
+        'enable', 'userId', 'service', 'messagePerMonthPerUser',
+        'dailyQuotaFusePercent', 'historyMsgCountMin', 'historyMsgCountMax',
+        'historyMsgSizeMax'
+    },
+    ('GET', '/app/list_models'): {'list', 'models', 'vendors'},
+    ('GET', '/app/list_chatbots'): {'list', 'total'},
+    ('POST', '/app/create_chatbot'): {'id', 'chatbot_id', 'name'},
+    ('POST', '/app/configure_chatbot'): {'id', 'changed_fields', 'resource'},
+    ('GET', '/app/list_ai_plugins'): {'list', 'total'},
+    ('GET', '/app/list_ai_functions'): {'list', 'total'},
+    ('POST', '/app/create_ai_plugin'): {'id', 'plugin_id', 'name'},
+    ('POST', '/app/configure_ai_plugin'): {'success', 'id', 'changed_fields', 'resource'},
+    ('POST', '/app/configure_ai_function'): {'success', 'id', 'changed_fields', 'resource'},
+    ('GET', '/app/get_ai_plugin_bind_relation'): {'relations', 'list'},
+    ('POST', '/app/bind_ai_plugin'): {'success', 'changed_fields'},
+    ('GET', '/app/get_ai_plugin_embedding'): {'embedding_max_tokens', 'embedding_max_blocks', 'vendor', 'model'},
+    ('POST', '/app/configure_ai_plugin_embedding'): {'success', 'id', 'changed_fields', 'resource'},
+    ('GET', '/app/list_embeddings'): {'list', 'total'},
+    ('GET', '/app/list_embedding_docs'): {'list', 'total'},
+    ('GET', '/app/list_embedding_tasks'): {'list', 'total'},
+    ('POST', '/app/create_embedding'): {'success', 'id', 'embedding_uuid'},
+    ('POST', '/app/configure_embedding'): {'success', 'id', 'changed_fields', 'resource'},
+    ('POST', '/app/add_doc_to_embedding'): {'success', 'task_id'},
+    ('POST', '/app/continue_embedding_task'): {'success', 'task_id', 'status'},
+    ('POST', '/app/re_run_doc_to_embedding'): {'success', 'doc_id', 'status'},
+    ('POST', '/app/re_run_all_doc_to_embedding'): {'success', 'status'},
+    ('GET', '/app/grow_ai/usage'): {'usage', 'limits', 'storage', 'traffic'},
+    ('GET', '/app/grow_ai/get_task_list'): {'list', 'total'},
+    ('POST', '/app/grow_ai/create_task'): {'id', 'task_id', 'status'},
+    ('POST', '/app/grow_ai/configure_task'): {'id', 'changed_fields', 'resource', 'task'},
+    ('POST', '/app/grow_ai/set_task_schedule'): {'task_id', 'schedule', 'status'},
+    ('POST', '/app/grow_ai/run_task'): {'task_id', 'task_run_id', 'status'},
+    ('GET', '/app/grow_ai/get_task_run_list'): {'list', 'total'},
+    ('GET', '/app/grow_ai/get_task_run_result_list'): {'list', 'total', 'status'},
+    ('POST', '/app/grow_ai/task_run_retry'): {'task_run_id', 'status', 'success'},
+    ('POST', '/app/grow_ai/task_run_preview'): {'preview_id', 'task_run_id', 'status', 'url'},
+    ('POST', '/app/grow_ai/preview_retry'): {'preview_id', 'status', 'url'},
+    ('POST', '/app/grow_ai/preview_publish'): {'preview_id', 'status', 'deployment_id'},
+    ('POST', '/app/grow_ai/preview_discard'): {'preview_id', 'status', 'success'},
+    ('POST', '/app/grow_ai/task_run_deploy'): {'task_run_id', 'status', 'deployment_id', 'url'},
+    ('GET', '/app/grow_ai/get_site_list'): {'list', 'total'},
+    ('POST', '/app/grow_ai/create_site'): {'id', 'site_id', 'status', 'url'},
+    ('POST', '/app/grow_ai/configure_site'): {'id', 'changed_fields', 'resource'},
+    ('GET', '/app/grow_ai/site_statistics'): {'statistics', 'list', 'total'},
+    ('GET', '/app/grow_ai/get_site_custom_domain_info'): {'domain', 'status', 'cname', 'site_id'},
+    ('GET', '/app/grow_ai/site_custom_domain_check_cname'): {'domain', 'status', 'cname', 'valid'},
+    ('GET', '/app/grow_ai/get_site_custom_domain_info_list'): {'list', 'total'},
+    ('POST', '/app/grow_ai/create_custom_domain'): {'site_id', 'domain', 'status', 'cname'},
 }
 def _redis():
     return lanying_redis.get_redis_connection()
@@ -320,6 +413,29 @@ def validate_tool_arguments(tool, arguments):
     if _contains_secret_key(arguments):
         raise ValueError('tool arguments contain a forbidden credential field')
     _validate_tool_value(arguments, tool.get('parameters', {}))
+    for field in ['endpoint', 'url', 'canonical_link', 'official_website_url',
+                  'hook_sentence_image', 'lanying_link']:
+        if field in arguments and arguments[field]:
+            _validate_public_url(
+                arguments[field], https_only=(field == 'endpoint'))
+    for value in arguments.get('urls', []) if isinstance(arguments.get('urls'), list) else []:
+        _validate_public_url(value)
+
+
+def _validate_public_url(value, https_only=False):
+    parsed = urlparse(str(value))
+    allowed_schemes = ['https'] if https_only else ['http', 'https']
+    hostname = str(parsed.hostname or '').strip().lower()
+    if (parsed.scheme not in allowed_schemes or not hostname or parsed.username
+            or parsed.password or hostname == 'localhost'
+            or hostname.endswith(('.localhost', '.local', '.internal'))):
+        raise ValueError('URL must use a public ' + ('HTTPS' if https_only else 'HTTP or HTTPS') + ' address')
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return
+    if not address.is_global:
+        raise ValueError('URL cannot use a private or local address')
 
 
 def feature_key(app_id, chatbot_id='*'):
@@ -442,6 +558,11 @@ def _conversation_scope(config):
 
 def find_capability(app_id, config, tool_id=None, runtime=None):
     chatbot_id, conversation_type, conversation_id, im_user_id = _conversation_scope(config)
+    client_context = config.get('seenical_client_context', {})
+    expected_instance_id = (str(client_context.get('client_instance_id', ''))
+                            if isinstance(client_context, dict) else '')
+    expected_session_id = (str(client_context.get('seenical_session_id', ''))
+                           if isinstance(client_context, dict) else '')
     if not is_feature_enabled(app_id, chatbot_id):
         return None
     binding = get_im_binding_projection(app_id)
@@ -459,6 +580,10 @@ def find_capability(app_id, config, tool_id=None, runtime=None):
             redis.srem(index, instance_id)
             continue
         if capability.get('im_user_id') and str(capability.get('im_user_id')) != im_user_id:
+            continue
+        if expected_instance_id and instance_id != expected_instance_id:
+            continue
+        if expected_session_id and str(capability.get('seenical_session_id', '')) != expected_session_id:
             continue
         if chatbot_id not in capability.get('chatbot_ids', [capability.get('chatbot_id', '')]):
             continue
@@ -586,7 +711,7 @@ def registry_function(tool_id):
         raise KeyError(tool_id)
     return {
         'name': tool['function_name'],
-        'description': tool['title'],
+        'description': tool.get('description', tool['title']),
         'parameters': copy.deepcopy(tool['parameters']),
         'priority': 5,
         'function_call': {
@@ -769,20 +894,18 @@ def _plan_create(app_id, arguments, request_info):
 
 
 def _plan_update(app_id, arguments, request_info):
-    if 'expected_revision' not in arguments:
-        return {'result': 'error', 'message': 'expected_revision is required'}
+    changes = {
+        key: value for key, value in arguments.items()
+        if key != 'task_id'
+    }
     return lanying_grow_ai.patch_task(
-        app_id, str(arguments.get('task_id', '')), arguments.get('changes', {}),
-        arguments.get('expected_revision'), request_info.get('request_id', ''))
+        app_id, str(arguments.get('task_id', '')), changes)
 
 
 def _plan_schedule(app_id, arguments, request_info):
-    if 'expected_revision' not in arguments:
-        return {'result': 'error', 'message': 'expected_revision is required'}
-    return lanying_grow_ai.set_task_schedule_revisioned(
+    return lanying_grow_ai.set_task_schedule(
         app_id, str(arguments.get('task_id', '')),
-        str(arguments.get('schedule', '')),
-        arguments.get('expected_revision'), request_info.get('request_id', ''))
+        str(arguments.get('schedule', '')))
 
 
 def _plan_run(app_id, arguments, request_info):
@@ -862,44 +985,35 @@ def _agent_get(app_id, arguments, request_info):
 
 def _agent_update(app_id, arguments, request_info):
     chatbot_id = str(arguments.get('chatbot_id') or request_info.get('chatbot_id', ''))
-    changes = arguments.get('changes', {})
+    changes = arguments.get('changes')
+    if changes is None:
+        changes = {
+            key: value for key, value in arguments.items()
+            if key in {'model', 'vendor', 'system_prompt', 'plugin_ids'}
+        }
     if not isinstance(changes, dict) or not changes or set(changes) - {'model', 'vendor', 'system_prompt', 'plugin_ids'}:
         return {'result': 'error', 'message': 'unsupported Agent changes'}
-    if 'expected_revision' not in arguments:
-        return {'result': 'error', 'message': 'expected_revision is required'}
     redis = _redis()
     key = lanying_chatbot.get_chatbot_key(app_id, chatbot_id)
-    relation_key = lanying_ai_plugin.ai_plugin_bind_relation_key(app_id)
-    pipe = redis.pipeline(transaction=True)
     try:
-        pipe.watch(key, relation_key)
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot is None:
-            pipe.unwatch()
             return {'result': 'error', 'message': 'chatbot not exist'}
         current_revision = int(chatbot.get('agent_tools_revision', 0) or 0)
-        expected = arguments.get('expected_revision')
-        if expected is not None and int(expected) != current_revision:
-            pipe.unwatch()
-            return {'result': 'error', 'code': 'revision_conflict', 'message': 'Agent revision changed', 'data': {'agent': _safe_agent(chatbot)}}
         preset = copy.deepcopy(chatbot.get('preset', {}))
         candidate_model = str(changes.get('model', preset.get('model', '')))
         candidate_vendor = str(changes.get('vendor', preset.get('vendor', 'openai')))
         if lanying_vendor.get_chat_model_config(app_id, candidate_vendor, candidate_model) is None:
-            pipe.unwatch()
             return {'result': 'error', 'message': 'model configuration does not exist'}
         if len(str(changes.get('system_prompt', ''))) > 20000:
-            pipe.unwatch()
             return {'result': 'error', 'message': 'system_prompt is too long'}
         plugin_ids = None
         relation = lanying_ai_plugin.get_ai_plugin_bind_relation(app_id)
         if 'plugin_ids' in changes:
             if not isinstance(changes['plugin_ids'], list):
-                pipe.unwatch()
                 return {'result': 'error', 'message': 'plugin_ids must be an array'}
             plugin_ids = list(dict.fromkeys(str(value) for value in changes['plugin_ids']))
             if any(lanying_ai_plugin.get_ai_plugin(app_id, plugin_id) is None for plugin_id in plugin_ids):
-                pipe.unwatch()
                 return {'result': 'error', 'message': 'AI plugin does not exist'}
             relation[chatbot.get('name', '')] = plugin_ids
         if 'model' in changes:
@@ -916,30 +1030,24 @@ def _agent_update(app_id, arguments, request_info):
             preset['messages'] = messages
         next_revision = current_revision + 1
         snapshot = _safe_agent(chatbot)
-        saved = _save_config_revision(
+        _save_config_revision(
             app_id, 'agent', chatbot_id, current_revision, snapshot,
             request_info.get('request_id', ''))
-        if saved.get('result') != 'ok':
-            pipe.unwatch()
-            return {
-                'result': 'error', 'code': 'revision_store_unavailable',
-                'message': 'configuration revision could not be saved'
-            }
-        pipe.multi()
-        pipe.hset(key, 'preset', _json(preset))
-        pipe.hset(key, 'agent_tools_revision', next_revision)
+        redis.hset(key, 'preset', _json(preset))
+        redis.hset(key, 'agent_tools_revision', next_revision)
         if plugin_ids is not None:
-            pipe.set(relation_key, _json(relation))
-        pipe.execute()
+            lanying_ai_plugin.set_ai_plugin_bind_relation(app_id, relation)
     except Exception as error:
         logging.exception(error)
-        latest = lanying_chatbot.get_chatbot(app_id, chatbot_id)
-        return {'result': 'error', 'code': 'revision_conflict', 'message': 'Agent revision changed', 'data': {'agent': _safe_agent(latest)}}
-    return {'result': 'ok', 'data': {'agent': _safe_agent(lanying_chatbot.get_chatbot(app_id, chatbot_id))}}
+        return {'result': 'error', 'message': 'Agent update failed'}
+    return {'result': 'ok', 'data': {
+        'id': chatbot_id, 'changed_fields': sorted(changes),
+        'resource': _safe_agent(lanying_chatbot.get_chatbot(app_id, chatbot_id))}}
 
 
-def patch_agent(app_id, arguments, request_info):
-    """Apply a revision-checked partial Agent update from the Butler API."""
+def patch_agent(app_id, arguments, request_info=None):
+    """Apply a partial Agent update from the existing Butler API."""
+    request_info = request_info or {}
     return _agent_update(app_id, arguments, request_info)
 
 
@@ -980,79 +1088,66 @@ def _site_get(app_id, arguments, request_info):
 
 def _site_update(app_id, arguments, request_info):
     site_id = str(arguments.get('site_id', ''))
-    changes = arguments.get('changes', {})
+    changes = arguments.get('changes')
+    if changes is None:
+        changes = {
+            key: value for key, value in arguments.items()
+            if key in SITE_PATCH_FIELDS
+        }
     if not isinstance(changes, dict) or not changes:
         return {'result': 'error', 'message': 'changes must be a non-empty object'}
-    if 'expected_revision' not in arguments:
-        return {'result': 'error', 'message': 'expected_revision is required'}
     unknown = sorted(set(changes) - SITE_PATCH_FIELDS)
     if unknown:
         return {'result': 'error', 'message': 'unsupported site fields: ' + ','.join(unknown)}
+    null_fields = sorted(field for field, value in changes.items() if value is None)
+    if null_fields:
+        return {'result': 'error', 'message': 'site fields cannot be null: ' + ','.join(null_fields)}
     redis = _redis()
     key = lanying_grow_ai.get_site_key(app_id, site_id)
-    pipe = redis.pipeline(transaction=True)
     try:
-        pipe.watch(key)
         old_site = lanying_grow_ai.get_site(app_id, site_id)
         if old_site is None:
-            pipe.unwatch()
             return {'result': 'error', 'message': 'site_id not exist'}
         current_revision = int(old_site.get('agent_tools_revision', 0) or 0)
-        expected = arguments.get('expected_revision')
-        if expected is not None and int(expected) != current_revision:
-            pipe.unwatch()
-            return {'result': 'error', 'code': 'revision_conflict', 'message': 'site revision changed', 'data': {'site': _safe_site(old_site)}}
         normalized = {field: (int(value) if field == 'max_latest_num' else str(value)) for field, value in changes.items()}
         if any(len(value) > 20000 for value in normalized.values() if isinstance(value, str)):
-            pipe.unwatch()
             return {'result': 'error', 'message': 'site field is too long'}
         if normalized.get('language', old_site.get('language', 'zh-hans')) not in ['zh-hans', 'en']:
-            pipe.unwatch()
             return {'result': 'error', 'message': 'language has an invalid value'}
         if normalized.get('commit_type', old_site.get('commit_type', 'branch')) not in ['branch', 'pull_request']:
-            pipe.unwatch()
             return {'result': 'error', 'message': 'commit_type has an invalid value'}
         if 'max_latest_num' in normalized and not 1 <= normalized['max_latest_num'] <= 100:
-            pipe.unwatch()
             return {'result': 'error', 'message': 'max_latest_num has an invalid value'}
         for field in ['lanying_link', 'canonical_link', 'official_website_url', 'hook_sentence_image']:
             value = normalized.get(field, '')
             if value:
                 parsed = urlparse(value)
                 if parsed.scheme not in ['http', 'https'] or not parsed.netloc:
-                    pipe.unwatch()
                     return {'result': 'error', 'message': field + ' has an invalid URL'}
         collaborator = normalized.get('collaborator')
         if collaborator and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', collaborator):
-            pipe.unwatch()
             return {'result': 'error', 'message': 'collaborator has an invalid value'}
         snapshot = _site_revision_snapshot(old_site)
-        saved = _save_config_revision(
+        _save_config_revision(
             app_id, 'site', site_id, current_revision, snapshot,
             request_info.get('request_id', ''))
-        if saved.get('result') != 'ok':
-            pipe.unwatch()
-            return {
-                'result': 'error', 'code': 'revision_store_unavailable',
-                'message': 'configuration revision could not be saved'
-            }
         fields = dict(normalized)
         fields['agent_tools_revision'] = current_revision + 1
         fields['update_time'] = int(time.time())
-        pipe.multi()
-        pipe.hmset(key, fields)
-        pipe.execute()
+        redis.hmset(key, fields)
     except Exception as error:
         logging.exception(error)
-        latest = lanying_grow_ai.get_site(app_id, site_id)
-        return {'result': 'error', 'code': 'revision_conflict', 'message': 'site revision changed', 'data': {'site': _safe_site(latest)}}
+        return {'result': 'error', 'message': 'site update failed'}
     new_site = lanying_grow_ai.get_site(app_id, site_id)
     lanying_grow_ai.maybe_sync_to_github(old_site, new_site)
-    return {'result': 'ok', 'data': {'site': _safe_site(new_site)}}
+    return {'result': 'ok', 'data': {
+        'id': site_id, 'changed_fields': sorted(changes),
+        'resource': _safe_site(new_site)}}
 
 
-def patch_site(app_id, arguments, request_info):
-    """Apply a revision-checked partial site update from the Butler API."""
+def patch_site(app_id, arguments, request_info=None):
+    """Apply a partial site update from the existing Butler API."""
+    request_info = request_info or {}
     return _site_update(app_id, arguments, request_info)
 
 
@@ -1618,8 +1713,6 @@ def _submit_local_result_locked(app_id, request_id, actor, client_result):
 def _constrain_client_result(value, allowed_fields):
     if not isinstance(value, dict):
         raise ValueError('client result must be an object')
-    if _contains_secret_key(value):
-        raise ValueError('client result contains a forbidden credential field')
     allowed = set(str(field) for field in allowed_fields)
     envelope = {'ok': bool(value.get('ok', False))}
     if not envelope['ok']:
@@ -1631,10 +1724,24 @@ def _constrain_client_result(value, allowed_fields):
         envelope['data'] = {'value': payload}
         return envelope
     envelope['data'] = {
-        key: copy.deepcopy(item) for key, item in payload.items()
-        if key in allowed and not _contains_secret_key({key: item})
+        key: _redact_sensitive_result(item) for key, item in payload.items()
+        if key in allowed and str(key).strip().lower() not in SECRET_FIELD_NAMES
     }
     return envelope
+
+
+def _redact_sensitive_result(value):
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_result(item)
+            for key, item in value.items()
+            if str(key).strip().lower() not in SECRET_FIELD_NAMES
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_result(item) for item in value[:50]]
+    if isinstance(value, str):
+        return value[:4000]
+    return copy.deepcopy(value)
 
 
 def tool_result_for_model(result):
@@ -1818,7 +1925,9 @@ def _skill_resource_paths(repository_files, skill_dir):
             relative = path[len(prefix):]
         allowed = (
             relative == 'agents/openai.yaml'
-            or relative in ['.seenical/runtime.json', '.seenical/tools.json']
+            or relative == '.seenical/runtime.json'
+            or (relative.startswith('.seenical/tools/')
+                and PurePosixPath(relative).suffix.lower() == '.json')
             or (relative.startswith('references/')
                 and PurePosixPath(relative).suffix.lower()
                 in ['.md', '.json', '.yaml', '.yml'])
@@ -1850,14 +1959,18 @@ def _resolve_local_schema(schema, definitions):
     return result
 
 
-def _normalize_butler_runtime(runtime_text, tools_text, skill_id):
+def _normalize_butler_runtime(runtime_text, tool_resources, skill_id):
     runtime_doc = json.loads(runtime_text)
-    tools_doc = json.loads(tools_text)
-    if set(runtime_doc) != {'schema_version', 'skill_id', 'runtime', 'tools_file'}:
+    if set(runtime_doc) != {'schema_version', 'skill_id', 'runtime', 'tools_files'}:
         raise ValueError('invalid runtime.json fields')
+    tools_files = runtime_doc.get('tools_files', [])
     if (int(runtime_doc.get('schema_version', 0) or 0) != SCHEMA_VERSION
             or str(runtime_doc.get('skill_id', '')) != skill_id
-            or str(runtime_doc.get('tools_file', '')) != '.seenical/tools.json'):
+            or not isinstance(tools_files, list) or not tools_files
+            or len(tools_files) > 20
+            or len(set(tools_files)) != len(tools_files)
+            or any(not re.fullmatch(r'\.seenical/tools/[A-Za-z0-9_-]+\.json', str(path))
+                   for path in tools_files)):
         raise ValueError('invalid Seenical runtime descriptor')
     runtime = runtime_doc.get('runtime', {})
     if (not isinstance(runtime, dict)
@@ -1866,16 +1979,25 @@ def _normalize_butler_runtime(runtime_text, tools_text, skill_id):
             or int(runtime.get('version', 0) or 0) != 1
             or runtime.get('authentication') != 'host_console_session'):
         raise ValueError('unsupported Seenical runtime')
-    if set(tools_doc) - {'schema_version', 'tools', 'definitions'}:
-        raise ValueError('unsupported tools.json fields')
-    if int(tools_doc.get('schema_version', 0) or 0) != SCHEMA_VERSION:
-        raise ValueError('unsupported tools.json schema_version')
-    definitions = tools_doc.get('definitions', {})
-    if not isinstance(definitions, dict):
-        raise ValueError('invalid Tool schema definitions')
     normalized = {}
     function_names = set()
-    for raw in tools_doc.get('tools', []):
+    api_definitions = set()
+    schema_bytes = 0
+    raw_tools = []
+    for tools_file in tools_files:
+        if tools_file not in tool_resources:
+            raise ValueError('Tool file is missing: ' + tools_file)
+        tools_doc = json.loads(tool_resources[tools_file])
+        if set(tools_doc) - {'schema_version', 'tools', 'definitions'}:
+            raise ValueError('unsupported Tool file fields')
+        if int(tools_doc.get('schema_version', 0) or 0) != SCHEMA_VERSION:
+            raise ValueError('unsupported Tool file schema_version')
+        definitions = tools_doc.get('definitions', {})
+        if not isinstance(definitions, dict) or not isinstance(tools_doc.get('tools', []), list):
+            raise ValueError('invalid Tool file')
+        for raw in tools_doc['tools']:
+            raw_tools.append((raw, definitions))
+    for raw, definitions in raw_tools:
         if not isinstance(raw, dict) or set(raw) != {
                 'tool_id', 'version', 'function_name', 'title', 'description',
                 'risk', 'parameters', 'request', 'result_fields'}:
@@ -1897,18 +2019,35 @@ def _normalize_butler_runtime(runtime_text, tools_text, skill_id):
                 or placement not in ['query', 'body']
                 or (method == 'GET') != (placement == 'query')):
             raise ValueError('unsafe Butler API Tool request')
+        policy = BUTLER_API_POLICY.get((method, path))
+        if policy is None:
+            raise ValueError('Butler API Tool request is not allowed')
         risk = str(raw.get('risk', ''))
         if risk not in ['read', 'write', 'execute', 'destructive']:
             raise ValueError('invalid Tool risk')
-        if method == 'GET' and risk != 'read' or method != 'GET' and risk == 'read':
-            raise ValueError('Tool risk cannot weaken HTTP method risk')
+        minimum_risk, allowed_fields = policy
+        if RISK_ORDER[risk] < RISK_ORDER[minimum_risk]:
+            raise ValueError('Tool risk is lower than the Butler API policy')
         result_fields = raw.get('result_fields', [])
         if (not isinstance(result_fields, list) or not result_fields
                 or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', str(value))
                        or str(value).lower() in SECRET_FIELD_NAMES
                        for value in result_fields)):
             raise ValueError('invalid Tool result field constraint')
+        allowed_result_fields = BUTLER_API_RESULT_FIELDS.get((method, path), set())
+        if set(str(value) for value in result_fields) - allowed_result_fields:
+            raise ValueError('Tool result fields exceed the Butler API policy')
         parameters = _resolve_local_schema(raw.get('parameters'), definitions)
+        properties = parameters.get('properties', {}) if isinstance(parameters, dict) else {}
+        if (parameters.get('type') != 'object'
+                or parameters.get('additionalProperties') is not False
+                or set(properties) - allowed_fields):
+            raise ValueError('Tool parameters exceed the Butler API policy')
+        api_definition = (method, path, placement, _json(parameters))
+        if api_definition in api_definitions:
+            raise ValueError('duplicate Butler API Tool definition')
+        api_definitions.add(api_definition)
+        schema_bytes += len(_json(parameters).encode('utf-8'))
         tool = {
             'tool_id': tool_id, 'version': int(raw.get('version', 0) or 0),
             'function_name': function_name, 'title': str(raw.get('title', ''))[:200],
@@ -1923,7 +2062,8 @@ def _normalize_butler_runtime(runtime_text, tools_text, skill_id):
         validate_tool_arguments(tool, {}) if not parameters.get('required') else None
         normalized[tool_id] = tool
         function_names.add(function_name)
-    if not normalized or len(normalized) > 100:
+    if (not normalized or len(normalized) > 100
+            or schema_bytes > MAX_TOOL_SCHEMA_BYTES):
         raise ValueError('invalid Tool count')
     return copy.deepcopy(runtime), normalized
 
@@ -2009,16 +2149,18 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
                 if not isinstance(parsed_resource, dict):
                     raise ValueError('invalid structured Skill resource: ' + resource_path)
             resources[relative_path] = resource_text
-        if ('.seenical/runtime.json' not in resources
-                or '.seenical/tools.json' not in resources):
+        if '.seenical/runtime.json' not in resources:
             raise ValueError('public Skill runtime files are missing')
         runtime, available_tools = _normalize_butler_runtime(
             resources['.seenical/runtime.json'],
-            resources['.seenical/tools.json'], skill_id)
+            resources, skill_id)
+        for builtin_tool_id in PUBLIC_SKILL_BUILTIN_TOOL_IDS:
+            available_tools[builtin_tool_id] = copy.deepcopy(
+                TOOL_REGISTRY[builtin_tool_id])
         tool_requirements = _normalize_tool_requirements(
             descriptor.get('tools', []), available_tools=available_tools)
         if set(tool_requirements) != set(available_tools):
-            raise ValueError('manifest Tool list must match tools.json')
+            raise ValueError('manifest Tool list must match runtime Tool files')
         scopes = descriptor.get('scopes', [])
         if isinstance(scopes, str):
             scopes = [scopes]
@@ -2314,6 +2456,20 @@ def apply_active_skills(app_id, config, messages, functions):
     current_im_user_id = _conversation_scope(config)[3]
     if (not binding or str(binding.get('im_user_id', '')) != current_im_user_id):
         return messages, functions
+    client_context = config.get('seenical_client_context', {})
+    if (not isinstance(client_context, dict)
+            or int(client_context.get('schema_version', 0) or 0) != SCHEMA_VERSION
+            or not str(client_context.get('client_instance_id', ''))
+            or not str(client_context.get('seenical_session_id', ''))):
+        return messages, functions
+    capability = find_capability(
+        app_id, config, runtime={'type': 'butler_api', 'version': 1})
+    if (not capability
+            or str(capability.get('client_instance_id', '')) != str(
+                client_context.get('client_instance_id', ''))
+            or str(capability.get('seenical_session_id', '')) != str(
+                client_context.get('seenical_session_id', ''))):
+        return messages, functions
     active_tool_ids = set()
     insert_at = 0
     while insert_at < len(messages) and messages[insert_at].get('role') in ['system', 'developer']:
@@ -2335,10 +2491,19 @@ def apply_active_skills(app_id, config, messages, functions):
     }
     for tool_id in sorted(active_tool_ids - existing_tool_ids):
         tool = tool_definition(tool_id)
-        if tool and find_capability(app_id, config, runtime=tool.get('runtime')):
+        if tool:
             function_info = registry_function(tool_id)
             function_info['seenical_builtin_tool'] = True
             function_info['seenical_skill_versions'] = (
                 _active_skill_authorizations(app_id, chatbot_id, tool_id))
             functions.append(function_info)
+    dynamic_functions = [
+        value for value in functions
+        if value.get('seenical_builtin_tool')
+    ]
+    logging.info(
+        'Seenical Skill loaded | app_id:%s, chatbot_id:%s, tool_count:%s, schema_bytes:%s',
+        app_id, chatbot_id, len(dynamic_functions),
+        sum(len(_json(value.get('parameters', {})).encode('utf-8'))
+            for value in dynamic_functions))
     return messages, functions

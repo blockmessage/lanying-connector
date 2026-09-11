@@ -114,7 +114,7 @@ class GrowAIPreviewTest(unittest.TestCase):
         self.assertEqual([], sites)
         get_task.assert_called_once_with('app', 'task')
 
-    def test_configure_without_auto_deploy_preserves_current_value(self):
+    def test_partial_configure_only_forwards_present_fields(self):
         app = Flask(__name__)
         payload = {
             'app_id': 'app', 'task_id': 'task', 'name': 'name', 'note': '',
@@ -123,23 +123,19 @@ class GrowAIPreviewTest(unittest.TestCase):
             'article_count': 1, 'cycle_type': 'none', 'cycle_interval': 3600,
             'file_list': [], 'site_id_list': ['site']
         }
-        task_setting = MagicMock()
         with app.test_request_context(json=payload), \
                 patch.object(grow_ai_service, 'check_access_token_valid', return_value=True), \
-                patch.object(lanying_grow_ai, 'get_task', return_value={
-                    'auto_deploy': 'off', 'article_prompt': 'keep this prompt',
-                    'article_language': 'en'
-                }), \
-                patch.object(lanying_grow_ai, 'TaskSetting', return_value=task_setting) as setting_class, \
-                patch.object(lanying_grow_ai, 'configure_task', return_value={
+                patch.object(lanying_grow_ai, 'patch_task', return_value={
                     'result': 'ok', 'data': {'success': True}
-                }):
+                }) as patch_task:
             response = grow_ai_service.configure_task()
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual('off', setting_class.call_args.kwargs['auto_deploy'])
-        self.assertEqual('keep this prompt', setting_class.call_args.kwargs['article_prompt'])
-        self.assertEqual('en', setting_class.call_args.kwargs['article_language'])
+        changes = patch_task.call_args.args[2]
+        self.assertNotIn('auto_deploy', changes)
+        self.assertNotIn('article_prompt', changes)
+        self.assertNotIn('article_language', changes)
+        self.assertEqual('prompt', changes['prompt'])
 
     def test_generate_article_uses_task_article_prompt(self):
         task = {

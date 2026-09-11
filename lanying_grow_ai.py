@@ -171,13 +171,28 @@ def handle_schedule(schedule_info):
 def set_task_schedule(app_id, task_id, schedule, message='manual'):
     logging.info(f"change task schedule {schedule} | app_id:{app_id}, task_id:{task_id}, message:{message}")
     task_info = get_task(app_id, task_id)
-    if task_info and schedule in ["on", "off"]:
-        if task_info.get('schedule') != schedule:
-            return set_task_schedule_revisioned(
-                app_id, task_id, schedule,
-                int(task_info.get('revision', 0) or 0), '', message)
-        update_task_field(app_id, task_id, "schedule_message", message)
-    return {'result': "ok", "data": {"success": True}}
+    if task_info is None:
+        return {'result': 'error', 'message': 'task_id not exist'}
+    if schedule not in ['on', 'off']:
+        return {'result': 'error', 'message': 'schedule has an invalid value'}
+    current_revision = int(task_info.get('revision', 0) or 0)
+    if task_info.get('schedule') != schedule:
+        _save_task_revision(
+            app_id, task_id, current_revision,
+            _task_revision_snapshot(task_info), '')
+        lanying_redis.get_redis_connection().hmset(
+            get_task_key(app_id, task_id), {
+                'schedule': schedule,
+                'schedule_message': message,
+                'revision': current_revision + 1,
+                'update_time': int(time.time())
+            })
+    else:
+        update_task_field(app_id, task_id, 'schedule_message', message)
+    latest = get_task(app_id, task_id)
+    return {'result': 'ok', 'data': {
+        'success': True, 'id': task_id, 'changed_fields': ['schedule'],
+        'resource': latest, 'task_id': task_id, 'schedule': schedule}}
 
 def open_service(app_id, product_id, price, website_storage_limit, website_traffic_limit):
     service_status_key = get_service_status_key(app_id)
@@ -501,6 +516,12 @@ def _normalize_task_patch(changes):
             'result': 'error',
             'message': 'unsupported task fields: ' + ','.join(unknown_fields)
         }
+    null_fields = sorted(field for field, value in changes.items() if value is None)
+    if null_fields:
+        return {
+            'result': 'error',
+            'message': 'task fields cannot be null: ' + ','.join(null_fields)
+        }
     normalized = {}
     try:
         for field, value in changes.items():
@@ -602,14 +623,6 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
         return normalized_result
     normalized = normalized_result['data']
     current_revision = int(task_info.get('revision', 0))
-    if expected_revision is not None and int(expected_revision) != current_revision:
-        return {
-            'result': 'error',
-            'code': 'revision_conflict',
-            'message': 'task revision changed',
-            'data': {'task': task_info, 'revision': current_revision}
-        }
-
     merged = dict(task_info)
     merged.update(normalized)
     if ('site_id_list' in normalized and any(
@@ -649,34 +662,11 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
         redis_fields[article_cursor_field(legacy_language, 'on')] = task_info.get('article_cursor', 0)
 
     snapshot = _task_revision_snapshot(task_info)
-    pipe = redis.pipeline(transaction=True)
-    try:
-        pipe.watch(task_key)
-        stored_revision = pipe.hget(task_key, 'revision')
-        stored_revision = int(stored_revision or 0)
-        if stored_revision != current_revision:
-            pipe.unwatch()
-            latest = get_task(app_id, task_id)
-            return {
-                'result': 'error',
-                'code': 'revision_conflict',
-                'message': 'task revision changed',
-                'data': {'task': latest, 'revision': int((latest or {}).get('revision', 0))}
-            }
-        saved = _save_task_revision(
-            app_id, task_id, current_revision, snapshot, request_id)
-        if saved.get('result') != 'ok':
-            pipe.unwatch()
-            return {
-                'result': 'error', 'code': 'revision_store_unavailable',
-                'message': 'configuration revision could not be saved'
-            }
-        pipe.multi()
-        pipe.hmset(task_key, redis_fields)
-        pipe.execute()
-    except Exception as error:
-        logging.exception(error)
-        return {'result': 'error', 'message': 'task update conflict', 'code': 'revision_conflict'}
+    # Revisions are retained for audit and rollback only. They must not turn
+    # an otherwise valid partial POST into a distributed-lock dependency.
+    # Concurrent requests intentionally use last-write-wins per supplied field.
+    _save_task_revision(app_id, task_id, current_revision, snapshot, request_id)
+    redis.hmset(task_key, redis_fields)
 
     new_task_info = get_task(app_id, task_id)
     title_inputs = {'prompt', 'article_prompt', 'article_language', 'keywords', 'file_list'}
@@ -708,14 +698,17 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
                 )
                 update_task_field(app_id, task_id, 'schedule_id', schedule_result['data']['schedule_id'])
 
+    latest_task = get_task(app_id, task_id)
     return {
         'result': 'ok',
         'data': {
             'success': True,
-            'request_id': str(request_id or ''),
+            'id': task_id,
+            'changed_fields': sorted(normalized),
             'previous_revision': current_revision,
             'revision': next_revision,
-            'task': get_task(app_id, task_id)
+            'task': latest_task,
+            'resource': latest_task
         }
     }
 

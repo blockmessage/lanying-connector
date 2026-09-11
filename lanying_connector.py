@@ -481,24 +481,48 @@ def configure_embedding(service):
         data = json.loads(text)
         app_id = data['app_id']
         embedding_name = data['embedding_name']
-        admin_user_ids = data.get('admin_user_ids',[])
-        preset_name = data.get('preset_name','')
-        embedding_max_tokens = data.get('embedding_max_tokens','2048')
-        embedding_max_blocks = data.get('embedding_max_blocks','5')
-        embedding_content = data.get('embedding_content', '')
-        new_embedding_name = data['new_embedding_name']
-        max_block_size = data.get('max_block_size', 0)
-        overlapping_size = data.get('overlapping_size', 0)
-        vendor = str(data.get('vendor', 'openai'))
-        model = str(data.get('model', ''))
-        tags = data.get('tags', [])
-        logging.info(f"configure_embedding | {data}")
+        allowed = {
+            'app_id', 'embedding_name', 'admin_user_ids', 'preset_name',
+            'embedding_max_tokens', 'embedding_max_blocks', 'embedding_content',
+            'new_embedding_name', 'max_block_size', 'overlapping_size',
+            'vendor', 'model', 'tags'
+        }
+        unknown = set(data) - allowed
+        changed_fields = set(data) - {'app_id', 'embedding_name'}
+        if unknown or not changed_fields or any(data[key] is None for key in changed_fields):
+            return app.make_response({'code': 400, 'message': 'invalid knowledge base update fields'})
+        current = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+        if current is None:
+            return app.make_response({'code': 400, 'message': 'embedding_name not exist'})
+        current_uuid = lanying_embedding.get_embedding_uuid_info(current['embedding_uuid']) or {}
+        current_admins = current.get('admin_user_ids', '')
+        if isinstance(current_admins, str):
+            current_admins = [int(value) for value in current_admins.split(',') if value]
+        admin_user_ids = data.get('admin_user_ids', current_admins)
+        preset_name = data.get('preset_name', current.get('preset_name', ''))
+        embedding_max_tokens = data.get('embedding_max_tokens', current.get('embedding_max_tokens', '2048'))
+        embedding_max_blocks = data.get('embedding_max_blocks', current.get('embedding_max_blocks', '5'))
+        embedding_content = data.get('embedding_content', current.get('embedding_content', ''))
+        new_embedding_name = data.get('new_embedding_name', embedding_name)
+        max_block_size = data.get('max_block_size', int(current_uuid.get('max_block_size', 500)))
+        overlapping_size = data.get('overlapping_size', int(current_uuid.get('overlapping_size', 0)))
+        vendor = str(data.get('vendor', current_uuid.get('vendor', 'openai')))
+        model = str(data.get('model', current_uuid.get('model', '')))
+        tags = data.get('tags', current_uuid.get('tags', []))
+        logging.info("configure_embedding | app_id:%s, embedding_name:%s, changed_fields:%s",
+                     app_id, embedding_name, sorted(changed_fields))
         service_module = get_service_module(service)
         result = service_module.configure_embedding(app_id, embedding_name, admin_user_ids, preset_name, embedding_max_tokens, embedding_max_blocks, embedding_content, new_embedding_name, max_block_size, overlapping_size, vendor, model, tags)
         if result['result'] == 'error':
             resp = app.make_response({'code':400, 'message':result['message']})
         else:
-            resp = app.make_response({'code':200, 'data': result['data']})
+            resource = lanying_embedding.get_embedding_name_info(
+                app_id, new_embedding_name or embedding_name) or {}
+            resp = app.make_response({'code':200, 'data': {
+                'id': str(resource.get('embedding_uuid', '')),
+                'changed_fields': sorted(changed_fields),
+                'resource': resource
+            }})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp

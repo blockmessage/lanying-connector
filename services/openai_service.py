@@ -5101,17 +5101,28 @@ def configure_ai_plugin():
     data = json.loads(text)
     app_id = str(data['app_id'])
     plugin_id = str(data['plugin_id'])
-    name = str(data['name'])
-    headers = dict(data.get('headers',{}))
-    params = dict(data.get('params',{}))
-    envs = dict(data.get('envs',{}))
-    endpoint = str(data.get('endpoint', ''))
-    auth = dict(data.get('auth',{}))
+    allowed = {'app_id', 'plugin_id', 'name', 'headers', 'params', 'envs', 'endpoint', 'auth'}
+    unknown = set(data) - allowed
+    changes = set(data) - {'app_id', 'plugin_id'}
+    if unknown or not changes or any(data[key] is None for key in changes):
+        return make_response({'code': 400, 'message': 'invalid AI plugin update fields'})
+    current = lanying_ai_plugin.get_ai_plugin(app_id, plugin_id)
+    if not current:
+        return make_response({'code': 400, 'message': 'ai plugin not exist'})
+    name = str(data['name']) if 'name' in data else str(current.get('name', ''))
+    headers = dict(data['headers']) if 'headers' in data else lanying_utils.safe_json_loads(current.get('headers', '{}'), {})
+    params = dict(data['params']) if 'params' in data else lanying_utils.safe_json_loads(current.get('params', '{}'), {})
+    envs = dict(data['envs']) if 'envs' in data else lanying_utils.safe_json_loads(current.get('envs', '{}'), {})
+    endpoint = str(data['endpoint']) if 'endpoint' in data else str(current.get('endpoint', ''))
+    auth = dict(data['auth']) if 'auth' in data else lanying_utils.safe_json_loads(current.get('auth', '{}'), {})
     result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params, auth)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
-        resp = make_response({'code':200, 'data':result["data"]})
+        latest = lanying_ai_plugin.get_ai_plugin(app_id, plugin_id) or {}
+        resp = make_response({'code':200, 'data': {
+            'id': plugin_id, 'changed_fields': sorted(changes),
+            'resource': {key: latest.get(key, '') for key in ['plugin_id', 'name', 'endpoint']}}})
     return resp
 
 @bp.route("/service/openai/delete_ai_plugin", methods=["POST"])
@@ -5140,17 +5151,30 @@ def configure_ai_function():
     app_id = str(data['app_id'])
     plugin_id = str(data['plugin_id'])
     function_id = str(data['function_id'])
-    priority = int(data.get('priority', 10))
-    force_call = bool(data.get('force_call', False))
-    name = str(data['name'])
-    description = str(data['description'])
-    parameters = dict(data['parameters'])
-    function_call = dict(data['function_call'])
+    allowed = {'app_id', 'plugin_id', 'function_id', 'priority', 'force_call',
+               'name', 'description', 'parameters', 'function_call'}
+    unknown = set(data) - allowed
+    changes = set(data) - {'app_id', 'plugin_id', 'function_id'}
+    if unknown or not changes or any(data[key] is None for key in changes):
+        return make_response({'code': 400, 'message': 'invalid AI function update fields'})
+    current = lanying_ai_plugin.get_ai_function(app_id, function_id)
+    if not current:
+        return make_response({'code': 400, 'message': 'ai function not exist'})
+    priority = int(data['priority']) if 'priority' in data else int(current.get('priority', 10))
+    force_call = bool(data['force_call']) if 'force_call' in data else lanying_utils.str_to_bool(current.get('force_call', False))
+    name = str(data['name']) if 'name' in data else str(current.get('name', ''))
+    description = str(data['description']) if 'description' in data else str(current.get('description', ''))
+    parameters = dict(data['parameters']) if 'parameters' in data else lanying_utils.safe_json_loads(current.get('parameters', '{}'), {})
+    function_call = dict(data['function_call']) if 'function_call' in data else lanying_utils.safe_json_loads(current.get('function_call', '{}'), {})
     result = lanying_ai_plugin.configure_ai_function(app_id, plugin_id, function_id, name, description, parameters,function_call, priority, force_call)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
-        resp = make_response({'code':200, 'data':result["data"]})
+        latest = lanying_ai_plugin.get_ai_function(app_id, function_id) or {}
+        resp = make_response({'code':200, 'data': {
+            'id': function_id, 'changed_fields': sorted(changes),
+            'resource': {key: latest.get(key, '') for key in [
+                'function_id', 'plugin_id', 'name', 'description', 'priority', 'force_call']}}})
     return resp
 
 @bp.route("/service/openai/bind_ai_plugin", methods=["POST"])
@@ -5161,6 +5185,9 @@ def bind_ai_plugin():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
+    if set(data) != {'app_id', 'type', 'name', 'list'} or any(
+            data[key] is None for key in ['type', 'name', 'list']):
+        return make_response({'code': 400, 'message': 'invalid AI plugin binding fields'})
     type = str(data['type'])
     name = str(data['name'])
     value_list = list(data['list'])
@@ -5203,15 +5230,23 @@ def configure_ai_plugin_embedding():
     text = request.get_data(as_text=True)
     data = json.loads(text)
     app_id = str(data['app_id'])
-    embedding_max_tokens = int(data['embedding_max_tokens'])
-    embedding_max_blocks = int(data['embedding_max_blocks'])
-    vendor = str(data['vendor'])
-    model = str(data.get('model', ''))
+    allowed = {'app_id', 'embedding_max_tokens', 'embedding_max_blocks', 'vendor', 'model'}
+    unknown = set(data) - allowed
+    changes = set(data) - {'app_id'}
+    if unknown or not changes or any(data[key] is None for key in changes):
+        return make_response({'code': 400, 'message': 'invalid plugin knowledge update fields'})
+    current = lanying_ai_plugin.get_ai_plugin_embedding(app_id) or {}
+    embedding_max_tokens = int(data.get('embedding_max_tokens', current.get('embedding_max_tokens', 2048)))
+    embedding_max_blocks = int(data.get('embedding_max_blocks', current.get('embedding_max_blocks', 5)))
+    vendor = str(data.get('vendor', current.get('vendor', 'openai')))
+    model = str(data.get('model', current.get('model', '')))
     result = lanying_ai_plugin.configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor, model)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
-        resp = make_response({'code':200, 'data':result["data"]})
+        resp = make_response({'code':200, 'data': {
+            'id': 'ai_plugin_embedding', 'changed_fields': sorted(changes),
+            'resource': lanying_ai_plugin.get_ai_plugin_embedding(app_id)}})
     return resp
 
 @bp.route("/service/openai/plugin_export", methods=["POST"])
@@ -5331,24 +5366,43 @@ def configure_chatbot():
     account_type = str(data.get('account_type', 'enterprise'))
     verification_level = str(data.get('verification_level', ''))
     chatbot_id = str(data['chatbot_id'])
+    null_fields = sorted(
+        key for key, value in data.items()
+        if key not in ['app_id', 'chatbot_id', 'tenement_id', 'account_status',
+                       'account_type', 'verification_level'] and value is None)
+    if null_fields:
+        return make_response({
+            'code': 400,
+            'message': 'Agent fields cannot be null: ' + ','.join(null_fields)
+        })
     legacy_required = {
         'name', 'desc', 'user_id', 'lanying_link', 'preset',
         'history_msg_count_max', 'history_msg_count_min',
         'history_msg_size_max', 'message_per_month_per_user'
     }
     if not legacy_required.issubset(data):
+        allowed = {
+            'app_id', 'chatbot_id', 'model', 'vendor', 'system_prompt', 'plugin_ids',
+            'tenement_id', 'account_status', 'account_type', 'verification_level'
+        }
+        unknown = sorted(set(data) - allowed)
         changes = {
             key: value for key, value in data.items()
             if key in ['model', 'vendor', 'system_prompt', 'plugin_ids']
         }
+        if unknown or not changes or any(value is None for value in changes.values()):
+            return make_response({
+                'code': 400,
+                'message': ('unsupported Agent fields: ' + ','.join(unknown)
+                            if unknown else 'invalid Agent update fields')
+            })
         result = lanying_agent_tools.patch_agent(app_id, {
             'chatbot_id': chatbot_id,
-            'changes': changes,
-            'expected_revision': data.get('expected_revision')
-        }, {'request_id': str(data.get('request_id', ''))})
+            'changes': changes
+        })
         if result['result'] == 'error':
             return make_response({
-                'code': 409 if result.get('code') == 'revision_conflict' else 400,
+                'code': 400,
                 'message': result['message'],
                 'error_code': result.get('code', ''),
                 'data': result.get('data', {})

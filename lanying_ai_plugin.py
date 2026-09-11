@@ -367,7 +367,9 @@ def _save_plugin_binding_revisions(app_id, relation, preset_names):
             logging.exception('failed to save Seenical Agent plugin revision')
             saved = {'result': 'error'}
         if saved.get('result') != 'ok':
-            return {'result': 'error', 'message': 'configuration revision could not be saved'}
+            logging.warning(
+                'bind_ai_plugin continues without configuration revision | app_id:%s, chatbot_id:%s',
+                app_id, chatbot_id)
         chatbot_ids.append(str(chatbot_id))
     return {'result': 'ok', 'chatbot_ids': chatbot_ids}
 

@@ -91,15 +91,15 @@ class AgentToolsTest(unittest.TestCase):
         self.redis = FakeRedis()
 
     def template_catalog(self):
-        root = pathlib.Path(__file__).resolve().parents[2] / "seenical-skill-repository-template"
+        root = pathlib.Path(__file__).resolve().parents[2] / "seenical-skill-repository"
         manifest = (root / ".seenical/manifest.json").read_text()
+        paths = [root / "SKILL.md", root / "agents/openai.yaml",
+                 root / ".seenical/runtime.json"]
+        paths.extend(sorted((root / "references").glob("*.md")))
+        paths.extend(sorted((root / ".seenical/tools").glob("*.json")))
         files = {
             path.relative_to(root).as_posix(): (path.read_text(), "sha")
-            for path in [
-                root / "SKILL.md", root / "agents/openai.yaml",
-                root / "references/tool-api.md", root / ".seenical/runtime.json",
-                root / ".seenical/tools.json",
-            ]
+            for path in paths
         }
         config = {
             "repository_url": "https://github.com/seenical/skills",
@@ -133,31 +133,41 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual(set(skill["required_tools"]), {tool["tool_id"] for tool in skill["tools"]})
         self.assertEqual("/app/grow_ai/configure_task",
                          next(tool for tool in skill["tools"] if tool["tool_id"] == "seenical.plan.update")["request"]["path"])
+        schedule = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.plan.schedule")
+        self.assertEqual(["task_id", "schedule"], schedule["parameters"]["required"])
+        self.assertGreater(len(skill["tools"]), 40)
 
     def test_runtime_rejects_absolute_urls_headers_and_weakened_risk(self):
         runtime = json.dumps({
             "schema_version": 1, "skill_id": "seenical-console",
             "runtime": {"type": "butler_api", "version": 1, "authentication": "host_console_session"},
-            "tools_file": ".seenical/tools.json"
+            "tools_files": [".seenical/tools/content.json"]
         })
         base = {
             "tool_id": "seenical.test", "version": 1, "function_name": "seenical_test",
             "title": "Test", "description": "Test", "risk": "read",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-            "request": {"method": "GET", "path": "/app/test", "arguments": "query"},
+            "request": {"method": "GET", "path": "/app/grow_ai/get_task_list", "arguments": "query"},
             "result_fields": ["status"]
         }
         for mutate in [
             lambda tool: tool["request"].update(path="https://evil.example/app/test"),
             lambda tool: tool["request"].update(headers={"Authorization": "x"}),
             lambda tool: tool.update(risk="read", request={"method": "POST", "path": "/app/test", "arguments": "body"}),
+            lambda tool: tool["parameters"]["properties"].update(token={"type": "string"}),
+            lambda tool: tool.update(result_fields=["access_token"]),
+            lambda tool: tool.update(result_fields=["unexpected"]),
         ]:
             tool = json.loads(json.dumps(base))
             mutate(tool)
             with self.subTest(tool=tool), self.assertRaises(ValueError):
-                self.module._normalize_butler_runtime(runtime, json.dumps({
-                    "schema_version": 1, "tools": [tool], "definitions": {}
-                }), "seenical-console")
+                self.module._normalize_butler_runtime(runtime, {
+                    ".seenical/tools/content.json": json.dumps({
+                        "schema_version": 1, "tools": [tool], "definitions": {}
+                    })
+                }, "seenical-console")
 
     def test_capability_is_runtime_scoped_and_requires_bound_im_user(self):
         self.activate_catalog()
@@ -199,6 +209,52 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual(messages, output_messages)
         self.assertEqual([], functions)
 
+    def test_bound_sender_without_matching_capability_does_not_receive_skill(self):
+        self.activate_catalog()
+        self.bind_app(user_id="22")
+        messages = [{"role": "user", "content": "list plans"}]
+        config = {
+            "chatbot_id": "bot", "send_from": "22", "reply_msg_type": "CHAT",
+            "reply_to": "22", "seenical_client_context": {
+                "schema_version": 1, "client_instance_id": "tab-a",
+                "seenical_session_id": "session-a"
+            }
+        }
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "is_feature_enabled", return_value=True):
+            output_messages, functions = self.module.apply_active_skills(
+                "app", config, messages, [])
+        self.assertEqual(messages, output_messages)
+        self.assertEqual([], functions)
+
+    def test_matching_seenical_capability_loads_complete_official_skill(self):
+        catalog = self.activate_catalog()
+        self.bind_app(user_id="22")
+        capability = {
+            "app_id": "app", "im_user_id": "22", "chatbot_ids": ["bot"],
+            "client_instance_id": "tab-a", "seenical_session_id": "session-a",
+            "conversation_type": "CHAT", "conversation_id": "22",
+            "runtimes": {"butler_api": 1}, "updated_at": 1
+        }
+        self.redis.set(self.module.capability_key("app", "tab-a"), json.dumps(capability))
+        self.redis.sadd(self.module.capability_index_key("app", "bot", "CHAT", "22"), "tab-a")
+        messages = [{"role": "user", "content": "list plans"}]
+        config = {
+            "chatbot_id": "bot", "send_from": "22", "reply_msg_type": "CHAT",
+            "reply_to": "22", "seenical_client_context": {
+                "schema_version": 1, "client_instance_id": "tab-a",
+                "seenical_session_id": "session-a"
+            }
+        }
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "is_feature_enabled", return_value=True):
+            output_messages, functions = self.module.apply_active_skills(
+                "app", config, messages, [])
+        self.assertEqual(len(catalog["skills"][0]["tools"]), len(functions))
+        self.assertIn("Seenical Skill", output_messages[0]["content"])
+        self.assertEqual("List content-generation plans and their current schedule/status. Read this before selecting a task_id.",
+                         next(item for item in functions if item["name"] == "seenical_plan_list")["description"])
+
     def test_request_freezes_runtime_and_original_message_context(self):
         catalog = self.activate_catalog()
         self.bind_app()
@@ -234,8 +290,10 @@ class AgentToolsTest(unittest.TestCase):
             "ok": True, "data": {"task_id": "1", "extra": "hidden"}
         }, ["task_id"])
         self.assertEqual({"ok": True, "data": {"task_id": "1"}}, result)
-        with self.assertRaises(ValueError):
-            self.module._constrain_client_result({"ok": True, "password": "secret"}, ["status"])
+        redacted = self.module._constrain_client_result({
+            "ok": True, "data": {"list": [{"name": "plugin", "headers": {"Authorization": "secret"}}]}
+        }, ["list"])
+        self.assertEqual({"ok": True, "data": {"list": [{"name": "plugin"}]}}, redacted)
 
     def test_repeated_client_approval_does_not_repeat_business_request(self):
         now = self.module.time.time()
@@ -271,7 +329,7 @@ class AgentToolsTest(unittest.TestCase):
                 create=True,
                 return_value={"task_id": "1", "prompt": "old", "revision": 3}):
             preview = self.module._preview_tool("app", "seenical.plan.update", {
-                "task_id": "1", "expected_revision": 3, "prompt": "new"
+                "task_id": "1", "prompt": "new"
             }, {})
         self.assertEqual({"prompt": "old"}, preview["before"])
         self.assertEqual({"prompt": "new"}, preview["after"])

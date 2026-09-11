@@ -117,20 +117,20 @@ def create_task():
     data = json.loads(text)
     app_id = str(data['app_id'])
     name = str(data['name'])
-    note = str(data['note'])
     chatbot_id = str(data['chatbot_id'])
     prompt = str(data['prompt'])
+    note = str(data.get('note', prompt))
     article_prompt = str(data.get('article_prompt', ''))
     article_language = str(data.get('article_language', 'auto'))
-    keywords = str(data['keywords'])
-    word_count_min = int(data['word_count_min'])
-    word_count_max = int(data['word_count_max'])
-    image_count = int(data['image_count'])
-    article_count = int(data['article_count'])
+    keywords = str(data.get('keywords', ''))
+    word_count_min = int(data.get('word_count_min', 800))
+    word_count_max = int(data.get('word_count_max', 1200))
+    image_count = int(data.get('image_count', 0))
+    article_count = int(data.get('article_count', 1))
     article_count = max(1, article_count)
     article_count = min(100000, article_count)
-    cycle_type = str(data['cycle_type'])
-    cycle_interval = int(data['cycle_interval'])
+    cycle_type = str(data.get('cycle_type', 'none'))
+    cycle_interval = int(data.get('cycle_interval', 86400))
     cycle_interval = max(3600, cycle_interval)
     file_list = list(data.get('file_list', []))
     deploy = dict(data.get('deploy', {'type': 'none'}))
@@ -172,7 +172,7 @@ def create_task():
         embedding_condition = embedding_condition,
         auto_deploy = auto_deploy
     )
-    run_immediately = data.get('run_immediately', True) is not False
+    run_immediately = data.get('run_immediately', False) is True
     result = lanying_grow_ai.create_task(task_setting, run_immediately=run_immediately)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
@@ -189,22 +189,30 @@ def configure_task():
     data = json.loads(text)
     app_id = str(data['app_id'])
     task_id = str(data['task_id'])
+    null_fields = sorted(
+        key for key, value in data.items()
+        if key not in ['app_id', 'task_id'] and value is None)
+    if null_fields:
+        return make_response({
+            'code': 400,
+            'message': 'task fields cannot be null: ' + ','.join(null_fields)
+        })
     legacy_required = {
         'name', 'note', 'chatbot_id', 'prompt', 'keywords',
         'word_count_min', 'word_count_max', 'image_count', 'article_count',
-        'cycle_type', 'cycle_interval'
+        'cycle_type', 'cycle_interval', 'file_list', 'title_reuse',
+        'auto_deploy', 'site_id_list', 'target_dir', 'target_summary_dir',
+        'commit_type', 'embedding_condition'
     }
     if not legacy_required.issubset(data):
         changes = {
             key: value for key, value in data.items()
-            if key not in ['app_id', 'task_id', 'expected_revision', 'request_id']
+            if key not in ['app_id', 'task_id']
         }
-        result = lanying_grow_ai.patch_task(
-            app_id, task_id, changes, data.get('expected_revision'),
-            str(data.get('request_id', '')))
+        result = lanying_grow_ai.patch_task(app_id, task_id, changes)
         if result['result'] == 'error':
             return make_response({
-                'code': 409 if result.get('code') == 'revision_conflict' else 400,
+                'code': 400,
                 'message': result['message'],
                 'error_code': result.get('code', ''),
                 'data': result.get('data', {})
@@ -552,14 +560,16 @@ def create_site():
     app_id = str(data['app_id'])
     tenement_id = str(data.get('tenement_id', ''))
     name = str(data['name'])
-    type = str(data['type'])
+    type = str(data.get('type', 'gitbook'))
     github_url = str(data.get('github_url', ''))
     github_token = str(data.get('github_token', ''))
     github_base_branch = str(data.get('github_base_branch', 'master'))
     github_base_dir = str(data.get('github_base_dir', '/'))
-    footer_note = str(data['footer_note'])
-    lanying_link = maybe_add_https_prefix(str(data['lanying_link']))
-    title = str(data.get('title', ''))
+    footer_note = str(data.get(
+        'footer_note',
+        '内容由 Seenical AI Agent 基于企业知识库生成，发布前请检查关键信息与引用来源。'))
+    lanying_link = maybe_add_https_prefix(str(data.get('lanying_link', '')))
+    title = str(data.get('title', name))
     copyright = str(data.get('copyright', ''))
     canonical_link = maybe_add_https_prefix(str(data.get('canonical_link', '')))
     meta_keywords = str(data.get('meta_keywords', ''))
@@ -572,7 +582,7 @@ def create_site():
     icp_number = str(data.get('icp_number','')).strip()
     hook_sentence_slogan = str(data.get('hook_sentence_slogan', ''))
     hook_sentence_image = str(data.get('hook_sentence_image', '')).strip()
-    github_hosting = ensure_value_on_off(str(data.get('github_hosting', 'off')))
+    github_hosting = ensure_value_on_off(str(data.get('github_hosting', 'on')))
     collaborator = str(data.get('collaborator', '')).strip()
     site_setting = lanying_grow_ai.SiteSetting(
         app_id = app_id,
@@ -618,20 +628,34 @@ def configure_site():
     app_id = str(data['app_id'])
     tenement_id = str(data.get('tenement_id', ''))
     site_id = str(data['site_id'])
-    legacy_required = {'name', 'type', 'footer_note', 'lanying_link'}
+    null_fields = sorted(
+        key for key, value in data.items()
+        if key not in ['app_id', 'site_id', 'tenement_id'] and value is None)
+    if null_fields:
+        return make_response({
+            'code': 400,
+            'message': 'site fields cannot be null: ' + ','.join(null_fields)
+        })
+    legacy_required = {
+        'name', 'type', 'github_url', 'github_token', 'github_base_branch',
+        'github_base_dir', 'footer_note', 'lanying_link', 'title', 'copyright',
+        'canonical_link', 'meta_keywords', 'baidu_token', 'google_token',
+        'max_latest_num', 'language', 'official_website_url', 'commit_type',
+        'icp_number', 'hook_sentence_slogan', 'hook_sentence_image',
+        'github_hosting', 'collaborator'
+    }
     if not legacy_required.issubset(data):
         changes = {
             key: value for key, value in data.items()
-            if key not in ['app_id', 'site_id', 'expected_revision', 'request_id', 'tenement_id']
+            if key not in ['app_id', 'site_id', 'tenement_id']
         }
         result = lanying_agent_tools.patch_site(app_id, {
             'site_id': site_id,
-            'changes': changes,
-            'expected_revision': data.get('expected_revision')
-        }, {'request_id': str(data.get('request_id', ''))})
+            'changes': changes
+        })
         if result['result'] == 'error':
             return make_response({
-                'code': 409 if result.get('code') == 'revision_conflict' else 400,
+                'code': 400,
                 'message': result['message'],
                 'error_code': result.get('code', ''),
                 'data': result.get('data', {})

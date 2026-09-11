@@ -39,9 +39,13 @@ class FakePipeline:
 class FakeRedis:
     def __init__(self, revision):
         self.pipeline_value = FakePipeline(revision)
+        self.hmset_calls = []
 
     def pipeline(self, transaction=True):
         return self.pipeline_value
+
+    def hmset(self, key, values):
+        self.hmset_calls.append((key, dict(values)))
 
 
 def load_grow_ai():
@@ -123,23 +127,27 @@ class GrowAIPatchTest(unittest.TestCase):
                 expected_revision=4, request_id="request-1")
 
         self.assertEqual("ok", result["result"])
-        written = redis.pipeline_value.hmset_calls[0][1]
+        written = redis.hmset_calls[0][1]
         self.assertEqual("New article prompt", written["article_prompt"])
         self.assertEqual(5, written["revision"])
         self.assertNotIn("schedule", written)
         self.assertEqual("off", result["data"]["task"]["schedule"])
         update_field.assert_not_called()
 
-    def test_revision_conflict_returns_current_task_without_writing(self):
+    def test_stale_revision_does_not_block_last_write_wins_update(self):
         current = task(revision=7)
-        with mock.patch.object(self.module, "get_task", return_value=current):
+        updated = dict(current, article_language="en", revision=8)
+        redis = FakeRedis(7)
+        with mock.patch.object(self.module, "get_task", side_effect=[current, updated, updated]), mock.patch.object(
+                self.module, "check_task_content_security", return_value={"result": "ok"}), mock.patch.object(
+                self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
+                self.module, "update_task_field"):
             result = self.module.patch_task(
                 "app", "task", {"article_language": "en"}, expected_revision=6)
-        self.assertEqual("error", result["result"])
-        self.assertEqual("revision_conflict", result["code"])
-        self.assertEqual(7, result["data"]["revision"])
+        self.assertEqual("ok", result["result"])
+        self.assertEqual("en", redis.hmset_calls[0][1]["article_language"])
 
-    def test_patch_does_not_write_when_revision_snapshot_cannot_be_saved(self):
+    def test_patch_continues_when_revision_snapshot_cannot_be_saved(self):
         current = task()
         redis = FakeRedis(4)
         with mock.patch.object(self.module, "get_task", return_value=current), mock.patch.object(
@@ -151,8 +159,8 @@ class GrowAIPatchTest(unittest.TestCase):
                 "app", "task", {"article_prompt": "New article prompt"},
                 expected_revision=4, request_id="request-1")
 
-        self.assertEqual("revision_store_unavailable", result["code"])
-        self.assertEqual([], redis.pipeline_value.hmset_calls)
+        self.assertEqual("ok", result["result"])
+        self.assertEqual("New article prompt", redis.hmset_calls[0][1]["article_prompt"])
 
     def test_durable_revision_excludes_file_urls_and_deploy_payload(self):
         snapshot = self.module._task_revision_snapshot(task())
