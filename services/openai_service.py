@@ -808,6 +808,7 @@ def init_chatbot_config(config, msg, chatbot_user_id=None):
                 config['send_to'] = toUserId
                 config['reply_msg_type'] = 'CHAT'
                 config['request_msg_id'] = msg['msgId']
+                config['seenical_client_context'] = get_message_ext(msg).get('seenical', {})
                 config['noreply'] = noreply
             elif msg_type == 'GROUPCHAT':
                 group_id = toUserId
@@ -817,6 +818,7 @@ def init_chatbot_config(config, msg, chatbot_user_id=None):
                 config['send_to'] = group_id
                 config['reply_msg_type'] = 'GROUPCHAT'
                 config['request_msg_id'] = msg['msgId']
+                config['seenical_client_context'] = get_message_ext(msg).get('seenical', {})
                 config['noreply'] = noreply
         else:
             logging.warning(f"cannot get chatbot info: app_id={app_id}, chatbot_user_id:{chatbot_user_id}, chatbot_id:{chatbot_id}")
@@ -2503,7 +2505,7 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
                     return {'result': 'ok', 'reply': '', 'usage': {'completion_tokens': 0, 'prompt_tokens': 0, 'total_tokens': 0}}
         elif function_call_type == 'client':
             tool_id = lanying_agent_tools.resolve_tool_id(function_config)
-            registry_tool = lanying_agent_tools.TOOL_REGISTRY.get(tool_id)
+            registry_tool = lanying_agent_tools.tool_definition(tool_id)
             if registry_tool is None:
                 return _append_function_result_and_continue(
                     app_id, config, tool_call, tool_call_id, preset,
@@ -2513,7 +2515,8 @@ def handle_function_call(app_id, config, tool_call, preset, api_key_type, model_
             continuation_config_keys = [
                 'reply_msg_type', 'reply_from', 'reply_to', 'send_from',
                 'send_to', 'request_msg_id', 'from_user_id', 'to_user_id',
-                'chatbot_id', 'chatbot_user_id', 'noreply'
+                'chatbot_id', 'chatbot_user_id', 'noreply',
+                'seenical_client_context'
             ]
             continuation = {
                 'config': {
@@ -5328,6 +5331,29 @@ def configure_chatbot():
     account_type = str(data.get('account_type', 'enterprise'))
     verification_level = str(data.get('verification_level', ''))
     chatbot_id = str(data['chatbot_id'])
+    legacy_required = {
+        'name', 'desc', 'user_id', 'lanying_link', 'preset',
+        'history_msg_count_max', 'history_msg_count_min',
+        'history_msg_size_max', 'message_per_month_per_user'
+    }
+    if not legacy_required.issubset(data):
+        changes = {
+            key: value for key, value in data.items()
+            if key in ['model', 'vendor', 'system_prompt', 'plugin_ids']
+        }
+        result = lanying_agent_tools.patch_agent(app_id, {
+            'chatbot_id': chatbot_id,
+            'changes': changes,
+            'expected_revision': data.get('expected_revision')
+        }, {'request_id': str(data.get('request_id', ''))})
+        if result['result'] == 'error':
+            return make_response({
+                'code': 409 if result.get('code') == 'revision_conflict' else 400,
+                'message': result['message'],
+                'error_code': result.get('code', ''),
+                'data': result.get('data', {})
+            })
+        return make_response({'code': 200, 'data': result['data']})
     name = str(data['name'])
     nickname = str(data.get('nickname', ''))
     desc = str(data['desc'])

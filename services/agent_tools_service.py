@@ -97,28 +97,14 @@ def refresh_public_catalog():
     return _response(lanying_agent_tools.sync_public_catalog())
 
 
-@bp.route('/service/agent_tools/authorization/sync', methods=['POST'])
-def sync_authorization():
+@bp.route('/service/agent_tools/im_binding/sync', methods=['POST'])
+def sync_im_binding():
     denied = _require_auth()
     if denied:
         return denied
     data = _body()
-    return _response(lanying_agent_tools.sync_authorization_projection(
+    return _response(lanying_agent_tools.sync_im_binding_projection(
         str(data.get('app_id', '')), data))
-
-
-@bp.route('/service/agent_tools/authorization/status', methods=['POST'])
-def authorization_status():
-    denied = _require_auth()
-    if denied:
-        return denied
-    data = _body()
-    projection = lanying_agent_tools.get_authorization_projection(
-        str(data.get('app_id', '')))
-    return make_response({'code': 200, 'data': {
-        'authorization_revision': -1 if projection is None else int(
-            projection.get('authorization_revision', 0))
-    }})
 
 
 def _require_auth():

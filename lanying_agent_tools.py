@@ -37,9 +37,11 @@ MAX_SKILL_BYTES = 256 * 1024
 MAX_SKILL_TOTAL_BYTES = 512 * 1024
 MAX_SKILL_REPOSITORY_FILES = 256
 MAX_MANIFEST_BYTES = 128 * 1024
-MAX_LOCAL_RESULT_BYTES = 4096
+MAX_LOCAL_RESULT_BYTES = 64 * 1024
 MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
 MAX_NOTIFY_BYTES = 4096
+OFFICIAL_SKILL_ID = 'seenical-console'
+SUPPORTED_CLIENT_RUNTIMES = {('butler_api', 1)}
 PUBLIC_CATALOG_CACHE_KEY = 'lanying_connector:agent_tools:public_catalog:active'
 PUBLIC_CATALOG_DIRTY_KEY = 'lanying_connector:agent_tools:public_catalog:dirty'
 PUBLIC_CATALOG_SYNC_LOCK_KEY = 'lanying_connector:agent_tools:public_catalog:sync_lock'
@@ -350,67 +352,82 @@ def capability_key(app_id, client_instance_id):
 
 def register_capabilities(app_id, actor, data):
     chatbot_id = str(data.get('chatbot_id', '')).strip()
+    raw_chatbot_ids = data.get('chatbot_ids', [chatbot_id])
+    chatbot_ids = list(dict.fromkeys(
+        str(value).strip() for value in
+        (raw_chatbot_ids[:50] if isinstance(raw_chatbot_ids, list) else [])
+        if str(value).strip()))
+    if chatbot_id and chatbot_id not in chatbot_ids:
+        chatbot_ids.insert(0, chatbot_id)
     conversation_type = str(data.get('conversation_type', '')).upper()
     conversation_id = str(data.get('conversation_id', '')).strip()
     im_user_id = str(data.get('im_user_id', '')).strip()
     client_instance_id = str(data.get('client_instance_id', '')).strip()
+    seenical_session_id = str(data.get('seenical_session_id', '')).strip()
     if int(data.get('schema_version', 0) or 0) != SCHEMA_VERSION:
         return {'result': 'error', 'message': 'unsupported capability schema_version'}
-    if (not chatbot_id or len(chatbot_id) > 128
+    if (not chatbot_id or len(chatbot_id) > 128 or not chatbot_ids
+            or any(len(value) > 128 for value in chatbot_ids)
             or conversation_type not in ['CHAT', 'GROUPCHAT']
             or not conversation_id or len(conversation_id) > 128):
         return {'result': 'error', 'message': 'invalid conversation capability scope'}
     if not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', client_instance_id):
         return {'result': 'error', 'message': 'invalid client_instance_id'}
+    if not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', seenical_session_id):
+        return {'result': 'error', 'message': 'invalid seenical_session_id'}
     if not actor.get('subject_id') or not im_user_id or str(actor.get('im_user_id', '')) != im_user_id:
         return {'result': 'error', 'message': 'Console and IM user identities do not match'}
     if not is_feature_enabled(app_id, chatbot_id):
         return {'result': 'ok', 'data': {'enabled': False, 'expires_in': 0}}
-    raw_tools = data.get('tools', [])
+    raw_runtimes = data.get('runtimes', [])
     supported = {}
-    for item in (raw_tools[:100] if isinstance(raw_tools, list) else []):
-        if isinstance(item, str):
-            tool_id, version = item, 1
-        elif isinstance(item, dict):
-            tool_id = str(item.get('id', ''))
-            try:
-                version = int(item.get('version', 0))
-            except (TypeError, ValueError):
-                continue
-        else:
+    for item in (raw_runtimes[:20] if isinstance(raw_runtimes, list) else []):
+        if not isinstance(item, dict):
             continue
-        registry_tool = TOOL_REGISTRY.get(tool_id)
-        if registry_tool and version >= registry_tool['version']:
-            supported[tool_id] = version
+        runtime_type = str(item.get('type', '')).strip()
+        try:
+            version = int(item.get('version', 0))
+        except (TypeError, ValueError):
+            continue
+        if (runtime_type, version) in SUPPORTED_CLIENT_RUNTIMES:
+            supported[runtime_type] = version
+    if not supported:
+        return {'result': 'error', 'message': 'no supported Seenical runtime'}
     payload = {
         'schema_version': SCHEMA_VERSION,
         'app_id': str(app_id),
         'chatbot_id': chatbot_id,
+        'chatbot_ids': chatbot_ids,
         'conversation_type': conversation_type,
         'conversation_id': conversation_id,
         'im_user_id': im_user_id,
         'client_instance_id': client_instance_id,
+        'seenical_session_id': seenical_session_id,
         'actor_subject_id': str(actor.get('subject_id', '')),
         'actor_tenement_id': str(actor.get('tenement_id', '')),
-        'tools': supported,
+        'runtimes': supported,
         'updated_at': int(time.time()),
     }
     redis = _redis()
     key = capability_key(app_id, client_instance_id)
     old = _load(redis.get(key), {})
     if old:
-        old_index = capability_index_key(
-            app_id, old.get('chatbot_id', ''), old.get('conversation_type', ''),
-            old.get('conversation_id', ''))
-        if old_index != capability_index_key(app_id, chatbot_id, conversation_type, conversation_id):
-            redis.srem(old_index, client_instance_id)
+        for old_chatbot_id in old.get('chatbot_ids', [old.get('chatbot_id', '')]):
+            redis.srem(capability_index_key(
+                app_id, old_chatbot_id, old.get('conversation_type', ''),
+                old.get('conversation_id', '')), client_instance_id)
     pipe = redis.pipeline(transaction=True)
     pipe.setex(key, CAPABILITY_TTL_SECONDS, _json(payload))
-    pipe.sadd(capability_index_key(app_id, chatbot_id, conversation_type, conversation_id), client_instance_id)
+    for supported_chatbot_id in chatbot_ids:
+        pipe.sadd(capability_index_key(
+            app_id, supported_chatbot_id, conversation_type, conversation_id),
+            client_instance_id)
     pipe.execute()
     return {
         'result': 'ok',
-        'data': {'enabled': True, 'expires_in': CAPABILITY_TTL_SECONDS, 'tools': sorted(supported.keys())}
+        'data': {'enabled': True, 'expires_in': CAPABILITY_TTL_SECONDS,
+                 'runtimes': [{'type': key, 'version': value}
+                              for key, value in sorted(supported.items())]}
     }
 
 
@@ -423,9 +440,13 @@ def _conversation_scope(config):
     )
 
 
-def find_capability(app_id, config, tool_id=None):
+def find_capability(app_id, config, tool_id=None, runtime=None):
     chatbot_id, conversation_type, conversation_id, im_user_id = _conversation_scope(config)
     if not is_feature_enabled(app_id, chatbot_id):
+        return None
+    binding = get_im_binding_projection(app_id)
+    if (not binding or binding.get('status') != 'BOUND'
+            or str(binding.get('im_user_id', '')) != im_user_id):
         return None
     redis = _redis()
     index = capability_index_key(app_id, chatbot_id, conversation_type, conversation_id)
@@ -439,7 +460,14 @@ def find_capability(app_id, config, tool_id=None):
             continue
         if capability.get('im_user_id') and str(capability.get('im_user_id')) != im_user_id:
             continue
-        if tool_id and tool_id not in capability.get('tools', {}):
+        if chatbot_id not in capability.get('chatbot_ids', [capability.get('chatbot_id', '')]):
+            continue
+        if runtime:
+            runtime_type = str(runtime.get('type', ''))
+            runtime_version = int(runtime.get('version', 0) or 0)
+            if int(capability.get('runtimes', {}).get(runtime_type, 0) or 0) < runtime_version:
+                continue
+        elif tool_id and tool_id not in capability.get('tools', {}):
             continue
         if selected is None or capability.get('updated_at', 0) > selected.get('updated_at', 0):
             selected = capability
@@ -449,6 +477,28 @@ def find_capability(app_id, config, tool_id=None):
 def resolve_tool_id(function_info):
     function_call = function_info.get('function_call', {}) if isinstance(function_info, dict) else {}
     return str(function_call.get('tool_id') or FUNCTION_TO_TOOL.get(function_info.get('name', ''), ''))
+
+
+def _official_skill():
+    catalog = get_public_catalog() or {}
+    for skill in catalog.get('skills', []):
+        if str(skill.get('skill_id', '')) == OFFICIAL_SKILL_ID:
+            return skill
+    return None
+
+
+def dynamic_tool(tool_id):
+    skill = _official_skill()
+    if not skill:
+        return None
+    for tool in skill.get('tools', []):
+        if str(tool.get('tool_id', '')) == str(tool_id):
+            return copy.deepcopy(tool)
+    return None
+
+
+def tool_definition(tool_id):
+    return dynamic_tool(tool_id) or TOOL_REGISTRY.get(tool_id)
 
 
 def _active_skill_authorizations(app_id, chatbot_id, tool_id):
@@ -503,18 +553,20 @@ def filter_supported_client_functions(app_id, config, functions):
             filtered.append(function_info)
             continue
         tool_id = resolve_tool_id(function_info)
-        registry_tool = TOOL_REGISTRY.get(tool_id)
+        registry_tool = tool_definition(tool_id)
         chatbot_id = str(config.get('chatbot_id', ''))
         skill_versions = _active_skill_authorizations(app_id, chatbot_id, tool_id)
         if function_info.get('seenical_builtin_tool'):
-            if registry_tool and skill_versions and find_capability(app_id, config, tool_id):
+            if (registry_tool and skill_versions
+                    and find_capability(app_id, config, runtime=registry_tool.get('runtime'))):
                 copied = registry_function(tool_id)
                 copied['seenical_builtin_tool'] = True
                 copied['seenical_skill_versions'] = skill_versions
                 filtered.append(copied)
             continue
         plugin_id = _bound_plugin_id(app_id, chatbot_id, function_info)
-        if registry_tool and skill_versions and plugin_id and find_capability(app_id, config, tool_id):
+        if (registry_tool and skill_versions and plugin_id
+                and find_capability(app_id, config, runtime=registry_tool.get('runtime'))):
             # The plugin authorizes a reference to a platform Tool.  It must
             # not be able to replace the model-visible schema, description,
             # risk or handler metadata with repository-controlled content.
@@ -529,7 +581,9 @@ def filter_supported_client_functions(app_id, config, functions):
 
 
 def registry_function(tool_id):
-    tool = TOOL_REGISTRY[tool_id]
+    tool = tool_definition(tool_id)
+    if not tool:
+        raise KeyError(tool_id)
     return {
         'name': tool['function_name'],
         'description': tool['title'],
@@ -537,7 +591,8 @@ def registry_function(tool_id):
         'priority': 5,
         'function_call': {
             'type': 'client', 'tool_id': tool_id,
-            'execution': tool['execution'], 'risk': tool['risk']
+            'execution': tool['execution'], 'risk': tool['risk'],
+            'runtime': copy.deepcopy(tool.get('runtime'))
         }
     }
 
@@ -883,6 +938,11 @@ def _agent_update(app_id, arguments, request_info):
     return {'result': 'ok', 'data': {'agent': _safe_agent(lanying_chatbot.get_chatbot(app_id, chatbot_id))}}
 
 
+def patch_agent(app_id, arguments, request_info):
+    """Apply a revision-checked partial Agent update from the Butler API."""
+    return _agent_update(app_id, arguments, request_info)
+
+
 def _agent_rollback(app_id, arguments, request_info):
     chatbot_id = str(arguments.get('chatbot_id') or request_info.get('chatbot_id', ''))
     revision = int(arguments.get('revision'))
@@ -991,6 +1051,11 @@ def _site_update(app_id, arguments, request_info):
     return {'result': 'ok', 'data': {'site': _safe_site(new_site)}}
 
 
+def patch_site(app_id, arguments, request_info):
+    """Apply a revision-checked partial site update from the Butler API."""
+    return _site_update(app_id, arguments, request_info)
+
+
 def _site_rollback(app_id, arguments, request_info):
     site_id = str(arguments.get('site_id', ''))
     revision = int(arguments.get('revision'))
@@ -1040,10 +1105,14 @@ def execute_tool(app_id, tool_id, arguments, request_info=None):
 def _preview_tool(app_id, tool_id, arguments, request_info):
     if tool_id == 'seenical.plan.update':
         current = lanying_grow_ai.get_task(app_id, str(arguments.get('task_id', '')))
-        after = copy.deepcopy(current) if current else None
-        if after is not None and isinstance(arguments.get('changes'), dict):
-            after.update(arguments['changes'])
-        return {'before': _safe_task(current), 'after': _safe_task(after)}
+        changes = {
+            key: value for key, value in arguments.items()
+            if key not in ['task_id', 'expected_revision']
+        }
+        return {
+            'before': {key: (current or {}).get(key) for key in changes},
+            'after': changes,
+        }
     if tool_id == 'seenical.plan.schedule':
         current = lanying_grow_ai.get_task(app_id, str(arguments.get('task_id', '')))
         return {'before': {'schedule': (current or {}).get('schedule')}, 'after': {'schedule': arguments.get('schedule')}}
@@ -1058,18 +1127,20 @@ def _preview_tool(app_id, tool_id, arguments, request_info):
     if tool_id in ['seenical.agent.update', 'seenical.agent.rollback']:
         current = _agent_get(app_id, arguments, request_info)
         before = current.get('data', {}).get('agent')
-        after = copy.deepcopy(before) if before else None
-        if after is not None and tool_id == 'seenical.agent.update':
-            after.update(arguments.get('changes', {}))
-        return ({'before': before, 'after': after}
+        changes = {
+            key: value for key, value in arguments.items()
+            if key not in ['chatbot_id', 'expected_revision']
+        }
+        return ({'before': {key: (before or {}).get(key) for key in changes}, 'after': changes}
                 if tool_id == 'seenical.agent.update'
                 else {'target': before, 'revision': arguments.get('revision')})
     if tool_id in ['seenical.site.update', 'seenical.site.rollback']:
         current = lanying_grow_ai.get_site(app_id, str(arguments.get('site_id', '')))
-        after = copy.deepcopy(current) if current else None
-        if after is not None and tool_id == 'seenical.site.update':
-            after.update(arguments.get('changes', {}))
-        return ({'before': _safe_site(current), 'after': _safe_site(after)}
+        changes = {
+            key: value for key, value in arguments.items()
+            if key not in ['site_id', 'expected_revision']
+        }
+        return ({'before': {key: (current or {}).get(key) for key in changes}, 'after': changes}
                 if tool_id == 'seenical.site.update'
                 else {'target': _safe_site(current), 'revision': arguments.get('revision')})
     if tool_id == 'seenical.deploy.rollback':
@@ -1175,14 +1246,14 @@ def record_resume_status(app_id, request_id, status, message=''):
 
 def create_client_request(app_id, config, tool_call, function_info, arguments, continuation):
     tool_id = resolve_tool_id(function_info)
-    tool = TOOL_REGISTRY.get(tool_id)
+    tool = tool_definition(tool_id)
     if tool is None:
         return {'result': 'error', 'message': 'client tool is not registered'}
     try:
         validate_tool_arguments(tool, arguments)
     except (TypeError, ValueError) as error:
         return {'result': 'error', 'message': str(error)}
-    capability = find_capability(app_id, config, tool_id)
+    capability = find_capability(app_id, config, runtime=tool.get('runtime'))
     if capability is None:
         return {'result': 'error', 'message': 'compatible Seenical client is not online'}
     chatbot_id, conversation_type, conversation_id, im_user_id = _conversation_scope(config)
@@ -1191,6 +1262,11 @@ def create_client_request(app_id, config, tool_call, function_info, arguments, c
     builtin_tool = bool(function_info.get('seenical_builtin_tool'))
     if (not builtin_tool and not plugin_id) or not skill_versions:
         return {'result': 'error', 'message': 'client tool authorization changed'}
+    client_context = config.get('seenical_client_context', {})
+    if (not isinstance(client_context, dict)
+            or str(client_context.get('client_instance_id', '')) != str(capability['client_instance_id'])
+            or str(client_context.get('seenical_session_id', '')) != str(capability.get('seenical_session_id', ''))):
+        return {'result': 'error', 'message': 'Seenical message context is missing or stale'}
     request_id = uuid.uuid4().hex
     request_info = {
         'schema_version': SCHEMA_VERSION,
@@ -1201,6 +1277,9 @@ def create_client_request(app_id, config, tool_call, function_info, arguments, c
         'conversation_id': conversation_id,
         'im_user_id': im_user_id,
         'client_instance_id': capability['client_instance_id'],
+        'seenical_session_id': str(client_context.get('seenical_session_id', '')),
+        'trigger_message_id': str(config.get('request_msg_id', '')),
+        'trigger_from_user_id': im_user_id,
         'actor_subject_id': capability['actor_subject_id'],
         'actor_tenement_id': capability.get('actor_tenement_id', ''),
         'tool_id': tool_id,
@@ -1211,9 +1290,15 @@ def create_client_request(app_id, config, tool_call, function_info, arguments, c
         'skill_versions': skill_versions,
         'execution': tool['execution'],
         'risk': tool['risk'],
+        'runtime': copy.deepcopy(tool.get('runtime')),
+        'request': copy.deepcopy(tool.get('request')),
+        'result_fields': copy.deepcopy(tool.get('result_fields', [])),
+        'parameters': copy.deepcopy(tool.get('parameters', {})),
         'arguments': arguments,
         'arguments_hash': hashlib.sha256(_json(arguments).encode('utf-8')).hexdigest(),
-        'preview': _preview_tool(app_id, tool_id, arguments, {'chatbot_id': chatbot_id}),
+        'preview': _preview_tool(app_id, tool_id, arguments, {
+            'chatbot_id': chatbot_id, 'request_id': request_id
+        }),
         'tool_call': tool_call,
         'continuation': continuation,
         'status': 'pending',
@@ -1252,31 +1337,38 @@ def _request_actor_error(request_info, actor):
         return 'Console and IM user identities do not match'
     actor_instance_id = str(actor.get('client_instance_id', ''))
     if str(request_info.get('client_instance_id')) != actor_instance_id:
-        capability = _load(_redis().get(capability_key(
-            request_info.get('app_id', ''), actor_instance_id)), None)
-        expected = {
-            'app_id': str(request_info.get('app_id', '')),
-            'chatbot_id': str(request_info.get('chatbot_id', '')),
-            'conversation_type': str(request_info.get('conversation_type', '')),
-            'conversation_id': str(request_info.get('conversation_id', '')),
-            'im_user_id': str(request_info.get('im_user_id', '')),
-            'actor_subject_id': str(request_info.get('actor_subject_id', '')),
-        }
-        if (not capability
-                or any(str(capability.get(key, '')) != value for key, value in expected.items())
-                or request_info.get('tool_id') not in capability.get('tools', {})):
-            return 'tool request belongs to another client instance'
+        return 'tool request belongs to another client instance'
+    capability = _load(_redis().get(capability_key(
+        request_info.get('app_id', ''), actor_instance_id)), None)
+    expected = {
+        'app_id': str(request_info.get('app_id', '')),
+        'conversation_type': str(request_info.get('conversation_type', '')),
+        'conversation_id': str(request_info.get('conversation_id', '')),
+        'im_user_id': str(request_info.get('im_user_id', '')),
+        'actor_subject_id': str(request_info.get('actor_subject_id', '')),
+        'seenical_session_id': str(request_info.get('seenical_session_id', '')),
+    }
+    runtime = request_info.get('runtime', {})
+    if (not capability
+            or any(str(capability.get(key, '')) != value for key, value in expected.items())
+            or str(request_info.get('chatbot_id', '')) not in
+               capability.get('chatbot_ids', [capability.get('chatbot_id', '')])
+            or int(capability.get('runtimes', {}).get(str(runtime.get('type', '')), 0) or 0)
+               < int(runtime.get('version', 0) or 0)):
+        return 'tool request client capability is no longer valid'
     return ''
 
 
 def _request_execution_error(app_id, request_info, client_instance_id=''):
     chatbot_id = str(request_info.get('chatbot_id', ''))
     tool_id = str(request_info.get('tool_id', ''))
-    registry_tool = TOOL_REGISTRY.get(tool_id)
+    registry_tool = tool_definition(tool_id)
     if (not registry_tool
             or int(registry_tool.get('version', 0)) != int(request_info.get('tool_version', 0))
             or registry_tool.get('execution') != request_info.get('execution')
-            or registry_tool.get('risk') != request_info.get('risk')):
+            or registry_tool.get('risk') != request_info.get('risk')
+            or registry_tool.get('runtime') != request_info.get('runtime')
+            or registry_tool.get('request') != request_info.get('request')):
         return 'platform Tool definition changed; please request the operation again'
     if not is_feature_enabled(app_id, chatbot_id):
         return 'client tools are disabled'
@@ -1284,7 +1376,9 @@ def _request_execution_error(app_id, request_info, client_instance_id=''):
         app_id, client_instance_id or request_info.get('client_instance_id', ''))), None)
     if (not capability or str(capability.get('actor_subject_id')) != str(request_info.get('actor_subject_id'))
             or str(capability.get('im_user_id')) != str(request_info.get('im_user_id'))
-            or capability.get('tools', {}).get(tool_id) is None):
+            or int(capability.get('runtimes', {}).get(
+                str(request_info.get('runtime', {}).get('type', '')), 0) or 0)
+               < int(request_info.get('runtime', {}).get('version', 0) or 0)):
         return 'compatible Seenical client is not online'
     current_skills = _active_skill_authorizations(app_id, chatbot_id, tool_id)
     if current_skills != request_info.get('skill_versions', []):
@@ -1375,8 +1469,10 @@ def _decide_request_locked(app_id, request_id, actor, decision,
     if int(request_info.get('expires_at', 0)) <= int(time.time()):
         return {'result': 'error', 'message': 'tool request expired'}
     if request_info.get('status') == 'awaiting_client_result' and decision == 'approve':
+        data = public_request(request_info)
+        data['execute_allowed'] = False
         return {
-            'result': 'ok', 'data': public_request(request_info),
+            'result': 'ok', 'data': data,
             'request': request_info, 'resume': False
         }
     if request_info.get('status') != 'pending':
@@ -1388,14 +1484,6 @@ def _decide_request_locked(app_id, request_id, actor, decision,
         _store_request(request_info)
         _audit(app_id, request_id, 'rejected', {'actor_subject_id': str(actor.get('subject_id', ''))})
         return {'result': 'ok', 'data': result, 'request': request_info, 'resume': True}
-    projection = get_authorization_projection(app_id)
-    if projection is not None:
-        try:
-            supplied_revision = int(authorization_revision)
-        except (TypeError, ValueError):
-            supplied_revision = -1
-        if supplied_revision != int(projection.get('authorization_revision', 0)):
-            return {'result': 'error', 'message': 'Skill authorization projection is stale'}
     execution_error = _request_execution_error(
         app_id, request_info, str(actor.get('client_instance_id', '')))
     if execution_error:
@@ -1411,11 +1499,14 @@ def _decide_request_locked(app_id, request_id, actor, decision,
             'message': execution_error
         })
         return {'result': 'ok', 'data': result, 'request': request_info, 'resume': True}
-    if request_info.get('execution') == 'local_action':
+    if request_info.get('execution') in ['local_action', 'butler_api']:
         request_info['status'] = 'awaiting_client_result'
+        request_info['client_execution_started_at'] = int(time.time())
         _store_request(request_info)
         _audit(app_id, request_id, 'approved_local', {'actor_subject_id': str(actor.get('subject_id', ''))})
-        return {'result': 'ok', 'data': public_request(request_info), 'request': request_info, 'resume': False}
+        data = public_request(request_info)
+        data['execute_allowed'] = True
+        return {'result': 'ok', 'data': data, 'request': request_info, 'resume': False}
 
     lock_key = f'lanying_connector:agent_tools:execute_lock:{request_id}'
     lock_value = uuid.uuid4().hex
@@ -1481,6 +1572,8 @@ def _submit_local_result_locked(app_id, request_id, actor, client_result):
     request_info = _load(redis.get(request_key(request_id)), None)
     if request_info is None or str(request_info.get('app_id')) != str(app_id):
         return {'result': 'error', 'message': 'tool request not found'}
+    if not isinstance(client_result, dict):
+        return {'result': 'error', 'message': 'client result must be an object'}
     actor_error = _request_actor_error(request_info, actor)
     if actor_error:
         return {'result': 'error', 'message': actor_error}
@@ -1489,22 +1582,59 @@ def _submit_local_result_locked(app_id, request_id, actor, client_result):
         return {'result': 'ok', 'data': existing, 'request': request_info, 'resume': False}
     if int(request_info.get('expires_at', 0)) <= int(time.time()):
         return {'result': 'error', 'message': 'tool request expired'}
-    if request_info.get('status') != 'awaiting_client_result' or request_info.get('execution') != 'local_action':
-        return {'result': 'error', 'message': 'tool request is not waiting for a local result'}
+    if (request_info.get('status') != 'awaiting_client_result'
+            or request_info.get('execution') not in ['local_action', 'butler_api']):
+        return {'result': 'error', 'message': 'tool request is not waiting for a client result'}
     execution_error = _request_execution_error(
         app_id, request_info, str(actor.get('client_instance_id', '')))
     if execution_error:
         return {'result': 'error', 'message': execution_error}
+    if request_info.get('execution') == 'butler_api':
+        try:
+            client_result = _constrain_client_result(
+                client_result, request_info.get('result_fields', []))
+        except (TypeError, ValueError) as error:
+            return {'result': 'error', 'message': str(error)}
     encoded = _json(client_result)
     if len(encoded.encode('utf-8')) > MAX_LOCAL_RESULT_BYTES:
         return {'result': 'error', 'message': 'client result is too large'}
-    result = {'status': 'completed', 'execution': {'result': 'ok', 'data': client_result}}
+    is_butler_api = request_info.get('execution') == 'butler_api'
+    succeeded = not is_butler_api or bool(client_result.get('ok'))
+    success_data = client_result.get('data', {}) if is_butler_api else client_result
+    execution = ({'result': 'ok', 'data': success_data} if succeeded else {
+                     'result': 'error',
+                     'code': client_result.get('error_code', 'request_failed'),
+                     'message': client_result.get('message', 'Butler API request failed')
+                 })
+    result = {'status': 'completed' if succeeded else 'failed', 'execution': execution}
     redis.setex(result_key(request_id), RESULT_TTL_SECONDS, _json(result))
-    request_info['status'] = 'completed'
+    request_info['status'] = result['status']
     request_info['completed_at'] = int(time.time())
     _store_request(request_info)
-    _audit(app_id, request_id, 'completed_local', {'actor_subject_id': str(actor.get('subject_id', ''))})
+    _audit(app_id, request_id, 'completed_client', {'actor_subject_id': str(actor.get('subject_id', ''))})
     return {'result': 'ok', 'data': result, 'request': request_info, 'resume': True}
+
+
+def _constrain_client_result(value, allowed_fields):
+    if not isinstance(value, dict):
+        raise ValueError('client result must be an object')
+    if _contains_secret_key(value):
+        raise ValueError('client result contains a forbidden credential field')
+    allowed = set(str(field) for field in allowed_fields)
+    envelope = {'ok': bool(value.get('ok', False))}
+    if not envelope['ok']:
+        envelope['error_code'] = str(value.get('error_code', 'request_failed'))[:100]
+        envelope['message'] = str(value.get('message', 'Butler API request failed'))[:300]
+        return envelope
+    payload = value.get('data', {})
+    if not isinstance(payload, dict):
+        envelope['data'] = {'value': payload}
+        return envelope
+    envelope['data'] = {
+        key: copy.deepcopy(item) for key, item in payload.items()
+        if key in allowed and not _contains_secret_key({key: item})
+    }
+    return envelope
 
 
 def tool_result_for_model(result):
@@ -1624,7 +1754,7 @@ def _contains_secret_key(value):
     return False
 
 
-def _normalize_tool_requirements(values, inherited=None):
+def _normalize_tool_requirements(values, inherited=None, available_tools=None):
     inherited = inherited or {}
     result = {}
     if isinstance(values, str):
@@ -1644,7 +1774,8 @@ def _normalize_tool_requirements(values, inherited=None):
             min_version = int(min_version)
         except (TypeError, ValueError):
             raise ValueError('invalid Tool minimum version')
-        registry_tool = TOOL_REGISTRY.get(tool_id)
+        registry_tool = ((available_tools or {}).get(tool_id)
+                         or TOOL_REGISTRY.get(tool_id))
         if registry_tool is None:
             raise ValueError('unknown Skill tool: ' + tool_id)
         if min_version < 1 or registry_tool['version'] < min_version:
@@ -1674,9 +1805,11 @@ def _skill_resource_paths(repository_files, skill_dir):
     prefix = '' if skill_dir == '.' else skill_dir + '/'
     result = []
     for path in sorted(repository_files or []):
+        if path == '.seenical/manifest.json':
+            continue
         if skill_dir == '.':
             if path == 'SKILL.md' or not path.startswith(
-                    ('agents/', 'references/', 'scripts/')):
+                    ('agents/', 'references/', 'scripts/', '.seenical/')):
                 continue
             relative = path
         else:
@@ -1685,6 +1818,7 @@ def _skill_resource_paths(repository_files, skill_dir):
             relative = path[len(prefix):]
         allowed = (
             relative == 'agents/openai.yaml'
+            or relative in ['.seenical/runtime.json', '.seenical/tools.json']
             or (relative.startswith('references/')
                 and PurePosixPath(relative).suffix.lower()
                 in ['.md', '.json', '.yaml', '.yml'])
@@ -1694,6 +1828,104 @@ def _skill_resource_paths(repository_files, skill_dir):
                 'public Skill repository contains unsupported files: ' + path)
         result.append((path, relative))
     return result
+
+
+def _resolve_local_schema(schema, definitions):
+    if not isinstance(schema, dict):
+        raise ValueError('Tool parameters must be a JSON Schema object')
+    if '$ref' in schema:
+        ref = str(schema.get('$ref', ''))
+        prefix = '#/definitions/'
+        if not ref.startswith(prefix) or ref[len(prefix):] not in definitions:
+            raise ValueError('unsupported Tool schema reference')
+        return _resolve_local_schema(definitions[ref[len(prefix):]], definitions)
+    result = copy.deepcopy(schema)
+    if isinstance(result.get('properties'), dict):
+        result['properties'] = {
+            key: _resolve_local_schema(value, definitions)
+            for key, value in result['properties'].items()
+        }
+    if isinstance(result.get('items'), dict):
+        result['items'] = _resolve_local_schema(result['items'], definitions)
+    return result
+
+
+def _normalize_butler_runtime(runtime_text, tools_text, skill_id):
+    runtime_doc = json.loads(runtime_text)
+    tools_doc = json.loads(tools_text)
+    if set(runtime_doc) != {'schema_version', 'skill_id', 'runtime', 'tools_file'}:
+        raise ValueError('invalid runtime.json fields')
+    if (int(runtime_doc.get('schema_version', 0) or 0) != SCHEMA_VERSION
+            or str(runtime_doc.get('skill_id', '')) != skill_id
+            or str(runtime_doc.get('tools_file', '')) != '.seenical/tools.json'):
+        raise ValueError('invalid Seenical runtime descriptor')
+    runtime = runtime_doc.get('runtime', {})
+    if (not isinstance(runtime, dict)
+            or set(runtime) != {'type', 'version', 'authentication'}
+            or runtime.get('type') != 'butler_api'
+            or int(runtime.get('version', 0) or 0) != 1
+            or runtime.get('authentication') != 'host_console_session'):
+        raise ValueError('unsupported Seenical runtime')
+    if set(tools_doc) - {'schema_version', 'tools', 'definitions'}:
+        raise ValueError('unsupported tools.json fields')
+    if int(tools_doc.get('schema_version', 0) or 0) != SCHEMA_VERSION:
+        raise ValueError('unsupported tools.json schema_version')
+    definitions = tools_doc.get('definitions', {})
+    if not isinstance(definitions, dict):
+        raise ValueError('invalid Tool schema definitions')
+    normalized = {}
+    function_names = set()
+    for raw in tools_doc.get('tools', []):
+        if not isinstance(raw, dict) or set(raw) != {
+                'tool_id', 'version', 'function_name', 'title', 'description',
+                'risk', 'parameters', 'request', 'result_fields'}:
+            raise ValueError('invalid Tool definition fields')
+        tool_id = str(raw.get('tool_id', ''))
+        function_name = str(raw.get('function_name', ''))
+        if (not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,99}', tool_id)
+                or not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]{0,99}', function_name)
+                or tool_id in normalized or function_name in function_names):
+            raise ValueError('invalid or duplicate Tool identifier')
+        request_info = raw.get('request', {})
+        method = str(request_info.get('method', '')).upper()
+        path = str(request_info.get('path', ''))
+        placement = str(request_info.get('arguments', ''))
+        if (set(request_info) != {'method', 'path', 'arguments'}
+                or method not in ['GET', 'POST', 'PUT', 'PATCH']
+                or not re.fullmatch(r'/app/[A-Za-z0-9_./-]+', path)
+                or '..' in PurePosixPath(path).parts
+                or placement not in ['query', 'body']
+                or (method == 'GET') != (placement == 'query')):
+            raise ValueError('unsafe Butler API Tool request')
+        risk = str(raw.get('risk', ''))
+        if risk not in ['read', 'write', 'execute', 'destructive']:
+            raise ValueError('invalid Tool risk')
+        if method == 'GET' and risk != 'read' or method != 'GET' and risk == 'read':
+            raise ValueError('Tool risk cannot weaken HTTP method risk')
+        result_fields = raw.get('result_fields', [])
+        if (not isinstance(result_fields, list) or not result_fields
+                or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', str(value))
+                       or str(value).lower() in SECRET_FIELD_NAMES
+                       for value in result_fields)):
+            raise ValueError('invalid Tool result field constraint')
+        parameters = _resolve_local_schema(raw.get('parameters'), definitions)
+        tool = {
+            'tool_id': tool_id, 'version': int(raw.get('version', 0) or 0),
+            'function_name': function_name, 'title': str(raw.get('title', ''))[:200],
+            'description': str(raw.get('description', ''))[:1000],
+            'risk': risk, 'execution': 'butler_api', 'parameters': parameters,
+            'runtime': copy.deepcopy(runtime),
+            'request': {'method': method, 'path': path, 'arguments': placement},
+            'result_fields': [str(value) for value in result_fields],
+        }
+        if tool['version'] < 1 or not tool['title'] or not tool['description']:
+            raise ValueError('invalid Tool metadata')
+        validate_tool_arguments(tool, {}) if not parameters.get('required') else None
+        normalized[tool_id] = tool
+        function_names.add(function_name)
+    if not normalized or len(normalized) > 100:
+        raise ValueError('invalid Tool count')
+    return copy.deepcopy(runtime), normalized
 
 
 def _skill_file_path(skill_dir, relative_path):
@@ -1777,8 +2009,16 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
                 if not isinstance(parsed_resource, dict):
                     raise ValueError('invalid structured Skill resource: ' + resource_path)
             resources[relative_path] = resource_text
+        if ('.seenical/runtime.json' not in resources
+                or '.seenical/tools.json' not in resources):
+            raise ValueError('public Skill runtime files are missing')
+        runtime, available_tools = _normalize_butler_runtime(
+            resources['.seenical/runtime.json'],
+            resources['.seenical/tools.json'], skill_id)
         tool_requirements = _normalize_tool_requirements(
-            descriptor.get('tools', []))
+            descriptor.get('tools', []), available_tools=available_tools)
+        if set(tool_requirements) != set(available_tools):
+            raise ValueError('manifest Tool list must match tools.json')
         scopes = descriptor.get('scopes', [])
         if isinstance(scopes, str):
             scopes = [scopes]
@@ -1795,6 +2035,8 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
                 if line.strip())[:300],
             'required_tools': sorted(tool_requirements),
             'tool_requirements': tool_requirements,
+            'runtime': runtime,
+            'tools': [available_tools[key] for key in sorted(available_tools)],
             'scopes': sorted(set(str(value) for value in scopes)),
             'sha': skill_sha,
             'resources': resources,
@@ -1802,6 +2044,8 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
         normalized['security_digest'] = hashlib.sha256(_json({
             'skill_id': skill_id,
             'tool_requirements': tool_requirements,
+            'runtime': runtime,
+            'tools': normalized['tools'],
             'scopes': normalized['scopes'],
         }).encode('utf-8')).hexdigest()
         normalized['revision'] = hashlib.sha256(
@@ -1982,76 +2226,52 @@ def run_public_catalog_sync(lock_value, release_lock=True):
             _release_catalog_lock(lock_value)
 
 
-def authorization_projection_key(app_id):
-    return f'lanying_connector:agent_tools:authorization:{app_id}'
+def im_binding_projection_key(app_id):
+    return f'lanying_connector:agent_tools:im_binding:{app_id}'
 
 
-def sync_authorization_projection(app_id, data):
+def sync_im_binding_projection(app_id, data):
     try:
-        revision = int(data.get('authorization_revision', 0) or 0)
+        revision = int(data.get('revision', 0) or 0)
     except (TypeError, ValueError):
-        return {'result': 'error', 'message': 'invalid authorization revision'}
-    skills = data.get('skills', [])
-    if not isinstance(skills, list) or len(skills) > 100:
-        return {'result': 'error', 'message': 'invalid authorization projection'}
+        return {'result': 'error', 'message': 'invalid IM binding revision'}
     normalized = {
         'schema_version': SCHEMA_VERSION,
         'app_id': str(app_id),
-        'enabled': bool(data.get('enabled', False)),
-        'authorization_revision': revision,
-        'skills': [],
+        'status': str(data.get('status', '')),
+        'im_user_id': str(data.get('im_user_id', '')),
+        'revision': revision,
         'synced_at': int(time.time()),
     }
-    for raw in skills:
-        item = dict(raw) if isinstance(raw, dict) else {}
-        skill_id = str(item.get('skill_id', ''))
-        skill_revision = str(item.get('revision', ''))
-        if not skill_id or not skill_revision or not get_public_skill_revision(skill_id, skill_revision):
-            return {'result': 'error', 'message': 'unknown public Skill revision'}
-        normalized['skills'].append({
-            'skill_id': skill_id,
-            'revision': skill_revision,
-            'chatbot_ids': sorted(set(str(value) for value in item.get('chatbot_ids', []))),
-        })
-    normalized['skills'].sort(
-        key=lambda item: (item['skill_id'], item['revision']))
+    if (normalized['status'] != 'BOUND'
+            or not normalized['im_user_id'].isdigit() or revision < 1):
+        return {'result': 'error', 'message': 'invalid Seenical IM binding'}
+    key = im_binding_projection_key(app_id)
     redis = _redis()
-    key = authorization_projection_key(app_id)
     pipe = redis.pipeline(transaction=True)
     try:
         pipe.watch(key)
         current = _load(pipe.get(key), None)
-        if current is not None:
-            current_revision = int(current.get('authorization_revision', 0) or 0)
+        if current:
+            current_revision = int(current.get('revision', 0) or 0)
             if revision < current_revision:
                 pipe.unwatch()
-                return {
-                    'result': 'error', 'code': 'stale_authorization_revision',
-                    'message': 'authorization revision cannot move backwards'
-                }
-            if revision == current_revision:
-                fields = ['app_id', 'enabled', 'authorization_revision', 'skills']
-                if ({field: normalized.get(field) for field in fields}
-                        != {field: current.get(field) for field in fields}):
-                    pipe.unwatch()
-                    return {
-                        'result': 'error', 'code': 'authorization_revision_conflict',
-                        'message': 'authorization revision content changed'
-                    }
+                return {'result': 'error', 'message': 'IM binding revision cannot move backwards'}
+            if (revision == current_revision
+                    and any(str(current.get(field, '')) != str(normalized.get(field, ''))
+                            for field in ['app_id', 'status', 'im_user_id', 'revision'])):
+                pipe.unwatch()
+                return {'result': 'error', 'message': 'IM binding revision content changed'}
         pipe.multi()
         pipe.set(key, _json(normalized))
         pipe.execute()
     except Exception:
-        return {
-            'result': 'error', 'code': 'authorization_revision_conflict',
-            'message': 'authorization projection changed concurrently'
-        }
-    return {'result': 'ok', 'data': {
-        'authorization_revision': revision, 'status': 'synced'}}
+        return {'result': 'error', 'message': 'IM binding projection changed concurrently'}
+    return {'result': 'ok', 'data': {'revision': revision, 'status': 'synced'}}
 
 
-def get_authorization_projection(app_id):
-    return _load(_redis().get(authorization_projection_key(app_id)), None)
+def get_im_binding_projection(app_id):
+    return _load(_redis().get(im_binding_projection_key(app_id)), None)
 
 
 def get_public_skill_revision(skill_id, revision):
@@ -2067,46 +2287,40 @@ def get_public_skill_revision(skill_id, revision):
 
 
 def get_active_skills(app_id, chatbot_id):
-    projection = get_authorization_projection(app_id)
-    if not projection or not projection.get('enabled'):
+    binding = get_im_binding_projection(app_id)
+    skill = _official_skill()
+    if not binding or binding.get('status') != 'BOUND' or not skill:
         return []
-    result = []
-    for item in projection.get('skills', []):
-        if str(chatbot_id) not in item.get('chatbot_ids', []):
-            continue
-        skill = get_public_skill_revision(
-            item.get('skill_id', ''), item.get('revision', ''))
-        if skill:
-            result.append({
-                'repository_id': skill.get('skill_id', ''),
-                'revision': skill.get('revision', ''),
-                'source_commit': skill.get('source_commit', ''),
-                'skills': [skill],
-            })
-    return result
+    return [{
+        'repository_id': skill.get('skill_id', ''),
+        'revision': skill.get('revision', ''),
+        'source_commit': skill.get('source_commit', ''),
+        'skills': [skill],
+    }]
 
 
 _legacy_is_feature_enabled = is_feature_enabled
 
 
 def is_feature_enabled(app_id, chatbot_id=''):
-    projection = get_authorization_projection(app_id)
-    if projection is not None:
-        return bool(projection.get('enabled', False))
+    if not _truthy(os.getenv('LANYING_AGENT_TOOLS_PLATFORM_ENABLED', 'on')):
+        return False
     return _legacy_is_feature_enabled(app_id, chatbot_id)
 
 
 def apply_active_skills(app_id, config, messages, functions):
     chatbot_id = str(config.get('chatbot_id', ''))
+    binding = get_im_binding_projection(app_id)
+    current_im_user_id = _conversation_scope(config)[3]
+    if (not binding or str(binding.get('im_user_id', '')) != current_im_user_id):
+        return messages, functions
     active_tool_ids = set()
     insert_at = 0
     while insert_at < len(messages) and messages[insert_at].get('role') in ['system', 'developer']:
         insert_at += 1
     for repository in get_active_skills(app_id, chatbot_id):
         for skill in repository.get('skills', []):
-            active_tool_ids.update(
-                tool_id for tool_id in skill.get('required_tools', [])
-                if tool_id in TOOL_REGISTRY)
+            active_tool_ids.update(skill.get('required_tools', []))
             instructions = str(skill.get('instructions', '')).strip()
             if instructions:
                 messages.insert(insert_at, {
@@ -2120,7 +2334,8 @@ def apply_active_skills(app_id, config, messages, functions):
         if isinstance(function_info, dict)
     }
     for tool_id in sorted(active_tool_ids - existing_tool_ids):
-        if find_capability(app_id, config, tool_id):
+        tool = tool_definition(tool_id)
+        if tool and find_capability(app_id, config, runtime=tool.get('runtime')):
             function_info = registry_function(tool_id)
             function_info['seenical_builtin_tool'] = True
             function_info['seenical_skill_versions'] = (

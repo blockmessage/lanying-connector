@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import lanying_grow_ai
+import lanying_agent_tools
 import lanying_cert
 from datetime import date as datetime_date
 from datetime import timedelta as datetime_timedelta
@@ -171,7 +172,8 @@ def create_task():
         embedding_condition = embedding_condition,
         auto_deploy = auto_deploy
     )
-    result = lanying_grow_ai.create_task(task_setting)
+    run_immediately = data.get('run_immediately', True) is not False
+    result = lanying_grow_ai.create_task(task_setting, run_immediately=run_immediately)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -187,6 +189,27 @@ def configure_task():
     data = json.loads(text)
     app_id = str(data['app_id'])
     task_id = str(data['task_id'])
+    legacy_required = {
+        'name', 'note', 'chatbot_id', 'prompt', 'keywords',
+        'word_count_min', 'word_count_max', 'image_count', 'article_count',
+        'cycle_type', 'cycle_interval'
+    }
+    if not legacy_required.issubset(data):
+        changes = {
+            key: value for key, value in data.items()
+            if key not in ['app_id', 'task_id', 'expected_revision', 'request_id']
+        }
+        result = lanying_grow_ai.patch_task(
+            app_id, task_id, changes, data.get('expected_revision'),
+            str(data.get('request_id', '')))
+        if result['result'] == 'error':
+            return make_response({
+                'code': 409 if result.get('code') == 'revision_conflict' else 400,
+                'message': result['message'],
+                'error_code': result.get('code', ''),
+                'data': result.get('data', {})
+            })
+        return make_response({'code': 200, 'data': result['data']})
     name = str(data['name'])
     note = str(data['note'])
     chatbot_id = str(data['chatbot_id'])
@@ -595,6 +618,25 @@ def configure_site():
     app_id = str(data['app_id'])
     tenement_id = str(data.get('tenement_id', ''))
     site_id = str(data['site_id'])
+    legacy_required = {'name', 'type', 'footer_note', 'lanying_link'}
+    if not legacy_required.issubset(data):
+        changes = {
+            key: value for key, value in data.items()
+            if key not in ['app_id', 'site_id', 'expected_revision', 'request_id', 'tenement_id']
+        }
+        result = lanying_agent_tools.patch_site(app_id, {
+            'site_id': site_id,
+            'changes': changes,
+            'expected_revision': data.get('expected_revision')
+        }, {'request_id': str(data.get('request_id', ''))})
+        if result['result'] == 'error':
+            return make_response({
+                'code': 409 if result.get('code') == 'revision_conflict' else 400,
+                'message': result['message'],
+                'error_code': result.get('code', ''),
+                'data': result.get('data', {})
+            })
+        return make_response({'code': 200, 'data': result['data']})
     name = str(data['name'])
     type = str(data['type'])
     github_url = str(data.get('github_url', ''))

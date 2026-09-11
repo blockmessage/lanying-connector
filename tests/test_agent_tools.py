@@ -19,14 +19,10 @@ def load_agent_tools():
             append_agent_tool_audit_log=lambda value: {"result": "ok"},
             get_active_public_skill_catalog=lambda: None,
             get_public_skill_revision=lambda skill_id, revision: None,
-            get_seenical_config_revision=lambda *args, **kwargs: None,
-            list_seenical_config_revisions=lambda *args, **kwargs: [],
-            save_seenical_config_revision=lambda *args, **kwargs: {"result": "ok"},
             save_public_skill_catalog=lambda value: {"result": "ok"}),
         "lanying_redis": types.SimpleNamespace(),
         "lanying_vendor": types.SimpleNamespace(),
         "yaml": types.SimpleNamespace(safe_load=lambda value: {}),
-        "lanying_async": types.SimpleNamespace(executor=types.SimpleNamespace(submit=lambda *args, **kwargs: None)),
     }
     old_modules = {name: sys.modules.get(name) for name in stubs}
     sys.modules.update(stubs)
@@ -44,438 +40,260 @@ def load_agent_tools():
                 sys.modules[name] = old_module
 
 
+class FakeRedis:
+    def __init__(self):
+        self.values = {}
+        self.sets = {}
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    def setex(self, key, ttl, value):
+        self.values[key] = value
+
+    def delete(self, key):
+        self.values.pop(key, None)
+
+    def sadd(self, key, value):
+        self.sets.setdefault(key, set()).add(value)
+
+    def srem(self, key, value):
+        self.sets.setdefault(key, set()).discard(value)
+
+    def smembers(self, key):
+        return self.sets.get(key, set())
+
+    def pipeline(self, transaction=True):
+        return self
+
+    def watch(self, *keys):
+        return None
+
+    def unwatch(self):
+        return None
+
+    def multi(self):
+        return None
+
+    def execute(self):
+        return []
+
+
 class AgentToolsTest(unittest.TestCase):
     def setUp(self):
         self.module = load_agent_tools()
+        self.redis = FakeRedis()
 
-    def test_client_function_requires_registry_skill_plugin_and_online_client(self):
-        function = {
-            "name": "repository_controlled_name",
-            "doc_id": "doc-1",
-            "description": "untrusted description",
-            "parameters": {"type": "object", "properties": {"secret": {"type": "string"}}},
-            "function_call": {
-                "type": "client", "tool_id": "seenical.plan.update",
-                "execution": "local_action", "risk": "read"
-            },
+    def template_catalog(self):
+        root = pathlib.Path(__file__).resolve().parents[2] / "seenical-skill-repository-template"
+        manifest = (root / ".seenical/manifest.json").read_text()
+        files = {
+            path.relative_to(root).as_posix(): (path.read_text(), "sha")
+            for path in [
+                root / "SKILL.md", root / "agents/openai.yaml",
+                root / "references/tool-api.md", root / ".seenical/runtime.json",
+                root / ".seenical/tools.json",
+            ]
         }
-        config = {"chatbot_id": "chatbot-1"}
+        config = {
+            "repository_url": "https://github.com/seenical/skills",
+            "owner": "seenical", "repo": "skills", "ref": "main",
+            "manifest_path": ".seenical/manifest.json",
+        }
         with mock.patch.object(
-                self.module, "_active_skill_authorizations",
-                return_value=[{"skill_id": "writer", "revision": "rev"}]), mock.patch.object(
-                self.module, "_bound_plugin_id", return_value="plugin-1"), mock.patch.object(
-                self.module, "find_capability", return_value={"client_instance_id": "tab-1"}):
-            result = self.module.filter_supported_client_functions("app", config, [function])
+                self.module, "_github_file",
+                side_effect=lambda owner, repo, path, ref, token, limit: files[path]):
+            return self.module._normalize_public_skill_catalog(
+                config, "a" * 40, manifest, "manifest-sha",
+                {".seenical/manifest.json", *files.keys()})
 
-        self.assertEqual(1, len(result))
-        self.assertEqual("plugin-1", result[0]["seenical_plugin_id"])
-        self.assertEqual("seenical_plan_update", result[0]["name"])
-        self.assertEqual("修改生成计划", result[0]["description"])
-        self.assertNotIn("secret", result[0]["parameters"]["properties"])
-        self.assertEqual("console_action", result[0]["function_call"]["execution"])
-        self.assertEqual("write", result[0]["function_call"]["risk"])
+    def activate_catalog(self):
+        catalog = self.template_catalog()
+        self.redis.set(self.module.PUBLIC_CATALOG_CACHE_KEY, json.dumps(catalog))
+        return catalog
 
-        for patch_name, patch_value in [
-                ("_active_skill_authorizations", []),
-                ("_bound_plugin_id", ""),
-                ("find_capability", None)]:
-            defaults = {
-                "_active_skill_authorizations": [{"skill_id": "writer", "revision": "rev"}],
-                "_bound_plugin_id": "plugin-1",
-                "find_capability": {"client_instance_id": "tab-1"},
+    def bind_app(self, app_id="app", user_id="22"):
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            result = self.module.sync_im_binding_projection(app_id, {
+                "status": "BOUND", "im_user_id": user_id, "revision": 1
+            })
+        self.assertEqual("ok", result["result"])
+
+    def test_template_loads_dynamic_butler_tools(self):
+        catalog = self.template_catalog()
+        skill = catalog["skills"][0]
+        self.assertEqual("seenical-console", skill["skill_id"])
+        self.assertEqual("butler_api", skill["runtime"]["type"])
+        self.assertEqual(set(skill["required_tools"]), {tool["tool_id"] for tool in skill["tools"]})
+        self.assertEqual("/app/grow_ai/configure_task",
+                         next(tool for tool in skill["tools"] if tool["tool_id"] == "seenical.plan.update")["request"]["path"])
+
+    def test_runtime_rejects_absolute_urls_headers_and_weakened_risk(self):
+        runtime = json.dumps({
+            "schema_version": 1, "skill_id": "seenical-console",
+            "runtime": {"type": "butler_api", "version": 1, "authentication": "host_console_session"},
+            "tools_file": ".seenical/tools.json"
+        })
+        base = {
+            "tool_id": "seenical.test", "version": 1, "function_name": "seenical_test",
+            "title": "Test", "description": "Test", "risk": "read",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "request": {"method": "GET", "path": "/app/test", "arguments": "query"},
+            "result_fields": ["status"]
+        }
+        for mutate in [
+            lambda tool: tool["request"].update(path="https://evil.example/app/test"),
+            lambda tool: tool["request"].update(headers={"Authorization": "x"}),
+            lambda tool: tool.update(risk="read", request={"method": "POST", "path": "/app/test", "arguments": "body"}),
+        ]:
+            tool = json.loads(json.dumps(base))
+            mutate(tool)
+            with self.subTest(tool=tool), self.assertRaises(ValueError):
+                self.module._normalize_butler_runtime(runtime, json.dumps({
+                    "schema_version": 1, "tools": [tool], "definitions": {}
+                }), "seenical-console")
+
+    def test_capability_is_runtime_scoped_and_requires_bound_im_user(self):
+        self.activate_catalog()
+        self.bind_app()
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "is_feature_enabled", return_value=True):
+            result = self.module.register_capabilities("app", {
+                "subject_id": "11", "tenement_id": "2", "im_user_id": "22"
+            }, {
+                "schema_version": 1, "client_instance_id": "tab-a",
+                "seenical_session_id": "session-a", "chatbot_id": "bot-a",
+                "chatbot_ids": ["bot-a", "bot-b"],
+                "conversation_type": "CHAT", "conversation_id": "22", "im_user_id": "22",
+                "runtimes": [{"type": "butler_api", "version": 1}]
+            })
+        self.assertEqual("ok", result["result"])
+        self.assertEqual("butler_api", result["data"]["runtimes"][0]["type"])
+        self.assertEqual({"tab-a"}, self.redis.smembers(self.module.capability_index_key(
+            "app", "bot-b", "CHAT", "22")))
+
+    def test_binding_projection_rejects_same_revision_with_different_user(self):
+        self.bind_app(user_id="22")
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            result = self.module.sync_im_binding_projection("app", {
+                "status": "BOUND", "im_user_id": "23", "revision": 1
+            })
+        self.assertEqual("error", result["result"])
+        stored = json.loads(self.redis.get(self.module.im_binding_projection_key("app")))
+        self.assertEqual("22", stored["im_user_id"])
+
+    def test_unbound_sender_does_not_receive_skill_or_tools(self):
+        self.activate_catalog()
+        self.bind_app(user_id="22")
+        messages = [{"role": "user", "content": "list plans"}]
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            output_messages, functions = self.module.apply_active_skills(
+                "app", {"chatbot_id": "bot", "send_from": "23",
+                        "reply_msg_type": "CHAT", "reply_to": "23"}, messages, [])
+        self.assertEqual(messages, output_messages)
+        self.assertEqual([], functions)
+
+    def test_request_freezes_runtime_and_original_message_context(self):
+        catalog = self.activate_catalog()
+        self.bind_app()
+        skill = catalog["skills"][0]
+        capability = {
+            "client_instance_id": "tab-a", "seenical_session_id": "session-a",
+            "actor_subject_id": "11", "actor_tenement_id": "2",
+            "runtimes": {"butler_api": 1}
+        }
+        config = {
+            "chatbot_id": "bot", "reply_msg_type": "CHAT", "reply_to": "22", "send_from": "22",
+            "request_msg_id": "9001", "seenical_client_context": {
+                "client_instance_id": "tab-a", "seenical_session_id": "session-a"
             }
-            defaults[patch_name] = patch_value
-            with mock.patch.object(self.module, "_active_skill_authorizations", return_value=defaults["_active_skill_authorizations"]), mock.patch.object(
-                    self.module, "_bound_plugin_id", return_value=defaults["_bound_plugin_id"]), mock.patch.object(
-                    self.module, "find_capability", return_value=defaults["find_capability"]):
-                self.assertEqual([], self.module.filter_supported_client_functions("app", config, [function]))
+        }
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "find_capability", return_value=capability), mock.patch.object(
+                self.module, "_audit"):
+            function = self.module.registry_function("seenical.plan.list")
+            function["seenical_builtin_tool"] = True
+            result = self.module.create_client_request(
+                "app", config, {"id": "call"}, function, {}, {"config": {}})
+        self.assertEqual("ok", result["result"])
+        request = result["data"]
+        self.assertEqual("9001", request["trigger_message_id"])
+        self.assertEqual("22", request["trigger_from_user_id"])
+        self.assertEqual("session-a", request["seenical_session_id"])
+        self.assertEqual("/app/grow_ai/get_task_list", request["request"]["path"])
+        self.assertEqual(skill["revision"], request["skill_versions"][0]["revision"])
+
+    def test_client_result_is_field_constrained_and_rejects_credentials(self):
+        result = self.module._constrain_client_result({
+            "ok": True, "data": {"task_id": "1", "extra": "hidden"}
+        }, ["task_id"])
+        self.assertEqual({"ok": True, "data": {"task_id": "1"}}, result)
+        with self.assertRaises(ValueError):
+            self.module._constrain_client_result({"ok": True, "password": "secret"}, ["status"])
+
+    def test_repeated_client_approval_does_not_repeat_business_request(self):
+        now = self.module.time.time()
+        request = {
+            "schema_version": 1, "request_id": "request-a", "app_id": "app",
+            "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-a", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "conversation_type": "CHAT",
+            "conversation_id": "22", "execution": "butler_api", "risk": "write",
+            "runtime": {"type": "butler_api", "version": 1},
+            "status": "pending", "expires_at": int(now) + 60,
+        }
+        capability = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-a", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "chatbot_ids": ["bot-a"], "conversation_type": "CHAT",
+            "conversation_id": "22", "runtimes": {"butler_api": 1},
+        }
+        actor = {"subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"}
+        self.redis.set(self.module.request_key("request-a"), json.dumps(request))
+        self.redis.set(self.module.capability_key("app", "tab-a"), json.dumps(capability))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "_request_execution_error", return_value=""), mock.patch.object(
+                self.module, "_audit"):
+            first = self.module._decide_request_locked("app", "request-a", actor, "approve")
+            second = self.module._decide_request_locked("app", "request-a", actor, "approve")
+        self.assertTrue(first["data"]["execute_allowed"])
+        self.assertFalse(second["data"]["execute_allowed"])
+
+    def test_plan_preview_only_contains_business_fields(self):
+        with mock.patch.object(
+                self.module.lanying_grow_ai, "get_task",
+                create=True,
+                return_value={"task_id": "1", "prompt": "old", "revision": 3}):
+            preview = self.module._preview_tool("app", "seenical.plan.update", {
+                "task_id": "1", "expected_revision": 3, "prompt": "new"
+            }, {})
+        self.assertEqual({"prompt": "old"}, preview["before"])
+        self.assertEqual({"prompt": "new"}, preview["after"])
 
     def test_non_client_functions_keep_legacy_behavior(self):
         functions = [
             {"name": "legacy_http", "function_call": {"type": "http"}},
             {"name": "legacy_system", "function_call": {"type": "system"}},
         ]
-        self.assertEqual(
-            functions,
-            self.module.filter_supported_client_functions("app", {"chatbot_id": "1"}, functions),
-        )
+        self.assertEqual(functions, self.module.filter_supported_client_functions(
+            "app", {"chatbot_id": "1"}, functions))
 
-    def test_active_skill_injects_builtin_registry_tool(self):
-        repository = {
-            "revision": "rev-1",
-            "skills": [{
-                "name": "Writer", "instructions": "Use the plan Tool.",
-                "required_tools": ["seenical.plan.list"],
-            }],
-        }
-        config = {"chatbot_id": "bot-1"}
-        messages = [{"role": "user", "content": "List plans"}]
-        with mock.patch.object(self.module, "get_active_skills", return_value=[repository]), mock.patch.object(
-                self.module, "find_capability", return_value={"client_instance_id": "tab-1"}), mock.patch.object(
-                self.module, "_active_skill_authorizations",
-                return_value=[{"skill_id": "writer", "revision": "rev-1"}]):
-            messages, functions = self.module.apply_active_skills(
-                "app", config, messages, [])
-            functions = self.module.filter_supported_client_functions(
-                "app", config, functions)
-
-        self.assertEqual("Seenical Skill: Writer", messages[0]["content"].splitlines()[0])
-        self.assertEqual(["seenical_plan_list"], [item["name"] for item in functions])
-        self.assertTrue(functions[0]["seenical_builtin_tool"])
-
-    def test_public_site_repository_config_tools_are_not_registered(self):
-        for tool_id in [
-                "seenical.repo.sync", "seenical.repo.config.get",
-                "seenical.repo.config.apply"]:
-            self.assertNotIn(tool_id, self.module.TOOL_REGISTRY)
-
-    def test_repository_paths_reject_absolute_and_traversal_values(self):
-        for value in ["/etc/passwd", "../SKILL.md", "skills/../../secret", "skills\\secret"]:
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                self.module._validate_repo_path(value)
-        self.assertEqual(".seenical/skills/writer", self.module._validate_repo_path(".seenical/skills/writer/"))
-
-    def test_public_request_never_returns_continuation_or_integrity_fields(self):
-        value = {
-            "request_id": "abc", "arguments": {"name": "safe"},
-            "continuation": {"config": {"access_token": "secret"}},
-            "tool_call": {"id": "call"}, "actor_tenement_id": "2",
-            "arguments_hash": "hash",
-        }
-        result = self.module.public_request(value)
-        self.assertEqual({"request_id": "abc", "arguments": {"name": "safe"}}, result)
-
-    def test_actor_check_binds_console_im_user_and_browser_instance(self):
-        request_info = {
-            "actor_subject_id": "11", "im_user_id": "22",
-            "client_instance_id": "tab-a",
-        }
-        self.assertEqual("", self.module._request_actor_error(request_info, {
-            "subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"
-        }))
-        self.assertIn("IM user", self.module._request_actor_error(request_info, {
-            "subject_id": "11", "im_user_id": "23", "client_instance_id": "tab-a"
-        }))
-        with mock.patch.object(self.module, "_redis", return_value=types.SimpleNamespace(get=lambda key: None)):
-            self.assertIn("client instance", self.module._request_actor_error(request_info, {
-                "subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-b"
-            }))
-        request_info.update({
-            "app_id": "app", "chatbot_id": "bot", "conversation_type": "CHAT",
-            "conversation_id": "22", "tool_id": "seenical.plan.list"
-        })
-        alternate = dict(request_info, client_instance_id="tab-b", tools={"seenical.plan.list": 1})
-        with mock.patch.object(
-                self.module, "_redis",
-                return_value=types.SimpleNamespace(get=lambda key: json.dumps(alternate))):
-            self.assertEqual("", self.module._request_actor_error(request_info, {
-                "subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-b"
-            }))
-
-    def test_skill_markdown_rejects_executable_frontmatter(self):
-        with mock.patch.object(self.module.yaml, "safe_load", return_value={"handler": "shell"}):
-            with self.assertRaises(ValueError):
-                self.module._parse_skill_markdown("---\nhandler: shell\n---\nDo work")
-
-    def test_public_catalog_uses_fixed_config_and_validates_skill_path(self):
-        manifest = json.dumps({
-            "schema_version": 1,
-            "skills": [{
-                "skill_id": "writer",
-                "name": "Writer",
-                "description": "Writes content",
-                "path": ".",
-                "tools": [{"id": "seenical.plan.list", "min_version": 1}],
-                "scopes": ["plans:read"],
-            }],
-        })
-        config = {
-            "repository_url": "https://github.com/seenical/skills",
-            "owner": "seenical", "repo": "skills", "ref": "main",
-            "manifest_path": ".seenical/manifest.json",
-        }
-        with mock.patch.object(
-                self.module, "_github_file",
-                return_value=("# Instructions\nUse the plan list tool.", "file-sha")):
-            catalog = self.module._normalize_public_skill_catalog(
-                config, "a" * 40, manifest, "manifest-sha")
-        self.assertEqual("writer", catalog["skills"][0]["skill_id"])
-        self.assertEqual(["seenical.plan.list"], catalog["skills"][0]["required_tools"])
-        self.assertNotIn("handler", catalog["skills"][0])
-
-        bad = json.loads(manifest)
-        bad["skills"][0]["path"] = "skills/writer"
-        with self.assertRaises(ValueError):
-            self.module._normalize_public_skill_catalog(
-                config, "a" * 40, json.dumps(bad), "manifest-sha")
-
-    def test_public_catalog_rejects_unlisted_repository_files(self):
-        manifest = json.dumps({
-            "schema_version": 1,
-            "skills": [{
-                "skill_id": "writer", "name": "Writer",
-                "description": "Writes content",
-                "path": ".",
-                "tools": [], "scopes": [],
-            }],
-        })
-        config = {
-            "repository_url": "https://github.com/seenical/skills",
-            "owner": "seenical", "repo": "skills", "ref": "main",
-            "manifest_path": ".seenical/manifest.json",
-        }
-        with mock.patch.object(
-                self.module, "_github_file",
-                return_value=("Use the configured tools.", "file-sha")):
-            with self.assertRaisesRegex(ValueError, "unsupported files"):
-                self.module._normalize_public_skill_catalog(
-                    config, "a" * 40, manifest, "manifest-sha", {
-                        ".seenical/manifest.json",
-                        "SKILL.md",
-                        "scripts/run.sh",
-                    })
-
-    def test_public_catalog_loads_standard_skill_references(self):
-        manifest = json.dumps({
-            "schema_version": 1,
-            "skills": [{
-                "skill_id": "writer", "name": "Writer",
-                "description": "Writes content",
-                "path": ".",
-                "tools": [], "scopes": [],
-            }],
-        })
-        config = {
-            "repository_url": "https://github.com/seenical/skills",
-            "owner": "seenical", "repo": "skills", "ref": "main",
-            "manifest_path": ".seenical/manifest.json",
-        }
-        files = {
-            "SKILL.md": (
-                "---\nname: writer\ndescription: Write content.\n---\n\nRead the API.",
-                "skill-sha"),
-            "references/api.json": (
-                '{"schema_version":1}', "api-sha"),
-            "agents/openai.yaml": (
-                'interface:\n  display_name: "Writer"\n', "agent-sha"),
-        }
-        with mock.patch.object(
-                self.module, "_github_file",
-                side_effect=lambda owner, repo, path, ref, token, limit: files[path]):
-            catalog = self.module._normalize_public_skill_catalog(
-                config, "a" * 40, manifest, "manifest-sha", {
-                    ".seenical/manifest.json", *files.keys(),
-                })
-
-        resources = catalog["skills"][0]["resources"]
-        self.assertIn("references/api.json", resources)
-        self.assertIn("agents/openai.yaml", resources)
-
-    def test_authorization_projection_is_app_and_agent_scoped(self):
-        module = self.module
-
-        class FakeRedis:
-            def __init__(inner_self):
-                inner_self.values = {}
-
-            def get(inner_self, key):
-                return inner_self.values.get(key)
-
-            def set(inner_self, key, value, **kwargs):
-                inner_self.values[key] = value
-                return True
-
-            def pipeline(inner_self, transaction=True):
-                return inner_self
-
-            def watch(inner_self, *keys):
-                return None
-
-            def unwatch(inner_self):
-                return None
-
-            def multi(inner_self):
-                return None
-
-            def execute(inner_self):
-                return []
-
-        fake = FakeRedis()
-        skill = {
-            "skill_id": "writer", "revision": "rev-1",
-            "required_tools": ["seenical.plan.list"], "instructions": "Use it"
-        }
-        with mock.patch.object(module, "_redis", return_value=fake), mock.patch.object(
-                module, "get_public_skill_revision", return_value=skill):
-            result = module.sync_authorization_projection("app-a", {
-                "enabled": True, "authorization_revision": 4,
-                "skills": [{"skill_id": "writer", "revision": "rev-1",
-                            "chatbot_ids": ["bot-a"]}],
-            })
-            self.assertEqual("ok", result["result"])
-            self.assertEqual(1, len(module.get_active_skills("app-a", "bot-a")))
-            self.assertEqual([], module.get_active_skills("app-a", "bot-b"))
-            self.assertEqual([], module.get_active_skills("app-b", "bot-a"))
-
-            stale = module.sync_authorization_projection("app-a", {
-                "enabled": False, "authorization_revision": 3, "skills": []
-            })
-            self.assertEqual("stale_authorization_revision", stale["code"])
-
-    def test_plan_create_does_not_start_generation_implicitly(self):
-        create_task = mock.Mock(return_value={"result": "ok", "data": {"task_id": "task"}})
-        self.module.lanying_grow_ai.TaskSetting = lambda **kwargs: kwargs
-        self.module.lanying_grow_ai.create_task = create_task
-        result = self.module._plan_create(
-            "app", {"name": "Plan", "prompt": "Topic"}, {"chatbot_id": "bot"})
-        self.assertEqual("ok", result["result"])
-        self.assertFalse(create_task.call_args.kwargs["run_immediately"])
-
-    def test_deployment_rollback_is_a_registered_destructive_tool(self):
-        tool = self.module.TOOL_REGISTRY["seenical.deploy.rollback"]
-        self.assertEqual("destructive", tool["risk"])
-        self.assertEqual("console_action", tool["execution"])
-
-    def test_public_catalog_notification_has_ip_and_global_limits(self):
-        class FakePipeline:
-            def __init__(self, values):
-                self.values = values
-
-            def incr(self, key):
-                return self
-
-            def expire(self, key, ttl):
-                return self
-
-            def execute(self):
-                return self.values
-
-        for values, expected in [
-                ([10, True, 60, True], True),
-                ([11, True, 1, True], False),
-                ([1, True, 61, True], False)]:
-            redis = types.SimpleNamespace(
-                pipeline=lambda transaction=True, values=values: FakePipeline(values))
-            with mock.patch.object(self.module, "_redis", return_value=redis):
+    def test_public_notification_limits_are_shared(self):
+        class Pipeline:
+            def __init__(self, values): self.values = values
+            def incr(self, key): return self
+            def expire(self, key, ttl): return self
+            def execute(self): return self.values
+        for values, expected in [([10, True, 60, True], True), ([11, True, 1, True], False), ([1, True, 61, True], False)]:
+            with mock.patch.object(self.module, "_redis", return_value=types.SimpleNamespace(
+                    pipeline=lambda transaction=True, values=values: Pipeline(values))):
                 self.assertEqual(expected, self.module._rate_limit_notification("127.0.0.1"))
-
-    def test_tool_arguments_are_strictly_validated_before_persistence(self):
-        tool = self.module.TOOL_REGISTRY["seenical.plan.schedule"]
-        self.module.validate_tool_arguments(tool, {
-            "task_id": "task-1", "schedule": "off", "expected_revision": 2
-        })
-        for arguments in [
-                {"task_id": "task-1", "schedule": "sometimes", "expected_revision": 2},
-                {"task_id": "task-1", "schedule": "off", "expected_revision": True},
-                {"task_id": "task-1", "schedule": "off", "expected_revision": 2,
-                 "access_token": "must-not-be-stored"},
-                {"task_id": "task-1", "schedule": "off", "expected_revision": 2,
-                 "unexpected": "value"}]:
-            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
-                self.module.validate_tool_arguments(tool, arguments)
-
-    def test_execution_result_hides_task_attachments_and_tokens(self):
-        value = {
-            "result": "error", "code": "revision_conflict",
-            "data": {"task": {
-                "task_id": "task-1", "site_cdn_token": "secret",
-                "file_list": [{"url": "https://files.example/private"}],
-                "deploy": {"type": "github", "token": "secret"}
-            }}
-        }
-        result = self.module._safe_execution_result(value)
-        task = result["data"]["task"]
-        self.assertNotIn("site_cdn_token", task)
-        self.assertNotIn("file_list", task)
-        self.assertEqual(1, task["attachment_count"])
-        self.assertNotIn("token", task["deploy"])
-
-    def test_repeated_approval_only_retries_failed_model_resume_once(self):
-        request_id = "a" * 32
-        request_info = {
-            "request_id": request_id, "app_id": "app", "status": "completed",
-            "expires_at": 4102444800, "resume_status": "failed",
-            "actor_subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a",
-        }
-        final_result = {"status": "completed", "execution": {"result": "ok"}}
-        module = self.module
-
-        class FakeRedis:
-            def __init__(self):
-                self.values = {
-                    module.request_key(request_id): json.dumps(request_info),
-                    module.result_key(request_id): json.dumps(final_result),
-                }
-
-            def get(inner_self, key):
-                return inner_self.values.get(key)
-
-            def set(inner_self, key, value, ex=None, nx=False):
-                if nx and key in inner_self.values:
-                    return False
-                inner_self.values[key] = value
-                return True
-
-            def setex(inner_self, key, ttl, value):
-                inner_self.values[key] = value
-
-            def pipeline(inner_self, transaction=True):
-                return inner_self
-
-            def watch(inner_self, *keys):
-                return None
-
-            def unwatch(inner_self):
-                return None
-
-            def multi(inner_self):
-                return None
-
-            def delete(inner_self, key):
-                inner_self.values.pop(key, None)
-
-            def execute(inner_self):
-                return []
-
-        fake = FakeRedis()
-        actor = {"subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"}
-        with mock.patch.object(self.module, "_redis", return_value=fake), mock.patch.object(
-                self.module, "_audit"):
-            first = self.module.decide_request("app", request_id, actor, "approve")
-            second = self.module.decide_request("app", request_id, actor, "approve")
-
-        self.assertTrue(first["resume"])
-        self.assertFalse(second["resume"])
-        self.assertEqual("completed", second["data"]["status"])
-
-    def test_terminal_request_uses_result_retention_and_remains_readable(self):
-        request_id = "b" * 32
-        request_info = {
-            "request_id": request_id, "app_id": "app", "status": "completed",
-            "expires_at": 1, "actor_subject_id": "11", "im_user_id": "22",
-            "client_instance_id": "tab-a",
-        }
-
-        class FakeRedis:
-            def __init__(inner_self):
-                inner_self.values = {self.module.request_key(request_id): json.dumps(request_info)}
-                inner_self.ttl = None
-
-            def get(inner_self, key):
-                return inner_self.values.get(key)
-
-            def setex(inner_self, key, ttl, value):
-                inner_self.values[key] = value
-                inner_self.ttl = ttl
-
-        fake = FakeRedis()
-        actor = {"subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"}
-        with mock.patch.object(self.module, "_redis", return_value=fake):
-            self.module._store_request(request_info)
-            result = self.module.get_request_for_actor("app", request_id, actor)
-
-        self.assertEqual(self.module.RESULT_TTL_SECONDS, fake.ttl)
-        self.assertEqual("ok", result["result"])
 
 
 if __name__ == "__main__":
