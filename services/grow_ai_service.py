@@ -172,7 +172,11 @@ def create_task():
         embedding_condition = embedding_condition,
         auto_deploy = auto_deploy
     )
-    run_immediately = data.get('run_immediately', False) is True
+    # Keep the historical API behavior for existing clients: creating a
+    # one-shot task starts it immediately unless the caller explicitly opts
+    # out. Seenical and conversational tools send false because they expose a
+    # separate, confirmed run action.
+    run_immediately = data.get('run_immediately', True) is True
     result = lanying_grow_ai.create_task(task_setting, run_immediately=run_immediately)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})

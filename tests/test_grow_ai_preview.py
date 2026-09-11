@@ -137,6 +137,38 @@ class GrowAIPreviewTest(unittest.TestCase):
         self.assertNotIn('article_language', changes)
         self.assertEqual('prompt', changes['prompt'])
 
+    def test_legacy_create_task_runs_immediately_when_option_is_omitted(self):
+        app = Flask(__name__)
+        payload = {
+            'app_id': 'app', 'name': 'Plan', 'chatbot_id': 'chatbot',
+            'prompt': 'Topic'
+        }
+        with app.test_request_context(json=payload), \
+                patch.object(grow_ai_service, 'check_access_token_valid', return_value=True), \
+                patch.object(lanying_grow_ai, 'create_task', return_value={
+                    'result': 'ok', 'data': {'task_id': 'task'}
+                }) as create_task:
+            response = grow_ai_service.create_task()
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(create_task.call_args.kwargs['run_immediately'])
+
+    def test_create_task_respects_explicit_deferred_run(self):
+        app = Flask(__name__)
+        payload = {
+            'app_id': 'app', 'name': 'Plan', 'chatbot_id': 'chatbot',
+            'prompt': 'Topic', 'run_immediately': False
+        }
+        with app.test_request_context(json=payload), \
+                patch.object(grow_ai_service, 'check_access_token_valid', return_value=True), \
+                patch.object(lanying_grow_ai, 'create_task', return_value={
+                    'result': 'ok', 'data': {'task_id': 'task'}
+                }) as create_task:
+            response = grow_ai_service.create_task()
+
+        self.assertEqual(200, response.status_code)
+        self.assertFalse(create_task.call_args.kwargs['run_immediately'])
+
     def test_generate_article_uses_task_article_prompt(self):
         task = {
             'task_id': 'task', 'image_count': 0, 'word_count_min': 500,
