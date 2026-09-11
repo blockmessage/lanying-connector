@@ -295,9 +295,9 @@ BUTLER_API_POLICY = {
     ('POST', '/app/grow_ai/configure_site'): ('write', set(SITE_CHANGE_PROPERTIES) | {'site_id'}),
     ('GET', '/app/grow_ai/site_statistics'): ('read', {'site_id', 'start_date', 'end_date', 'targets'}),
     ('GET', '/app/grow_ai/get_site_custom_domain_info'): ('read', {'site_id'}),
-    ('GET', '/app/grow_ai/site_custom_domain_check_cname'): ('read', {'site_id'}),
+    ('GET', '/app/grow_ai/site_custom_domain_check_cname'): ('write', {'site_id'}),
     ('GET', '/app/grow_ai/get_site_custom_domain_info_list'): ('read', set()),
-    ('POST', '/app/grow_ai/create_custom_domain'): ('write', {'site_id', 'domain'}),
+    ('POST', '/app/grow_ai/create_custom_domain'): ('destructive', {'site_id', 'domain_name', 'scope'}),
 }
 BUTLER_API_RESULT_FIELDS = {
     ('GET', '/app/config/lanying_connector'): {
@@ -345,10 +345,16 @@ BUTLER_API_RESULT_FIELDS = {
     ('POST', '/app/grow_ai/create_site'): {'id', 'site_id', 'status', 'url'},
     ('POST', '/app/grow_ai/configure_site'): {'id', 'changed_fields', 'resource'},
     ('GET', '/app/grow_ai/site_statistics'): {'statistics', 'list', 'total'},
-    ('GET', '/app/grow_ai/get_site_custom_domain_info'): {'domain', 'status', 'cname', 'site_id'},
-    ('GET', '/app/grow_ai/site_custom_domain_check_cname'): {'domain', 'status', 'cname', 'valid'},
+    ('GET', '/app/grow_ai/get_site_custom_domain_info'): {
+        'site_id', 'domain_id', 'domain_name', 'scope', 'state', 'cname',
+        'cname_ready', 'cdn_status', 'task_status'},
+    ('GET', '/app/grow_ai/site_custom_domain_check_cname'): {
+        'site_id', 'domain_id', 'domain_name', 'scope', 'state', 'cname',
+        'cname_ready', 'cdn_status', 'task_status'},
     ('GET', '/app/grow_ai/get_site_custom_domain_info_list'): {'list', 'total'},
-    ('POST', '/app/grow_ai/create_custom_domain'): {'site_id', 'domain', 'status', 'cname'},
+    ('POST', '/app/grow_ai/create_custom_domain'): {
+        'site_id', 'domain_id', 'domain_name', 'scope', 'state', 'status', 'cname',
+        'verify_key', 'verify_code', 'root_domain'},
 }
 def _redis():
     return lanying_redis.get_redis_connection()
@@ -1926,8 +1932,6 @@ def _skill_resource_paths(repository_files, skill_dir):
         allowed = (
             relative == 'agents/openai.yaml'
             or relative == '.seenical/runtime.json'
-            or (relative.startswith('.seenical/tools/')
-                and PurePosixPath(relative).suffix.lower() == '.json')
             or (relative.startswith('references/')
                 and PurePosixPath(relative).suffix.lower()
                 in ['.md', '.json', '.yaml', '.yml'])
@@ -1969,7 +1973,7 @@ def _normalize_butler_runtime(runtime_text, tool_resources, skill_id):
             or not isinstance(tools_files, list) or not tools_files
             or len(tools_files) > 20
             or len(set(tools_files)) != len(tools_files)
-            or any(not re.fullmatch(r'\.seenical/tools/[A-Za-z0-9_-]+\.json', str(path))
+            or any(not re.fullmatch(r'references/api/[A-Za-z0-9_-]+\.json', str(path))
                    for path in tools_files)):
         raise ValueError('invalid Seenical runtime descriptor')
     runtime = runtime_doc.get('runtime', {})

@@ -96,7 +96,7 @@ class AgentToolsTest(unittest.TestCase):
         paths = [root / "SKILL.md", root / "agents/openai.yaml",
                  root / ".seenical/runtime.json"]
         paths.extend(sorted((root / "references").glob("*.md")))
-        paths.extend(sorted((root / ".seenical/tools").glob("*.json")))
+        paths.extend(sorted((root / "references/api").glob("*.json")))
         files = {
             path.relative_to(root).as_posix(): (path.read_text(), "sha")
             for path in paths
@@ -137,13 +137,30 @@ class AgentToolsTest(unittest.TestCase):
             tool for tool in skill["tools"]
             if tool["tool_id"] == "seenical.plan.schedule")
         self.assertEqual(["task_id", "schedule"], schedule["parameters"]["required"])
+        domain = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.site.domain.create")
+        self.assertEqual("destructive", domain["risk"])
+        self.assertEqual(["site_id", "domain_name"], domain["parameters"]["required"])
+        domain_check = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.site.domain.check")
+        self.assertEqual("write", domain_check["risk"])
+        plugin_functions = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.plugin.functions.list")
+        self.assertEqual(["plugin_id"], plugin_functions["parameters"]["required"])
+        knowledge_documents = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.knowledge.documents.list")
+        self.assertEqual(["embedding_name"], knowledge_documents["parameters"]["required"])
         self.assertGreater(len(skill["tools"]), 40)
 
     def test_runtime_rejects_absolute_urls_headers_and_weakened_risk(self):
         runtime = json.dumps({
             "schema_version": 1, "skill_id": "seenical-console",
             "runtime": {"type": "butler_api", "version": 1, "authentication": "host_console_session"},
-            "tools_files": [".seenical/tools/content.json"]
+            "tools_files": ["references/api/content.json"]
         })
         base = {
             "tool_id": "seenical.test", "version": 1, "function_name": "seenical_test",
@@ -164,7 +181,7 @@ class AgentToolsTest(unittest.TestCase):
             mutate(tool)
             with self.subTest(tool=tool), self.assertRaises(ValueError):
                 self.module._normalize_butler_runtime(runtime, {
-                    ".seenical/tools/content.json": json.dumps({
+                    "references/api/content.json": json.dumps({
                         "schema_version": 1, "tools": [tool], "definitions": {}
                     })
                 }, "seenical-console")

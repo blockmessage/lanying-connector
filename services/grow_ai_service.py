@@ -744,7 +744,7 @@ def create_custom_domain():
     site_id = str(data['site_id'])
     tenement_id = str(data['tenement_id'])
     domain_name = str(data['domain_name']).strip()
-    scope = str(data['scope'])
+    scope = str(data.get('scope', 'global'))
     max_domain_num = int(data['max_domain_num'])
     check_verify_owner = str(data.get('check_verify_owner', 'off'))
     result = lanying_grow_ai.create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner, max_domain_num)

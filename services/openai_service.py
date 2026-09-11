@@ -5315,7 +5315,7 @@ def create_chatbot():
     app_id = str(data['app_id'])
     name = str(data['name'])
     nickname = str(data.get('nickname', ''))
-    desc = str(data['desc'])
+    desc = str(data.get('desc', ''))
     avatar = str(data.get('avatar', ''))
     user_id = int(data['user_id'])
     lanying_link = str(data['lanying_link'])
