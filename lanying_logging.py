@@ -166,6 +166,24 @@ def _request_path_for_log(request):
     return request.path
 
 
+def _is_root_health_check(request):
+    return (request.method in ['GET', 'HEAD'] and request.path == '/'
+            and not request.query_string)
+
+
+def _write_http_request_log(request, request_id):
+    logging.info(
+        'connector http request | request_id:%s | method:%s | path:%s '
+        '| remote:%s | content_type:%s | query:%s | body:%s',
+        request_id,
+        request.method,
+        _request_path_for_log(request),
+        request.remote_addr or '',
+        request.content_type or '',
+        format_log_value(request.args.to_dict(flat=False)),
+        format_log_value(_request_body_for_log(request)))
+
+
 def register_http_logging(app):
     """Log Flask API request/response pairs without exposing credentials."""
     if app.extensions.get('lanying_http_logging'):
@@ -178,17 +196,11 @@ def register_http_logging(app):
     def log_connector_http_request():
         g.connector_http_request_id = uuid.uuid4().hex[:16]
         g.connector_http_started_at = time.monotonic()
+        g.connector_http_quiet_health_check = _is_root_health_check(request)
+        if g.connector_http_quiet_health_check:
+            return
         try:
-            logging.info(
-                'connector http request | request_id:%s | method:%s | path:%s '
-                '| remote:%s | content_type:%s | query:%s | body:%s',
-                g.connector_http_request_id,
-                request.method,
-                _request_path_for_log(request),
-                request.remote_addr or '',
-                request.content_type or '',
-                format_log_value(request.args.to_dict(flat=False)),
-                format_log_value(_request_body_for_log(request)))
+            _write_http_request_log(request, g.connector_http_request_id)
         except Exception:
             logging.warning('failed to log connector http request', exc_info=True)
 
@@ -198,6 +210,17 @@ def register_http_logging(app):
         started_at = getattr(g, 'connector_http_started_at', None)
         duration_ms = ((time.monotonic() - started_at) * 1000
                        if started_at is not None else -1)
+        quiet_health_check = getattr(
+            g, 'connector_http_quiet_health_check', False)
+        if quiet_health_check and response.status_code < 400:
+            return response
+        if quiet_health_check:
+            try:
+                _write_http_request_log(request, request_id)
+            except Exception:
+                logging.warning(
+                    'failed to log connector http request | request_id:%s',
+                    request_id, exc_info=True)
         try:
             logging.info(
                 'connector http response | request_id:%s | method:%s | path:%s '

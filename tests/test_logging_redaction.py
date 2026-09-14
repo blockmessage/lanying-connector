@@ -107,6 +107,41 @@ class LoggingRedactionTests(unittest.TestCase):
         self.assertIn('"name":"example"', logs)
         self.assertNotIn('secret-value', logs)
 
+    def test_http_logging_ignores_successful_root_health_checks(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.route('/', methods=['GET', 'HEAD'])
+        def health():
+            return ''
+
+        with mock.patch.object(lanying_logging.logging, 'info') as info, mock.patch.object(
+                lanying_logging.logging, 'warning') as warning:
+            head_response = app.test_client().head('/')
+            get_response = app.test_client().get('/')
+
+        self.assertEqual(200, head_response.status_code)
+        self.assertEqual(200, get_response.status_code)
+        info.assert_not_called()
+        warning.assert_not_called()
+
+    def test_http_logging_keeps_failed_root_head_health_check(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.route('/', methods=['HEAD'])
+        def health():
+            return '', 503
+
+        with self.assertLogs(level='INFO') as captured:
+            response = app.test_client().head('/')
+
+        logs = '\n'.join(captured.output)
+        self.assertEqual(503, response.status_code)
+        self.assertIn('connector http request', logs)
+        self.assertIn('connector http response', logs)
+        self.assertIn('status:503', logs)
+
     def test_http_logging_does_not_consume_streaming_response(self):
         app = Flask(__name__)
         lanying_logging.register_http_logging(app)
