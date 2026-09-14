@@ -348,6 +348,77 @@ class AgentToolsTest(unittest.TestCase):
         self.assertTrue(first["data"]["execute_allowed"])
         self.assertFalse(second["data"]["execute_allowed"])
 
+    def test_same_console_user_can_resume_request_after_client_refresh(self):
+        request = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-before-refresh", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "conversation_type": "CHAT", "conversation_id": "22",
+            "runtime": {"type": "butler_api", "version": 1},
+        }
+        capability = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-after-refresh", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "chatbot_ids": ["bot-a"],
+            "conversation_type": "CHAT", "conversation_id": "22",
+            "runtimes": {"butler_api": 1},
+        }
+        actor = {
+            "subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-after-refresh",
+        }
+        self.redis.set(
+            self.module.capability_key("app", "tab-after-refresh"),
+            json.dumps(capability))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            self.assertEqual("", self.module._request_actor_error(request, actor))
+
+    def test_another_console_user_cannot_resume_visible_request(self):
+        request = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-a", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "conversation_type": "CHAT", "conversation_id": "22",
+            "runtime": {"type": "butler_api", "version": 1},
+        }
+        actor = {
+            "subject_id": "12", "im_user_id": "22", "client_instance_id": "tab-b",
+        }
+        self.assertEqual(
+            "tool request does not belong to current user",
+            self.module._request_actor_error(request, actor))
+
+    def test_read_request_can_be_reclaimed_after_client_refresh(self):
+        now = self.module.time.time()
+        request = {
+            "schema_version": 1, "request_id": "request-read", "app_id": "app",
+            "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-before-refresh", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "conversation_type": "CHAT", "conversation_id": "22",
+            "execution": "butler_api", "risk": "read",
+            "runtime": {"type": "butler_api", "version": 1},
+            "status": "awaiting_client_result", "expires_at": int(now) + 60,
+        }
+        capability = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-after-refresh", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "chatbot_ids": ["bot-a"],
+            "conversation_type": "CHAT", "conversation_id": "22",
+            "runtimes": {"butler_api": 1},
+        }
+        actor = {
+            "subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-after-refresh",
+        }
+        self.redis.set(self.module.request_key("request-read"), json.dumps(request))
+        self.redis.set(
+            self.module.capability_key("app", "tab-after-refresh"),
+            json.dumps(capability))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "_request_execution_error", return_value=""), mock.patch.object(
+                self.module, "_audit"):
+            result = self.module._decide_request_locked(
+                "app", "request-read", actor, "approve")
+        self.assertTrue(result["data"]["execute_allowed"])
+
     def test_plan_preview_only_contains_business_fields(self):
         with mock.patch.object(
                 self.module.lanying_grow_ai, "get_task",

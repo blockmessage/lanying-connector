@@ -1432,8 +1432,6 @@ def _request_actor_error(request_info, actor):
     if str(request_info.get('im_user_id')) != str(actor.get('im_user_id', '')):
         return 'Console and IM user identities do not match'
     actor_instance_id = str(actor.get('client_instance_id', ''))
-    if str(request_info.get('client_instance_id')) != actor_instance_id:
-        return 'tool request belongs to another client instance'
     capability = _load(_redis().get(capability_key(
         request_info.get('app_id', ''), actor_instance_id)), None)
     expected = {
@@ -1566,7 +1564,20 @@ def _decide_request_locked(app_id, request_id, actor, decision,
         return {'result': 'error', 'message': 'tool request expired'}
     if request_info.get('status') == 'awaiting_client_result' and decision == 'approve':
         data = public_request(request_info)
-        data['execute_allowed'] = False
+        # A read-only Butler request is safe to reclaim after a browser refresh.
+        # Mutating requests remain non-replayable because the previous browser
+        # may have completed the business call before losing its result reply.
+        data['execute_allowed'] = (
+            request_info.get('execution') == 'butler_api'
+            and request_info.get('risk') == 'read')
+        if data['execute_allowed']:
+            execution_error = _request_execution_error(
+                app_id, request_info, str(actor.get('client_instance_id', '')))
+            if execution_error:
+                return {'result': 'error', 'message': execution_error}
+            _audit(app_id, request_id, 'reclaimed_read', {
+                'actor_subject_id': str(actor.get('subject_id', ''))
+            })
         return {
             'result': 'ok', 'data': data,
             'request': request_info, 'resume': False
