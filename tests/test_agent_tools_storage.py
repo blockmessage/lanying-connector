@@ -108,6 +108,20 @@ class AgentToolsStorageTest(unittest.TestCase):
             self.assertTrue(storage.should_save_config_revision('app', 'enabled-bot'))
             self.assertFalse(storage.should_save_config_revision('app', 'disabled-bot'))
 
+    def test_platform_enabled_without_app_switch_remains_disabled(self):
+        fake_redis = types.SimpleNamespace(get=lambda key: None)
+        redis_module = types.SimpleNamespace(
+            get_redis_connection=lambda: fake_redis,
+            redis_get=lambda redis, key: redis.get(key))
+        environment = {
+            'LANYING_AGENT_TOOLS_MYSQL_HOST': 'mysql',
+            'LANYING_AGENT_TOOLS_PLATFORM_ENABLED': 'on',
+        }
+        with mock.patch.dict(os.environ, environment, clear=True), mock.patch.dict(
+                sys.modules, {'lanying_redis': redis_module}):
+            self.assertFalse(storage.is_feature_enabled('app', 'bot'))
+            self.assertFalse(storage.should_save_config_revision('app', 'bot'))
+
     def test_mysql_engine_uses_bounded_socket_timeouts(self):
         with mock.patch.dict(os.environ, {
                 'LANYING_AGENT_TOOLS_MYSQL_HOST': 'mysql'}, clear=True), mock.patch.object(

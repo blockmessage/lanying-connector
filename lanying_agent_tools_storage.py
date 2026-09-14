@@ -54,7 +54,7 @@ def is_feature_enabled(app_id, chatbot_id=''):
                 return _truthy(value)
     except Exception:
         logging.exception('failed to read Agent Tools feature state')
-    return _truthy(os.getenv('LANYING_AGENT_TOOLS_ENABLED', 'off'))
+    return False
 
 
 def should_save_config_revision(app_id, chatbot_id=''):
