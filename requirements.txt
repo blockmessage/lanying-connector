@@ -119,6 +119,7 @@ PySocks==1.7.1
 python-dateutil==2.8.2
 python-dotenv==0.21.0
 python-pptx==0.6.23
+PyMySQL==1.1.0
 pytz==2022.6
 PyYAML==6.0
 redis==4.5.5

@@ -71,8 +71,9 @@ def load_grow_ai():
         "lanying_baidu": empty,
         "lanying_google": empty,
         "lanying_oss": empty,
-        "lanying_pgvector": types.SimpleNamespace(
+        "lanying_agent_tools_storage": types.SimpleNamespace(
             is_enabled=lambda: True,
+            should_save_config_revision=lambda app_id, chatbot_id="": True,
             save_seenical_config_revision=lambda *args, **kwargs: {"result": "ok"},
             get_seenical_config_revision=lambda *args, **kwargs: None,
             list_seenical_config_revisions=lambda *args, **kwargs: []),
@@ -153,7 +154,7 @@ class GrowAIPatchTest(unittest.TestCase):
         with mock.patch.object(self.module, "get_task", return_value=current), mock.patch.object(
                 self.module, "check_task_content_security", return_value={"result": "ok"}), mock.patch.object(
                 self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
-                self.module.lanying_pgvector, "save_seenical_config_revision",
+                self.module.lanying_agent_tools_storage, "save_seenical_config_revision",
                 return_value={"result": "error"}):
             result = self.module.patch_task(
                 "app", "task", {"article_prompt": "New article prompt"},

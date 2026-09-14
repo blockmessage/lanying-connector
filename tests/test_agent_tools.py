@@ -15,8 +15,9 @@ def load_agent_tools():
         "lanying_ai_plugin": types.SimpleNamespace(),
         "lanying_chatbot": types.SimpleNamespace(),
         "lanying_grow_ai": types.SimpleNamespace(ARTICLE_LANGUAGE_VALUES={"auto", "zh-hans", "en"}),
-        "lanying_pgvector": types.SimpleNamespace(
+        "lanying_agent_tools_storage": types.SimpleNamespace(
             append_agent_tool_audit_log=lambda value: {"result": "ok"},
+            is_feature_enabled=lambda app_id, chatbot_id="": False,
             get_active_public_skill_catalog=lambda: None,
             get_public_skill_revision=lambda skill_id, revision: None,
             save_public_skill_catalog=lambda value: {"result": "ok"}),
@@ -91,7 +92,7 @@ class AgentToolsTest(unittest.TestCase):
         self.redis = FakeRedis()
 
     def template_catalog(self):
-        root = pathlib.Path(__file__).resolve().parents[2] / "seenical-skill-repository"
+        root = pathlib.Path(__file__).resolve().parents[2] / "seenical-skills"
         manifest = (root / ".seenical/manifest.json").read_text()
         paths = [root / "SKILL.md", root / "agents/openai.yaml",
                  root / ".seenical/runtime.json"]
@@ -243,6 +244,13 @@ class AgentToolsTest(unittest.TestCase):
                 "app", config, messages, [])
         self.assertEqual(messages, output_messages)
         self.assertEqual([], functions)
+
+    def test_catalog_storage_failure_disables_skill_for_current_message(self):
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module.lanying_agent_tools_storage,
+                "get_active_public_skill_catalog", side_effect=RuntimeError("mysql down")), mock.patch.object(
+                self.module.logging, "exception"):
+            self.assertIsNone(self.module.get_public_catalog())
 
     def test_matching_seenical_capability_loads_complete_official_skill(self):
         catalog = self.activate_catalog()

@@ -13,7 +13,7 @@ import lanying_ai_capsule
 from lanying_chatbot import get_chatbot
 import lanying_utils
 import lanying_logging
-import lanying_pgvector
+import lanying_agent_tools_storage
 from lanying_chatbot import get_chatbot_key, get_name_chatbot_id
 
 def configure_ai_plugin_embedding(app_id, embedding_max_tokens, embedding_max_blocks, vendor, model):
@@ -339,12 +339,15 @@ def configure_ai_function(app_id, plugin_id, function_id, name, description, par
 
 def _save_plugin_binding_revisions(app_id, relation, preset_names):
     chatbot_ids = []
-    if not lanying_pgvector.is_enabled():
+    if not lanying_agent_tools_storage.is_enabled():
         return {'result': 'ok', 'chatbot_ids': chatbot_ids}
     for preset_name in preset_names:
         chatbot_id = get_name_chatbot_id(app_id, preset_name)
         chatbot = get_chatbot(app_id, chatbot_id) if chatbot_id else None
         if not chatbot:
+            continue
+        if not lanying_agent_tools_storage.should_save_config_revision(
+                app_id, chatbot_id):
             continue
         preset = chatbot.get('preset', {}) if isinstance(chatbot.get('preset'), dict) else {}
         system_prompt = ''
@@ -361,7 +364,7 @@ def _save_plugin_binding_revisions(app_id, relation, preset_names):
             'revision': revision,
         }
         try:
-            saved = lanying_pgvector.save_seenical_config_revision(
+            saved = lanying_agent_tools_storage.save_seenical_config_revision(
                 app_id, 'agent', chatbot_id, revision, snapshot, '')
         except Exception:
             logging.exception('failed to save Seenical Agent plugin revision')

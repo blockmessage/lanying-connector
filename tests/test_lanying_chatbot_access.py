@@ -112,7 +112,10 @@ def _load_lanying_chatbot():
             safe_json_loads=_safe_json_loads,
         ),
         "lanying_oss": types.SimpleNamespace(),
-        "lanying_pgvector": types.SimpleNamespace(is_enabled=lambda: False),
+        "lanying_agent_tools_storage": types.SimpleNamespace(
+            should_save_config_revision=lambda app_id, chatbot_id="": False,
+            save_seenical_config_revision=lambda *args, **kwargs: {"result": "ok"},
+        ),
         "lanying_openclaw": types.SimpleNamespace(
             get_chatbot_node_id=lambda *args, **kwargs: "",
         ),

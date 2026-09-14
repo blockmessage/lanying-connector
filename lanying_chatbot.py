@@ -7,7 +7,7 @@ from datetime import datetime
 import lanying_im_api
 import lanying_utils
 import lanying_oss
-import lanying_pgvector
+import lanying_agent_tools_storage
 import os
 
 
@@ -422,9 +422,10 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
         if chatbot_id in force_content_security_chatbot_ids:
             return {'result':'error', 'message': 'content_security closed need custom site'}
     current_revision = int(chatbot_info.get('agent_tools_revision', 0) or 0)
-    if lanying_pgvector.is_enabled():
+    if lanying_agent_tools_storage.should_save_config_revision(
+            app_id, chatbot_id):
         try:
-            saved = lanying_pgvector.save_seenical_config_revision(
+            saved = lanying_agent_tools_storage.save_seenical_config_revision(
                 app_id, 'agent', chatbot_id, current_revision,
                 _agent_revision_snapshot(app_id, chatbot_info), '')
         except Exception:

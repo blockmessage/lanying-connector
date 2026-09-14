@@ -23,9 +23,9 @@ import requests
 import yaml
 
 import lanying_ai_plugin
+import lanying_agent_tools_storage
 import lanying_chatbot
 import lanying_grow_ai
-import lanying_pgvector
 import lanying_redis
 import lanying_vendor
 
@@ -455,12 +455,7 @@ def configure_feature(app_id, enabled, chatbot_id='*'):
 
 
 def is_feature_enabled(app_id, chatbot_id=''):
-    redis = _redis()
-    for key in [feature_key(app_id, chatbot_id), feature_key(app_id, '*')]:
-        value = lanying_redis.redis_get(redis, key)
-        if value is not None:
-            return _truthy(value)
-    return _truthy(os.getenv('LANYING_AGENT_TOOLS_ENABLED', 'off'))
+    return lanying_agent_tools_storage.is_feature_enabled(app_id, chatbot_id)
 
 
 def capability_index_key(app_id, chatbot_id, conversation_type, conversation_id):
@@ -804,7 +799,7 @@ def _safe_agent(chatbot):
 def _save_config_revision(app_id, resource_type, resource_id, revision,
                           snapshot, request_id=''):
     try:
-        return lanying_pgvector.save_seenical_config_revision(
+        return lanying_agent_tools_storage.save_seenical_config_revision(
             app_id, resource_type, resource_id, revision, snapshot, request_id)
     except Exception:
         logging.exception('failed to save Seenical configuration revision')
@@ -813,7 +808,7 @@ def _save_config_revision(app_id, resource_type, resource_id, revision,
 
 def _get_config_revision(app_id, resource_type, resource_id, revision):
     try:
-        return lanying_pgvector.get_seenical_config_revision(
+        return lanying_agent_tools_storage.get_seenical_config_revision(
             app_id, resource_type, resource_id, revision)
     except Exception:
         logging.exception('failed to read Seenical configuration revision')
@@ -822,7 +817,7 @@ def _get_config_revision(app_id, resource_type, resource_id, revision):
 
 def _list_config_revisions(app_id, resource_type, resource_id, limit=20):
     try:
-        return lanying_pgvector.list_seenical_config_revisions(
+        return lanying_agent_tools_storage.list_seenical_config_revisions(
             app_id, resource_type, resource_id, limit)
     except Exception:
         logging.exception('failed to list Seenical configuration revisions')
@@ -1322,7 +1317,7 @@ def _audit(app_id, request_id, event, fields=None):
         },
     }
     try:
-        lanying_pgvector.append_agent_tool_audit_log(audit_entry)
+        lanying_agent_tools_storage.append_agent_tool_audit_log(audit_entry)
     except Exception:
         # Redis already contains the append-only fallback entry.  Do not repeat
         # an already completed business action because audit storage is down.
@@ -2237,7 +2232,11 @@ def get_public_catalog():
     cached = _load(_redis().get(PUBLIC_CATALOG_CACHE_KEY), None)
     if cached:
         return cached
-    catalog = lanying_pgvector.get_active_public_skill_catalog()
+    try:
+        catalog = lanying_agent_tools_storage.get_active_public_skill_catalog()
+    except Exception:
+        logging.exception('failed to load public Skill catalog from MySQL')
+        return None
     if catalog:
         _cache_public_catalog(catalog)
     return catalog
@@ -2281,7 +2280,7 @@ def sync_public_catalog():
         catalog = _normalize_public_skill_catalog(
             config, source_commit, manifest_text, manifest_sha,
             repository_files)
-        persisted = lanying_pgvector.save_public_skill_catalog(catalog)
+        persisted = lanying_agent_tools_storage.save_public_skill_catalog(catalog)
         if persisted.get('result') != 'ok':
             return persisted
         _cache_public_catalog(catalog)
@@ -2426,7 +2425,7 @@ def get_public_skill_revision(skill_id, revision):
     skill = _load(_redis().get(key), None)
     if skill:
         return skill
-    skill = lanying_pgvector.get_public_skill_revision(skill_id, revision)
+    skill = lanying_agent_tools_storage.get_public_skill_revision(skill_id, revision)
     if skill:
         _redis().set(key, _json(skill))
     return skill
@@ -2443,15 +2442,6 @@ def get_active_skills(app_id, chatbot_id):
         'source_commit': skill.get('source_commit', ''),
         'skills': [skill],
     }]
-
-
-_legacy_is_feature_enabled = is_feature_enabled
-
-
-def is_feature_enabled(app_id, chatbot_id=''):
-    if not _truthy(os.getenv('LANYING_AGENT_TOOLS_PLATFORM_ENABLED', 'on')):
-        return False
-    return _legacy_is_feature_enabled(app_id, chatbot_id)
 
 
 def apply_active_skills(app_id, config, messages, functions):

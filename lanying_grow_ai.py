@@ -32,7 +32,7 @@ from urllib.parse import urlparse,urlunparse
 import lanying_baidu
 import lanying_google
 import lanying_oss
-import lanying_pgvector
+import lanying_agent_tools_storage
 from github import Github
 
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
@@ -394,7 +394,7 @@ def configure_task(task_id, task_setting: TaskSetting):
     logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
     current_revision = int(task_info.get('revision', 0) or 0)
     snapshot = _task_revision_snapshot(task_info)
-    if lanying_pgvector.is_enabled():
+    if lanying_agent_tools_storage.should_save_config_revision(app_id):
         saved = _save_task_revision(
             app_id, task_id, current_revision, snapshot, '')
         if saved.get('result') != 'ok':
@@ -567,7 +567,7 @@ def _normalize_task_patch(changes):
 
 def get_task_revision_snapshot(app_id, task_id, revision):
     try:
-        return lanying_pgvector.get_seenical_config_revision(
+        return lanying_agent_tools_storage.get_seenical_config_revision(
             app_id, 'plan', task_id, revision)
     except Exception:
         logging.exception('failed to read Seenical plan revision')
@@ -576,7 +576,7 @@ def get_task_revision_snapshot(app_id, task_id, revision):
 
 def list_task_revisions(app_id, task_id, limit=20):
     try:
-        return lanying_pgvector.list_seenical_config_revisions(
+        return lanying_agent_tools_storage.list_seenical_config_revisions(
             app_id, 'plan', task_id, limit)
     except Exception:
         logging.exception('failed to list Seenical plan revisions')
@@ -600,7 +600,7 @@ def _task_revision_snapshot(task_info):
 
 def _save_task_revision(app_id, task_id, revision, snapshot, request_id):
     try:
-        return lanying_pgvector.save_seenical_config_revision(
+        return lanying_agent_tools_storage.save_seenical_config_revision(
             app_id, 'plan', task_id, revision, snapshot, request_id)
     except Exception:
         logging.exception('failed to save Seenical plan revision')
@@ -3414,9 +3414,9 @@ def configure_site(site_id, site_setting: SiteSetting):
     logging.info(f"configure site start | app_id:{app_id}, site_info:{fields}")
     current_revision = int(site_info.get('agent_tools_revision', 0) or 0)
     snapshot = _site_revision_snapshot(site_info)
-    if lanying_pgvector.is_enabled():
+    if lanying_agent_tools_storage.should_save_config_revision(app_id):
         try:
-            saved = lanying_pgvector.save_seenical_config_revision(
+            saved = lanying_agent_tools_storage.save_seenical_config_revision(
                 app_id, 'site', site_id, current_revision, snapshot, '')
         except Exception:
             logging.exception('failed to save Seenical site revision')
