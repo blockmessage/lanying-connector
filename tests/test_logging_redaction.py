@@ -2,6 +2,8 @@ import logging
 import unittest
 from unittest import mock
 
+from flask import Flask
+
 import lanying_logging
 import lanying_utils
 
@@ -45,6 +47,128 @@ class LoggingRedactionTests(unittest.TestCase):
         self.assertEqual(redacted['body']['password'], '[REDACTED]')
         self.assertEqual(redacted['body']['prompt'], '[REDACTED]')
 
+    def test_format_log_value_redacts_common_api_credentials(self):
+        value = {
+            'app_id': 'app-1',
+            'prompt': 'write an article',
+            'github_token': 'github-value',
+            'temporary_password': 'password-value',
+            'file_sign': 'download-value',
+            'max_tokens': 1024,
+        }
+
+        formatted = lanying_logging.format_log_value(value)
+
+        self.assertIn('write an article', formatted)
+        self.assertIn('"max_tokens":1024', formatted)
+        self.assertNotIn('github-value', formatted)
+        self.assertNotIn('password-value', formatted)
+        self.assertNotIn('download-value', formatted)
+
+    def test_format_log_value_truncates_large_values(self):
+        formatted = lanying_logging.format_log_value(
+            {'content': 'x' * 1000}, max_chars=300)
+
+        self.assertLess(len(formatted), 360)
+        self.assertIn('[truncated', formatted)
+
+    def test_format_log_value_redacts_credentials_in_serialized_json(self):
+        formatted = lanying_logging.format_log_value({
+            'key': 'lanying_connector',
+            'value': '{"access_token":"access-value",'
+                     '"lanying_admin_token":"admin-value",'
+                     '"name":"example"}',
+        })
+
+        self.assertNotIn('access-value', formatted)
+        self.assertNotIn('admin-value', formatted)
+        self.assertIn('example', formatted)
+
+    def test_http_logging_records_json_request_and_response(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.post('/service/test')
+        def api():
+            from flask import jsonify, request
+            return jsonify({'code': 200, 'data': request.get_json()})
+
+        with self.assertLogs(level='INFO') as captured:
+            response = app.test_client().post('/service/test', json={
+                'app_id': 'app-1',
+                'name': 'example',
+                'access_token': 'secret-value',
+            })
+
+        logs = '\n'.join(captured.output)
+        self.assertEqual(200, response.status_code)
+        self.assertIn('connector http request', logs)
+        self.assertIn('connector http response', logs)
+        self.assertIn('"name":"example"', logs)
+        self.assertNotIn('secret-value', logs)
+
+    def test_http_logging_does_not_consume_streaming_response(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.get('/service/stream')
+        def stream():
+            from flask import Response
+            return Response(iter(['first', 'second']), mimetype='text/plain')
+
+        with self.assertLogs(level='INFO') as captured:
+            response = app.test_client().get('/service/stream')
+
+        self.assertEqual('firstsecond', response.get_data(as_text=True))
+        self.assertIn('streaming response', '\n'.join(captured.output))
+
+    def test_http_logging_uses_route_template_for_sensitive_path_parameter(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.post('/wechat/<string:token>/messages')
+        def callback(token):
+            return {'ok': bool(token)}
+
+        with self.assertLogs(level='INFO') as captured:
+            response = app.test_client().post('/wechat/path-secret/messages')
+
+        logs = '\n'.join(captured.output)
+        self.assertEqual(200, response.status_code)
+        self.assertIn('/wechat/<string:token>/messages', logs)
+        self.assertNotIn('path-secret', logs)
+
+    def test_http_logging_keeps_non_sensitive_path_parameter(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.get('/service/<string:service>/status')
+        def status(service):
+            return {'service': service}
+
+        with self.assertLogs(level='INFO') as captured:
+            response = app.test_client().get('/service/openai/status')
+
+        self.assertEqual(200, response.status_code)
+        self.assertIn('/service/openai/status', '\n'.join(captured.output))
+
+    def test_http_logging_does_not_parse_multipart_for_logging(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.post('/upload')
+        def upload():
+            from flask import request
+            return {'name': request.form['name']}
+
+        with self.assertLogs(level='INFO') as captured:
+            response = app.test_client().post(
+                '/upload', data={'name': 'example'},
+                content_type='multipart/form-data')
+
+        self.assertEqual({'name': 'example'}, response.get_json())
+        self.assertIn('multipart request body', '\n'.join(captured.output))
+
     def test_init_logging_disables_urllib3_debug_request_urls(self):
         root_logger = logging.getLogger()
         urllib3_logger = logging.getLogger('urllib3.connectionpool')
@@ -54,11 +178,26 @@ class LoggingRedactionTests(unittest.TestCase):
         self.addCleanup(urllib3_logger.setLevel, urllib3_level)
         with (
             mock.patch.object(lanying_logging.os, 'makedirs'),
-            mock.patch.object(lanying_logging.logging, 'FileHandler'),
+            mock.patch.object(
+                lanying_logging, 'ConcurrentTimedRotatingFileHandler')
+                as file_handler_class,
+            mock.patch.object(lanying_logging.logging, 'StreamHandler')
+                as stream_handler_class,
             mock.patch.object(root_logger, 'addHandler'),
         ):
             lanying_logging.init_logging()
 
+        file_handler_class.assert_called_once_with(
+            filename=mock.ANY,
+            when='midnight',
+            interval=1,
+            backupCount=365,
+            use_gzip=True,
+            encoding='utf-8')
+        file_handler_class.return_value.setLevel.assert_called_once_with(
+            logging.DEBUG)
+        stream_handler_class.return_value.setLevel.assert_called_once_with(
+            logging.DEBUG)
         self.assertGreaterEqual(urllib3_logger.level, logging.INFO)
 
     def test_formatter_redacts_third_party_log_messages(self):

@@ -34,6 +34,7 @@ click-didyoumean==0.3.0
 click-plugins==1.1.1
 click-repl==0.2.0
 contourpy==1.0.7
+concurrent-log-handler==0.9.29
 cosine-similarity==0.1.2
 crcmod==1.7
 cryptography==44.0.0
@@ -97,6 +98,7 @@ pdfreader==0.1.12
 pilk==0.2.4
 Pillow==9.4.0
 plotly==5.13.1
+portalocker==4.3.2
 prompt-toolkit==3.0.38
 protobuf==3.20.3
 psycopg2-binary==2.9.7

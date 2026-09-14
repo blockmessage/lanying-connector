@@ -29,6 +29,7 @@ def create_app():
         app.debug = True
     return app
 app = create_app()
+lanying_logging.register_http_logging(app)
 import wechat_official_account_service
 app.register_blueprint(wechat_official_account_service.bp)
 import openai_service
