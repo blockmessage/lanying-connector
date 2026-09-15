@@ -1,6 +1,12 @@
 import random
 import time
 import os
+import sys
+
+_SERVICES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'services')
+if _SERVICES_DIR not in sys.path:
+    sys.path.append(_SERVICES_DIR)
+
 from flask import Flask
 from concurrent.futures import ThreadPoolExecutor
 import lanying_config
