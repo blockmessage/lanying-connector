@@ -2,7 +2,6 @@ import uuid
 import openai
 import time
 import logging
-import lanying_connector
 import json
 import tiktoken
 import lanying_config
@@ -28,6 +27,7 @@ import lanying_file_storage
 import lanying_chatbot
 import lanying_ai_capsule
 import lanying_im_api
+import lanying_im_sender
 from requests.auth import HTTPDigestAuth
 from requests.auth import HTTPBasicAuth
 import lanying_message
@@ -1679,6 +1679,9 @@ def resume_client_tool_request(request_info, execution_result):
         config = copy.deepcopy(base_config)
         config.update(copy.deepcopy(continuation.get('config', {})))
         config['app_id'] = app_id
+        deduct_res = check_message_deduct_failed(app_id, config)
+        if deduct_res.get('result') == 'error':
+            raise ValueError(deduct_res.get('msg', 'message deduction unavailable'))
         chatbot_id = str(request_info.get('chatbot_id', ''))
         chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
         if chatbot:
@@ -3484,7 +3487,8 @@ def maybe_reply_message_read_ack(config, msg):
         toUserId = config['to_user_id']
         msgId = config['msg_id']
         appId = config['app_id']
-        lanying_connector.sendReadAckAsync(appId, toUserId, fromUserId, msgId)
+        lanying_im_sender.send_read_ack_async(
+            appId, toUserId, fromUserId, msgId)
 
 def check_image_quota(model_config, preset):
     n = abs(int(preset.get('n', 1)))
@@ -6203,7 +6207,8 @@ def get_ai_message_round_key(from_user_id, to_user_id):
 
 def sendMessageAsync(app_id, notify_from, user_id, content, ext = {}):
     add_ai_message_cnt(content)
-    return lanying_connector.sendMessageAsync(app_id, notify_from, user_id, content, ext)
+    return lanying_im_sender.send_message_async(
+        app_id, notify_from, user_id, content, ext)
 
 def can_reply_msg(config):
     if 'reply_msg_type' in config:
@@ -6226,7 +6231,8 @@ def replyMessageAsync(config, content, ext = {}):
             add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext)
             return
         if reply_msg_type == 'CHAT':
-            return lanying_connector.sendMessageAsync(app_id, reply_from, reply_to, content, ext)
+            return lanying_im_sender.send_message_async(
+                app_id, reply_from, reply_to, content, ext)
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_async(config, app_id, reply_from, reply_to, content, ext)
 
@@ -6460,7 +6466,8 @@ def replyMessageSync(config, content, ext = {}):
             add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext)
             return int(time.time() * 1000000)
         if reply_msg_type == 'CHAT':
-            return lanying_connector.sendMessage(app_id, reply_from, reply_to, content, ext)
+            return lanying_im_sender.send_message(
+                app_id, reply_from, reply_to, content, ext)
         elif reply_msg_type == 'GROUPCHAT':
             return lanying_message.send_group_message_sync(config, app_id, reply_from, reply_to, content, ext)
     else:
@@ -6477,7 +6484,9 @@ def replyMessageOperAsync(config, stream_msg_id, oper_type, content, ext, msg_co
                 add_sync_mode_message(config, reply_msg_type, reply_from, reply_to, content, ext, msg_config)
             return
         if reply_msg_type == 'CHAT':
-            return lanying_connector.sendMessageOperAsync(app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
+            return lanying_im_sender.send_message_oper_async(
+                app_id, reply_from, reply_to, stream_msg_id, oper_type,
+                content, ext, msg_config, online_only)
         else:
             return lanying_message.send_group_message_oper_async(config, app_id, reply_from, reply_to, stream_msg_id, oper_type, content, ext, msg_config, online_only)
     else:

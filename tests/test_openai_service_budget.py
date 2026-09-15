@@ -227,6 +227,7 @@ def _install_fake_openai_service_local_modules_if_needed():
         'lanying_chatbot',
         'lanying_ai_capsule',
         'lanying_im_api',
+        'lanying_im_sender',
         'lanying_message',
         'lanying_image',
         'lanying_message_quota_usage',
@@ -256,6 +257,7 @@ def _install_fake_openai_service_local_modules_if_needed():
     sys.modules['lanying_openai_compat'].get_tools_as_functions = lambda preset: []
     sys.modules['lanying_slack'].async_send_grafana_message_with_filter = lambda *args, **kwargs: None
     sys.modules['lanying_config'].get_message_daily_quota_limit_reached = lambda _app_id: 'daily quota limit reached'
+    sys.modules['lanying_config'].get_lanying_connector = lambda _app_id: None
 
     if 'lanying_tasks' not in sys.modules:
         tasks_mod = types.ModuleType('lanying_tasks')
@@ -340,6 +342,31 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertFalse(m.is_ai_generate_disabled_msg({
             'ext': '{"openclaw":{"type":"session_sync_delivery","role":"user"}}'
         }))
+
+    def test_agent_tool_resume_stops_when_message_deduction_failed(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(
+                f"optional dependency missing for openai_service import: {exc}")
+
+        request_info = {
+            'request_id': 'request-1',
+            'app_id': 'app-1',
+            'continuation': {'config': {'reply_msg_type': 'CHAT'}},
+        }
+        with mock.patch.object(
+                m.lanying_agent_tools, 'record_resume_status'), mock.patch.object(
+                m.lanying_config, 'get_lanying_connector',
+                return_value={'product_id': 7002}), mock.patch.object(
+                m, 'check_message_deduct_failed',
+                return_value={'result': 'error', 'msg': 'deduct failed'}) as check, mock.patch.object(
+                m, 'invoke_chat_model') as invoke, mock.patch.object(
+                m, 'replyMessageAsync'):
+            m.resume_client_tool_request(request_info, {'result': 'ok'})
+
+        check.assert_called_once()
+        invoke.assert_not_called()
 
     def test_openclaw_delivery_no_reentry_msg_is_detected_from_openclaw_ext(self):
         try:

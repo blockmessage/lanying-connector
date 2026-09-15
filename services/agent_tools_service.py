@@ -178,6 +178,17 @@ def decide_tool_request():
     return _response(result)
 
 
+@bp.route('/service/agent_tools/target', methods=['POST'])
+def retarget_tool_request():
+    denied = _require_auth()
+    if denied:
+        return denied
+    data = _body()
+    return _response(lanying_agent_tools.retarget_request(
+        str(data.get('app_id', '')), str(data.get('request_id', '')),
+        _actor(data), str(data.get('target_id', ''))))
+
+
 @bp.route('/service/agent_tools/result', methods=['POST'])
 def submit_tool_result():
     denied = _require_auth()

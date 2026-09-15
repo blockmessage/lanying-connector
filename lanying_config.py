@@ -23,11 +23,16 @@ def init():
         global mode
         global etcd
         if etcd is None:
+            if not prefix:
+                raise ValueError('LANYING_CONNECTOR_APP_CONFIG_PREFIX is required')
+            client = etcd3.client(host=etcdServer, port=etcdPort)
+            loaded_configs = {}
+            for (value, meta) in client.get_prefix(prefix):
+                loaded_configs[meta.key.decode("utf-8")] = parse_value(value)
+            client.add_watch_prefix_callback(prefix, key_changed)
+            configs.update(loaded_configs)
+            etcd = client
             mode = 'etcd'
-            etcd = etcd3.client(host = etcdServer, port=etcdPort)
-            for (value, meta) in etcd.get_prefix(prefix):
-                configs[meta.key.decode("utf-8") ] = parse_value(value)
-            etcd.add_watch_prefix_callback(prefix, key_changed)
 
 def parse_value(value):
     try:

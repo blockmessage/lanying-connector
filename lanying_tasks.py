@@ -7,6 +7,7 @@ import lanying_config
 import time
 import lanying_redis
 from celery import Celery
+from celery.signals import worker_process_init
 import logging
 import lanying_file_storage
 import lanying_embedding
@@ -51,6 +52,31 @@ slow_queue.conf.beat_schedule = {
         'schedule': crontab(minute='*/10')
     }
 }
+
+
+@worker_process_init.connect
+def initialize_worker_process(**_kwargs):
+    """Load App configuration and its etcd watch in each Celery child.
+
+    Initializing after fork avoids sharing the etcd gRPC client between worker
+    processes and makes background task configuration independent of Flask app
+    imports.
+    """
+    lanying_config.init()
+    redis = lanying_redis.get_redis_connection()
+    redis.ping()
+    logging.info(
+        'Celery worker runtime initialized | config_mode=%s | prefix=%s | '
+        'app_config_count=%s | agent_tools_mysql=%s | quota_log_pg=%s | '
+        'openai_proxy=%s | azure_proxy=%s | aws_proxy=%s | claude_proxy=%s',
+        lanying_config.mode, lanying_config.prefix or '',
+        len(lanying_config.configs),
+        bool(os.getenv('LANYING_AGENT_TOOLS_MYSQL_HOST')),
+        bool(os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')),
+        bool(os.getenv('LANYING_CONNECTOR_OPENAI_PROXY_API_BASE')),
+        bool(os.getenv('LANYING_CONNECTOR_AZURE_PROXY_DOMAIN')),
+        bool(os.getenv('LANYING_CONNECTOR_AWS_PROXY_API_BASE')),
+        bool(os.getenv('LANYING_CONNECTOR_CLAUDE_PROXY_API_BASE')))
 # normal_queue.conf.update(
 #     task_acks_late=True,
 # )

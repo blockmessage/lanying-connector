@@ -280,6 +280,67 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual("List content-generation plans and their current schedule/status. Read this before selecting a task_id.",
                          next(item for item in functions if item["name"] == "seenical_plan_list")["description"])
 
+    def test_verified_workspace_context_is_injected_as_reference_data(self):
+        self.activate_catalog()
+        self.bind_app(user_id="22")
+        capability = {
+            "app_id": "app", "im_user_id": "22", "chatbot_ids": ["bot"],
+            "client_instance_id": "tab-a", "seenical_session_id": "session-a",
+            "conversation_type": "CHAT", "conversation_id": "22",
+            "runtimes": {"butler_api": 1}, "updated_at": 1
+        }
+        self.redis.set(self.module.capability_key("app", "tab-a"), json.dumps(capability))
+        self.redis.sadd(self.module.capability_index_key("app", "bot", "CHAT", "22"), "tab-a")
+        config = {
+            "chatbot_id": "bot", "send_from": "22", "reply_msg_type": "CHAT",
+            "reply_to": "22", "seenical_client_context": {
+                "schema_version": 1, "client_instance_id": "tab-a",
+                "seenical_session_id": "session-a", "workspace_context": {
+                    "task_id": "task-a", "site_id": "site-a",
+                    "task_run_id": "run-a", "preview_id": "preview-a"
+                }
+            }
+        }
+        grow_ai = self.module.lanying_grow_ai
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "is_feature_enabled", return_value=True), mock.patch.object(
+                self.module.lanying_chatbot, "get_chatbot", create=True,
+                return_value={"name": "Writer"}), mock.patch.object(
+                grow_ai, "get_task", create=True,
+                return_value={"task_id": "task-a", "chatbot_id": "bot", "name": "News", "schedule": "off", "article_language": "en"}), mock.patch.object(
+                grow_ai, "get_site", create=True,
+                return_value={"site_id": "site-a", "name": "Docs", "language": "en"}), mock.patch.object(
+                grow_ai, "get_task_run", create=True,
+                return_value={"task_run_id": "run-a", "task_id": "task-a", "status": "success"}), mock.patch.object(
+                grow_ai, "get_preview", create=True,
+                return_value={"preview_id": "preview-a", "task_run_id": "run-a", "site_id": "site-a", "status": "ready"}):
+            messages, _ = self.module.apply_active_skills(
+                "app", config, [{"role": "user", "content": "update this plan"}], [])
+        workspace_messages = [item for item in messages if "verified workspace context" in item.get("content", "")]
+        self.assertEqual(1, len(workspace_messages))
+        self.assertIn('"task_id":"task-a"', workspace_messages[0]["content"])
+        self.assertEqual("task-a", config["seenical_verified_workspace_context"]["task"]["task_id"])
+
+    def test_workspace_context_omits_wrong_agent_plan_and_mismatched_run(self):
+        config = {
+            "chatbot_id": "bot", "reply_msg_type": "CHAT", "reply_to": "22",
+            "seenical_client_context": {
+                "seenical_session_id": "session-a", "workspace_context": {
+                    "task_id": "task-a", "task_run_id": "run-a"
+                }
+            }
+        }
+        with mock.patch.object(
+                self.module.lanying_chatbot, "get_chatbot", create=True,
+                return_value={"name": "Writer"}), mock.patch.object(
+                self.module.lanying_grow_ai, "get_task", create=True,
+                return_value={"task_id": "task-a", "chatbot_id": "other"}), mock.patch.object(
+                self.module.lanying_grow_ai, "get_task_run", create=True,
+                return_value={"task_run_id": "run-a", "task_id": "other-task"}):
+            context = self.module._verified_workspace_context("app", config)
+        self.assertNotIn("task", context)
+        self.assertNotIn("task_run", context)
+
     def test_request_freezes_runtime_and_original_message_context(self):
         catalog = self.activate_catalog()
         self.bind_app()
@@ -429,6 +490,79 @@ class AgentToolsTest(unittest.TestCase):
             }, {})
         self.assertEqual({"prompt": "old"}, preview["before"])
         self.assertEqual({"prompt": "new"}, preview["after"])
+
+    def test_pending_plan_request_can_retarget_and_refreeze_arguments(self):
+        self.activate_catalog()
+        now = int(self.module.time.time())
+        request = {
+            "schema_version": 1, "request_id": "request-target", "app_id": "app",
+            "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "tab-a", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "conversation_type": "CHAT", "conversation_id": "22",
+            "tool_id": "seenical.plan.update", "tool_version": 1,
+            "execution": "butler_api", "risk": "write",
+            "runtime": {"type": "butler_api", "version": 1},
+            "arguments": {"task_id": "old", "article_language": "en"},
+            "arguments_hash": "old-hash",
+            "tool_call": {"id": "call-a", "type": "function", "function": {
+                "name": "seenical_plan_update", "arguments": "{}"
+            }},
+            "status": "pending", "expires_at": now + 60,
+        }
+        actor = {"subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"}
+        self.redis.set(self.module.request_key("request-target"), json.dumps(request))
+        tasks = [
+            {"task_id": "new", "name": "New plan", "chatbot_id": "bot-b", "schedule": "off"},
+            {"task_id": "old", "name": "Old plan", "chatbot_id": "bot-a", "schedule": "on"},
+        ]
+        def get_task(app_id, task_id):
+            return next((item for item in tasks if item["task_id"] == task_id), None)
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "_request_actor_error", return_value=""), mock.patch.object(
+                self.module, "_audit") as audit, mock.patch.object(
+                self.module.lanying_grow_ai, "get_task", create=True,
+                side_effect=get_task), mock.patch.object(
+                self.module.lanying_grow_ai, "get_task_list", create=True,
+                return_value={"result": "ok", "data": {"list": tasks}}), mock.patch.object(
+                self.module.lanying_chatbot, "get_chatbot", create=True,
+                side_effect=lambda app_id, chatbot_id: {"name": "Current" if chatbot_id == "bot-a" else "Other"}):
+            result = self.module.retarget_request(
+                "app", "request-target", actor, "new")
+        self.assertEqual("ok", result["result"])
+        updated = json.loads(self.redis.get(self.module.request_key("request-target")))
+        self.assertEqual({"task_id": "new", "article_language": "en"}, updated["arguments"])
+        self.assertEqual(updated["arguments"], json.loads(updated["tool_call"]["function"]["arguments"]))
+        self.assertEqual({"article_language": None}, updated["preview"]["before"])
+        self.assertEqual("new", result["data"]["target_selector"]["selected_id"])
+        self.assertTrue(result["data"]["target_selector"]["options"][0]["current_agent"])
+        audit.assert_called_once()
+
+    def test_non_pending_or_unknown_plan_request_cannot_retarget(self):
+        now = int(self.module.time.time())
+        base = {
+            "request_id": "request-target", "app_id": "app", "tool_id": "seenical.plan.update",
+            "status": "completed", "expires_at": now + 60,
+        }
+        actor = {"subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"}
+        self.redis.set(self.module.request_key("request-target"), json.dumps(base))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "_request_actor_error", return_value=""):
+            result = self.module.retarget_request("app", "request-target", actor, "new")
+        self.assertEqual("error", result["result"])
+        self.assertIn("no longer", result["message"])
+
+    def test_target_change_and_approval_share_one_request_lock(self):
+        request_id = "request-locked"
+        self.redis.set(
+            f"lanying_connector:agent_tools:decision_lock:{request_id}",
+            "approving")
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            result = self.module.retarget_request(
+                "app", request_id,
+                {"subject_id": "11", "im_user_id": "22", "client_instance_id": "tab-a"},
+                "new")
+        self.assertEqual("error", result["result"])
+        self.assertIn("being updated", result["message"])
 
     def test_non_client_functions_keep_legacy_behavior(self):
         functions = [
