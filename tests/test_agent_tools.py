@@ -277,8 +277,13 @@ class AgentToolsTest(unittest.TestCase):
                 "app", config, messages, [])
         self.assertEqual(len(catalog["skills"][0]["tools"]), len(functions))
         self.assertIn("Seenical Skill", output_messages[0]["content"])
-        self.assertEqual("List content-generation plans and their current schedule/status. Read this before selecting a task_id.",
-                         next(item for item in functions if item["name"] == "seenical_plan_list")["description"])
+        plan_list_description = next(
+            item for item in functions
+            if item["name"] == "seenical_plan_list")["description"]
+        self.assertIn("prompt is the plan topic", plan_list_description)
+        self.assertIn("article_prompt is the per-article instruction",
+                      plan_list_description)
+        self.assertIn("never substitute prompt or note", plan_list_description)
 
     def test_verified_workspace_context_is_injected_as_reference_data(self):
         self.activate_catalog()
