@@ -44,8 +44,8 @@ import lanying_grow_ai
 import lanying_slack
 import lanying_openclaw
 import lanying_openai_compat
-import lanying_pgvector
 import lanying_agent_tools
+import lanying_operational_storage
 from lanying_ai_chat_pipeline import (
     ChatHandlerResult, ModelResponse, PresetResolution, Prompt, ReplyResult,
     ToolRunResult,
@@ -3550,22 +3550,22 @@ def maybe_trace_message_quota_usage(config, message_count_quota):
     except Exception as e:
         logging.exception(e)
 
-def add_message_quota_usage_pgvector_log(entry):
+def add_message_quota_usage_log(entry):
     try:
         if executor and hasattr(executor, 'submit'):
-            executor.submit(add_message_quota_usage_pgvector_log_internal, entry)
+            executor.submit(add_message_quota_usage_log_internal, entry)
         else:
-            add_message_quota_usage_pgvector_log_internal(entry)
+            add_message_quota_usage_log_internal(entry)
     except Exception as e:
         logging.exception(e)
 
-def add_message_quota_usage_pgvector_log_internal(entry):
+def add_message_quota_usage_log_internal(entry):
     try:
         if not isinstance(entry, dict):
             return
-        append_result = lanying_pgvector.append_message_quota_usage_log(entry)
+        append_result = lanying_operational_storage.append_message_quota_usage_log(entry)
         if isinstance(append_result, dict) and append_result.get('result') not in ['ok', 'ignored']:
-            logging.info(f"add_message_quota_usage_pgvector_log_internal got unexpected result: {append_result}")
+            logging.info(f"add_message_quota_usage_log_internal got unexpected result: {append_result}")
     except Exception as e:
         logging.exception(e)
 
@@ -3625,7 +3625,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
                 key_count = 0
                 add_quota_used_statistic(app_id, message_count_quota)
-                add_message_quota_usage_pgvector_log({
+                add_message_quota_usage_log({
                     'app_id': app_id,
                     'quota': message_count_quota,
                     'model_type': model_type,
@@ -3668,7 +3668,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
                 key_count = 0
                 add_quota_used_statistic(app_id, message_count_quota)
-                add_message_quota_usage_pgvector_log({
+                add_message_quota_usage_log({
                     'app_id': app_id,
                     'quota': message_count_quota,
                     'model_type': model_type,
@@ -3737,7 +3737,7 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
                 key_count = 0
                 add_quota_used_statistic(app_id, message_count_quota)
-                add_message_quota_usage_pgvector_log({
+                add_message_quota_usage_log({
                     'app_id': app_id,
                     'quota': message_count_quota,
                     'model_type': model_type,

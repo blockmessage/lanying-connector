@@ -50,7 +50,7 @@ def _load_lanying_openclaw():
             safe_json_loads=_safe_json_loads,
         ),
         "lanying_vendor": types.SimpleNamespace(),
-        "lanying_pgvector": types.SimpleNamespace(
+        "lanying_operational_storage": types.SimpleNamespace(
             append_openclaw_session_map_log=lambda entry: {"result": "ignored", "message": "test stub"},
         ),
         "requests": types.SimpleNamespace(

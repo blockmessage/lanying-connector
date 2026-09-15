@@ -12,7 +12,7 @@ import json
 import hashlib
 import threading
 import lanying_vendor
-import lanying_pgvector
+import lanying_operational_storage
 import requests
 from lanying_async import executor
 
@@ -2613,7 +2613,7 @@ def build_session_mapping_change_log_entry(
 
 def write_session_mapping_change_log(log_entry):
     try:
-        append_result = lanying_pgvector.append_openclaw_session_map_log(log_entry)
+        append_result = lanying_operational_storage.append_openclaw_session_map_log(log_entry)
         if append_result.get('result') not in ['ok', 'ignored']:
             logging.info(
                 f"write_session_mapping_change_log unexpected result | "

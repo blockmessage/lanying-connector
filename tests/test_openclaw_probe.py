@@ -46,7 +46,9 @@ def _load_lanying_openclaw():
         "lanying_vendor": types.SimpleNamespace(
             list_models=lambda app_id: [],
         ),
-        "lanying_pgvector": types.SimpleNamespace(),
+        "lanying_operational_storage": types.SimpleNamespace(
+            append_openclaw_session_map_log=lambda entry: {"result": "ignored"},
+        ),
         "requests": types.SimpleNamespace(),
         "lanying_async": types.SimpleNamespace(
             executor=types.SimpleNamespace(submit=lambda *args, **kwargs: None),

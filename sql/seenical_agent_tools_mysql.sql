@@ -59,3 +59,45 @@ CREATE TABLE IF NOT EXISTS `seenical_config_revision` (
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`app_id`,`resource_type`,`resource_id`,`revision`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `message_quota_usage_log` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `app_id` varchar(100) NOT NULL DEFAULT '',
+  `quota` decimal(20,6) NOT NULL DEFAULT 0,
+  `model_type` varchar(100) NOT NULL DEFAULT '',
+  `vendor` varchar(100) NOT NULL DEFAULT '',
+  `model` varchar(255) NOT NULL DEFAULT '',
+  `api_key_type` varchar(100) NOT NULL DEFAULT '',
+  `message_count` int NOT NULL DEFAULT 1,
+  `total_tokens` int NOT NULL DEFAULT 0,
+  `prompt_tokens` int NOT NULL DEFAULT 0,
+  `completion_tokens` int NOT NULL DEFAULT 0,
+  `text_size` int NOT NULL DEFAULT 0,
+  `content_security` varchar(100) NOT NULL DEFAULT '',
+  `product_id` bigint NOT NULL DEFAULT 0,
+  `extra_metadata` longtext NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_message_quota_app_created` (`app_id`,`created_at`),
+  KEY `idx_message_quota_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `openclaw_session_map_log` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `app_id` varchar(100) NOT NULL DEFAULT '',
+  `node_id` varchar(100) NOT NULL DEFAULT '',
+  `session_key` text NOT NULL,
+  `group_id` varchar(100) NOT NULL DEFAULT '',
+  `openclaw_user_id` varchar(100) NOT NULL DEFAULT '',
+  `change_source` varchar(100) NOT NULL DEFAULT '',
+  `previous_signature` longtext NOT NULL,
+  `new_signature` longtext NOT NULL,
+  `previous_mapping` longtext NOT NULL,
+  `new_mapping` longtext NOT NULL,
+  `legacy_session_keys` longtext NOT NULL,
+  `extra_metadata` longtext NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_openclaw_map_app_node_created` (`app_id`,`node_id`,`created_at`),
+  KEY `idx_openclaw_map_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

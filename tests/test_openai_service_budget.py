@@ -236,6 +236,7 @@ def _install_fake_openai_service_local_modules_if_needed():
         'lanying_openclaw',
         'lanying_openai_compat',
         'lanying_pgvector',
+        'lanying_operational_storage',
     ]
     for name in module_names:
         if name not in sys.modules:
@@ -872,7 +873,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertEqual(out['messages'][0]['role'], 'user')
         self.assertNotIn('developer', [item['role'] for item in out['messages']])
 
-    def test_add_message_statistic_writes_quota_usage_to_pgvector(self):
+    def test_add_message_statistic_writes_quota_usage_to_mysql(self):
         try:
             m = importlib.import_module('openai_service')
         except ModuleNotFoundError as exc:
@@ -897,7 +898,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             mock.patch.object(m, 'add_quota_used_statistic'),
             mock.patch.object(m, 'maybe_trace_message_quota_usage'),
             mock.patch.object(m, 'maybe_statistic_ai_capsule'),
-            mock.patch.object(m.lanying_pgvector, 'append_message_quota_usage_log', side_effect=lambda entry: captured.append(entry) or {'result': 'ok'}, create=True),
+            mock.patch.object(m.lanying_operational_storage, 'append_message_quota_usage_log', side_effect=lambda entry: captured.append(entry) or {'result': 'ok'}, create=True),
         ):
             m.add_message_statistic('app-quota', config, preset, response, model_config)
 

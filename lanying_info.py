@@ -3,6 +3,7 @@ import lanying_chatbot
 import lanying_embedding
 import json
 import lanying_pgvector
+import lanying_operational_storage
 import lanying_grow_ai
 import lanying_openclaw
 lanying_config.init()
@@ -395,7 +396,7 @@ def info_openclaw_session_map_log_list(node_id):
     app_id = cache.get('app_id')
     if is_app_id(app_id) and is_node_id(node_id):
         node_id_text = str(node_id)
-        logs = lanying_pgvector.list_openclaw_session_map_logs(app_id, node_id_text)
+        logs = lanying_operational_storage.list_openclaw_session_map_logs(app_id, node_id_text)
         if len(logs) > 0:
             set_cache('node_id', node_id_text)
             return {

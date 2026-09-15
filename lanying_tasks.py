@@ -73,7 +73,7 @@ def initialize_worker_process(**_kwargs):
     redis.ping()
     logging.info(
         'Celery worker runtime initialized | config_mode=%s | prefix=%s | '
-        'app_config_count=%s | agent_tools_mysql=%s | quota_log_pg=%s | '
+        'app_config_count=%s | connector_mysql=%s | pgvector=%s | '
         'openai_proxy=%s | azure_proxy=%s | aws_proxy=%s | claude_proxy=%s',
         lanying_config.mode, lanying_config.prefix or '',
         len(lanying_config.configs),

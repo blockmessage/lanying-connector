@@ -1,8 +1,9 @@
-"""MySQL persistence for Seenical Agent Tools.
+"""MySQL persistence and shared connection pool for Seenical Agent Tools.
 
-The database is intentionally separate from the pgvector database. Schema
-creation is handled by sql/seenical_agent_tools_mysql.sql so the runtime user
-only needs normal DML permissions.
+The database is intentionally separate from the pgvector database and also
+stores Connector operational logs. Schema creation is handled by
+sql/seenical_agent_tools_mysql.sql so the runtime user only needs normal DML
+permissions.
 """
 
 import json
@@ -97,6 +98,11 @@ def _get_engine():
                 'LANYING_AGENT_TOOLS_MYSQL_MAX_OVERFLOW', '10')),
         )
         return _engine
+
+
+def get_engine():
+    """Return the shared Connector MySQL engine."""
+    return _get_engine()
 
 
 def append_agent_tool_audit_log(entry):

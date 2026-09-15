@@ -1,16 +1,13 @@
+import logging
+import os
+import time
+
 import psycopg2
 from psycopg2 import pool
-from psycopg2.extras import Json
-import os
-import logging
-import time
-import threading
+
 
 connection_pool = None
-openclaw_session_map_log_table_ready = False
-openclaw_session_map_log_table_lock = threading.Lock()
-message_quota_usage_log_table_ready = False
-message_quota_usage_log_table_lock = threading.Lock()
+
 
 def get_connection():
     if connection_pool:
@@ -19,19 +16,21 @@ def get_connection():
             conn = connection_pool.getconn()
             if is_connection_valid(conn):
                 return conn
-            else:
-                logging.info(f"get_connection | get bad connection: {i}/{retry_times}")
-                connection_pool.putconn(conn, close=True)
-                if i == retry_times-1:
-                    raise Exception('fail to get pgvector connection')
-                time.sleep(0.1)
+            logging.info(f"get_connection | get bad connection: {i}/{retry_times}")
+            connection_pool.putconn(conn, close=True)
+            if i == retry_times - 1:
+                raise Exception('fail to get pgvector connection')
+            time.sleep(0.1)
+
 
 def put_connection(conn):
     if connection_pool:
         return connection_pool.putconn(conn)
 
+
 def is_enabled():
     return connection_pool is not None
+
 
 def is_connection_valid(conn):
     try:
@@ -39,367 +38,25 @@ def is_connection_valid(conn):
             cursor.execute("SELECT 1")
             result = cursor.fetchone()
             return result and result[0] == 1
-    except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError):
+    except (psycopg2.OperationalError, psycopg2.InterfaceError,
+            psycopg2.DatabaseError):
         return False
     except Exception as e:
         logging.info("is_connection_valid got other exception")
         logging.exception(e)
         return False
 
-def ensure_openclaw_session_map_log_table():
-    global openclaw_session_map_log_table_ready
-    if not is_enabled():
-        return False
-    if openclaw_session_map_log_table_ready:
-        return True
-    with openclaw_session_map_log_table_lock:
-        if openclaw_session_map_log_table_ready:
-            return True
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS openclaw_session_map_log (
-                    id bigserial PRIMARY KEY,
-                    created_at timestamptz NOT NULL DEFAULT NOW(),
-                    app_id varchar(100) NOT NULL DEFAULT '',
-                    node_id varchar(100) NOT NULL DEFAULT '',
-                    session_key text NOT NULL DEFAULT '',
-                    group_id varchar(100) NOT NULL DEFAULT '',
-                    openclaw_user_id varchar(100) NOT NULL DEFAULT '',
-                    change_source varchar(100) NOT NULL DEFAULT '',
-                    previous_signature jsonb NOT NULL DEFAULT '{}'::jsonb,
-                    new_signature jsonb NOT NULL DEFAULT '{}'::jsonb,
-                    previous_mapping jsonb NOT NULL DEFAULT '{}'::jsonb,
-                    new_mapping jsonb NOT NULL DEFAULT '{}'::jsonb,
-                    legacy_session_keys jsonb NOT NULL DEFAULT '[]'::jsonb,
-                    extra_metadata jsonb NOT NULL DEFAULT '{}'::jsonb
-                );
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS openclaw_session_map_log_idx_session_created_at
-                ON openclaw_session_map_log (app_id, node_id, session_key, created_at DESC);
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS openclaw_session_map_log_idx_created_at
-                ON openclaw_session_map_log (created_at DESC);
-            """)
-            conn.commit()
-            cursor.close()
-            put_connection(conn)
-        openclaw_session_map_log_table_ready = True
-        return True
-
-def append_openclaw_session_map_log(entry):
-    if not isinstance(entry, dict):
-        return {
-            'result': 'ignored',
-            'message': 'bad log entry'
-        }
-    if not is_enabled():
-        return {
-            'result': 'ignored',
-            'message': 'pgvector disabled'
-        }
-    ensure_openclaw_session_map_log_table()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO openclaw_session_map_log (
-                app_id,
-                node_id,
-                session_key,
-                group_id,
-                openclaw_user_id,
-                change_source,
-                previous_signature,
-                new_signature,
-                previous_mapping,
-                new_mapping,
-                legacy_session_keys,
-                extra_metadata
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """,
-            [
-                str(entry.get('app_id', '')).strip(),
-                str(entry.get('node_id', '')).strip(),
-                str(entry.get('session_key', '')).strip(),
-                str(entry.get('group_id', '')).strip(),
-                str(entry.get('openclaw_user_id', '')).strip(),
-                str(entry.get('change_source', '')).strip(),
-                Json(entry.get('previous_signature', {})),
-                Json(entry.get('new_signature', {})),
-                Json(entry.get('previous_mapping', {})),
-                Json(entry.get('new_mapping', {})),
-                Json(entry.get('legacy_session_keys', [])),
-                Json(entry.get('extra_metadata', {})),
-            ]
-        )
-        conn.commit()
-        cursor.close()
-        put_connection(conn)
-    return {
-        'result': 'ok'
-    }
-
-def list_openclaw_session_map_logs(app_id, node_id, limit=100):
-    if not is_enabled():
-        return []
-    normalized_app_id = str(app_id or '').strip()
-    normalized_node_id = str(node_id or '').strip()
-    normalized_limit = int(limit or 100)
-    if normalized_app_id == '' or normalized_node_id == '' or normalized_limit <= 0:
-        return []
-    ensure_openclaw_session_map_log_table()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                id,
-                created_at,
-                app_id,
-                node_id,
-                session_key,
-                group_id,
-                openclaw_user_id,
-                change_source,
-                previous_signature,
-                new_signature,
-                previous_mapping,
-                new_mapping,
-                legacy_session_keys,
-                extra_metadata
-            FROM openclaw_session_map_log
-            WHERE app_id = %s AND node_id = %s
-            ORDER BY created_at DESC, id DESC
-            LIMIT %s;
-            """,
-            [normalized_app_id, normalized_node_id, normalized_limit]
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-        put_connection(conn)
-    results = []
-    for row in rows:
-        results.append({
-            'id': row[0],
-            'created_at': row[1].isoformat() if row[1] is not None else '',
-            'app_id': row[2],
-            'node_id': row[3],
-            'session_key': row[4],
-            'group_id': row[5],
-            'openclaw_user_id': row[6],
-            'change_source': row[7],
-            'previous_signature': row[8] or {},
-            'new_signature': row[9] or {},
-            'previous_mapping': row[10] or {},
-            'new_mapping': row[11] or {},
-            'legacy_session_keys': row[12] or [],
-            'extra_metadata': row[13] or {},
-        })
-    return results
-
-def ensure_message_quota_usage_log_table():
-    global message_quota_usage_log_table_ready
-    if not is_enabled():
-        return False
-    if message_quota_usage_log_table_ready:
-        return True
-    with message_quota_usage_log_table_lock:
-        if message_quota_usage_log_table_ready:
-            return True
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS message_quota_usage_log (
-                    id bigserial PRIMARY KEY,
-                    created_at timestamptz NOT NULL DEFAULT NOW(),
-                    app_id varchar(100) NOT NULL DEFAULT '',
-                    quota numeric(20, 6) NOT NULL DEFAULT 0,
-                    model_type varchar(100) NOT NULL DEFAULT '',
-                    vendor varchar(100) NOT NULL DEFAULT '',
-                    model varchar(255) NOT NULL DEFAULT '',
-                    api_key_type varchar(100) NOT NULL DEFAULT '',
-                    message_count integer NOT NULL DEFAULT 1,
-                    total_tokens integer NOT NULL DEFAULT 0,
-                    prompt_tokens integer NOT NULL DEFAULT 0,
-                    completion_tokens integer NOT NULL DEFAULT 0,
-                    text_size integer NOT NULL DEFAULT 0,
-                    content_security varchar(100) NOT NULL DEFAULT '',
-                    product_id bigint NOT NULL DEFAULT 0,
-                    extra_metadata jsonb NOT NULL DEFAULT '{}'::jsonb
-                );
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS message_quota_usage_log_idx_app_created_at
-                ON message_quota_usage_log (app_id, created_at DESC);
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS message_quota_usage_log_idx_created_at
-                ON message_quota_usage_log (created_at DESC);
-            """)
-            conn.commit()
-            cursor.close()
-            put_connection(conn)
-        message_quota_usage_log_table_ready = True
-        return True
-
-def append_message_quota_usage_log(entry):
-    if not isinstance(entry, dict):
-        return {
-            'result': 'ignored',
-            'message': 'bad log entry'
-        }
-    if not is_enabled():
-        return {
-            'result': 'ignored',
-            'message': 'pgvector disabled'
-        }
-    ensure_message_quota_usage_log_table()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO message_quota_usage_log (
-                app_id,
-                quota,
-                model_type,
-                vendor,
-                model,
-                api_key_type,
-                message_count,
-                total_tokens,
-                prompt_tokens,
-                completion_tokens,
-                text_size,
-                content_security,
-                product_id,
-                extra_metadata
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """,
-            [
-                str(entry.get('app_id', '')).strip(),
-                float(entry.get('quota', 0)),
-                str(entry.get('model_type', '')).strip(),
-                str(entry.get('vendor', '')).strip(),
-                str(entry.get('model', '')).strip(),
-                str(entry.get('api_key_type', '')).strip(),
-                int(entry.get('message_count', 1)),
-                int(entry.get('total_tokens', 0)),
-                int(entry.get('prompt_tokens', 0)),
-                int(entry.get('completion_tokens', 0)),
-                int(entry.get('text_size', 0)),
-                str(entry.get('content_security', '')).strip(),
-                int(entry.get('product_id', 0)),
-                Json(entry.get('extra_metadata', {})),
-            ]
-        )
-        conn.commit()
-        cursor.close()
-        put_connection(conn)
-    return {
-        'result': 'ok'
-    }
-
-def list_message_quota_usage_logs(app_id='', limit=100):
-    if not is_enabled():
-        return []
-    normalized_limit = int(limit or 100)
-    if normalized_limit <= 0:
-        return []
-    normalized_app_id = str(app_id or '').strip()
-    ensure_message_quota_usage_log_table()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        if normalized_app_id == '':
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    created_at,
-                    app_id,
-                    quota,
-                    model_type,
-                    vendor,
-                    model,
-                    api_key_type,
-                    message_count,
-                    total_tokens,
-                    prompt_tokens,
-                    completion_tokens,
-                    text_size,
-                    content_security,
-                    product_id,
-                    extra_metadata
-                FROM message_quota_usage_log
-                ORDER BY created_at DESC, id DESC
-                LIMIT %s;
-                """,
-                [normalized_limit]
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT
-                    id,
-                    created_at,
-                    app_id,
-                    quota,
-                    model_type,
-                    vendor,
-                    model,
-                    api_key_type,
-                    message_count,
-                    total_tokens,
-                    prompt_tokens,
-                    completion_tokens,
-                    text_size,
-                    content_security,
-                    product_id,
-                    extra_metadata
-                FROM message_quota_usage_log
-                WHERE app_id = %s
-                ORDER BY created_at DESC, id DESC
-                LIMIT %s;
-                """,
-                [normalized_app_id, normalized_limit]
-            )
-        rows = cursor.fetchall()
-        cursor.close()
-        put_connection(conn)
-    results = []
-    for row in rows:
-        results.append({
-            'id': row[0],
-            'created_at': row[1].isoformat() if row[1] is not None else '',
-            'app_id': row[2],
-            'quota': float(row[3] or 0),
-            'model_type': row[4],
-            'vendor': row[5],
-            'model': row[6],
-            'api_key_type': row[7],
-            'message_count': row[8] or 0,
-            'total_tokens': row[9] or 0,
-            'prompt_tokens': row[10] or 0,
-            'completion_tokens': row[11] or 0,
-            'text_size': row[12] or 0,
-            'content_security': row[13],
-            'product_id': row[14] or 0,
-            'extra_metadata': row[15] or {},
-        })
-    return results
-
 
 sql_pool_host = os.getenv('LANYING_CONNECTOR_SQL_POOL_HOST')
 if sql_pool_host:
-    sql_pool_min_connection = int(os.getenv('LANYING_CONNECTOR_SQL_POOL_MIN_CONNECTION', '5'))
-    sql_pool_max_connection = int(os.getenv('LANYING_CONNECTOR_SQL_POOL_MAX_CONNECTION', '100'))
+    sql_pool_min_connection = int(os.getenv(
+        'LANYING_CONNECTOR_SQL_POOL_MIN_CONNECTION', '5'))
+    sql_pool_max_connection = int(os.getenv(
+        'LANYING_CONNECTOR_SQL_POOL_MAX_CONNECTION', '100'))
     sql_pool_db_name = os.getenv('LANYING_CONNECTOR_SQL_POOL_DBNAME', 'maxim')
     sql_pool_port = int(os.getenv('LANYING_CONNECTOR_SQL_POOL_PORT', '5432'))
     sql_pool_user = os.getenv('LANYING_CONNECTOR_SQL_POOL_USER', 'user')
     sql_pool_password = os.getenv('LANYING_CONNECTOR_SQL_POOL_PASSWORD', '')
-    # 创建连接池
     connection_pool = psycopg2.pool.ThreadedConnectionPool(
         minconn=sql_pool_min_connection,
         maxconn=sql_pool_max_connection,
