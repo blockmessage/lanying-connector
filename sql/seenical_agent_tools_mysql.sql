@@ -60,6 +60,28 @@ CREATE TABLE IF NOT EXISTS `seenical_config_revision` (
   PRIMARY KEY (`app_id`,`resource_type`,`resource_id`,`revision`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS `seenical_conversation_binding` (
+  `app_id` varchar(100) NOT NULL,
+  `seenical_session_id` varchar(128) NOT NULL,
+  `chatbot_id` varchar(100) NOT NULL,
+  `agent_user_id` varchar(100) NOT NULL,
+  `conversation_type` varchar(32) NOT NULL,
+  `conversation_id` varchar(100) NOT NULL,
+  `conversation_name` varchar(255) NOT NULL DEFAULT '',
+  `task_id` varchar(128) DEFAULT NULL,
+  `bound_im_user_id` varchar(100) NOT NULL,
+  `status` varchar(32) NOT NULL DEFAULT 'ACTIVE',
+  `revision` bigint NOT NULL DEFAULT 1,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+    ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`app_id`,`seenical_session_id`),
+  UNIQUE KEY `uk_seenical_conversation_target`
+    (`app_id`,`conversation_type`,`conversation_id`),
+  UNIQUE KEY `uk_seenical_conversation_task` (`app_id`,`task_id`),
+  KEY `idx_seenical_conversation_chatbot` (`app_id`,`chatbot_id`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS `message_quota_usage_log` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

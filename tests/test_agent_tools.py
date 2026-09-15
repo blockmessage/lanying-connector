@@ -13,10 +13,19 @@ def load_agent_tools():
     stubs = {
         "requests": types.SimpleNamespace(RequestException=Exception),
         "lanying_ai_plugin": types.SimpleNamespace(),
-        "lanying_chatbot": types.SimpleNamespace(),
-        "lanying_grow_ai": types.SimpleNamespace(ARTICLE_LANGUAGE_VALUES={"auto", "zh-hans", "en"}),
+        "lanying_chatbot": types.SimpleNamespace(get_chatbot=lambda app_id, chatbot_id: None),
+        "lanying_grow_ai": types.SimpleNamespace(
+            ARTICLE_LANGUAGE_VALUES={"auto", "zh-hans", "en"},
+            get_task=lambda app_id, task_id: None,
+            set_loop_conversation_binding=lambda app_id, task_id, value: {"result": "ok"}),
+        "lanying_im_api": types.SimpleNamespace(
+            get_group_info=lambda app_id, group_id: {},
+            filter_group_member_ids=lambda app_id, group_id, user_ids: []),
         "lanying_agent_tools_storage": types.SimpleNamespace(
             append_agent_tool_audit_log=lambda value: {"result": "ok"},
+            list_seenical_conversation_bindings=lambda app_id: [],
+            save_seenical_conversation_binding=lambda value: {"result": "ok"},
+            deactivate_seenical_conversation_binding=lambda *args: {"result": "ok"},
             is_feature_enabled=lambda app_id, chatbot_id="": False,
             get_active_public_skill_catalog=lambda: None,
             get_public_skill_revision=lambda skill_id, revision: None,
@@ -215,6 +224,164 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual("error", result["result"])
         stored = json.loads(self.redis.get(self.module.im_binding_projection_key("app")))
         self.assertEqual("22", stored["im_user_id"])
+
+    def test_loop_conversation_binding_validates_group_and_members(self):
+        self.bind_app(user_id="22")
+        stored = []
+        group = {"code": 200, "data": {
+            "description": json.dumps({"seenical": {
+                "scene": "agent_session", "app_id": "app",
+                "agent_user_id": 33, "session_id": "session-a",
+                "loop_id": ""
+            }}),
+            "ext": json.dumps({"seenical": {
+                "scene": "agent_session", "app_id": "app",
+                "agent_user_id": 33, "session_id": "session-a",
+                "loop_id": "191"
+            }})
+        }}
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), \
+             mock.patch.object(self.module.lanying_grow_ai, "get_task", return_value={
+                 "task_id": "191", "chatbot_id": "chatbot-a"
+             }), \
+             mock.patch.object(self.module.lanying_chatbot, "get_chatbot", return_value={
+                 "user_id": 33
+             }), \
+             mock.patch.object(self.module.lanying_im_api, "get_group_info", return_value=group), \
+             mock.patch.object(self.module.lanying_im_api, "filter_group_member_ids", return_value=["22", "33"]), \
+             mock.patch.object(self.module.lanying_grow_ai, "set_loop_conversation_binding", side_effect=lambda app_id, task_id, value: (stored.append(value), {"result": "ok"})[1]):
+            result = self.module.bind_loop_conversation("app", {
+                "im_user_id": "22"
+            }, {
+                "task_id": "191", "conversation_type": "GROUPCHAT",
+                "conversation_id": "1001", "seenical_session_id": "session-a"
+            })
+
+        self.assertEqual("ok", result["result"])
+        self.assertEqual("1001", stored[0]["conversation_id"])
+        self.assertEqual("33", stored[0]["agent_user_id"])
+
+    def test_loop_conversation_binding_rejects_mismatched_metadata(self):
+        self.bind_app(user_id="22")
+        group = {"code": 200, "data": {"description": json.dumps({
+            "seenical": {
+                "scene": "agent_session", "app_id": "app",
+                "agent_user_id": 33, "session_id": "another-session",
+                "loop_id": "191"
+            }
+        })}}
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), \
+             mock.patch.object(self.module.lanying_grow_ai, "get_task", return_value={
+                 "task_id": "191", "chatbot_id": "chatbot-a"
+             }), \
+             mock.patch.object(self.module.lanying_chatbot, "get_chatbot", return_value={
+                 "user_id": 33
+             }), \
+             mock.patch.object(self.module.lanying_im_api, "get_group_info", return_value=group), \
+             mock.patch.object(self.module.lanying_grow_ai, "set_loop_conversation_binding") as save:
+            result = self.module.bind_loop_conversation("app", {
+                "im_user_id": "22"
+            }, {
+                "task_id": "191", "conversation_type": "GROUPCHAT",
+                "conversation_id": "1001", "seenical_session_id": "session-a"
+            })
+
+        self.assertEqual("error", result["result"])
+        save.assert_not_called()
+
+    def test_register_seenical_conversation_persists_verified_group(self):
+        self.bind_app(user_id="22")
+        group = {"code": 200, "data": {"name": "Child", "ext": json.dumps({
+            "seenical": {
+                "scene": "agent_session", "app_id": "app",
+                "agent_id": "chatbot-a", "agent_user_id": 33,
+                "session_id": "session-a", "loop_id": ""
+            }
+        })}}
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), \
+             mock.patch.object(self.module.lanying_chatbot, "get_chatbot", return_value={"user_id": 33}), \
+             mock.patch.object(self.module.lanying_im_api, "get_group_info", return_value=group), \
+             mock.patch.object(self.module.lanying_im_api, "filter_group_member_ids", return_value=["22", "33"]), \
+             mock.patch.object(self.module.lanying_agent_tools_storage, "save_seenical_conversation_binding", return_value={"result": "ok"}) as save:
+            result = self.module.register_seenical_conversation("app", {
+                "im_user_id": "22"
+            }, {
+                "chatbot_id": "chatbot-a", "conversation_type": "GROUPCHAT",
+                "conversation_id": "1001", "seenical_session_id": "session-a"
+            })
+
+        self.assertEqual("ok", result["result"])
+        self.assertEqual("Child", save.call_args.args[0]["conversation_name"])
+        self.assertEqual("", save.call_args.args[0]["task_id"])
+
+    def test_unregister_seenical_conversation_uses_bound_actor_and_exact_target(self):
+        self.bind_app(user_id="22")
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), \
+             mock.patch.object(self.module.lanying_agent_tools_storage,
+                               "deactivate_seenical_conversation_binding",
+                               return_value={"result": "ok"}) as deactivate:
+            result = self.module.unregister_seenical_conversation("app", {
+                "im_user_id": "22"
+            }, {
+                "conversation_type": "GROUPCHAT", "conversation_id": "1001",
+                "seenical_session_id": "session-a"
+            })
+        self.assertEqual("ok", result["result"])
+        deactivate.assert_called_once_with(
+            "app", "session-a", "GROUPCHAT", "1001", "22")
+
+    def test_unregister_seenical_conversation_rejects_unbound_actor(self):
+        self.bind_app(user_id="22")
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), \
+             mock.patch.object(self.module.lanying_agent_tools_storage,
+                               "deactivate_seenical_conversation_binding") as deactivate:
+            result = self.module.unregister_seenical_conversation("app", {
+                "im_user_id": "23"
+            }, {
+                "conversation_type": "GROUPCHAT", "conversation_id": "1001",
+                "seenical_session_id": "session-a"
+            })
+        self.assertEqual("error", result["result"])
+        deactivate.assert_not_called()
+
+    def test_unregister_seenical_conversation_rejects_existing_bound_loop(self):
+        self.bind_app(user_id="22")
+        stored = [{
+            "seenical_session_id": "session-a",
+            "conversation_type": "GROUPCHAT", "conversation_id": "1001",
+            "bound_im_user_id": "22", "task_id": "191",
+        }]
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), \
+             mock.patch.object(self.module.lanying_agent_tools_storage,
+                               "list_seenical_conversation_bindings",
+                               return_value=stored), \
+             mock.patch.object(self.module.lanying_grow_ai, "get_task",
+                               return_value={"task_id": "191"}), \
+             mock.patch.object(self.module.lanying_agent_tools_storage,
+                               "deactivate_seenical_conversation_binding") as deactivate:
+            result = self.module.unregister_seenical_conversation("app", {
+                "im_user_id": "22"
+            }, {
+                "conversation_type": "GROUPCHAT", "conversation_id": "1001",
+                "seenical_session_id": "session-a"
+            })
+        self.assertEqual("error", result["result"])
+        self.assertEqual("Seenical conversation has a bound LOOP",
+                         result["message"])
+        deactivate.assert_not_called()
+
+    def test_conversation_list_reports_storage_unavailable(self):
+        self.bind_app(user_id="22")
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), \
+             mock.patch.object(self.module.lanying_agent_tools_storage,
+                               "list_seenical_conversation_bindings",
+                               side_effect=RuntimeError("MySQL disabled")):
+            result = self.module.list_seenical_conversations("app", {
+                "im_user_id": "22"
+            })
+        self.assertEqual("error", result["result"])
+        self.assertEqual("Seenical conversation storage unavailable",
+                         result["message"])
 
     def test_unbound_sender_does_not_receive_skill_or_tools(self):
         self.activate_catalog()

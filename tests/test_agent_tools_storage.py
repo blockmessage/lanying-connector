@@ -16,6 +16,17 @@ class FakeScalars:
         return self.values
 
 
+class FakeMappings:
+    def __init__(self, values):
+        self.values = values
+
+    def first(self):
+        return self.values[0] if self.values else None
+
+    def all(self):
+        return self.values
+
+
 class FakeResult:
     def __init__(self, rowcount=1, scalar=None, values=None):
         self.rowcount = rowcount
@@ -27,6 +38,9 @@ class FakeResult:
 
     def scalars(self):
         return FakeScalars(self.values)
+
+    def mappings(self):
+        return FakeMappings(self.values)
 
 
 class FakeConnection:
@@ -166,6 +180,71 @@ class AgentToolsStorageTest(unittest.TestCase):
         with mock.patch.object(storage, '_get_engine', return_value=skill_engine):
             self.assertEqual(skill, storage.get_public_skill_revision(
                 skill['skill_id'], skill['revision']))
+
+    def test_seenical_conversation_binding_is_persisted_and_listed(self):
+        engine = FakeEngine([
+            FakeResult(values=[]), FakeResult(values=[]), FakeResult(),
+        ])
+        binding = {
+            'app_id': 'app', 'seenical_session_id': 'session-a',
+            'chatbot_id': 'bot', 'agent_user_id': '33',
+            'conversation_type': 'GROUPCHAT', 'conversation_id': '1001',
+            'conversation_name': 'Child', 'task_id': '',
+            'bound_im_user_id': '22',
+        }
+        with mock.patch.object(storage, '_get_engine', return_value=engine):
+            result = storage.save_seenical_conversation_binding(binding)
+        self.assertEqual('ok', result['result'])
+        self.assertIn('INSERT INTO seenical_conversation_binding',
+                      engine.connection.calls[-1][0])
+        self.assertIsNone(engine.connection.calls[-1][1]['task_id'])
+
+        row = dict(binding, task_id='191', status='ACTIVE', revision=2,
+                   created_at=None, updated_at=None)
+        list_engine = FakeEngine([FakeResult(values=[row])])
+        with mock.patch.object(storage, '_get_engine', return_value=list_engine):
+            values = storage.list_seenical_conversation_bindings('app')
+        self.assertEqual('191', values[0]['task_id'])
+        self.assertEqual(2, values[0]['revision'])
+
+    def test_conversation_list_fails_when_mysql_is_disabled(self):
+        with mock.patch.object(storage, '_get_engine', return_value=None):
+            with self.assertRaisesRegex(RuntimeError, 'MySQL disabled'):
+                storage.list_seenical_conversation_bindings('app')
+
+    def test_seenical_conversation_binding_can_be_deactivated(self):
+        engine = FakeEngine([FakeResult(rowcount=1)])
+        with mock.patch.object(storage, '_get_engine', return_value=engine):
+            result = storage.deactivate_seenical_conversation_binding(
+                'app', 'session-a', 'GROUPCHAT', '1001', '22')
+        self.assertEqual('ok', result['result'])
+        statement, params = engine.connection.calls[0]
+        self.assertIn("status='INACTIVE'", statement)
+        self.assertEqual('session-a', params['seenical_session_id'])
+        self.assertEqual('22', params['bound_im_user_id'])
+
+    def test_unregister_missing_legacy_conversation_is_idempotent(self):
+        engine = FakeEngine([FakeResult(rowcount=0), FakeResult(values=[])])
+        with mock.patch.object(storage, '_get_engine', return_value=engine):
+            result = storage.deactivate_seenical_conversation_binding(
+                'app', 'session-a', 'GROUPCHAT', '1001', '22')
+        self.assertEqual('ok', result['result'])
+
+    def test_conversation_with_bound_loop_cannot_be_deactivated(self):
+        engine = FakeEngine([
+            FakeResult(rowcount=0),
+            FakeResult(values=[{
+                'conversation_type': 'GROUPCHAT',
+                'conversation_id': '1001',
+                'task_id': '191',
+            }]),
+        ])
+        with mock.patch.object(storage, '_get_engine', return_value=engine):
+            result = storage.deactivate_seenical_conversation_binding(
+                'app', 'session-a', 'GROUPCHAT', '1001', '22')
+        self.assertEqual('error', result['result'])
+        self.assertEqual('Seenical conversation has a bound LOOP',
+                         result['message'])
 
     def test_duplicate_config_revision_must_have_same_snapshot(self):
         snapshot = {'name': 'Original', 'article_language': 'en'}

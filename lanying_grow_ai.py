@@ -1002,6 +1002,58 @@ def get_task_key(app_id, task_id):
 def get_task_list_key(app_id):
     return f"lanying_connector:grow_ai:task_list:{app_id}"
 
+
+def get_loop_conversation_binding_key(app_id, task_id):
+    return f"lanying_connector:agent_tools:loop_conversation_binding:{app_id}:{task_id}"
+
+
+def get_loop_conversation_binding(app_id, task_id):
+    redis = lanying_redis.get_redis_connection()
+    cached = lanying_redis.redis_get(
+        redis, get_loop_conversation_binding_key(app_id, task_id))
+    if cached:
+        try:
+            value = json.loads(cached)
+            if isinstance(value, dict):
+                return value
+        except Exception:
+            pass
+    result = lanying_agent_tools_storage.get_seenical_loop_conversation_binding(
+        app_id, task_id)
+    if result:
+        redis.set(
+            get_loop_conversation_binding_key(app_id, task_id),
+            json.dumps(result, ensure_ascii=False))
+    return result
+
+
+def set_loop_conversation_binding(app_id, task_id, binding):
+    value = dict(binding, app_id=str(app_id), task_id=str(task_id))
+    result = lanying_agent_tools_storage.save_seenical_conversation_binding(value)
+    if result.get('result') == 'ok':
+        redis = lanying_redis.get_redis_connection()
+        for unbound_task_id in result.get('data', {}).get('unbound_task_ids', []):
+            redis.delete(get_loop_conversation_binding_key(
+                app_id, unbound_task_id))
+        redis.set(
+            get_loop_conversation_binding_key(app_id, task_id),
+            json.dumps(value, ensure_ascii=False))
+    return result
+
+
+def delete_loop_conversation_binding(app_id, task_id):
+    try:
+        result = lanying_agent_tools_storage.unbind_seenical_loop_conversation(
+            app_id, task_id)
+    except Exception:
+        logging.exception(
+            'failed to unbind deleted LOOP conversation | app_id:%s, task_id:%s',
+            app_id, task_id)
+        result = {'result': 'error', 'message': 'storage unavailable'}
+    lanying_redis.get_redis_connection().delete(
+        get_loop_conversation_binding_key(app_id, task_id))
+    return result
+
 def generate_task_id():
     redis = lanying_redis.get_redis_connection()
     return redis.incrby("lanying_connector:grow_ai:task_id_generator", 1)
@@ -1032,8 +1084,157 @@ def delete_task(app_id, task_id):
     task_list_key = get_task_list_key(app_id)
     redis.lrem(task_list_key, 1, task_id)
     redis.delete(task_key)
+    delete_loop_conversation_binding(app_id, task_id)
 
 ## TASK RUN
+
+
+def _task_run_notification_route(app_id, task):
+    chatbot_id = str(task.get('chatbot_id', ''))
+    chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if not chatbot:
+        return {}
+    agent_user_id = str(chatbot.get('user_id', ''))
+    try:
+        from lanying_agent_tools import get_im_binding_projection
+        app_binding = get_im_binding_projection(app_id)
+    except Exception:
+        logging.exception(
+            'failed to read Seenical IM binding | app_id:%s, task_id:%s',
+            app_id, task.get('task_id', ''))
+        app_binding = None
+    bound_im_user_id = str((app_binding or {}).get('im_user_id', ''))
+    if not bound_im_user_id or (app_binding or {}).get('status') != 'BOUND':
+        return {}
+
+    try:
+        loop_binding = get_loop_conversation_binding(
+            app_id, task.get('task_id', ''))
+    except Exception:
+        logging.exception(
+            'failed to read LOOP conversation binding | app_id:%s, task_id:%s',
+            app_id, task.get('task_id', ''))
+        loop_binding = None
+    if (loop_binding
+            and str(loop_binding.get('chatbot_id', '')) == chatbot_id
+            and str(loop_binding.get('agent_user_id', '')) == agent_user_id
+            and str(loop_binding.get('bound_im_user_id', '')) == bound_im_user_id
+            and loop_binding.get('conversation_type') == 'GROUPCHAT'):
+        return {
+            'notification_conversation_type': 'GROUPCHAT',
+            'notification_conversation_id': str(loop_binding.get('conversation_id', '')),
+            'notification_seenical_session_id': str(loop_binding.get('seenical_session_id', '')),
+            'notification_from_user_id': agent_user_id,
+            'notification_bound_im_user_id': bound_im_user_id,
+        }
+    return {
+        'notification_conversation_type': 'CHAT',
+        'notification_conversation_id': bound_im_user_id,
+        'notification_seenical_session_id': '',
+        'notification_from_user_id': agent_user_id,
+        'notification_bound_im_user_id': bound_im_user_id,
+    }
+
+
+def _loop_notification_text(event, task_run):
+    if event == 'started':
+        return {
+            'type': 'loop_started',
+            'title': 'LOOP 已开始运行',
+            'title_en': 'LOOP started',
+            'detail': '正在生成内容',
+            'detail_en': 'Generating content',
+        }
+    if event == 'success':
+        count = int(task_run.get('article_success_count', 0) or 0)
+        return {
+            'type': 'loop_success',
+            'title': 'LOOP 已成功完成',
+            'title_en': 'LOOP completed successfully',
+            'detail': f'已生成 {count} 篇文章',
+            'detail_en': f'Generated {count} article(s)',
+        }
+    error = str(task_run.get('error_message', '')).lower()
+    if 'quota_not_enough' in error or 'quota' in error:
+        detail, detail_en = '额度不足', 'Insufficient quota'
+    elif 'title' in error and ('not exist' in error or 'exhaust' in error):
+        detail, detail_en = '没有可用的文章标题', 'No article titles are available'
+    elif 'file not exist' in error or 'zip' in error:
+        detail, detail_en = '生成结果文件失败', 'Failed to create the result file'
+    else:
+        detail, detail_en = '运行失败，请查看运行记录', 'Run failed. Check the run history.'
+    return {
+        'type': 'loop_failed',
+        'title': 'LOOP 运行失败',
+        'title_en': 'LOOP failed',
+        'detail': detail,
+        'detail_en': detail_en,
+    }
+
+
+def send_task_run_notification(app_id, task_run_id, event):
+    try:
+        task_run = get_task_run(app_id, task_run_id)
+        if not task_run:
+            return 0
+        attempt = int(task_run.get('notification_attempt', 1) or 1)
+        marker = ('notification_started_attempt' if event == 'started'
+                  else 'notification_result_attempt')
+        if int(task_run.get(marker, 0) or 0) == attempt:
+            return int(task_run.get(
+                'notification_started_message_id' if event == 'started'
+                else 'notification_result_message_id', 0) or 0)
+        conversation_type = str(task_run.get('notification_conversation_type', ''))
+        conversation_id = str(task_run.get('notification_conversation_id', ''))
+        from_user_id = str(task_run.get('notification_from_user_id', ''))
+        if conversation_type not in ['CHAT', 'GROUPCHAT'] or not conversation_id or not from_user_id:
+            logging.info(
+                'skip LOOP notification without Seenical binding | app_id:%s, task_run_id:%s, event:%s',
+                app_id, task_run_id, event)
+            return 0
+        task_id = str(task_run.get('task_id', ''))
+        task = get_task(app_id, task_id) or {}
+        text = _loop_notification_text(event, task_run)
+        notification_id = f'loop-run:{task_run_id}:{attempt}:{event}'
+        payload = dict(text, **{
+            'schema_version': 1,
+            'notification_id': notification_id,
+            'loop_id': task_id,
+            'loop_name': str(task.get('name', ''))[:200],
+            'run_id': str(task_run_id),
+            'attempt': attempt,
+        })
+        ext = {'seenical': {
+            'schema_version': 1,
+            'seenical_session_id': str(task_run.get(
+                'notification_seenical_session_id', '')),
+            'loop_event': payload,
+        }}
+        message_type = 2 if conversation_type == 'GROUPCHAT' else 1
+        message_id = lanying_im_api.send_message_sync(
+            get_dummy_lanying_connector(app_id), app_id, from_user_id,
+            conversation_id, message_type, 0, text['title'], {'ext': ext})
+        if message_id:
+            update_task_run_field(app_id, task_run_id, marker, attempt)
+            update_task_run_field(
+                app_id, task_run_id,
+                'notification_started_message_id' if event == 'started'
+                else 'notification_result_message_id', message_id)
+            update_task_run_field(app_id, task_run_id, 'notification_last_error', '')
+            return message_id
+        update_task_run_field(
+            app_id, task_run_id, 'notification_last_error', 'IM send failed')
+    except Exception:
+        logging.exception(
+            'failed to send LOOP notification | app_id:%s, task_run_id:%s, event:%s',
+            app_id, task_run_id, event)
+        try:
+            update_task_run_field(
+                app_id, task_run_id, 'notification_last_error', 'internal error')
+        except Exception:
+            pass
+    return 0
+
 
 def run_task(app_id, task_id, countdown=0):
     logging.info(f"run task start | app_id:{app_id}, task_id:{task_id}")
@@ -1048,7 +1249,8 @@ def run_task(app_id, task_id, countdown=0):
         article_language = resolve_article_language(task_info)
         task_run_id = generate_task_run_id(task_id)
         user_id = generate_dummy_user_id()
-        redis.hmset(get_task_run_key(app_id, task_run_id),{
+        notification_fields = _task_run_notification_route(app_id, task_info)
+        redis.hmset(get_task_run_key(app_id, task_run_id), dict({
             'task_run_id': task_run_id,
             'status': 'wait',
             'create_time': now,
@@ -1058,8 +1260,9 @@ def run_task(app_id, task_id, countdown=0):
             'cycle_type': cycle_type,
             'article_language': article_language,
             'article_language_scoped': task_info.get('article_language_scoped', 'off'),
-            'article_title_legacy_language': task_info.get('article_title_legacy_language', '')
-        })
+            'article_title_legacy_language': task_info.get('article_title_legacy_language', ''),
+            'notification_attempt': 1,
+        }, **notification_fields))
         redis.rpush(get_task_run_list_key(app_id, task_id), task_run_id)
         set_admin_token(app_id)
         from lanying_tasks import grow_ai_run_task
@@ -1098,6 +1301,7 @@ def delete_task_run(app_id, task_run_id):
 def do_run_task(app_id, task_run_id, has_retry_times):
     try:
         update_task_run_field(app_id, task_run_id, "status", "running")
+        send_task_run_notification(app_id, task_run_id, 'started')
         result = do_run_task_internal(app_id, task_run_id, has_retry_times)
         if result['result'] == 'error':
             logging.info(f"do_run_task result | {result}")
@@ -1112,6 +1316,7 @@ def do_run_task(app_id, task_run_id, has_retry_times):
                 raise Exception(result['message'])
             else:
                 update_task_run_field(app_id, task_run_id, "status", "error")
+                send_task_run_notification(app_id, task_run_id, 'failed')
                 return result
         elif result['result'] == 'continue':
             from lanying_tasks import grow_ai_run_task
@@ -1121,6 +1326,7 @@ def do_run_task(app_id, task_run_id, has_retry_times):
             increase_task_run_field(app_id, task_run_id, "success_times", 1)
             update_task_run_field(app_id, task_run_id, "status", "success")
             update_task_run_field(app_id, task_run_id, "error_message", '')
+            send_task_run_notification(app_id, task_run_id, 'success')
         return result
     except Exception as e:
         increase_task_run_field(app_id, task_run_id, "fail_times", 1)
@@ -1134,6 +1340,7 @@ def do_run_task(app_id, task_run_id, has_retry_times):
             update_task_run_field(app_id, task_run_id, "status", "retry")
         else:
             update_task_run_field(app_id, task_run_id, "status", "error")
+            send_task_run_notification(app_id, task_run_id, 'failed')
         raise e
 
 def get_website_storage_limit(app_id):
@@ -2567,6 +2774,10 @@ def task_run_retry(app_id, task_run_id):
         return {'result': 'error', 'message': 'task_run not exist'}
     if task_run['status'] != 'error':
         return {'result': 'error', 'message': 'task_run status cannot retry'}
+    update_task_run_field(
+        app_id, task_run_id, "notification_attempt",
+        int(task_run.get('notification_attempt', 1) or 1) + 1)
+    update_task_run_field(app_id, task_run_id, "notification_last_error", '')
     update_task_run_field(app_id, task_run_id, "status", "wait")
     update_task_run_field(app_id, task_run_id, "update_time", now)
     set_admin_token(app_id)

@@ -26,6 +26,7 @@ import lanying_ai_plugin
 import lanying_agent_tools_storage
 import lanying_chatbot
 import lanying_grow_ai
+import lanying_im_api
 import lanying_redis
 import lanying_vendor
 
@@ -2545,6 +2546,189 @@ def sync_im_binding_projection(app_id, data):
 
 def get_im_binding_projection(app_id):
     return _load(_redis().get(im_binding_projection_key(app_id)), None)
+
+
+def _seenical_group_metadata(group_info):
+    if not isinstance(group_info, dict):
+        return {}
+    group = group_info.get('data', group_info)
+    if not isinstance(group, dict):
+        return {}
+    # Group description is the creation-time snapshot; later binding updates
+    # the mutable ext field with the real Loop ID.
+    for field in ['ext', 'description']:
+        value = group.get(field)
+        if isinstance(value, str):
+            value = _load(value, {})
+        if not isinstance(value, dict):
+            continue
+        seenical = value.get('seenical', value)
+        if (isinstance(seenical, dict)
+                and seenical.get('scene') in ['agent_session', 'multi_agent_session']):
+            return seenical
+    return {}
+
+
+def _validate_seenical_conversation(app_id, actor, data, task=None):
+    conversation_type = str(data.get('conversation_type', '')).strip().upper()
+    conversation_id = str(data.get('conversation_id', '')).strip()
+    seenical_session_id = str(data.get('seenical_session_id', '')).strip()
+    if conversation_type != 'GROUPCHAT':
+        return {'result': 'error', 'message': 'invalid conversation_type'}
+    if not conversation_id.isdigit():
+        return {'result': 'error', 'message': 'invalid conversation_id'}
+    if not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', seenical_session_id):
+        return {'result': 'error', 'message': 'invalid seenical_session_id'}
+
+    binding = get_im_binding_projection(app_id)
+    bound_im_user_id = str((binding or {}).get('im_user_id', ''))
+    if (not binding or binding.get('status') != 'BOUND'
+            or bound_im_user_id != str(actor.get('im_user_id', ''))):
+        return {'result': 'error', 'message': 'Seenical IM binding is unavailable'}
+    chatbot_id = str((task or {}).get(
+        'chatbot_id', data.get('chatbot_id', ''))).strip()
+    if not chatbot_id:
+        return {'result': 'error', 'message': 'invalid chatbot_id'}
+    chatbot = lanying_chatbot.get_chatbot(app_id, chatbot_id)
+    if not chatbot:
+        return {'result': 'error', 'message': 'chatbot not exist'}
+    agent_user_id = str(chatbot.get('user_id', ''))
+
+    group_result = lanying_im_api.get_group_info(app_id, conversation_id)
+    if (not isinstance(group_result, dict)
+            or int(group_result.get('code', 200) or 0) != 200):
+        return {'result': 'error', 'message': 'Seenical conversation does not exist'}
+    metadata = _seenical_group_metadata(group_result)
+    expected = {
+        'app_id': str(app_id),
+        'agent_user_id': agent_user_id,
+        'session_id': seenical_session_id,
+    }
+    task_id = str((task or {}).get('task_id', '')).strip()
+    if task_id:
+        expected['loop_id'] = task_id
+    if not metadata or any(
+            str(metadata.get(field, '')) != value
+            for field, value in expected.items()):
+        return {'result': 'error', 'message': 'Seenical conversation metadata mismatch'}
+    if (metadata.get('agent_id')
+            and str(metadata.get('agent_id')) != chatbot_id):
+        return {'result': 'error', 'message': 'Seenical conversation Agent mismatch'}
+    members = set(lanying_im_api.filter_group_member_ids(
+        app_id, conversation_id, [bound_im_user_id, agent_user_id]))
+    if not {bound_im_user_id, agent_user_id}.issubset(members):
+        return {'result': 'error', 'message': 'Seenical conversation members mismatch'}
+
+    group = group_result.get('data', group_result)
+    return {'result': 'ok', 'data': {
+        'schema_version': SCHEMA_VERSION,
+        'task_id': task_id,
+        'chatbot_id': chatbot_id,
+        'agent_user_id': agent_user_id,
+        'conversation_type': conversation_type,
+        'conversation_id': conversation_id,
+        'conversation_name': str((group or {}).get('name', ''))[:255],
+        'seenical_session_id': seenical_session_id,
+        'bound_im_user_id': bound_im_user_id,
+        'updated_at': int(time.time()),
+    }}
+
+
+def list_seenical_conversations(app_id, actor):
+    binding = get_im_binding_projection(app_id)
+    bound_im_user_id = str((binding or {}).get('im_user_id', ''))
+    if (not binding or binding.get('status') != 'BOUND'
+            or bound_im_user_id != str(actor.get('im_user_id', ''))):
+        return {'result': 'error', 'message': 'Seenical IM binding is unavailable'}
+    try:
+        values = lanying_agent_tools_storage.list_seenical_conversation_bindings(app_id)
+    except Exception:
+        logging.exception(
+            'failed to list Seenical conversations | app_id:%s', app_id)
+        return {'result': 'error', 'message': 'Seenical conversation storage unavailable'}
+    return {'result': 'ok', 'data': {'list': [value for value in values
+        if str(value.get('bound_im_user_id', '')) == bound_im_user_id]}}
+
+
+def register_seenical_conversation(app_id, actor, data):
+    validated = _validate_seenical_conversation(app_id, actor, data)
+    if validated.get('result') != 'ok':
+        return validated
+    value = dict(validated['data'], app_id=str(app_id))
+    saved = lanying_agent_tools_storage.save_seenical_conversation_binding(value)
+    if saved.get('result') != 'ok':
+        return saved
+    return {'result': 'ok', 'data': value}
+
+
+def unregister_seenical_conversation(app_id, actor, data):
+    conversation_type = str(data.get('conversation_type', '')).strip().upper()
+    conversation_id = str(data.get('conversation_id', '')).strip()
+    seenical_session_id = str(data.get('seenical_session_id', '')).strip()
+    if conversation_type != 'GROUPCHAT':
+        return {'result': 'error', 'message': 'invalid conversation_type'}
+    if not conversation_id.isdigit():
+        return {'result': 'error', 'message': 'invalid conversation_id'}
+    if not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', seenical_session_id):
+        return {'result': 'error', 'message': 'invalid seenical_session_id'}
+    binding = get_im_binding_projection(app_id)
+    bound_im_user_id = str((binding or {}).get('im_user_id', ''))
+    if (not binding or binding.get('status') != 'BOUND'
+            or bound_im_user_id != str(actor.get('im_user_id', ''))):
+        return {'result': 'error', 'message': 'Seenical IM binding is unavailable'}
+    try:
+        stored = next((value for value in
+            lanying_agent_tools_storage.list_seenical_conversation_bindings(app_id)
+            if str(value.get('seenical_session_id', '')) == seenical_session_id
+            and str(value.get('conversation_type', '')) == conversation_type
+            and str(value.get('conversation_id', '')) == conversation_id
+            and str(value.get('bound_im_user_id', '')) == bound_im_user_id), None)
+    except Exception:
+        logging.exception(
+            'failed to read Seenical conversation before unregister | app_id:%s',
+            app_id)
+        return {'result': 'error', 'message': 'Seenical conversation storage unavailable'}
+    stored_task_id = str((stored or {}).get('task_id', '')).strip()
+    if stored_task_id:
+        if lanying_grow_ai.get_task(app_id, stored_task_id):
+            return {'result': 'error',
+                    'message': 'Seenical conversation has a bound LOOP'}
+        cleanup = lanying_grow_ai.delete_loop_conversation_binding(
+            app_id, stored_task_id)
+        if cleanup.get('result') != 'ok':
+            return cleanup
+    result = lanying_agent_tools_storage.deactivate_seenical_conversation_binding(
+        app_id, seenical_session_id, conversation_type, conversation_id,
+        bound_im_user_id)
+    if result.get('result') != 'ok':
+        return result
+    return {'result': 'ok', 'data': {
+        'seenical_session_id': seenical_session_id,
+        'conversation_type': conversation_type,
+        'conversation_id': conversation_id,
+        'active': False,
+    }}
+
+
+def bind_loop_conversation(app_id, actor, data):
+    task_id = str(data.get('task_id', '')).strip()
+    if not task_id or len(task_id) > 128:
+        return {'result': 'error', 'message': 'invalid task_id'}
+    task = lanying_grow_ai.get_task(app_id, task_id)
+    if not task:
+        return {'result': 'error', 'message': 'task_id not exist'}
+    validated = _validate_seenical_conversation(app_id, actor, data, task)
+    if validated.get('result') != 'ok':
+        return validated
+    value = validated['data']
+    saved = lanying_grow_ai.set_loop_conversation_binding(
+        app_id, task_id, value)
+    if saved.get('result') != 'ok':
+        return saved
+    return {'result': 'ok', 'data': dict(value, **{
+        'task_id': task_id,
+        'bound': True,
+    })}
 
 
 def get_public_skill_revision(skill_id, revision):

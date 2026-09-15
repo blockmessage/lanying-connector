@@ -107,6 +107,46 @@ def sync_im_binding():
         str(data.get('app_id', '')), data))
 
 
+@bp.route('/service/agent_tools/loop_conversation_binding', methods=['POST'])
+def bind_loop_conversation():
+    denied = _require_auth()
+    if denied:
+        return denied
+    data = _body()
+    return _response(lanying_agent_tools.bind_loop_conversation(
+        str(data.get('app_id', '')), _actor(data), data))
+
+
+@bp.route('/service/agent_tools/seenical/conversations', methods=['POST'])
+def list_seenical_conversations():
+    denied = _require_auth()
+    if denied:
+        return denied
+    data = _body()
+    return _response(lanying_agent_tools.list_seenical_conversations(
+        str(data.get('app_id', '')), _actor(data)))
+
+
+@bp.route('/service/agent_tools/seenical/conversations/register', methods=['POST'])
+def register_seenical_conversation():
+    denied = _require_auth()
+    if denied:
+        return denied
+    data = _body()
+    return _response(lanying_agent_tools.register_seenical_conversation(
+        str(data.get('app_id', '')), _actor(data), data))
+
+
+@bp.route('/service/agent_tools/seenical/conversations/unregister', methods=['POST'])
+def unregister_seenical_conversation():
+    denied = _require_auth()
+    if denied:
+        return denied
+    data = _body()
+    return _response(lanying_agent_tools.unregister_seenical_conversation(
+        str(data.get('app_id', '')), _actor(data), data))
+
+
 def _require_auth():
     if _authorized():
         return None

@@ -114,6 +114,53 @@ class GrowAIPreviewTest(unittest.TestCase):
         self.assertEqual([], sites)
         get_task.assert_called_once_with('app', 'task')
 
+    def test_loop_notification_uses_frozen_group_route(self):
+        task_run = {
+            'task_run_id': '191_20260915_1', 'task_id': '191',
+            'notification_attempt': 1,
+            'notification_conversation_type': 'GROUPCHAT',
+            'notification_conversation_id': '1001',
+            'notification_seenical_session_id': 'session-a',
+            'notification_from_user_id': '33',
+            'article_success_count': '2'
+        }
+        updates = []
+        with patch.object(lanying_grow_ai, 'get_task_run', return_value=task_run), \
+                patch.object(lanying_grow_ai, 'get_task', return_value={
+                    'task_id': '191', 'name': 'Plan'
+                }), \
+                patch.object(lanying_grow_ai, 'get_dummy_lanying_connector', return_value={
+                    'lanying_admin_token': 'token'
+                }), \
+                patch.object(lanying_grow_ai.lanying_im_api, 'send_message_sync', return_value=9001) as send, \
+                patch.object(lanying_grow_ai, 'update_task_run_field', side_effect=lambda *args: updates.append(args)):
+            message_id = lanying_grow_ai.send_task_run_notification(
+                'app', '191_20260915_1', 'success')
+
+        self.assertEqual(9001, message_id)
+        self.assertEqual(2, send.call_args.args[4])
+        self.assertEqual('1001', send.call_args.args[3])
+        ext = send.call_args.args[7]['ext']['seenical']
+        self.assertEqual('session-a', ext['seenical_session_id'])
+        self.assertEqual('loop_success', ext['loop_event']['type'])
+        self.assertEqual('loop-run:191_20260915_1:1:success', ext['loop_event']['notification_id'])
+        self.assertIn(('app', '191_20260915_1', 'notification_result_attempt', 1), updates)
+
+    def test_run_task_lifecycle_only_notifies_terminal_failure(self):
+        with patch.object(lanying_grow_ai, 'update_task_run_field'), \
+                patch.object(lanying_grow_ai, 'increase_task_run_field'), \
+                patch.object(lanying_grow_ai, 'do_run_task_internal', return_value={
+                    'result': 'error', 'message': 'article title not exist', 'retry': False
+                }), \
+                patch.object(lanying_grow_ai, 'send_task_run_notification') as notify:
+            result = lanying_grow_ai.do_run_task('app', 'run', True)
+
+        self.assertEqual('error', result['result'])
+        self.assertEqual([
+            call('app', 'run', 'started'),
+            call('app', 'run', 'failed')
+        ], notify.call_args_list)
+
     def test_partial_configure_only_forwards_present_fields(self):
         app = Flask(__name__)
         payload = {

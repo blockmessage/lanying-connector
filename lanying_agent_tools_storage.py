@@ -1,7 +1,7 @@
-"""MySQL persistence and shared connection pool for Seenical Agent Tools.
+"""MySQL persistence and shared connection pool for Seenical runtime data.
 
 The database is intentionally separate from the pgvector database and also
-stores Connector operational logs. Schema creation is handled by
+stores Agent Tools data, conversation bindings, and operational logs. Schema creation is handled by
 sql/seenical_agent_tools_mysql.sql so the runtime user only needs normal DML
 permissions.
 """
@@ -293,3 +293,218 @@ def list_seenical_config_revisions(app_id, resource_type, resource_id,
             'limit': bounded_limit,
         }).scalars().all()
     return [int(value) for value in rows]
+
+
+def _conversation_binding(row):
+    if row is None:
+        return None
+    value = dict(row)
+    for field in ['app_id', 'seenical_session_id', 'chatbot_id',
+                  'agent_user_id', 'conversation_type', 'conversation_id',
+                  'conversation_name', 'task_id', 'bound_im_user_id',
+                  'status']:
+        value[field] = '' if value.get(field) is None else str(value[field])
+    value['revision'] = int(value.get('revision', 0) or 0)
+    for field in ['created_at', 'updated_at']:
+        timestamp = value.get(field)
+        if timestamp is not None:
+            value[field] = timestamp.isoformat(timespec='milliseconds')
+    return value
+
+
+def save_seenical_conversation_binding(binding):
+    """Persist one verified Seenical child conversation and optional Loop."""
+    engine = _get_engine()
+    if engine is None:
+        return {'result': 'error', 'message': 'Agent Tools MySQL disabled'}
+    params = {
+        'app_id': str(binding.get('app_id', '')),
+        'seenical_session_id': str(binding.get('seenical_session_id', '')),
+        'chatbot_id': str(binding.get('chatbot_id', '')),
+        'agent_user_id': str(binding.get('agent_user_id', '')),
+        'conversation_type': str(binding.get('conversation_type', '')),
+        'conversation_id': str(binding.get('conversation_id', '')),
+        'conversation_name': str(binding.get('conversation_name', ''))[:255],
+        'task_id': str(binding.get('task_id', '')).strip() or None,
+        'bound_im_user_id': str(binding.get('bound_im_user_id', '')),
+    }
+    required = [field for field in [
+        'app_id', 'seenical_session_id', 'chatbot_id', 'agent_user_id',
+        'conversation_type', 'conversation_id', 'bound_im_user_id'
+    ] if not params[field]]
+    if required:
+        return {'result': 'error', 'message': 'invalid conversation binding'}
+    unbound_task_ids = []
+    with engine.begin() as conn:
+        session_row = conn.execute(text("""
+            SELECT seenical_session_id, conversation_type, conversation_id,
+                   chatbot_id, agent_user_id, conversation_name, task_id,
+                   bound_im_user_id, status
+            FROM seenical_conversation_binding
+            WHERE app_id=:app_id AND seenical_session_id=:seenical_session_id
+            FOR UPDATE
+        """), params).mappings().first()
+        target_row = conn.execute(text("""
+            SELECT seenical_session_id
+            FROM seenical_conversation_binding
+            WHERE app_id=:app_id AND conversation_type=:conversation_type
+              AND conversation_id=:conversation_id
+            FOR UPDATE
+        """), params).mappings().first()
+        if target_row and str(target_row['seenical_session_id']) != params['seenical_session_id']:
+            return {'result': 'error', 'message': 'conversation is already registered'}
+        if session_row and (
+                str(session_row['conversation_type']) != params['conversation_type']
+                or str(session_row['conversation_id']) != params['conversation_id']):
+            return {'result': 'error', 'message': 'session is already registered'}
+        if session_row:
+            effective_task_id = params['task_id'] or (
+                str(session_row.get('task_id') or '') or None)
+            unchanged = (
+                str(session_row.get('chatbot_id', '')) == params['chatbot_id']
+                and str(session_row.get('agent_user_id', '')) == params['agent_user_id']
+                and str(session_row.get('conversation_name', '')) == params['conversation_name']
+                and (str(session_row.get('task_id') or '') or None) == effective_task_id
+                and str(session_row.get('bound_im_user_id', '')) == params['bound_im_user_id']
+                and str(session_row.get('status', '')) == 'ACTIVE')
+            if unchanged:
+                return {'result': 'ok', 'data': {'unbound_task_ids': []}}
+        if params['task_id']:
+            if (session_row and session_row.get('task_id')
+                    and str(session_row['task_id']) != params['task_id']):
+                unbound_task_ids.append(str(session_row['task_id']))
+            task_row = conn.execute(text("""
+                SELECT seenical_session_id
+                FROM seenical_conversation_binding
+                WHERE app_id=:app_id AND task_id=:task_id
+                FOR UPDATE
+            """), params).mappings().first()
+            if task_row and str(task_row['seenical_session_id']) != params['seenical_session_id']:
+                conn.execute(text("""
+                    UPDATE seenical_conversation_binding
+                    SET task_id=NULL, revision=revision + 1
+                    WHERE app_id=:app_id AND task_id=:task_id
+                """), params)
+        if session_row:
+            conn.execute(text("""
+                UPDATE seenical_conversation_binding
+                SET chatbot_id=:chatbot_id, agent_user_id=:agent_user_id,
+                    conversation_name=:conversation_name,
+                    task_id=COALESCE(:task_id, task_id),
+                    bound_im_user_id=:bound_im_user_id, status='ACTIVE',
+                    revision=revision + 1
+                WHERE app_id=:app_id
+                  AND seenical_session_id=:seenical_session_id
+            """), params)
+        else:
+            conn.execute(text("""
+                INSERT INTO seenical_conversation_binding (
+                    app_id, seenical_session_id, chatbot_id, agent_user_id,
+                    conversation_type, conversation_id, conversation_name,
+                    task_id, bound_im_user_id, status, revision
+                ) VALUES (
+                    :app_id, :seenical_session_id, :chatbot_id, :agent_user_id,
+                    :conversation_type, :conversation_id, :conversation_name,
+                    :task_id, :bound_im_user_id, 'ACTIVE', 1
+                )
+            """), params)
+    return {'result': 'ok', 'data': {
+        'unbound_task_ids': unbound_task_ids,
+    }}
+
+
+def list_seenical_conversation_bindings(app_id):
+    engine = _get_engine()
+    if engine is None:
+        raise RuntimeError('Agent Tools MySQL disabled')
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT app_id, seenical_session_id, chatbot_id, agent_user_id,
+                   conversation_type, conversation_id, conversation_name,
+                   task_id, bound_im_user_id, status, revision,
+                   created_at, updated_at
+            FROM seenical_conversation_binding
+            WHERE app_id=:app_id AND status='ACTIVE'
+            ORDER BY created_at ASC
+        """), {'app_id': str(app_id)}).mappings().all()
+    return [_conversation_binding(row) for row in rows]
+
+
+def deactivate_seenical_conversation_binding(app_id, seenical_session_id,
+                                             conversation_type,
+                                             conversation_id,
+                                             bound_im_user_id):
+    """Deactivate one App-owned Seenical child conversation."""
+    engine = _get_engine()
+    if engine is None:
+        return {'result': 'error', 'message': 'Agent Tools MySQL disabled'}
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            UPDATE seenical_conversation_binding
+            SET task_id=NULL, status='INACTIVE', revision=revision + 1
+            WHERE app_id=:app_id
+              AND seenical_session_id=:seenical_session_id
+              AND conversation_type=:conversation_type
+              AND conversation_id=:conversation_id
+              AND bound_im_user_id=:bound_im_user_id
+              AND task_id IS NULL
+        """), {
+            'app_id': str(app_id),
+            'seenical_session_id': str(seenical_session_id),
+            'conversation_type': str(conversation_type),
+            'conversation_id': str(conversation_id),
+            'bound_im_user_id': str(bound_im_user_id),
+        })
+    if result.rowcount == 0:
+        with engine.connect() as conn:
+            existing = conn.execute(text("""
+                SELECT conversation_type, conversation_id, task_id
+                FROM seenical_conversation_binding
+                WHERE app_id=:app_id
+                  AND seenical_session_id=:seenical_session_id
+                  AND bound_im_user_id=:bound_im_user_id
+            """), {
+                'app_id': str(app_id),
+                'seenical_session_id': str(seenical_session_id),
+                'bound_im_user_id': str(bound_im_user_id),
+            }).mappings().first()
+        if existing:
+            if existing.get('task_id') is not None:
+                return {'result': 'error',
+                        'message': 'Seenical conversation has a bound LOOP'}
+            return {'result': 'error', 'message': 'Seenical conversation mismatch'}
+        # Legacy local/IM conversations may not have reached server storage yet.
+        # Treat their absence as an idempotent unregister operation.
+        return {'result': 'ok'}
+    return {'result': 'ok'}
+
+
+def get_seenical_loop_conversation_binding(app_id, task_id):
+    engine = _get_engine()
+    if engine is None:
+        return None
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT app_id, seenical_session_id, chatbot_id, agent_user_id,
+                   conversation_type, conversation_id, conversation_name,
+                   task_id, bound_im_user_id, status, revision,
+                   created_at, updated_at
+            FROM seenical_conversation_binding
+            WHERE app_id=:app_id AND task_id=:task_id AND status='ACTIVE'
+        """), {
+            'app_id': str(app_id), 'task_id': str(task_id)
+        }).mappings().first()
+    return _conversation_binding(row)
+
+
+def unbind_seenical_loop_conversation(app_id, task_id):
+    engine = _get_engine()
+    if engine is None:
+        return {'result': 'error', 'message': 'Agent Tools MySQL disabled'}
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE seenical_conversation_binding
+            SET task_id=NULL, revision=revision + 1
+            WHERE app_id=:app_id AND task_id=:task_id
+        """), {'app_id': str(app_id), 'task_id': str(task_id)})
+    return {'result': 'ok'}
