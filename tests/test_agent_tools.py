@@ -156,6 +156,27 @@ class AgentToolsTest(unittest.TestCase):
             tool for tool in skill["tools"]
             if tool["tool_id"] == "seenical.site.domain.check")
         self.assertEqual("write", domain_check["risk"])
+        plan_update = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.plan.update")
+        title_pool = plan_update["parameters"]["properties"]["keywords"]
+        self.assertIn("article-title pool", title_pool["description"])
+        self.assertIn("replaces the whole pool", title_pool["description"])
+        self.assertIn("Never store a requested title", plan_update["description"])
+        self.assertIn("non-recurring plan is run manually again",
+                      plan_update["parameters"]["properties"]["title_reuse"]["description"])
+        self.assertIn("GitBook navigation/SUMMARY directory",
+                      plan_update["parameters"]["properties"]["target_summary_dir"]["description"])
+        plan_run = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.plan.run")
+        self.assertIn("existing uploaded title file in file_list",
+                      plan_run["description"])
+        self.assertIn("Never put a requested article title",
+                      skill["instructions"])
+        self.assertIn("Never treat a choice number", skill["instructions"])
+        self.assertIn("action marker such as A/B/C", skill["instructions"])
+        self.assertIn("Before running a plan", skill["instructions"])
         plugin_functions = next(
             tool for tool in skill["tools"]
             if tool["tool_id"] == "seenical.plugin.functions.list")
