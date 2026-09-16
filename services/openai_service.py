@@ -68,10 +68,11 @@ bp = Blueprint(service, __name__)
 
 global_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
 
-expireSeconds = 86400 * 3
+expireSeconds = 86400 * 30
+imMessageExpireSeconds = 86400 * 3
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
-maxUserHistoryLen = 20
+maxUserHistoryLen = 100
 MaxTotalTokens = 4000
 openclaw_group_active_expire_seconds = 7 * 24 * 3600
 openclaw_cold_start_history_max_messages = 12
@@ -6618,7 +6619,7 @@ def save_im_message(msg):
     if msg_id:
         redis = lanying_redis.get_redis_connection()
         msg_json = json.dumps(msg, ensure_ascii=False)
-        redis.setex(im_message_key(msg_id), expireSeconds + 300, msg_json)
+        redis.setex(im_message_key(msg_id), imMessageExpireSeconds + 300, msg_json)
 
 def get_im_message(msg_id):
     redis = lanying_redis.get_redis_connection()

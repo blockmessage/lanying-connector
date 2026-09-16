@@ -344,6 +344,35 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'ext': '{"openclaw":{"type":"session_sync_delivery","role":"user"}}'
         }))
 
+    def test_chat_history_keeps_one_hundred_records_for_thirty_days(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        class FakeRedis:
+            def __init__(self):
+                self.expiry = None
+                self.popped = False
+
+            def rpush(self, key, value):
+                return 101
+
+            def expire(self, key, seconds):
+                self.expiry = seconds
+
+            def lpop(self, key):
+                self.popped = True
+
+        redis = FakeRedis()
+        m.addHistory(redis, 'history-key', {'time': 1, 'user': 'hello'})
+
+        self.assertEqual(100, m.maxUserHistoryLen)
+        self.assertEqual(30 * 86400, m.expireSeconds)
+        self.assertEqual(3 * 86400, m.imMessageExpireSeconds)
+        self.assertEqual(m.expireSeconds, redis.expiry)
+        self.assertTrue(redis.popped)
+
     def test_agent_tool_resume_stops_when_message_deduction_failed(self):
         try:
             m = importlib.import_module('openai_service')
