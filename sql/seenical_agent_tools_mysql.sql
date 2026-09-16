@@ -20,6 +20,22 @@ CREATE TABLE IF NOT EXISTS `agent_tool_audit_log` (
   KEY `idx_agent_tool_audit_app_created` (`app_id`,`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS `agent_tool_request_view` (
+  `request_id` varchar(128) NOT NULL,
+  `app_id` varchar(100) NOT NULL DEFAULT '',
+  `actor_subject_id` varchar(100) NOT NULL DEFAULT '',
+  `status` varchar(32) NOT NULL DEFAULT '',
+  `expires_at` datetime(3) NOT NULL,
+  `retain_until` datetime(3) NOT NULL,
+  `snapshot` longtext NOT NULL,
+  `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+    ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`request_id`),
+  KEY `idx_agent_tool_request_view_app_updated` (`app_id`,`updated_at`),
+  KEY `idx_agent_tool_request_view_retain` (`retain_until`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS `public_skill_catalog_revision` (
   `revision` varchar(128) NOT NULL,
   `source_commit` varchar(64) NOT NULL,

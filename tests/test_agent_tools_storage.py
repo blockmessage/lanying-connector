@@ -181,6 +181,27 @@ class AgentToolsStorageTest(unittest.TestCase):
             self.assertEqual(skill, storage.get_public_skill_revision(
                 skill['skill_id'], skill['revision']))
 
+    def test_agent_tool_request_view_is_saved_and_loaded(self):
+        snapshot = {
+            'request_id': 'request-a', 'app_id': 'app',
+            'actor_subject_id': '11', 'status': 'pending',
+            'expires_at': 1700000000,
+        }
+        save_engine = FakeEngine()
+        with mock.patch.object(storage, '_get_engine', return_value=save_engine):
+            result = storage.save_agent_tool_request_view(snapshot)
+        self.assertEqual('ok', result['result'])
+        self.assertIn('INSERT INTO agent_tool_request_view',
+                      save_engine.connection.calls[0][0])
+        self.assertEqual(snapshot,
+                         json.loads(save_engine.connection.calls[0][1]['snapshot']))
+        self.assertEqual(1, len(save_engine.connection.calls))
+
+        load_engine = FakeEngine([FakeResult(scalar=json.dumps(snapshot))])
+        with mock.patch.object(storage, '_get_engine', return_value=load_engine):
+            self.assertEqual(snapshot, storage.get_agent_tool_request_view(
+                'app', 'request-a'))
+
     def test_seenical_conversation_binding_is_persisted_and_listed(self):
         engine = FakeEngine([
             FakeResult(values=[]), FakeResult(values=[]), FakeResult(),

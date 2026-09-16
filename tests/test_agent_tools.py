@@ -23,6 +23,8 @@ def load_agent_tools():
             filter_group_member_ids=lambda app_id, group_id, user_ids: []),
         "lanying_agent_tools_storage": types.SimpleNamespace(
             append_agent_tool_audit_log=lambda value: {"result": "ok"},
+            save_agent_tool_request_view=lambda value: {"result": "ok"},
+            get_agent_tool_request_view=lambda app_id, request_id: None,
             list_seenical_conversation_bindings=lambda app_id: [],
             save_seenical_conversation_binding=lambda value: {"result": "ok"},
             deactivate_seenical_conversation_binding=lambda *args: {"result": "ok"},
@@ -563,6 +565,9 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual("session-a", request["seenical_session_id"])
         self.assertEqual("/app/grow_ai/get_task_list", request["request"]["path"])
         self.assertEqual(skill["revision"], request["skill_versions"][0]["revision"])
+        self.assertEqual(
+            self.module.REQUEST_TTL_SECONDS,
+            request["expires_at"] - request["created_at"])
 
     def test_client_result_is_field_constrained_and_rejects_credentials(self):
         result = self.module._constrain_client_result({
@@ -573,6 +578,22 @@ class AgentToolsTest(unittest.TestCase):
             "ok": True, "data": {"list": [{"name": "plugin", "headers": {"Authorization": "secret"}}]}
         }, ["list"])
         self.assertEqual({"ok": True, "data": {"list": [{"name": "plugin"}]}}, redacted)
+
+    def test_client_result_redacts_secret_field_name_variants(self):
+        result = self.module._constrain_client_result({
+            "ok": True,
+            "data": {
+                "apiKey": "top-secret",
+                "resource": {
+                    "name": "Plan",
+                    "temporary_password": "nested-secret",
+                },
+            },
+        }, ["apiKey", "resource"])
+        self.assertEqual({
+            "ok": True,
+            "data": {"resource": {"name": "Plan"}},
+        }, result)
 
     def test_repeated_client_approval_does_not_repeat_business_request(self):
         now = self.module.time.time()
@@ -648,6 +669,102 @@ class AgentToolsTest(unittest.TestCase):
             json.dumps(capability))
         with mock.patch.object(self.module, "_redis", return_value=self.redis):
             self.assertEqual("", self.module._request_actor_error(request, actor))
+
+    def test_expired_request_uses_mysql_display_snapshot(self):
+        now = int(self.module.time.time())
+        snapshot = {
+            "schema_version": 1, "request_id": "request-old", "app_id": "app",
+            "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "browser-a", "seenical_session_id": "old-session",
+            "chatbot_id": "bot-a", "conversation_type": "CHAT", "conversation_id": "22",
+            "runtime": {"type": "butler_api", "version": 1},
+            "tool_id": "seenical.plan.list", "tool_name": "List plans",
+            "execution": "butler_api", "risk": "read", "status": "pending",
+            "created_at": now - 9000, "expires_at": now - 1800,
+            "trigger_message_id": "message-a",
+        }
+        capability = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "browser-b", "seenical_session_id": "new-session",
+            "chatbot_id": "bot-a", "chatbot_ids": ["bot-a"],
+            "conversation_type": "CHAT", "conversation_id": "22",
+            "runtimes": {"butler_api": 1},
+        }
+        actor = {
+            "subject_id": "11", "im_user_id": "22", "client_instance_id": "browser-b",
+        }
+        self.redis.set(
+            self.module.capability_key("app", "browser-b"), json.dumps(capability))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module.lanying_agent_tools_storage, "get_agent_tool_request_view",
+                return_value=snapshot):
+            result = self.module.get_request_for_actor("app", "request-old", actor)
+        self.assertEqual("ok", result["result"])
+        self.assertEqual("expired", result["data"]["status"])
+
+    def test_mysql_display_snapshot_excludes_execution_context_and_credentials(self):
+        snapshot = self.module._request_view_snapshot({
+            "request_id": "request-a", "app_id": "app", "status": "pending",
+            "expires_at": 1700000000,
+            "arguments": {
+                "name": "Plan", "token": "secret", "apiKey": "secret",
+            },
+            "preview": {"after": {
+                "name": "Plan", "temporary_password": "secret",
+                "url": "https://example.com/file?X-Amz-Signature=secret#access_token=secret",
+            }},
+            "continuation": {"preset": {"messages": ["private"]}},
+            "tool_call": {"id": "call-a"},
+            "resume_message": "provider diagnostic",
+        })
+        self.assertNotIn("continuation", snapshot)
+        self.assertNotIn("tool_call", snapshot)
+        self.assertNotIn("resume_message", snapshot)
+        self.assertNotIn("token", snapshot["arguments"])
+        self.assertNotIn("apiKey", snapshot["arguments"])
+        self.assertNotIn("temporary_password", snapshot["preview"]["after"])
+        self.assertEqual(
+            "https://example.com/file",
+            snapshot["preview"]["after"]["url"])
+
+    def test_mysql_display_snapshot_removes_url_userinfo(self):
+        snapshot = self.module._request_view_snapshot({
+            "request_id": "request-a", "app_id": "app", "status": "pending",
+            "expires_at": 1700000000,
+            "arguments": {
+                "url": "https://user:password@example.com:8443/file?mode=read#section",
+            },
+        })
+        self.assertEqual(
+            "https://example.com:8443/file",
+            snapshot["arguments"]["url"])
+
+    def test_mysql_display_snapshot_keeps_malformed_text(self):
+        snapshot = self.module._request_view_snapshot({
+            "request_id": "request-a", "app_id": "app", "status": "pending",
+            "expires_at": 1700000000,
+            "arguments": {"article_prompt": "Explain http://[ as plain text"},
+        })
+        self.assertEqual(
+            "Explain http://[ as plain text",
+            snapshot["arguments"]["article_prompt"])
+
+    def test_callback_endpoint_rejects_query_credentials_and_fragments(self):
+        for endpoint in [
+                "https://api.example.com/callback?token=secret",
+                "https://api.example.com/callback?mode=test",
+                "https://api.example.com/callback#credential"]:
+            with self.assertRaisesRegex(ValueError, "callback endpoint"):
+                self.module._validate_public_url(
+                    endpoint, https_only=True, allow_query=False)
+
+    def test_public_url_rejects_sensitive_query_parameter_variants(self):
+        for url in [
+                "https://example.com/page?access_token=secret",
+                "https://example.com/page?apiKey=secret",
+                "https://example.com/page?temporary-password=secret"]:
+            with self.assertRaisesRegex(ValueError, "credential query"):
+                self.module._validate_public_url(url)
 
     def test_visible_request_still_requires_the_same_im_conversation(self):
         request = {

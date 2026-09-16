@@ -143,6 +143,55 @@ def append_agent_tool_audit_log(entry):
     return {'result': 'ok'}
 
 
+def save_agent_tool_request_view(snapshot):
+    engine = _get_engine()
+    if not isinstance(snapshot, dict) or engine is None:
+        return {'result': 'ignored', 'message': 'Agent Tools MySQL disabled'}
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO agent_tool_request_view (
+                request_id, app_id, actor_subject_id, status, expires_at,
+                retain_until, snapshot
+            ) VALUES (
+                :request_id, :app_id, :actor_subject_id, :status,
+                FROM_UNIXTIME(:expires_at), DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 DAY),
+                :snapshot
+            )
+            ON DUPLICATE KEY UPDATE
+                actor_subject_id=VALUES(actor_subject_id),
+                status=VALUES(status),
+                expires_at=VALUES(expires_at),
+                retain_until=VALUES(retain_until),
+                snapshot=VALUES(snapshot),
+                updated_at=CURRENT_TIMESTAMP(3)
+        """), {
+            'request_id': str(snapshot.get('request_id', '')),
+            'app_id': str(snapshot.get('app_id', '')),
+            'actor_subject_id': str(snapshot.get('actor_subject_id', '')),
+            'status': str(snapshot.get('status', '')),
+            'expires_at': int(snapshot.get('expires_at', 0) or 0),
+            'snapshot': _json(snapshot),
+        })
+    return {'result': 'ok'}
+
+
+def get_agent_tool_request_view(app_id, request_id):
+    engine = _get_engine()
+    if engine is None:
+        return None
+    with engine.connect() as conn:
+        value = conn.execute(text("""
+            SELECT snapshot
+            FROM agent_tool_request_view
+            WHERE request_id=:request_id AND app_id=:app_id
+              AND retain_until >= CURRENT_TIMESTAMP(3)
+        """), {
+            'request_id': str(request_id),
+            'app_id': str(app_id),
+        }).scalar_one_or_none()
+    return _load(value)
+
+
 def save_public_skill_catalog(catalog):
     engine = _get_engine()
     if not isinstance(catalog, dict) or engine is None:

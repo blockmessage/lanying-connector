@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 from pathlib import PurePosixPath
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 import requests
 import yaml
@@ -33,7 +33,10 @@ import lanying_vendor
 
 SCHEMA_VERSION = 1
 CAPABILITY_TTL_SECONDS = 150
-REQUEST_TTL_SECONDS = 600
+# Full requests contain model continuation context and stay in Redis only while
+# they can be executed. A smaller, redacted display snapshot is retained in
+# MySQL for historical IM cards.
+REQUEST_TTL_SECONDS = 2 * 3600
 RESULT_TTL_SECONDS = 24 * 3600
 MAX_SKILL_BYTES = 256 * 1024
 MAX_SKILL_TOTAL_BYTES = 512 * 1024
@@ -251,6 +254,9 @@ SECRET_FIELD_NAMES = {
     'secret_key', 'password', 'authorization', 'baidu_token', 'google_token',
     'headers', 'envs', 'auth', 'cookie', 'cookies', 'credential', 'credentials'
 }
+NORMALIZED_SECRET_FIELD_NAMES = {
+    re.sub(r'[^a-z0-9]', '', value.lower()) for value in SECRET_FIELD_NAMES
+}
 RISK_ORDER = {'read': 0, 'write': 1, 'execute': 2, 'destructive': 3}
 
 # Public Skills may describe Tools dynamically, but they may only point at an
@@ -427,12 +433,13 @@ def validate_tool_arguments(tool, arguments):
                   'hook_sentence_image', 'lanying_link']:
         if field in arguments and arguments[field]:
             _validate_public_url(
-                arguments[field], https_only=(field == 'endpoint'))
+                arguments[field], https_only=(field == 'endpoint'),
+                allow_query=(field != 'endpoint'))
     for value in arguments.get('urls', []) if isinstance(arguments.get('urls'), list) else []:
         _validate_public_url(value)
 
 
-def _validate_public_url(value, https_only=False):
+def _validate_public_url(value, https_only=False, allow_query=True):
     parsed = urlparse(str(value))
     allowed_schemes = ['https'] if https_only else ['http', 'https']
     hostname = str(parsed.hostname or '').strip().lower()
@@ -440,6 +447,11 @@ def _validate_public_url(value, https_only=False):
             or parsed.password or hostname == 'localhost'
             or hostname.endswith(('.localhost', '.local', '.internal'))):
         raise ValueError('URL must use a public ' + ('HTTPS' if https_only else 'HTTP or HTTPS') + ' address')
+    if not allow_query and (parsed.query or parsed.fragment):
+        raise ValueError('callback endpoint cannot contain query parameters or fragments')
+    if any(_is_secret_field_name(key) for key, _ in parse_qsl(
+            parsed.query, keep_blank_values=True)):
+        raise ValueError('URL cannot contain credential query parameters')
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
@@ -736,7 +748,7 @@ def _safe_task(task):
         if isinstance(result.get('deploy'), dict):
             result['deploy'] = {
                 key: value for key, value in result['deploy'].items()
-                if str(key).strip().lower() not in SECRET_FIELD_NAMES
+                if not _is_secret_field_name(key)
             }
     return result
 
@@ -1444,7 +1456,7 @@ def create_client_request(app_id, config, tool_call, function_info, arguments, c
         'created_at': int(time.time()),
         'expires_at': int(time.time()) + REQUEST_TTL_SECONDS,
     }
-    _redis().setex(request_key(request_id), REQUEST_TTL_SECONDS, _json(request_info))
+    _store_request(request_info)
     _audit(app_id, request_id, 'created', {
         'tool_id': tool_id, 'risk': tool['risk'],
         'tool_version': tool['version'], 'chatbot_id': chatbot_id,
@@ -1470,6 +1482,68 @@ def public_request(request_info):
     if selector:
         result['target_selector'] = selector
     return result
+
+
+def _request_view_snapshot(request_info):
+    fields = [
+        'schema_version', 'request_id', 'app_id', 'chatbot_id',
+        'conversation_type', 'conversation_id', 'im_user_id',
+        'client_instance_id', 'seenical_session_id', 'trigger_message_id',
+        'trigger_from_user_id', 'actor_subject_id', 'tool_id', 'tool_name',
+        'tool_version', 'execution', 'risk', 'runtime', 'arguments', 'preview',
+        'status', 'created_at', 'expires_at', 'completed_at', 'resume_status',
+        'resume_updated_at'
+    ]
+    snapshot = {
+        field: copy.deepcopy(request_info[field])
+        for field in fields if field in request_info
+    }
+    if 'arguments' in snapshot:
+        snapshot['arguments'] = _redact_request_view_value(snapshot['arguments'])
+    if 'preview' in snapshot:
+        snapshot['preview'] = _redact_request_view_value(snapshot['preview'])
+    return snapshot
+
+
+def _redact_request_view_value(value):
+    if isinstance(value, dict):
+        return {
+            key: _redact_request_view_value(item)
+            for key, item in value.items()
+            if not _is_secret_field_name(key)
+        }
+    if isinstance(value, list):
+        return [_redact_request_view_value(item) for item in value[:50]]
+    if isinstance(value, str):
+        text = value[:4000]
+        try:
+            parsed = urlparse(text)
+            if parsed.scheme in ['http', 'https'] and parsed.hostname:
+                netloc = parsed.netloc.rsplit('@', 1)[-1]
+                if parsed.query or parsed.fragment or parsed.username or parsed.password:
+                    return urlunparse(parsed._replace(
+                        netloc=netloc, query='', fragment=''))
+        except ValueError:
+            pass
+        return text
+    return copy.deepcopy(value)
+
+
+def _save_request_view(request_info):
+    try:
+        lanying_agent_tools_storage.save_agent_tool_request_view(
+            _request_view_snapshot(request_info))
+    except Exception:
+        logging.exception('failed to persist Agent Tool request view')
+
+
+def _load_request_view(app_id, request_id):
+    try:
+        return lanying_agent_tools_storage.get_agent_tool_request_view(
+            app_id, request_id)
+    except Exception:
+        logging.exception('failed to load Agent Tool request view')
+        return None
 
 
 def _replace_tool_call_arguments(tool_call, arguments):
@@ -1603,14 +1677,19 @@ def _request_execution_error(app_id, request_info, client_instance_id=''):
 
 def get_request_for_actor(app_id, request_id, actor):
     request_info = _load(_redis().get(request_key(request_id)), None)
+    historical = request_info is None
+    if historical:
+        request_info = _load_request_view(app_id, request_id)
     if request_info is None or str(request_info.get('app_id')) != str(app_id):
         return {'result': 'error', 'message': 'tool request not found'}
     actor_error = _request_actor_error(request_info, actor)
     if actor_error:
         return {'result': 'error', 'message': actor_error}
-    if (request_info.get('status') in ['pending', 'awaiting_client_result']
-            and int(request_info.get('expires_at', 0)) <= int(time.time())):
-        return {'result': 'error', 'message': 'tool request expired'}
+    if (historical or (request_info.get('status') in ['pending', 'awaiting_client_result']
+            and int(request_info.get('expires_at', 0)) <= int(time.time()))):
+        request_info = copy.deepcopy(request_info)
+        if request_info.get('status') in ['pending', 'awaiting_client_result', 'executing']:
+            request_info['status'] = 'expired'
     return {'result': 'ok', 'data': public_request(request_info)}
 
 
@@ -1620,6 +1699,7 @@ def _store_request(request_info):
     else:
         ttl = max(1, int(request_info.get('expires_at', 0)) - int(time.time()))
     _redis().setex(request_key(request_info['request_id']), ttl, _json(request_info))
+    _save_request_view(request_info)
 
 
 def decide_request(app_id, request_id, actor, decision,
@@ -1854,7 +1934,7 @@ def _constrain_client_result(value, allowed_fields):
         return envelope
     envelope['data'] = {
         key: _redact_sensitive_result(item) for key, item in payload.items()
-        if key in allowed and str(key).strip().lower() not in SECRET_FIELD_NAMES
+        if key in allowed and not _is_secret_field_name(key)
     }
     return envelope
 
@@ -1864,7 +1944,7 @@ def _redact_sensitive_result(value):
         return {
             key: _redact_sensitive_result(item)
             for key, item in value.items()
-            if str(key).strip().lower() not in SECRET_FIELD_NAMES
+            if not _is_secret_field_name(key)
         }
     if isinstance(value, list):
         return [_redact_sensitive_result(item) for item in value[:50]]
@@ -1982,12 +2062,21 @@ def _github_tree(owner, repo, revision, token):
 def _contains_secret_key(value):
     if isinstance(value, dict):
         for key, item in value.items():
-            normalized = str(key).strip().lower()
-            if normalized in SECRET_FIELD_NAMES or _contains_secret_key(item):
+            if _is_secret_field_name(key) or _contains_secret_key(item):
                 return True
     elif isinstance(value, list):
         return any(_contains_secret_key(item) for item in value)
     return False
+
+
+def _is_secret_field_name(value):
+    normalized = re.sub(r'[^a-z0-9]', '', str(value).strip().lower())
+    if normalized in NORMALIZED_SECRET_FIELD_NAMES:
+        return True
+    return normalized.endswith((
+        'password', 'token', 'secret', 'apikey', 'authorization',
+        'credential', 'credentials'
+    ))
 
 
 def _normalize_tool_requirements(values, inherited=None, available_tools=None):
@@ -2158,7 +2247,7 @@ def _normalize_butler_runtime(runtime_text, tool_resources, skill_id):
         result_fields = raw.get('result_fields', [])
         if (not isinstance(result_fields, list) or not result_fields
                 or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', str(value))
-                       or str(value).lower() in SECRET_FIELD_NAMES
+                       or _is_secret_field_name(value)
                        for value in result_fields)):
             raise ValueError('invalid Tool result field constraint')
         allowed_result_fields = BUTLER_API_RESULT_FIELDS.get((method, path), set())
