@@ -69,7 +69,7 @@ bp = Blueprint(service, __name__)
 global_lanying_connector_server = os.getenv("EMBEDDING_LANYING_CONNECTOR_SERVER", "https://lanying-connector.lanyingim.com")
 
 expireSeconds = 86400 * 30
-imMessageExpireSeconds = 86400 * 3
+imMessageExpireSeconds = expireSeconds
 presetNameExpireSeconds = 86400 * 3
 using_embedding_expire_seconds = 86400 * 3
 maxUserHistoryLen = 100
@@ -6644,7 +6644,7 @@ def get_im_message_from_client_id(client_id):
 def save_im_message_client_id(client_id, server_id):
     key = im_message_client_id_key(client_id)
     redis = lanying_redis.get_redis_connection()
-    redis.set(key, server_id)
+    redis.setex(key, imMessageExpireSeconds + 300, server_id)
     
 def im_message_client_id_key(client_id):
     return f"lanying-connector:im:msg_client_id:{client_id}"

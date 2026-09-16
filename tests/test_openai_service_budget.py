@@ -369,9 +369,26 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
 
         self.assertEqual(100, m.maxUserHistoryLen)
         self.assertEqual(30 * 86400, m.expireSeconds)
-        self.assertEqual(3 * 86400, m.imMessageExpireSeconds)
+        self.assertEqual(m.expireSeconds, m.imMessageExpireSeconds)
         self.assertEqual(m.expireSeconds, redis.expiry)
         self.assertTrue(redis.popped)
+
+    def test_image_message_client_id_mapping_uses_history_retention(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        redis = mock.Mock()
+        with mock.patch.object(
+                m.lanying_redis, 'get_redis_connection',
+                return_value=redis, create=True):
+            m.save_im_message_client_id('client-message', 'server-message')
+
+        redis.setex.assert_called_once_with(
+            m.im_message_client_id_key('client-message'),
+            m.imMessageExpireSeconds + 300,
+            'server-message')
 
     def test_agent_tool_resume_stops_when_message_deduction_failed(self):
         try:
