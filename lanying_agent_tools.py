@@ -1558,7 +1558,6 @@ def _request_actor_error(request_info, actor):
         'conversation_id': str(request_info.get('conversation_id', '')),
         'im_user_id': str(request_info.get('im_user_id', '')),
         'actor_subject_id': str(request_info.get('actor_subject_id', '')),
-        'seenical_session_id': str(request_info.get('seenical_session_id', '')),
     }
     runtime = request_info.get('runtime', {})
     if (not capability

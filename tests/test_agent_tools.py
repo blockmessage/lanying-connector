@@ -626,6 +626,54 @@ class AgentToolsTest(unittest.TestCase):
         with mock.patch.object(self.module, "_redis", return_value=self.redis):
             self.assertEqual("", self.module._request_actor_error(request, actor))
 
+    def test_same_console_user_can_resume_request_after_browser_session_restore(self):
+        request = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "browser-a", "seenical_session_id": "local-session-a",
+            "chatbot_id": "bot-a", "conversation_type": "CHAT", "conversation_id": "22",
+            "runtime": {"type": "butler_api", "version": 1},
+        }
+        capability = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "browser-b", "seenical_session_id": "restored-session-b",
+            "chatbot_id": "bot-a", "chatbot_ids": ["bot-a"],
+            "conversation_type": "CHAT", "conversation_id": "22",
+            "runtimes": {"butler_api": 1},
+        }
+        actor = {
+            "subject_id": "11", "im_user_id": "22", "client_instance_id": "browser-b",
+        }
+        self.redis.set(
+            self.module.capability_key("app", "browser-b"),
+            json.dumps(capability))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            self.assertEqual("", self.module._request_actor_error(request, actor))
+
+    def test_visible_request_still_requires_the_same_im_conversation(self):
+        request = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "browser-a", "seenical_session_id": "session-a",
+            "chatbot_id": "bot-a", "conversation_type": "GROUPCHAT", "conversation_id": "group-a",
+            "runtime": {"type": "butler_api", "version": 1},
+        }
+        capability = {
+            "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "browser-b", "seenical_session_id": "session-b",
+            "chatbot_id": "bot-a", "chatbot_ids": ["bot-a"],
+            "conversation_type": "GROUPCHAT", "conversation_id": "group-b",
+            "runtimes": {"butler_api": 1},
+        }
+        actor = {
+            "subject_id": "11", "im_user_id": "22", "client_instance_id": "browser-b",
+        }
+        self.redis.set(
+            self.module.capability_key("app", "browser-b"),
+            json.dumps(capability))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            self.assertEqual(
+                "tool request client capability is no longer valid",
+                self.module._request_actor_error(request, actor))
+
     def test_another_console_user_cannot_resume_visible_request(self):
         request = {
             "app_id": "app", "actor_subject_id": "11", "im_user_id": "22",
