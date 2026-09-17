@@ -46,7 +46,8 @@ MAX_LOCAL_RESULT_BYTES = 64 * 1024
 MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
 MAX_TOOL_SCHEMA_BYTES = 256 * 1024
 MAX_NOTIFY_BYTES = 4096
-OFFICIAL_SKILL_ID = 'seenical-console'
+OFFICIAL_SKILL_ID = 'seenical-api'
+LEGACY_OFFICIAL_SKILL_IDS = ('seenical-console',)
 PUBLIC_SKILL_BUILTIN_TOOL_IDS = {'seenical.console.navigate'}
 SUPPORTED_CLIENT_RUNTIMES = {('butler_api', 1)}
 PUBLIC_CATALOG_CACHE_KEY = 'lanying_connector:agent_tools:public_catalog:active'
@@ -623,9 +624,13 @@ def resolve_tool_id(function_info):
 
 def _official_skill():
     catalog = get_public_catalog() or {}
-    for skill in catalog.get('skills', []):
-        if str(skill.get('skill_id', '')) == OFFICIAL_SKILL_ID:
-            return skill
+    skills = catalog.get('skills', [])
+    for expected_id in (OFFICIAL_SKILL_ID,) + LEGACY_OFFICIAL_SKILL_IDS:
+        for skill in skills:
+            if (str(skill.get('skill_id', '')) == expected_id
+                    and (expected_id == OFFICIAL_SKILL_ID
+                         or (skill.get('runtime') or {}).get('type') == 'butler_api')):
+                return skill
     return None
 
 
@@ -2039,7 +2044,8 @@ def _github_tree(owner, repo, revision, token):
         path = str(item.get('path', ''))
         relevant = (
             path == '.seenical' or path.startswith('.seenical/')
-            or path == 'SKILL.md' or path == 'agents'
+            or path == 'SKILL.md' or path == 'skills'
+            or path.startswith('skills/') or path == 'agents'
             or path.startswith('agents/') or path == 'references'
             or path.startswith('references/') or path == 'scripts'
             or path.startswith('scripts/'))
@@ -2317,8 +2323,9 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
     if unknown:
         raise ValueError('unsupported manifest fields: ' + ','.join(sorted(unknown)))
     descriptors = manifest.get('skills', [])
-    if not isinstance(descriptors, list) or len(descriptors) != 1:
-        raise ValueError('public Skill repository must contain exactly one Skill')
+    if (not isinstance(descriptors, list) or not descriptors
+            or len(descriptors) > 20):
+        raise ValueError('public Skill repository must contain 1 to 20 Skills')
     skills = []
     seen_ids = set()
     total_bytes = 0
@@ -2327,7 +2334,8 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
             raise ValueError('invalid Skill descriptor')
         descriptor = dict(raw)
         descriptor_unknown = set(descriptor) - {
-            'skill_id', 'name', 'description', 'path', 'tools', 'scopes'
+            'skill_id', 'name', 'name_zh', 'name_en', 'description',
+            'description_zh', 'description_en', 'path', 'tools', 'scopes'
         }
         if descriptor_unknown:
             raise ValueError('unsupported Skill fields: ' + ','.join(
@@ -2338,8 +2346,8 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
             raise ValueError('invalid or duplicate skill_id')
         seen_ids.add(skill_id)
         skill_dir = _validate_repo_path(descriptor.get('path'))
-        if skill_dir != '.':
-            raise ValueError('single-repository Skill path must be the repository root')
+        if skill_dir != 'skills/' + skill_id:
+            raise ValueError('public Skill path must be skills/<skill_id>')
         skill_text, skill_sha = _github_file(
             config['owner'], config['repo'], _skill_file_path(skill_dir, 'SKILL.md'),
             source_commit, '', MAX_SKILL_BYTES)
@@ -2365,14 +2373,14 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
                 if not isinstance(parsed_resource, dict):
                     raise ValueError('invalid structured Skill resource: ' + resource_path)
             resources[relative_path] = resource_text
-        if '.seenical/runtime.json' not in resources:
-            raise ValueError('public Skill runtime files are missing')
-        runtime, available_tools = _normalize_butler_runtime(
-            resources['.seenical/runtime.json'],
-            resources, skill_id)
-        for builtin_tool_id in PUBLIC_SKILL_BUILTIN_TOOL_IDS:
-            available_tools[builtin_tool_id] = copy.deepcopy(
-                TOOL_REGISTRY[builtin_tool_id])
+        runtime = None
+        available_tools = {}
+        if '.seenical/runtime.json' in resources:
+            runtime, available_tools = _normalize_butler_runtime(
+                resources['.seenical/runtime.json'], resources, skill_id)
+            for builtin_tool_id in PUBLIC_SKILL_BUILTIN_TOOL_IDS:
+                available_tools[builtin_tool_id] = copy.deepcopy(
+                    TOOL_REGISTRY[builtin_tool_id])
         tool_requirements = _normalize_tool_requirements(
             descriptor.get('tools', []), available_tools=available_tools)
         if set(tool_requirements) != set(available_tools):
@@ -2382,12 +2390,25 @@ def _normalize_public_skill_catalog(config, source_commit, manifest_text,
             scopes = [scopes]
         if not isinstance(scopes, list) or len(scopes) > 100:
             raise ValueError('invalid Skill scopes')
+        if runtime is None and (tool_requirements or scopes):
+            raise ValueError('instruction-only Skill cannot declare Tools or scopes')
         normalized = {
             'skill_id': skill_id,
             'name': str(descriptor.get('name') or metadata.get('name') or skill_id)[:200],
+            'name_zh': str(descriptor.get('name_zh') or descriptor.get('name')
+                           or metadata.get('name') or skill_id)[:200],
+            'name_en': str(descriptor.get('name_en') or descriptor.get('name')
+                           or metadata.get('name') or skill_id)[:200],
             'description': str(descriptor.get('description') or metadata.get('description', ''))[:1000],
+            'description_zh': str(descriptor.get('description_zh')
+                                  or descriptor.get('description')
+                                  or metadata.get('description', ''))[:1000],
+            'description_en': str(descriptor.get('description_en')
+                                  or descriptor.get('description')
+                                  or metadata.get('description', ''))[:1000],
             'path': skill_dir,
             'instructions': instructions,
+            'skill_markdown': skill_text,
             'content_summary': ' '.join(
                 line.strip() for line in instructions.splitlines()
                 if line.strip())[:300],
@@ -2465,6 +2486,7 @@ def public_catalog_view(catalog=None):
         skill['instructions_digest'] = hashlib.sha256(
             str(skill.get('instructions', '')).encode('utf-8')).hexdigest()
         skill.pop('instructions', None)
+        skill.pop('skill_markdown', None)
     return value
 
 

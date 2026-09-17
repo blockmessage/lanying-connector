@@ -105,10 +105,7 @@ class AgentToolsTest(unittest.TestCase):
     def template_catalog(self):
         root = pathlib.Path(__file__).resolve().parents[2] / "seenical-skills"
         manifest = (root / ".seenical/manifest.json").read_text()
-        paths = [root / "SKILL.md", root / "agents/openai.yaml",
-                 root / ".seenical/runtime.json"]
-        paths.extend(sorted((root / "references").glob("*.md")))
-        paths.extend(sorted((root / "references/api").glob("*.json")))
+        paths = sorted(path for path in (root / "skills").rglob("*") if path.is_file())
         files = {
             path.relative_to(root).as_posix(): (path.read_text(), "sha")
             for path in paths
@@ -140,7 +137,12 @@ class AgentToolsTest(unittest.TestCase):
     def test_template_loads_dynamic_butler_tools(self):
         catalog = self.template_catalog()
         skill = catalog["skills"][0]
-        self.assertEqual("seenical-console", skill["skill_id"])
+        self.assertEqual(3, len(catalog["skills"]))
+        self.assertEqual("seenical-api", skill["skill_id"])
+        self.assertEqual("知见API", skill["name_zh"])
+        self.assertEqual("Seenical API", skill["name_en"])
+        self.assertIn("Butler APIs", skill["description_en"])
+        self.assertIn("name: seenical-api", skill["skill_markdown"])
         self.assertEqual("butler_api", skill["runtime"]["type"])
         self.assertEqual(set(skill["required_tools"]), {tool["tool_id"] for tool in skill["tools"]})
         self.assertEqual("/app/grow_ai/configure_task",
@@ -188,6 +190,32 @@ class AgentToolsTest(unittest.TestCase):
             if tool["tool_id"] == "seenical.knowledge.documents.list")
         self.assertEqual(["embedding_name"], knowledge_documents["parameters"]["required"])
         self.assertGreater(len(skill["tools"]), 40)
+        instruction_skills = {
+            item["skill_id"]: item for item in catalog["skills"][1:]
+        }
+        self.assertEqual(
+            {"seenical-console", "seenical-product-onboarding"},
+            set(instruction_skills))
+        self.assertTrue(all(item["runtime"] is None
+                            and item["tools"] == []
+                            and item["required_tools"] == []
+                            for item in instruction_skills.values()))
+
+    def test_legacy_public_skill_id_remains_active_during_catalog_upgrade(self):
+        catalog = self.template_catalog()
+        catalog["skills"][0]["skill_id"] = "seenical-console"
+        self.redis.set(self.module.PUBLIC_CATALOG_CACHE_KEY, json.dumps(catalog))
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            self.assertEqual("seenical-console", self.module._official_skill()["skill_id"])
+
+    def test_public_skill_detail_exposes_downloadable_markdown_only_in_detail(self):
+        catalog = self.template_catalog()
+        summary = self.module.public_catalog_view(catalog)
+        self.assertNotIn("skill_markdown", summary["skills"][0])
+        with mock.patch.object(self.module, "get_public_catalog", return_value=catalog):
+            detail = self.module.public_skill_detail("seenical-api")
+        self.assertEqual("ok", detail["result"])
+        self.assertIn("name: seenical-api", detail["data"]["skill_markdown"])
 
     def test_runtime_rejects_absolute_urls_headers_and_weakened_risk(self):
         runtime = json.dumps({
