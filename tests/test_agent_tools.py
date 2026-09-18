@@ -285,6 +285,62 @@ class AgentToolsTest(unittest.TestCase):
         stored = json.loads(self.redis.get(self.module.im_binding_projection_key("app")))
         self.assertEqual("22", stored["im_user_id"])
 
+    def test_binding_projection_accepts_identical_revision_without_rewriting(self):
+        self.bind_app(user_id="22")
+        key = self.module.im_binding_projection_key("app")
+        stored = json.loads(self.redis.get(key))
+        stored["synced_at"] = 123
+        self.redis.set(key, json.dumps(stored))
+
+        with mock.patch.object(self.module, "_redis", return_value=self.redis):
+            result = self.module.sync_im_binding_projection("app", {
+                "status": "BOUND", "im_user_id": "22", "revision": 1
+            })
+
+        self.assertEqual("ok", result["result"])
+        self.assertEqual(123, json.loads(self.redis.get(key))["synced_at"])
+
+    def test_binding_projection_accepts_watch_conflict_when_winner_is_identical(self):
+        class WatchError(Exception):
+            pass
+
+        class ConflictPipeline:
+            def __init__(self, redis):
+                self.redis = redis
+                self.pending = None
+
+            def watch(self, *keys):
+                return None
+
+            def get(self, key):
+                return None
+
+            def unwatch(self):
+                return None
+
+            def multi(self):
+                return None
+
+            def set(self, key, value):
+                self.pending = (key, value)
+
+            def execute(self):
+                key, value = self.pending
+                self.redis.values[key] = value
+                raise WatchError()
+
+        class ConflictRedis(FakeRedis):
+            def pipeline(self, transaction=True):
+                return ConflictPipeline(self)
+
+        redis = ConflictRedis()
+        with mock.patch.object(self.module, "_redis", return_value=redis):
+            result = self.module.sync_im_binding_projection("app", {
+                "status": "BOUND", "im_user_id": "22", "revision": 1
+            })
+
+        self.assertEqual("ok", result["result"])
+
     def test_loop_conversation_binding_validates_group_and_members(self):
         self.bind_app(user_id="22")
         stored = []

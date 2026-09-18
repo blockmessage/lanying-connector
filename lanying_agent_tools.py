@@ -2635,6 +2635,12 @@ def im_binding_projection_key(app_id):
     return f'lanying_connector:agent_tools:im_binding:{app_id}'
 
 
+def _same_im_binding_projection(current, expected):
+    return bool(current) and all(
+        str(current.get(field, '')) == str(expected.get(field, ''))
+        for field in ['app_id', 'status', 'im_user_id', 'revision'])
+
+
 def sync_im_binding_projection(app_id, data):
     try:
         revision = int(data.get('revision', 0) or 0)
@@ -2662,15 +2668,24 @@ def sync_im_binding_projection(app_id, data):
             if revision < current_revision:
                 pipe.unwatch()
                 return {'result': 'error', 'message': 'IM binding revision cannot move backwards'}
-            if (revision == current_revision
-                    and any(str(current.get(field, '')) != str(normalized.get(field, ''))
-                            for field in ['app_id', 'status', 'im_user_id', 'revision'])):
+            if revision == current_revision:
                 pipe.unwatch()
+                if _same_im_binding_projection(current, normalized):
+                    return {'result': 'ok', 'data': {
+                        'revision': revision, 'status': 'synced'}}
                 return {'result': 'error', 'message': 'IM binding revision content changed'}
         pipe.multi()
         pipe.set(key, _json(normalized))
         pipe.execute()
-    except Exception:
+    except Exception as error:
+        if error.__class__.__name__ == 'WatchError':
+            try:
+                latest = _load(redis.get(key), None)
+                if _same_im_binding_projection(latest, normalized):
+                    return {'result': 'ok', 'data': {
+                        'revision': revision, 'status': 'synced'}}
+            except Exception:
+                pass
         return {'result': 'error', 'message': 'IM binding projection changed concurrently'}
     return {'result': 'ok', 'data': {'revision': revision, 'status': 'synced'}}
 
