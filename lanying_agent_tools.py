@@ -1693,7 +1693,21 @@ def get_request_for_actor(app_id, request_id, actor):
     if historical:
         request_info = _load_request_view(app_id, request_id)
     if request_info is None or str(request_info.get('app_id')) != str(app_id):
-        return {'result': 'error', 'message': 'tool request not found'}
+        # Tool request messages can outlive both the executable Redis record
+        # and request-view retention.  Reopening such a conversation is a
+        # normal read-only display path, not an operational failure.  Return a
+        # data-free tombstone so old cards render as expired without causing a
+        # burst of 404 exceptions in Butler.  Mutating endpoints continue to
+        # require the original request and still return "not found".
+        return {
+            'result': 'ok',
+            'data': {
+                'schema_version': 1,
+                'request_id': str(request_id or ''),
+                'status': 'expired',
+                'unavailable': True,
+            }
+        }
     actor_error = _request_actor_error(request_info, actor)
     if actor_error:
         return {'result': 'error', 'message': actor_error}

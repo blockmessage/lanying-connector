@@ -739,6 +739,25 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual("ok", result["result"])
         self.assertEqual("expired", result["data"]["status"])
 
+    def test_missing_historical_request_returns_expired_tombstone(self):
+        actor = {
+            "subject_id": "11", "im_user_id": "22",
+            "client_instance_id": "browser-b",
+        }
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module.lanying_agent_tools_storage, "get_agent_tool_request_view",
+                return_value=None):
+            result = self.module.get_request_for_actor(
+                "app", "missing-request", actor)
+
+        self.assertEqual("ok", result["result"])
+        self.assertEqual({
+            "schema_version": 1,
+            "request_id": "missing-request",
+            "status": "expired",
+            "unavailable": True,
+        }, result["data"])
+
     def test_mysql_display_snapshot_excludes_execution_context_and_credentials(self):
         snapshot = self.module._request_view_snapshot({
             "request_id": "request-a", "app_id": "app", "status": "pending",
