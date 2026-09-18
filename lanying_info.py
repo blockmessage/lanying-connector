@@ -218,14 +218,13 @@ def info_embedding_doc_block_ids(doc_id):
         embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
         db_table_name = embedding_uuid_info['db_table_name']
         count = 200
-        with lanying_pgvector.get_connection() as conn:
+        with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
             query = f"SELECT block_id FROM {db_table_name} where doc_id = %s ORDER BY block_id LIMIT %s;"
             args =  [doc_id, count]
             cursor.execute(query, args)
             rows = cursor.fetchall()
             cursor.close()
-            lanying_pgvector.put_connection(conn)
             ret = []
             for row in rows:
                 ret.append(row[0])
@@ -243,14 +242,13 @@ def info_embedding_doc_block_info(block_id):
         embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
         db_table_name = embedding_uuid_info['db_table_name']
         count = 10
-        with lanying_pgvector.get_connection() as conn:
+        with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
             query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,tags FROM {db_table_name} where doc_id = %s and block_id = %s LIMIT %s;"
             args =  [doc_id, block_id, count]
             cursor.execute(query, args)
             rows = cursor.fetchall()
             cursor.close()
-            lanying_pgvector.put_connection(conn)
             names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id', 'tags']
             ret = []
             for row in rows:

@@ -110,14 +110,13 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
         result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", f"{model_dim}", "DISTANCE_METRIC",algo)
         logging.info(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
     elif db_type == 'pgvector':
-        with lanying_pgvector.get_connection() as conn:
+        with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
             cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
             conn.commit()
             cursor.close()
-            lanying_pgvector.put_connection(conn)
     update_app_embedding_admin_users(app_id, admin_user_ids)
     bind_preset_name(app_id, preset_name, embedding_name)
     return {'result':'ok', 'embedding_uuid':embedding_uuid}
@@ -133,12 +132,11 @@ def maybe_add_table_tags(embedding_uuid):
 def maybe_add_table_tags_internal(embedding_uuid, db_table_name):
     try:
         logging.info(f"maybe_add_table_tags_internal start for embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
-        with lanying_pgvector.get_connection() as conn:
+        with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"ALTER TABLE {db_table_name} ADD COLUMN IF NOT EXISTS tags jsonb DEFAULT '{{}}'::jsonb;")
             conn.commit()
             cursor.close()
-            lanying_pgvector.put_connection(conn)
         logging.info(f"maybe_add_table_tags_internal finish for embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
     except Exception as e:
         logging.error("maybe_add_table_tags_internal failed:", e)
@@ -156,14 +154,13 @@ def re_create_embedding_table(embedding_uuid):
         if model_config:
             model_dim = model_config['dim']
             if db_type == 'pgvector':
-                with lanying_pgvector.get_connection() as conn:
+                with lanying_pgvector.connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
                     cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
                     cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
                     conn.commit()
                     cursor.close()
-                    lanying_pgvector.put_connection(conn)
                 update_embedding_uuid_info(embedding_uuid, "db_table_name", db_table_name)
                 redis = lanying_redis.get_redis_stack_connection()
                 redis.rpush("lanying_connector:pgvector:table_to_deleted", old_db_table_name)
@@ -191,7 +188,7 @@ def migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name):
     if data_prefix == '':
         print(f"skip for data_prefix is empty: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}")
         return
-    with lanying_pgvector.get_connection() as conn:
+    with lanying_pgvector.connection() as conn:
         cursor = conn.cursor()
         cursor.execute(f"DROP TABLE IF EXISTS {db_table_name};")
         cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector(1536), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
@@ -199,7 +196,6 @@ def migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name):
         cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
         conn.commit()
         cursor.close()
-        lanying_pgvector.put_connection(conn)
     key_count = 0
     for bytes in redis.scan_iter(match=f'{data_prefix}*', count=100):
         key_count += 1
@@ -210,12 +206,11 @@ def migrate_embedding_from_redis_to_pgvector_one(app_id, embedding_name):
     redis.hmset(get_embedding_uuid_key(embedding_uuid),
                 {"db_type": 'pgvector',
                 "db_table_name": db_table_name})
-    with lanying_pgvector.get_connection() as conn:
+    with lanying_pgvector.connection() as conn:
         cursor = conn.cursor()
         cursor.execute(f"SELECT COUNT(*) FROM {db_table_name}")
         row_count = cursor.fetchone()[0]
         cursor.close()
-        lanying_pgvector.put_connection(conn)
         print(f"check row count: key_count:{key_count}, row_count:{row_count}, equal: {key_count == row_count}")
     print(f"finish migration: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid}, db_table_name:{db_table_name}")
 
@@ -247,13 +242,12 @@ def migrate_embedding_from_redis_to_pgvector_for_key(db_table_name, key_count, d
     if text_hash == '':
         embedding_text = text + question
         text_hash = sha256(embedding_text+function)
-    with lanying_pgvector.get_connection() as conn:
+    with lanying_pgvector.connection() as conn:
         cursor = conn.cursor()
         insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
         cursor.execute(insert_query, (embedding, text, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id))
         conn.commit()
         cursor.close()
-        lanying_pgvector.put_connection(conn)
     print(f"insert data finish | block_id:{block_id}, db_table_name:{db_table_name}, key_count:{key_count}, data_prefix:{data_prefix}")
 
 def migrate_embedding_from_redis_to_pgvector_for_app_id(app_id):
@@ -497,14 +491,13 @@ def show_blocks(app_id, embedding_name, doc_id, count):
         embedding_uuid = embedding_name_info['embedding_uuid']
         embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
         db_table_name = embedding_uuid_info['db_table_name']
-        with lanying_pgvector.get_connection() as conn:
+        with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
             query = f"SELECT id,content,doc_id,num_of_tokens,summary,text_hash,question,function,reference,block_id,tags FROM {db_table_name} where doc_id = %s ORDER BY block_id LIMIT %s;"
             args =  [doc_id, count]
             cursor.execute(query, args)
             rows = cursor.fetchall()
             cursor.close()
-            lanying_pgvector.put_connection(conn)
             names = ['id','text','doc_id','num_of_tokens','summary','text_hash','question','function','reference','block_id', 'tags']
             ret = []
             for row in rows:
@@ -535,7 +528,7 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
         sql_part_tags = ",tags"
         sql_extra_fields = ['tags']
     start_time = time.time()
-    with lanying_pgvector.get_connection() as conn:
+    with lanying_pgvector.connection() as conn:
         cursor = conn.cursor()
         embedding_str = f"{embedding}"
         if len(doc_ids) > 0:
@@ -555,7 +548,6 @@ def search_in_pgvector(app_id, embedding_name, doc_id, embedding, max_tokens, ma
         cursor.execute(query, args)
         rows = cursor.fetchall()
         cursor.close()
-        lanying_pgvector.put_connection(conn)
         # logging.info(f"rows:{rows}")
         logging.info(f"query finish with time: {time.time() - start_time}, db_table_name:{db_table_name}")
         class MyDocument:
@@ -1125,7 +1117,7 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             if db_type == "pgvector":
                 db_table_name = config['db_table_name']
                 def insert_fun():
-                    with lanying_pgvector.get_connection() as conn:
+                    with lanying_pgvector.connection() as conn:
                         cursor = conn.cursor()
                         if len(embedding_tags) > 0:
                             insert_query = f"INSERT INTO {db_table_name} (embedding, content, doc_id, num_of_tokens, summary, text_hash, question, function, reference, block_id, tags) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
@@ -1135,7 +1127,6 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
                             cursor.execute(insert_query, (embedding, text, doc_id, token_cnt, "{}", text_hash, question, function, reference, block_id))
                         conn.commit()
                         cursor.close()
-                        lanying_pgvector.put_connection(conn)
                 retry_time = 10
                 for i in range(retry_time):
                     try:
@@ -1651,12 +1642,11 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
 def search_doc_data_and_delete(app_id, embedding_name, doc_id, embedding_index, last_total, db_type, db_table_name):
     logging.info(f"delete doc_id from embedding| db_type={db_type}, app_id={app_id}, embedding_name={embedding_name}, doc_id={doc_id}")
     if db_type == 'pgvector':
-        with lanying_pgvector.get_connection() as conn:
+        with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"delete from {db_table_name} where doc_id = %s", [doc_id])
             conn.commit()
             cursor.close()
-            lanying_pgvector.put_connection(conn)
     else:
         redis = lanying_redis.get_redis_stack_connection()
         base_query = query_by_doc_id(doc_id)
@@ -1683,13 +1673,12 @@ def delete_embedding_block(app_id, embedding_name, doc_id, block_id):
         embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
         db_type = embedding_uuid_info.get('db_type', 'redis')
         if db_type == 'pgvector':
-            with lanying_pgvector.get_connection() as conn:
+            with lanying_pgvector.connection() as conn:
                 db_table_name = embedding_uuid_info['db_table_name']
                 cursor = conn.cursor()
                 cursor.execute(f"delete from {db_table_name} where doc_id = %s and block_id = %s", [doc_id, block_id])
                 conn.commit()
                 cursor.close()
-                lanying_pgvector.put_connection(conn)
         else:
             redis = lanying_redis.get_redis_stack_connection()
             key = get_embedding_data_key(embedding_uuid, block_id)
@@ -1792,13 +1781,12 @@ def update_doc_block_tags_internal(app_id, embedding_uuid, doc_id, tags, embeddi
         logging.info(f"update_doc_block_tags_internal skip for no tags | app_id:{app_id}, embedding_uuid:{embedding_uuid}, doc_id:{doc_id}, tags:{tags}")
         return
     def update_fun():
-        with lanying_pgvector.get_connection() as conn:
+        with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
             update_query = f"Update {db_table_name} set tags = %s where doc_id = %s;"
             cursor.execute(update_query, (Json(tags), doc_id))
             conn.commit()
             cursor.close()
-            lanying_pgvector.put_connection(conn)
     retry_time = 10
     for i in range(retry_time):
         try:
