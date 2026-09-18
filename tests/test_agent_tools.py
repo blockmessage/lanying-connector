@@ -189,6 +189,15 @@ class AgentToolsTest(unittest.TestCase):
             tool for tool in skill["tools"]
             if tool["tool_id"] == "seenical.knowledge.documents.list")
         self.assertEqual(["embedding_name"], knowledge_documents["parameters"]["required"])
+        plugin_update = next(
+            tool for tool in skill["tools"]
+            if tool["tool_id"] == "seenical.plugin.update")
+        self.assertIn("headers", plugin_update["parameters"]["properties"])
+        self.module.validate_tool_arguments(plugin_update, {
+            "plugin_id": "plugin-1",
+            "headers": {"Authorization": "__MASKED_SENSITIVE_VALUE__"},
+            "auth": {"type": "basic", "password": "replacement"},
+        })
         self.assertGreater(len(skill["tools"]), 40)
         instruction_skills = {
             item["skill_id"]: item for item in catalog["skills"][1:]

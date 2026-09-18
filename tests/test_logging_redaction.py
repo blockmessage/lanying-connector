@@ -23,6 +23,19 @@ class LoggingRedactionTests(unittest.TestCase):
         self.assertFalse(
             lanying_utils.is_valid_public_url('https://[broken'))
 
+    def test_public_url_rejects_mixed_public_and_private_dns_results(self):
+        with mock.patch.object(lanying_utils, 'get_ip_addresses', return_value=[
+                '8.8.8.8', '127.0.0.1']):
+            self.assertFalse(lanying_utils.is_valid_public_url(
+                'https://callback.example.com/path'))
+
+    def test_public_url_accepts_explicit_port_when_all_addresses_are_public(self):
+        with mock.patch.object(lanying_utils, 'get_ip_addresses', return_value=[
+                '8.8.8.8', '1.1.1.1']) as resolver:
+            self.assertTrue(lanying_utils.is_valid_public_url(
+                'https://callback.example.com:8443/path'))
+        resolver.assert_called_once_with('callback.example.com')
+
     def test_redacts_nested_credentials_and_url_query(self):
         value = {
             'headers': {

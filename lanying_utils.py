@@ -16,18 +16,20 @@ def is_valid_public_url(url):
     if url.startswith('http://') or url.startswith('https://'):
         try:
             parse_url= urlparse(url.strip(' '))
-            domain = parse_url.netloc
+            domain = parse_url.hostname
+            if not domain or parse_url.username or parse_url.password:
+                logging.info(f"check is public url:{log_url} | invalid host")
+                return False
             ip_addresses = get_ip_addresses(domain)
             if not ip_addresses:
                 logging.info(f"check is public url:{log_url} | no address")
                 return False
             for ip in ip_addresses:
-                if is_public_ip(ip):
-                    logging.info(f"check is public url:{log_url} | {ip} is a public IP address.")
-                    return True
-                else:
+                if not is_public_ip(ip):
                     logging.info(f"check is public url:{log_url} | {ip} is a private IP address.")
-            return False
+                    return False
+                logging.info(f"check is public url:{log_url} | {ip} is a public IP address.")
+            return True
         except Exception as e:
             logging.info(f"check is public url:{log_url} | exception")
             return False
@@ -46,7 +48,7 @@ def url_for_log(url):
 def is_public_ip(ip_address):
     try:
         ip_obj = ipaddress.ip_address(ip_address)
-        return not ip_obj.is_private
+        return ip_obj.is_global
     except ValueError:
         return False
 

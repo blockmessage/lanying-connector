@@ -20,6 +20,7 @@ import lanying_command
 import lanying_url_loader
 import lanying_vendor
 import lanying_utils
+import lanying_masked_config
 from flask import Blueprint, request, make_response, Response
 import lanying_ai_plugin
 import random
@@ -5115,11 +5116,18 @@ def configure_ai_plugin():
     if not current:
         return make_response({'code': 400, 'message': 'ai plugin not exist'})
     name = str(data['name']) if 'name' in data else str(current.get('name', ''))
-    headers = dict(data['headers']) if 'headers' in data else lanying_utils.safe_json_loads(current.get('headers', '{}'), {})
-    params = dict(data['params']) if 'params' in data else lanying_utils.safe_json_loads(current.get('params', '{}'), {})
-    envs = dict(data['envs']) if 'envs' in data else lanying_utils.safe_json_loads(current.get('envs', '{}'), {})
+    try:
+        headers = _plugin_config_value(
+            data, current, 'headers')
+        params = _plugin_config_value(
+            data, current, 'params')
+        envs = _plugin_config_value(
+            data, current, 'envs')
+        auth = _plugin_config_value(
+            data, current, 'auth')
+    except ValueError as error:
+        return make_response({'code': 400, 'message': str(error)})
     endpoint = str(data['endpoint']) if 'endpoint' in data else str(current.get('endpoint', ''))
-    auth = dict(data['auth']) if 'auth' in data else lanying_utils.safe_json_loads(current.get('auth', '{}'), {})
     result = lanying_ai_plugin.configure_ai_plugin(app_id, plugin_id, name, endpoint, headers, envs, params, auth)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
@@ -5129,6 +5137,15 @@ def configure_ai_plugin():
             'id': plugin_id, 'changed_fields': sorted(changes),
             'resource': {key: latest.get(key, '') for key in ['plugin_id', 'name', 'endpoint']}}})
     return resp
+
+
+def _plugin_config_value(data, current, field):
+    current_value = lanying_utils.safe_json_loads(
+        current.get(field, '{}'), {})
+    if field not in data:
+        return current_value
+    return lanying_masked_config.restore_masked_config_map(
+        data[field], current_value)
 
 @bp.route("/service/openai/delete_ai_plugin", methods=["POST"])
 def delete_ai_plugin():

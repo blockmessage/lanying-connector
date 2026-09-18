@@ -264,7 +264,7 @@ RISK_ORDER = {'read': 0, 'write': 1, 'execute': 2, 'destructive': 3}
 # existing Console contract reviewed here.  This keeps the repository easy to
 # update without making it an arbitrary authenticated HTTP client.
 BUTLER_API_POLICY = {
-    ('GET', '/app/config/lanying_connector'): ('read', set()),
+    ('GET', '/app/config/lanying_connector/status'): ('read', set()),
     ('GET', '/app/list_models'): ('read', set()),
     ('GET', '/app/list_chatbots'): ('read', set()),
     ('POST', '/app/create_chatbot'): ('write', {'name', 'desc', 'nickname'}),
@@ -272,7 +272,8 @@ BUTLER_API_POLICY = {
     ('GET', '/app/list_ai_plugins'): ('read', set()),
     ('GET', '/app/list_ai_functions'): ('read', {'plugin_id', 'start', 'end'}),
     ('POST', '/app/create_ai_plugin'): ('write', {'plugin_name'}),
-    ('POST', '/app/configure_ai_plugin'): ('write', {'plugin_id', 'name', 'endpoint'}),
+    ('POST', '/app/configure_ai_plugin'): (
+        'write', {'plugin_id', 'name', 'endpoint', 'headers', 'params', 'envs', 'auth'}),
     ('POST', '/app/configure_ai_function'): ('write', {'plugin_id', 'function_id', 'name', 'description', 'parameters', 'function_call', 'priority', 'force_call'}),
     ('GET', '/app/get_ai_plugin_bind_relation'): ('read', set()),
     ('POST', '/app/bind_ai_plugin'): ('write', {'type', 'name', 'list'}),
@@ -311,10 +312,10 @@ BUTLER_API_POLICY = {
     ('POST', '/app/grow_ai/create_custom_domain'): ('destructive', {'site_id', 'domain_name', 'scope'}),
 }
 BUTLER_API_RESULT_FIELDS = {
-    ('GET', '/app/config/lanying_connector'): {
-        'enable', 'userId', 'service', 'messagePerMonthPerUser',
-        'dailyQuotaFusePercent', 'historyMsgCountMin', 'historyMsgCountMax',
-        'historyMsgSizeMax'
+    ('GET', '/app/config/lanying_connector/status'): {
+        'enable', 'user_id', 'service', 'message_per_month_per_user',
+        'daily_quota_fuse_percent', 'history_msg_count_min',
+        'history_msg_count_max', 'history_msg_size_max'
     },
     ('GET', '/app/list_models'): {'list', 'models', 'vendors'},
     ('GET', '/app/list_chatbots'): {'list', 'total'},
@@ -427,7 +428,11 @@ def validate_tool_arguments(tool, arguments):
         raise ValueError('tool arguments must be an object')
     if len(_json(arguments).encode('utf-8')) > MAX_TOOL_ARGUMENT_BYTES:
         raise ValueError('tool arguments are too large')
-    if _contains_secret_key(arguments):
+    request_info = tool.get('request', {}) if isinstance(tool, dict) else {}
+    plugin_config = (
+        str(request_info.get('method', '')).upper() == 'POST'
+        and request_info.get('path') == '/app/configure_ai_plugin')
+    if _contains_secret_key(arguments) and not plugin_config:
         raise ValueError('tool arguments contain a forbidden credential field')
     _validate_tool_value(arguments, tool.get('parameters', {}))
     for field in ['endpoint', 'url', 'canonical_link', 'official_website_url',
