@@ -465,6 +465,24 @@ def get_task_run_result_list():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/grow_ai/get_task_result_list", methods=["POST"])
+def get_task_result_list():
+    if not check_access_token_valid():
+        resp = make_response({'code':401, 'message':'bad authorization'})
+        return resp
+    text = request.get_data(as_text=True)
+    data = json.loads(text)
+    app_id = str(data['app_id'])
+    task_id = str(data['task_id'])
+    limit = data.get('limit', 50)
+    cursor = data.get('cursor', '')
+    result = lanying_grow_ai.get_task_result_list(app_id, task_id, limit, cursor)
+    if result['result'] == 'error':
+        resp = make_response({'code':400, 'message':result['message']})
+    else:
+        resp = make_response({'code':200, 'data':result["data"]})
+    return resp
+
 @bp.route('/service/grow_ai/file/download', methods=['GET', 'OPTIONS'])
 def download_file():
     if request.method == 'OPTIONS':

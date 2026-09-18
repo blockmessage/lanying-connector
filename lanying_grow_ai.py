@@ -22,6 +22,7 @@ import os
 import lanying_schedule
 import lanying_chatbot
 import base64
+import binascii
 import copy
 import yaml
 import lanying_cdn
@@ -1676,6 +1677,96 @@ def get_task_run_result_list(app_id, task_run_id):
         'data': {
             'list': dtos
         }
+    }
+
+def _encode_task_result_cursor(task_run_id, article_id):
+    payload = json.dumps({
+        'v': 1,
+        'task_run_id': str(task_run_id),
+        'article_id': str(article_id),
+    }, separators=(',', ':')).encode('utf-8')
+    return base64.urlsafe_b64encode(payload).decode('ascii').rstrip('=')
+
+
+def _decode_task_result_cursor(cursor):
+    value = str(cursor or '')
+    if not value or len(value) > 2048:
+        raise ValueError('invalid cursor')
+    padding = '=' * (-len(value) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(value + padding).decode('utf-8'))
+    if (not isinstance(payload, dict)
+            or set(payload) != {'v', 'task_run_id', 'article_id'}
+            or payload.get('v') != 1
+            or not str(payload.get('task_run_id', ''))
+            or not str(payload.get('article_id', ''))):
+        raise ValueError('invalid cursor')
+    return str(payload['task_run_id']), str(payload['article_id'])
+
+
+def get_task_result_list(app_id, task_id, limit=50, cursor=''):
+    try:
+        limit = int(limit)
+        if limit < 1 or limit > 100:
+            return {'result': 'error', 'message': 'limit must be between 1 and 100'}
+        if cursor:
+            cursor_task_run_id, cursor_article_id = _decode_task_result_cursor(cursor)
+        else:
+            cursor_task_run_id = ''
+            cursor_article_id = ''
+    except (TypeError, ValueError, UnicodeDecodeError, binascii.Error):
+        return {'result': 'error', 'message': 'invalid task result cursor or limit'}
+
+    task_run_ids = [str(value) for value in get_task_run_id_list(app_id, task_id)]
+    if cursor_task_run_id:
+        try:
+            run_index = task_run_ids.index(cursor_task_run_id)
+        except ValueError:
+            return {'result': 'error', 'message': 'task result cursor is no longer valid'}
+    else:
+        run_index = 0
+    results = []
+    while run_index < len(task_run_ids):
+        task_run_id = task_run_ids[run_index]
+        run_result = get_task_run_result_list(app_id, task_run_id)
+        if run_result.get('result') != 'ok':
+            return run_result
+        run_results = list(run_result.get('data', {}).get('list', []))
+        def result_sort_key(item):
+            try:
+                create_time = int(item.get('create_time', 0) or 0)
+            except (TypeError, ValueError):
+                create_time = 0
+            return create_time, str(item.get('article_id', ''))
+        run_results.sort(key=result_sort_key, reverse=True)
+        result_index = 0
+        if cursor_task_run_id:
+            article_ids = [str(item.get('article_id', '')) for item in run_results]
+            try:
+                result_index = article_ids.index(cursor_article_id) + 1
+            except ValueError:
+                return {'result': 'error', 'message': 'task result cursor is no longer valid'}
+            cursor_task_run_id = ''
+            cursor_article_id = ''
+        while result_index < len(run_results):
+            if len(results) >= limit:
+                last_result = results[-1]
+                next_cursor = _encode_task_result_cursor(
+                    last_result['task_run_id'], last_result['article_id'])
+                return {
+                    'result': 'ok',
+                    'data': {'list': results, 'has_more': True, 'next': next_cursor}
+                }
+            item = dict(run_results[result_index])
+            item['task_id'] = str(task_id)
+            item['task_run_id'] = task_run_id
+            results.append(item)
+            result_index += 1
+        run_index += 1
+        result_index = 0
+
+    return {
+        'result': 'ok',
+        'data': {'list': results, 'has_more': False, 'next': ''}
     }
 
 def deploy_task_run(app_id, task_run_id):

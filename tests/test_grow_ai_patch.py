@@ -169,6 +169,62 @@ class GrowAIPatchTest(unittest.TestCase):
         self.assertNotIn("deploy", snapshot)
         self.assertEqual("Old article prompt", snapshot["article_prompt"])
 
+    def test_task_result_list_pages_across_runs_and_adds_parent_ids(self):
+        run_results = {
+            "run-2": [
+                {"article_id": "run-2-2", "create_time": 22, "title": "second"},
+                {"article_id": "run-2-1", "create_time": 21, "title": "first"},
+            ],
+            "run-1": [
+                {"article_id": "run-1-1", "create_time": 11, "title": "older"},
+            ],
+        }
+
+        def get_results(app_id, run_id):
+            return {"result": "ok", "data": {"list": run_results[run_id]}}
+
+        with mock.patch.object(self.module, "get_task_run_id_list", return_value=["run-2", "run-1"]), mock.patch.object(
+                self.module, "get_task_run_result_list", side_effect=get_results):
+            first = self.module.get_task_result_list("app", "task", 2)
+            second = self.module.get_task_result_list("app", "task", 2, first["data"]["next"])
+
+        self.assertTrue(first["data"]["has_more"])
+        self.assertTrue(first["data"]["next"])
+        self.assertNotIn("run-2", first["data"]["next"])
+        self.assertEqual(["run-2-2", "run-2-1"], [item["article_id"] for item in first["data"]["list"]])
+        self.assertEqual("task", first["data"]["list"][0]["task_id"])
+        self.assertEqual("run-2", first["data"]["list"][0]["task_run_id"])
+        self.assertFalse(second["data"]["has_more"])
+        self.assertEqual(["run-1-1"], [item["article_id"] for item in second["data"]["list"]])
+
+    def test_task_result_cursor_remains_stable_when_new_run_is_prepended(self):
+        run_results = {
+            "run-3": [{"article_id": "run-3-1", "create_time": 31}],
+            "run-2": [
+                {"article_id": "run-2-2", "create_time": 22},
+                {"article_id": "run-2-1", "create_time": 21},
+            ],
+            "run-1": [{"article_id": "run-1-1", "create_time": 11}],
+        }
+
+        def get_results(app_id, run_id):
+            return {"result": "ok", "data": {"list": run_results[run_id]}}
+
+        with mock.patch.object(self.module, "get_task_run_id_list", return_value=["run-2", "run-1"]), mock.patch.object(
+                self.module, "get_task_run_result_list", side_effect=get_results):
+            first = self.module.get_task_result_list("app", "task", 1)
+        run_results["run-2"].insert(0, {"article_id": "run-2-3", "create_time": 23})
+        with mock.patch.object(self.module, "get_task_run_id_list", return_value=["run-3", "run-2", "run-1"]), mock.patch.object(
+                self.module, "get_task_run_result_list", side_effect=get_results):
+            second = self.module.get_task_result_list("app", "task", 1, first["data"]["next"])
+
+        self.assertEqual(["run-2-2"], [item["article_id"] for item in first["data"]["list"]])
+        self.assertEqual(["run-2-1"], [item["article_id"] for item in second["data"]["list"]])
+
+    def test_task_result_list_rejects_invalid_cursor_and_limit(self):
+        self.assertEqual("error", self.module.get_task_result_list("app", "task", 0)["result"])
+        self.assertEqual("error", self.module.get_task_result_list("app", "task", 50, "bad")["result"])
+
     def test_deployment_rollback_requires_unchanged_branch_and_rotates_versions(self):
         current = "a" * 40
         previous = "b" * 40
