@@ -73,18 +73,14 @@ class StoredObjectStream:
 def open_object(object_name):
     data = None
     try:
-        if client is None or not object_name:
-            return {"result":"error", "message":"file storage unavailable"}
-        stat = client.stat_object(bucket_name, object_name)
-        content_length = int(stat.size or 0)
-        if content_length > max_upload_file_size:
-            logging.warning("download object rejected because it is too large")
-            return {"result":"error", "message":"file too large"}
+        stat_result = stat_object(object_name)
+        if stat_result.get("result") != "ok":
+            return stat_result
         data = client.get_object(bucket_name, object_name)
         return {
             "result":"ok",
             "stream":StoredObjectStream(data),
-            "content_length":content_length
+            "content_length":stat_result["content_length"]
         }
     except Exception:
         logging.exception("read object from file storage failed")
@@ -92,6 +88,21 @@ def open_object(object_name):
             data.close()
             data.release_conn()
         return {"result":"error", "message":"fail to download file"}
+
+
+def stat_object(object_name):
+    try:
+        if client is None or not object_name:
+            return {"result":"error", "message":"file storage unavailable"}
+        stat = client.stat_object(bucket_name, object_name)
+        content_length = int(stat.size or 0)
+        if content_length > max_upload_file_size:
+            logging.warning("download object rejected because it is too large")
+            return {"result":"error", "message":"file too large"}
+        return {"result":"ok", "content_length":content_length}
+    except Exception:
+        logging.exception("stat object from file storage failed")
+        return {"result":"error", "message":"fail to stat file"}
 
 def download_url(url, headers, filename):
     try:

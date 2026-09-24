@@ -589,6 +589,27 @@ def download_embedding_doc(service):
     response.headers['Cache-Control'] = 'private, no-store'
     return response
 
+
+@app.route("/service/<string:service>/prepare_embedding_doc_download", methods=["POST"])
+def prepare_embedding_doc_download(service):
+    headerToken = request.headers.get('access-token', "")
+    if not accessToken or accessToken != headerToken:
+        return app.make_response({'code':401, 'message':'bad authorization'}), 401
+    data = request.get_json(silent=True) or {}
+    app_id = data.get('app_id')
+    embedding_name = data.get('embedding_name')
+    doc_id = data.get('doc_id')
+    if not app_id or not embedding_name or not doc_id:
+        return app.make_response({'code':400, 'message':'missing download parameters'}), 400
+    service_module = get_service_module(service)
+    result = service_module.prepare_embedding_doc_download(
+        str(app_id), str(embedding_name), str(doc_id))
+    if not result:
+        return app.make_response({'code':404, 'message':'embedding document not found'}), 404
+    if result.get('error'):
+        return app.make_response({'code':502, 'message':'embedding document storage unavailable'}), 502
+    return app.make_response({'code':200, 'data':result})
+
 @app.route("/service/<string:service>/list_embedding_tasks", methods=["POST"])
 def list_embedding_tasks(service):
     headerToken = request.headers.get('access-token', "")

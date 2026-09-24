@@ -32,7 +32,7 @@ import lanying_im_sender
 from requests.auth import HTTPDigestAuth
 from requests.auth import HTTPBasicAuth
 import lanying_message
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 import uuid
 from pydub import AudioSegment
 import math
@@ -4193,29 +4193,80 @@ def list_embeddings(app_id):
     return lanying_embedding.list_embeddings(app_id)
 
 def get_embedding_doc_info_list(app_id, embedding_name, start, end):
-    return lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, start, end)
+    total, docs = lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, start, end)
+    for doc in docs:
+        doc['downloadable'] = is_downloadable_embedding_doc(doc)
+    return total, docs
 
-def download_embedding_doc(app_id, embedding_name, doc_id):
+
+def is_downloadable_embedding_doc(doc):
+    if not doc or not doc.get('object_name'):
+        return False
+    # Stored uploads and fetched web pages are both useful for offline review.
+    # Records without a type predate the field and remain downloadable.
+    doc_type = str(doc.get('type', '')).lower()
+    return not doc_type or doc_type in ('file', 'url', 'site')
+
+
+def get_downloadable_embedding_doc(app_id, embedding_name, doc_id):
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
     if not embedding_info:
         return None
     doc = lanying_embedding.get_doc(embedding_info['embedding_uuid'], doc_id)
-    if not doc or str(doc.get('type', '')).lower() != 'file' or not doc.get('object_name'):
+    return doc if is_downloadable_embedding_doc(doc) else None
+
+
+def embedding_doc_download_metadata(doc, doc_id, content_length):
+    original_filename = str(doc.get('filename') or '')
+    parsed_url = urlparse(original_filename)
+    if parsed_url.scheme.lower() in ('http', 'https') and parsed_url.netloc:
+        path_filename = os.path.basename(unquote(parsed_url.path).rstrip('/'))
+        if path_filename:
+            filename = path_filename
+        else:
+            filename = re.sub(r'[^A-Za-z0-9_-]', '_', parsed_url.hostname or 'index')
+        filename = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', '_', filename).strip(' .')
+    else:
+        filename = os.path.basename(original_filename.replace('\\', '/'))
+    filename = re.sub(r'[\x00-\x1f\x7f]', '_', filename)
+    if not filename:
+        filename = f"{doc_id}{doc.get('ext', '')}"
+    elif not os.path.splitext(filename)[1]:
+        object_name = os.path.basename(str(doc.get('object_name') or '').replace('\\', '/'))
+        extension = os.path.splitext(object_name)[1] or str(doc.get('ext') or '')
+        if extension and not extension.startswith('.'):
+            extension = f'.{extension}'
+        if re.fullmatch(r'\.[A-Za-z0-9]{1,16}', extension):
+            filename = f'{filename}{extension}'
+    return {
+        'content_length': content_length,
+        'filename': filename,
+        'content_type': mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+    }
+
+
+def prepare_embedding_doc_download(app_id, embedding_name, doc_id):
+    doc = get_downloadable_embedding_doc(app_id, embedding_name, doc_id)
+    if not doc:
+        return None
+    result = lanying_file_storage.stat_object(doc['object_name'])
+    if result.get('result') != 'ok':
+        return {'error': result.get('message', 'fail to stat file')}
+    metadata = embedding_doc_download_metadata(doc, doc_id, result['content_length'])
+    metadata['doc_id'] = doc_id
+    return metadata
+
+
+def download_embedding_doc(app_id, embedding_name, doc_id):
+    doc = get_downloadable_embedding_doc(app_id, embedding_name, doc_id)
+    if not doc:
         return None
     result = lanying_file_storage.open_object(doc['object_name'])
     if result.get('result') != 'ok':
         return {'error': result.get('message', 'fail to download file')}
-    filename = os.path.basename(str(doc.get('filename') or '').replace('\\', '/'))
-    filename = re.sub(r'[\x00-\x1f\x7f]', '_', filename)
-    if not filename:
-        filename = f"{doc_id}{doc.get('ext', '')}"
-    content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-    return {
-        'stream': result['stream'],
-        'content_length': result['content_length'],
-        'filename': filename,
-        'content_type': content_type
-    }
+    metadata = embedding_doc_download_metadata(doc, doc_id, result['content_length'])
+    metadata['stream'] = result['stream']
+    return metadata
 
 def list_embedding_tasks(app_id, embedding_name):
     embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)

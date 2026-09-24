@@ -381,7 +381,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertIsNone(result)
         open_object.assert_not_called()
 
-    def test_download_embedding_doc_rejects_crawled_web_content(self):
+    def test_download_embedding_doc_accepts_stored_web_content(self):
         try:
             m = importlib.import_module('openai_service')
         except ModuleNotFoundError as exc:
@@ -393,10 +393,114 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
                     'object_name': 'embedding/app-a/uuid-1/doc-2.html',
                     'type': 'url'
                 }, create=True), \
-                mock.patch.object(m.lanying_file_storage, 'open_object', create=True) as open_object:
+                mock.patch.object(m.lanying_file_storage, 'open_object', return_value={
+                    'result': 'ok', 'stream': 'web-stream', 'content_length': 13
+                }, create=True) as open_object:
             result = m.download_embedding_doc('app-a', 'knowledge', 'doc-2')
 
-        self.assertIsNone(result)
+        self.assertEqual('docs.html', result['filename'])
+        self.assertEqual('text/html', result['content_type'])
+        self.assertEqual('web-stream', result['stream'])
+        open_object.assert_called_once_with('embedding/app-a/uuid-1/doc-2.html')
+
+    def test_embedding_doc_download_metadata_sanitizes_web_urls(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        root = m.embedding_doc_download_metadata({
+            'filename': 'https://www.example.com/',
+            'object_name': 'embedding/app-a/uuid-1/root.html',
+            'type': 'site'
+        }, 'root', 1)
+        query = m.embedding_doc_download_metadata({
+            'filename': 'https://example.com/docs?lang=zh#intro',
+            'object_name': 'embedding/app-a/uuid-1/docs.html',
+            'type': 'url'
+        }, 'query', 1)
+        existing_extension = m.embedding_doc_download_metadata({
+            'filename': 'https://example.com/report.pdf?download=1',
+            'object_name': 'embedding/app-a/uuid-1/report.pdf',
+            'type': 'url'
+        }, 'pdf', 1)
+        upload = m.embedding_doc_download_metadata({
+            'filename': 'report.final.pdf',
+            'object_name': 'embedding/app-a/uuid-1/upload.pdf',
+            'type': 'file'
+        }, 'upload', 1)
+
+        self.assertEqual('www_example_com.html', root['filename'])
+        self.assertEqual('text/html', root['content_type'])
+        self.assertEqual('docs.html', query['filename'])
+        self.assertEqual('text/html', query['content_type'])
+        self.assertEqual('report.pdf', existing_extension['filename'])
+        self.assertEqual('application/pdf', existing_extension['content_type'])
+        self.assertEqual('report.final.pdf', upload['filename'])
+
+    def test_download_embedding_doc_accepts_legacy_file_without_type(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        with mock.patch.object(m.lanying_embedding, 'get_embedding_name_info', return_value={'embedding_uuid': 'uuid-1'}, create=True), \
+                mock.patch.object(m.lanying_embedding, 'get_doc', return_value={
+                    'filename': 'legacy.csv',
+                    'object_name': 'embedding/app-a/uuid-1/doc-legacy.csv'
+                }, create=True), \
+                mock.patch.object(m.lanying_file_storage, 'open_object', return_value={
+                    'result': 'ok', 'stream': 'legacy-stream', 'content_length': 7
+                }, create=True) as open_object:
+            result = m.download_embedding_doc('app-a', 'knowledge', 'doc-legacy')
+
+        self.assertEqual('legacy.csv', result['filename'])
+        self.assertEqual('legacy-stream', result['stream'])
+        open_object.assert_called_once_with('embedding/app-a/uuid-1/doc-legacy.csv')
+
+    def test_embedding_doc_list_marks_downloadable_files(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        docs = [
+            {'doc_id': 'new', 'type': 'file', 'object_name': 'new.pdf'},
+            {'doc_id': 'legacy', 'object_name': 'legacy.csv'},
+            {'doc_id': 'url', 'type': 'url', 'object_name': 'cached.html'},
+            {'doc_id': 'site', 'type': 'site', 'object_name': 'site.html'},
+            {'doc_id': 'plugin', 'type': 'plugin', 'object_name': 'dummy'},
+            {'doc_id': 'failed', 'type': 'file', 'object_name': ''}
+        ]
+        with mock.patch.object(m.lanying_embedding, 'get_embedding_doc_info_list',
+                               return_value=(len(docs), docs), create=True):
+            total, result = m.get_embedding_doc_info_list('app-a', 'knowledge', 0, 20)
+
+        self.assertEqual(6, total)
+        self.assertEqual([True, True, True, True, False, False],
+                         [doc['downloadable'] for doc in result])
+
+    def test_prepare_embedding_doc_download_validates_without_opening_file(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        with mock.patch.object(m.lanying_embedding, 'get_embedding_name_info', return_value={'embedding_uuid': 'uuid-1'}, create=True), \
+                mock.patch.object(m.lanying_embedding, 'get_doc', return_value={
+                    'filename': 'guide.pdf',
+                    'object_name': 'embedding/app-a/uuid-1/doc-1.pdf',
+                    'type': 'file'
+                }, create=True), \
+                mock.patch.object(m.lanying_file_storage, 'stat_object', return_value={
+                    'result': 'ok', 'content_length': 11
+                }, create=True) as stat_object, \
+                mock.patch.object(m.lanying_file_storage, 'open_object', create=True) as open_object:
+            result = m.prepare_embedding_doc_download('app-a', 'knowledge', 'doc-1')
+
+        self.assertEqual('guide.pdf', result['filename'])
+        self.assertEqual(11, result['content_length'])
+        stat_object.assert_called_once_with('embedding/app-a/uuid-1/doc-1.pdf')
         open_object.assert_not_called()
 
     def test_chat_history_keeps_one_hundred_records_for_thirty_days(self):
