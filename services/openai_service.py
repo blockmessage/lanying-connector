@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 import uuid
 from pydub import AudioSegment
 import math
+import mimetypes
 import lanying_image
 from lanying_async import executor
 import lanying_message_quota_usage
@@ -4193,6 +4194,28 @@ def list_embeddings(app_id):
 
 def get_embedding_doc_info_list(app_id, embedding_name, start, end):
     return lanying_embedding.get_embedding_doc_info_list(app_id, embedding_name, start, end)
+
+def download_embedding_doc(app_id, embedding_name, doc_id):
+    embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if not embedding_info:
+        return None
+    doc = lanying_embedding.get_doc(embedding_info['embedding_uuid'], doc_id)
+    if not doc or str(doc.get('type', '')).lower() != 'file' or not doc.get('object_name'):
+        return None
+    result = lanying_file_storage.open_object(doc['object_name'])
+    if result.get('result') != 'ok':
+        return {'error': result.get('message', 'fail to download file')}
+    filename = os.path.basename(str(doc.get('filename') or '').replace('\\', '/'))
+    filename = re.sub(r'[\x00-\x1f\x7f]', '_', filename)
+    if not filename:
+        filename = f"{doc_id}{doc.get('ext', '')}"
+    content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+    return {
+        'stream': result['stream'],
+        'content_length': result['content_length'],
+        'filename': filename,
+        'content_type': content_type
+    }
 
 def list_embedding_tasks(app_id, embedding_name):
     embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)

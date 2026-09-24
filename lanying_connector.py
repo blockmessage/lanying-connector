@@ -1,5 +1,5 @@
 import os
-from flask import Flask, Response, request, render_template
+from flask import Flask, Response, request, render_template, send_file
 import requests
 import logging
 import json
@@ -559,6 +559,35 @@ def list_embedding_docs(service):
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
+
+@app.route("/service/<string:service>/download_embedding_doc", methods=["POST"])
+def download_embedding_doc(service):
+    headerToken = request.headers.get('access-token', "")
+    if not accessToken or accessToken != headerToken:
+        return app.make_response({'code':401, 'message':'bad authorization'}), 401
+    data = request.get_json(silent=True) or {}
+    app_id = data.get('app_id')
+    embedding_name = data.get('embedding_name')
+    doc_id = data.get('doc_id')
+    if not app_id or not embedding_name or not doc_id:
+        return app.make_response({'code':400, 'message':'missing download parameters'}), 400
+    service_module = get_service_module(service)
+    result = service_module.download_embedding_doc(str(app_id), str(embedding_name), str(doc_id))
+    if not result:
+        return app.make_response({'code':404, 'message':'embedding document not found'}), 404
+    if result.get('error'):
+        return app.make_response({'code':502, 'message':'embedding document storage unavailable'}), 502
+    response = send_file(
+        result['stream'],
+        mimetype=result['content_type'],
+        as_attachment=True,
+        download_name=result['filename'],
+        conditional=False,
+        etag=False
+    )
+    response.content_length = result['content_length']
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
 @app.route("/service/<string:service>/list_embedding_tasks", methods=["POST"])
 def list_embedding_tasks(service):

@@ -222,6 +222,7 @@ def _install_fake_openai_service_local_modules_if_needed():
         'lanying_url_loader',
         'lanying_vendor',
         'lanying_utils',
+        'lanying_masked_config',
         'lanying_ai_plugin',
         'lanying_file_storage',
         'lanying_chatbot',
@@ -343,6 +344,60 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertFalse(m.is_ai_generate_disabled_msg({
             'ext': '{"openclaw":{"type":"session_sync_delivery","role":"user"}}'
         }))
+
+    def test_download_embedding_doc_reads_only_resolved_app_embedding(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        with mock.patch.object(m.lanying_embedding, 'get_embedding_name_info', return_value={'embedding_uuid': 'uuid-1'}, create=True), \
+                mock.patch.object(m.lanying_embedding, 'get_doc', return_value={
+                    'filename': 'guide.pdf',
+                    'object_name': 'embedding/app-a/uuid-1/doc-1.pdf',
+                    'type': 'file'
+                }, create=True), \
+                mock.patch.object(m.lanying_file_storage, 'open_object', return_value={
+                    'result': 'ok', 'stream': 'file-stream', 'content_length': 11
+                }, create=True) as open_object:
+            result = m.download_embedding_doc('app-a', 'knowledge', 'doc-1')
+
+        self.assertEqual('guide.pdf', result['filename'])
+        self.assertEqual('application/pdf', result['content_type'])
+        self.assertEqual('file-stream', result['stream'])
+        self.assertEqual(11, result['content_length'])
+        open_object.assert_called_once_with('embedding/app-a/uuid-1/doc-1.pdf')
+
+    def test_download_embedding_doc_does_not_read_storage_for_unknown_embedding(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        with mock.patch.object(m.lanying_embedding, 'get_embedding_name_info', return_value=None, create=True), \
+                mock.patch.object(m.lanying_file_storage, 'open_object', create=True) as open_object:
+            result = m.download_embedding_doc('app-a', 'missing', 'doc-1')
+
+        self.assertIsNone(result)
+        open_object.assert_not_called()
+
+    def test_download_embedding_doc_rejects_crawled_web_content(self):
+        try:
+            m = importlib.import_module('openai_service')
+        except ModuleNotFoundError as exc:
+            raise unittest.SkipTest(f"optional dependency missing for openai_service import: {exc}")
+
+        with mock.patch.object(m.lanying_embedding, 'get_embedding_name_info', return_value={'embedding_uuid': 'uuid-1'}, create=True), \
+                mock.patch.object(m.lanying_embedding, 'get_doc', return_value={
+                    'filename': 'https://example.com/docs',
+                    'object_name': 'embedding/app-a/uuid-1/doc-2.html',
+                    'type': 'url'
+                }, create=True), \
+                mock.patch.object(m.lanying_file_storage, 'open_object', create=True) as open_object:
+            result = m.download_embedding_doc('app-a', 'knowledge', 'doc-2')
+
+        self.assertIsNone(result)
+        open_object.assert_not_called()
 
     def test_chat_history_keeps_one_hundred_records_for_thirty_days(self):
         try:

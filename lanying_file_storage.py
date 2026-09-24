@@ -52,6 +52,47 @@ def download(object_name, filename):
         logging.error(f"download {filename} failed:", err)
     return {"result":"error", "message":"fail to download file"}
 
+class StoredObjectStream:
+    def __init__(self, response):
+        self.response = response
+        self.closed = False
+
+    def read(self, size=-1):
+        return self.response.read(size)
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.response.close()
+        finally:
+            self.response.release_conn()
+
+
+def open_object(object_name):
+    data = None
+    try:
+        if client is None or not object_name:
+            return {"result":"error", "message":"file storage unavailable"}
+        stat = client.stat_object(bucket_name, object_name)
+        content_length = int(stat.size or 0)
+        if content_length > max_upload_file_size:
+            logging.warning("download object rejected because it is too large")
+            return {"result":"error", "message":"file too large"}
+        data = client.get_object(bucket_name, object_name)
+        return {
+            "result":"ok",
+            "stream":StoredObjectStream(data),
+            "content_length":content_length
+        }
+    except Exception:
+        logging.exception("read object from file storage failed")
+        if data is not None:
+            data.close()
+            data.release_conn()
+        return {"result":"error", "message":"fail to download file"}
+
 def download_url(url, headers, filename):
     try:
         if len(headers) == 0:
