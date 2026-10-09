@@ -9,6 +9,7 @@ import base64
 import binascii
 import logging
 import os
+import stat
 import tempfile
 import zipfile
 import uuid
@@ -21,6 +22,8 @@ from psycopg2.errors import UndefinedTable
 import lanying_agent_tools_storage as storage
 
 MAX_FILE_BYTES = 30 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+MAX_ARCHIVE_ENTRIES = 200
 INTERNAL_TYPE = 'seenical_session'
 BUSY = {'indexing', 'cleaning'}
 
@@ -257,7 +260,7 @@ def ingest_message(msg):
     try:
         validate_source(url, str(msg['appId']))
         validate_attachment_identity(url, msg)
-        if ext not in embedding.allow_exts() or ext == '.zip':
+        if ext not in embedding.allow_exts() and ext != '.zip':
             raise MaterialError('material_unsupported_format')
         try:
             declared_size = int(attachment.get('fLen', 0))
@@ -582,7 +585,6 @@ def _index_document(app_id, space, doc):
     config = lanying_config.get_lanying_connector(app_id) or {}
     if not config.get('product_id') or lanying_config.get_lanying_connector_deduct_failed(app_id):
         raise MaterialError('material_service_unavailable')
-    initialize_index(app_id, space)
     ext = os.path.splitext(doc['filename'])[1].lower()
     with tempfile.TemporaryDirectory(prefix='seenical-material-') as directory:
         path = os.path.join(directory, 'source' + ext)
@@ -591,9 +593,14 @@ def _index_document(app_id, space, doc):
         size = os.path.getsize(path)
         if size > MAX_FILE_BYTES:
             raise MaterialError('material_file_too_large')
-        if ext not in embedding.allow_exts():
+        if ext not in embedding.allow_exts() and ext != '.zip':
             raise MaterialError('material_unsupported_format')
-        validate_file(path, ext)
+        archive = None
+        if ext == '.zip':
+            archive = extract_archive_documents(path, directory, embedding.allow_exts())
+        else:
+            validate_file(path, ext)
+        initialize_index(app_id, space)
         # Retain the source even when indexing cannot obtain quota. Source-only
         # files do not count towards knowledge storage until indexing starts.
         embedding_uuid = space['embedding_uuid']
@@ -602,9 +609,24 @@ def _index_document(app_id, space, doc):
         if not meta or not meta.get('object_name'):
             embedding.create_doc_info(app_id, embedding_uuid, doc['filename'], object_name,
                 doc['doc_id'], size, ext, 'file', '', 'openai', {})
-        update_usage(app_id, embedding_uuid, doc['doc_id'], size)
-        embedding.process_embedding_file('', app_id, embedding_uuid, path,
-                                         doc['filename'], doc['doc_id'], ext)
+        if archive:
+            documents, indexed_size, skipped = archive
+            for field, value in [('archive_document_count', len(documents)),
+                                 ('archive_skipped_count', skipped),
+                                 ('archive_indexed_size', indexed_size)]:
+                embedding.update_doc_field(embedding_uuid, doc['doc_id'], field, value)
+            # Compressed size is the download size, not the knowledge allowance.
+            update_usage(app_id, embedding_uuid, doc['doc_id'], indexed_size)
+            # A retry rebuilds the whole archive under the same document ID.
+            for field in ['progress_total', 'progress_finish']:
+                embedding.update_doc_field(embedding_uuid, doc['doc_id'], field, 0)
+            for name, child_path, child_ext in documents:
+                embedding.process_embedding_file('', app_id, embedding_uuid, child_path,
+                    name, doc['doc_id'], child_ext, source_filename=name)
+        else:
+            update_usage(app_id, embedding_uuid, doc['doc_id'], size)
+            embedding.process_embedding_file('', app_id, embedding_uuid, path,
+                                             doc['filename'], doc['doc_id'], ext)
         if embedding.get_doc(embedding_uuid, doc['doc_id']).get('status') != 'finish':
             raise MaterialError('material_processing_failed')
 
@@ -637,6 +659,15 @@ def material_api(app_id, actor, operation, data):
             for doc_id in ids[start:start + limit]:
                 doc = _document(conn, app_id, doc_id)
                 value = {k: doc[k] for k in ['doc_id', 'filename', 'file_size', 'status', 'error_code']}
+                if doc['filename'].lower().endswith('.zip'):
+                    import lanying_embedding
+                    meta = lanying_embedding.get_doc(_space(conn, app_id)['embedding_uuid'], doc_id) or {}
+                    if 'archive_document_count' in meta:
+                        value['archive_summary'] = {
+                            'document_count': int(meta['archive_document_count']),
+                            'skipped_count': int(meta.get('archive_skipped_count', 0)),
+                            'indexed_size': int(meta.get('archive_indexed_size', 0)),
+                        }
                 if doc['status'] in BUSY and worker_interrupted(app_id, doc.get('worker_id')):
                     value.update(status='interrupted', error_code='material_processing_interrupted')
                 value['references'] = [dict(r) for r in conn.execute(text(
@@ -790,6 +821,82 @@ def reconcile_deleted_agents(app_id):
     for chatbot_id in ids:
         if not lanying_chatbot.get_chatbot(app_id, chatbot_id):
             release_chatbot_sessions(app_id, chatbot_id)
+
+
+def archive_member_name(entry):
+    name = entry.orig_filename
+    if not entry.flag_bits & 0x800:
+        # Legacy ZIP writers omit the UTF-8 flag and may use GBK filenames.
+        raw = name.encode('cp437')
+        for encoding in ['utf-8', 'gbk']:
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+    return name
+
+
+def extract_archive_documents(path, directory, allowed_exts):
+    """Bounded ZIP reading; never extract to a caller-controlled member path.
+
+    All member metadata is checked before any extraction or model call. Only
+    supported text documents are read; nested archives/images are not indexed.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if len(entries) > MAX_ARCHIVE_ENTRIES:
+                raise MaterialError('material_archive_limit')
+            selected = []
+            total = 0
+            skipped = 0
+            for entry in entries:
+                name = archive_member_name(entry).replace('\\', '/')
+                parts = name.split('/')
+                mode = stat.S_IFMT(entry.external_attr >> 16)
+                if (not name or len(name) > 1024 or '\x00' in name or name.startswith('/')
+                        or '..' in parts or ':' in name
+                        or mode not in {0, stat.S_IFREG, stat.S_IFDIR}):
+                    raise MaterialError('material_archive_unsafe')
+                if entry.flag_bits & 1 or entry.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+                    raise MaterialError('material_archive_unsupported')
+                if entry.is_dir():
+                    continue
+                if entry.file_size > MAX_FILE_BYTES:
+                    raise MaterialError('material_file_too_large')
+                total += entry.file_size
+                if total > MAX_ARCHIVE_BYTES:
+                    raise MaterialError('material_archive_limit')
+                ext = os.path.splitext(name)[1].lower()
+                if (not entry.file_size or '__MACOSX' in parts or parts[-1] == '.DS_Store'
+                        or ext == '.zip' or ext not in allowed_exts):
+                    skipped += 1
+                    continue
+                selected.append((entry, name, ext))
+            if not selected:
+                raise MaterialError('material_archive_empty')
+            documents = []
+            indexed_size = 0
+            for index, (entry, name, ext) in enumerate(selected):
+                child_path = os.path.join(directory, f'member-{index}{ext}')
+                size = 0
+                with archive.open(entry) as source, open(child_path, 'wb') as output:
+                    while True:
+                        block = source.read(65536)
+                        if not block:
+                            break
+                        size += len(block)
+                        indexed_size += len(block)
+                        if size > MAX_FILE_BYTES or indexed_size > MAX_ARCHIVE_BYTES:
+                            raise MaterialError('material_archive_limit')
+                        output.write(block)
+                if size != entry.file_size:
+                    raise MaterialError('material_archive_invalid')
+                validate_file(child_path, ext)
+                documents.append((name, child_path, ext))
+            return documents, indexed_size, skipped
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError) as exc:
+        raise MaterialError('material_archive_invalid') from exc
 
 
 def validate_file(path, ext):

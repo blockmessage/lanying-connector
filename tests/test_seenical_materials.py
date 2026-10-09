@@ -468,7 +468,7 @@ class MaterialReferencesTest(unittest.TestCase):
         embedding = types.SimpleNamespace(allow_exts=lambda: ['.txt'])
         msg = {'appId': 'a', 'ctype': 'FILE', 'msgId': 'new-file',
                'ext': {'seenical': {'material_version': 1}},
-               'attachment': {'dName': 'archive.zip', 'fLen': 10, 'url': 'https://api.maximtop.com/file'}}
+               'attachment': {'dName': 'archive.rar', 'fLen': 10, 'url': 'https://api.maximtop.com/file'}}
         with mock.patch.dict('sys.modules', {'lanying_embedding': embedding}), \
                 mock.patch.object(m, 'message_conversation', return_value={'seenical_session_id': 's'}), \
                 mock.patch.object(m, 'validate_source'), mock.patch.object(m, 'validate_attachment_identity'):
@@ -479,6 +479,57 @@ class MaterialReferencesTest(unittest.TestCase):
         self.assertEqual(doc['status'], 'failed')
         self.assertEqual(doc['error_code'], 'material_unsupported_format')
         self.queue.assert_not_called()
+
+    def test_zip_ingestion_is_queued_as_one_material_without_model_initialization(self):
+        embedding = types.SimpleNamespace(allow_exts=lambda: ['.txt'])
+        msg = {'appId': 'a', 'ctype': 'FILE', 'msgId': 'new-zip',
+               'ext': {'seenical': {'material_version': 1}},
+               'attachment': {'dName': 'archive.zip', 'fLen': 10, 'url': 'https://api.maximtop.com/file'}}
+        with mock.patch.dict('sys.modules', {'lanying_embedding': embedding}), \
+                mock.patch.object(m, 'message_conversation', return_value={'seenical_session_id': 's'}), \
+                mock.patch.object(m, 'validate_source'), mock.patch.object(m, 'validate_attachment_identity'):
+            self.assertTrue(m.ingest_message(msg))
+            self.assertTrue(m.ingest_message(msg))
+        ids = m.reference_ids('a', 'session', 's')
+        self.assertEqual(len(ids), 1)
+        with self.engine.connect() as conn:
+            self.assertEqual(m._document(conn, 'a', ids[0])['status'], 'pending')
+        self.queue.assert_called_once_with('a')
+
+    def test_archive_summary_is_returned_for_active_and_removed_materials(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("UPDATE seenical_material SET filename='docs.zip',object_name='original.zip',file_size=80 WHERE doc_id='1-1'"))
+        m.set_references('a', 'session', 's', ['1-1'])
+        embedding = types.SimpleNamespace(get_embedding_usage=lambda app: {'storage_file_size': 9000},
+            get_doc=lambda *args: {'archive_document_count': '2', 'archive_skipped_count': '1',
+                                   'archive_indexed_size': '9000'})
+        with mock.patch.dict('sys.modules', {'lanying_embedding': embedding}), \
+                mock.patch.object(m, 'authorized_conversation', return_value={}):
+            current = m.material_api('a', {}, 'list', {'seenical_session_id': 's'})['list'][0]
+            m.release_owner('a', 'session', 's')
+            removed = m.material_api('a', {}, 'list', {'seenical_session_id': 's', 'removed': True})['list'][0]
+        self.assertEqual(current['archive_summary'], {'document_count': 2, 'skipped_count': 1, 'indexed_size': 9000})
+        self.assertEqual(current['file_size'], 80)
+        self.assertEqual(current['archive_summary'], removed['archive_summary'])
+
+    def test_zip_partial_index_failure_cleans_whole_document_then_can_retry(self):
+        self.set_state('unindexed', '1-2')
+        with self.engine.begin() as conn:
+            conn.execute(text("UPDATE seenical_material SET filename='docs.zip',object_name='original.zip',status='pending' WHERE doc_id='1-1'"))
+        m.set_references('a', 'session', 's', ['1-1'])
+        self.index.side_effect = RuntimeError('second archive member failed')
+        m.process_pending('a', 'first')
+        self.assertEqual(self.state(), 'failed')
+        self.clear.assert_called_once()
+        self.assertEqual(self.clear.call_args.args[2]['doc_id'], '1-1')
+        with self.engine.connect() as conn:
+            self.assertEqual(m._document(conn, 'a', '1-1')['object_name'], 'original.zip')
+        with mock.patch.object(m, 'authorized_conversation', return_value={}):
+            m.material_api('a', {}, 'retry', {'seenical_session_id': 's', 'doc_id': '1-1'})
+        self.index.side_effect = None
+        m.process_pending('a', 'second')
+        self.assertEqual(self.state(), 'ready')
+        self.assertEqual(m.reference_ids('a', 'session', 's'), ['1-1'])
 
     def test_model_failure_after_ingest_remains_retryable(self):
         self.set_state('pending')

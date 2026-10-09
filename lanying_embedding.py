@@ -752,12 +752,17 @@ def get_global_embedding_name_info(embedding_name):
 def get_global_embedding_name_key(embedding_name):
     return f"embedding_config:alias:{embedding_name}"
 
-def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_filename, doc_id, ext):
+def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_filename, doc_id, ext, source_filename=None):
     redis = lanying_redis.get_redis_stack_connection()
     increase_embedding_doc_field(redis, embedding_uuid, doc_id, "process_count", 1)
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
     # logging.info(f"process_embedding_file | config:{embedding_uuid_info}")
     if embedding_uuid_info:
+        if source_filename is not None:
+            # Per-call metadata only; never changes the shared library config.
+            meta = get_doc(embedding_uuid, doc_id) or {}
+            embedding_uuid_info = dict(embedding_uuid_info, _seenical_source_filename=source_filename,
+                                       _seenical_progress_offset=int(meta.get('progress_total', 0)))
         try:
             if ext in [".html", ".htm"]:
                 process_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
@@ -853,7 +858,7 @@ def process_html(config, app_id, embedding_uuid, filename, origin_filename, doc_
 def process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, markdown):
     blocks = markdown_to_blocks(config, markdown)
     redis = lanying_redis.get_redis_stack_connection()
-    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks), config)
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
 
 def markdown_to_blocks(config, markdown):
@@ -879,7 +884,7 @@ def process_txt(config, app_id, embedding_uuid, filename, origin_filename, doc_i
         content = f.read()
         total_tokens, blocks = process_block(config, content)
     redis = lanying_redis.get_redis_stack_connection()
-    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks), config)
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
 
 
@@ -889,7 +894,7 @@ def process_pdf(config, app_id, embedding_uuid, filename, origin_filename, doc_i
     content = extract_pdf(filename)
     total_tokens, blocks = process_block(config, content)
     redis = lanying_redis.get_redis_stack_connection()
-    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks), config)
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
 
 def extract_pdf(filename):
@@ -926,7 +931,7 @@ def process_docx(config, app_id, embedding_uuid, filename, origin_filename, doc_
         text = docx2txt.process(filename)
     total_tokens, blocks = process_block(config, text)
     redis = lanying_redis.get_redis_stack_connection()
-    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks), config)
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
 
 def process_pptx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
@@ -946,7 +951,7 @@ def process_pptx(config, app_id, embedding_uuid, filename, origin_filename, doc_
             block_tokens, block_blocks = process_block(config, now_texts_str)
             total_tokens += block_tokens
             total_blocks += len(block_blocks)
-            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks, config)
             insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
             now_texts = [text]
             now_tokens = tokens
@@ -958,7 +963,7 @@ def process_pptx(config, app_id, embedding_uuid, filename, origin_filename, doc_
         block_tokens, block_blocks = process_block(config, now_texts_str)
         total_tokens += block_tokens
         total_blocks += len(block_blocks)
-        update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+        update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks, config)
         insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
 
 def extract_text_from_pptx(pptx_path):
@@ -1008,7 +1013,7 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
                 block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''), tags)
                 total_tokens += block_tokens
                 total_blocks += len(block_blocks)
-                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks, config)
                 insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
     elif has_custom_tag:
         for i, row in df.iterrows():
@@ -1024,7 +1029,7 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
             block_tokens, block_blocks = process_block(config, content, tags)
             total_tokens += block_tokens
             total_blocks += len(block_blocks)
-            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks, config)
             insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
     else:
         df = pd.read_csv(filename, header=None)
@@ -1037,7 +1042,7 @@ def process_csv(config, app_id, embedding_uuid, filename, origin_filename, doc_i
             lines.append(line)
         content = '\n'.join(lines)
         total_tokens, blocks = process_block(config, content)
-        update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks))
+        update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks), config)
         insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
 
 def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
@@ -1065,7 +1070,7 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
                     block_tokens, block_blocks = process_question(config, str(row['question']), str(row['answer']), row.get('reference',''), tags)
                     total_tokens += block_tokens
                     total_blocks += len(block_blocks)
-                    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                    update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks, config)
                     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
         elif has_custom_tag:
             for i, row in df.iterrows():
@@ -1081,7 +1086,7 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
                 block_tokens, block_blocks = process_block(config, content, tags)
                 total_tokens += block_tokens
                 total_blocks += len(block_blocks)
-                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+                update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks, config)
                 insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
         else:
             df = pd.read_excel(filename, sheet_name=sheet_name, header=None)
@@ -1097,7 +1102,7 @@ def process_xlsx(config, app_id, embedding_uuid, filename, origin_filename, doc_
             total_tokens += block_tokens
             total_blocks += len(block_blocks)
             redis = lanying_redis.get_redis_stack_connection()
-            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks)
+            update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), total_blocks, config)
             insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, block_blocks, redis)
 
 def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis):
@@ -1128,6 +1133,9 @@ def insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, b
             custom_tags = {}
         else:
             raise Exception(f"bad_block: {block}")
+        if config.get('_seenical_source_filename'):
+            text = '[来源文件：' + json.dumps(config['_seenical_source_filename'], ensure_ascii=False) + ']\n' + text
+            token_cnt = num_of_tokens(question + text)
         doc_info = get_doc(embedding_uuid, doc_id)
         if doc_info:
             block_id = advised_block_id if len(advised_block_id) > 0 else generate_block_id(embedding_uuid, doc_id)
@@ -1428,8 +1436,11 @@ def trace_doc_key(trace_id):
 def update_progress(redis, key, value):
     redis.hincrby(key, "progress_finish", value)
 
-def update_progress_total(redis, key, total):
-    redis.hset(key, "progress_total", total)
+def update_progress_total(redis, key, total, config=None):
+    # Each parser reports its own (possibly growing) total. Archive members
+    # add that total to the preceding members, instead of overwriting them.
+    offset = (config or {}).get('_seenical_progress_offset', 0)
+    redis.hset(key, "progress_total", offset + total)
 
 def increase_embedding_uuid_field(redis, embedding_uuid, field, value):
     redis.hincrby(get_embedding_uuid_key(embedding_uuid), field, value)
