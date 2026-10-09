@@ -533,6 +533,11 @@ def delete_chatbot(app_id, chatbot_id):
     capsule_info = lanying_ai_capsule.get_capsule(capsule_id)
     if capsule_info:
         return {'result': 'error', 'message': 'shared chatbot cannot be deleted'}
+    import lanying_seenical_materials as materials
+    if materials.storage.is_enabled():
+        # Fail before deleting the Agent if its durable material state cannot
+        # be read. A queued reconciliation recovers a later release failure.
+        materials.reference_ids(app_id, 'session', 'primary:' + str(chatbot_id))
     logging.info(f"start delete chatbot: app_id={app_id}, chatbot_id={chatbot_id}")
     chatbot_name = chatbot_info['name']
     chatbot_user_id = chatbot_info['user_id']
@@ -543,6 +548,11 @@ def delete_chatbot(app_id, chatbot_id):
     del_name_chatbot_id(app_id, chatbot_name)
     from lanying_ai_plugin import delete_chatbot_plugin_bind_relation
     delete_chatbot_plugin_bind_relation(app_id, chatbot_name)
+    try:
+        materials.release_chatbot_sessions(app_id, chatbot_id)
+    except Exception:
+        materials.enqueue(app_id)
+        raise
     logging.info(f"finish delete chatbot: app_id={app_id}, chatbot_id={chatbot_id}")
     return {'result': 'ok', 'data':{
         'name': chatbot_name

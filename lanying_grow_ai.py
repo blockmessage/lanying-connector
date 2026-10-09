@@ -40,8 +40,9 @@ ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
 
 
 class TaskSetting:
-    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition, auto_deploy, article_prompt='', article_language='auto'):
+    def __init__(self, app_id, name, note, chatbot_id, prompt, keywords, word_count_min, word_count_max, image_count, article_count, cycle_type, cycle_interval, file_list, deploy, title_reuse, site_id_list, target_dir, commit_type, target_summary_dir, embedding_condition, auto_deploy, article_prompt='', article_language='auto', reference_document_ids=None):
         self.app_id = app_id
+        self.reference_document_ids = reference_document_ids
         self.name = name
         self.note = note
         self.chatbot_id = chatbot_id
@@ -350,8 +351,23 @@ def create_task(task_setting: TaskSetting, run_immediately=True):
     # readers ignore this field and old tasks lazily default to revision 0.
     fields['revision'] = 0
     logging.info(f"create task start | app_id:{app_id}, task_info:{fields}")
-    redis.hmset(get_task_key(app_id, task_id), fields)
-    redis.rpush(get_task_list_key(app_id), task_id)
+    if task_setting.reference_document_ids is not None:
+        import lanying_seenical_materials as materials
+        def persist_plan():
+            # Publish the record and list entry together, before committing its
+            # MySQL references. A failed write must not pin invisible inputs.
+            with redis.pipeline(transaction=True) as pipe:
+                pipe.hmset(get_task_key(app_id, task_id), fields)
+                pipe.rpush(get_task_list_key(app_id), task_id)
+                pipe.execute()
+        try:
+            materials.set_references(app_id, 'plan', task_id, task_setting.reference_document_ids,
+                                     persist_owner=persist_plan)
+        except materials.MaterialError as exc:
+            return {'result': 'error', 'message': str(exc)}
+    else:
+        redis.hmset(get_task_key(app_id, task_id), fields)
+        redis.rpush(get_task_list_key(app_id), task_id)
     task_info = get_task(app_id, task_id)
     logging.info(f"create task finish | app_id:{app_id}, task_info:{task_info}")
     cycle_type = task_info['cycle_type']
@@ -466,7 +482,7 @@ TASK_PATCH_INTEGER_FIELDS = {
     'cycle_interval'
 }
 TASK_PATCH_JSON_FIELDS = {
-    'file_list', 'deploy', 'site_id_list', 'embedding_condition'
+    'file_list', 'deploy', 'site_id_list', 'embedding_condition', 'reference_document_ids'
 }
 TASK_PATCH_ENUM_FIELDS = {
     'article_language': ARTICLE_LANGUAGE_VALUES,
@@ -531,7 +547,7 @@ def _normalize_task_patch(changes):
             elif field in TASK_PATCH_INTEGER_FIELDS:
                 normalized[field] = int(value)
             elif field in TASK_PATCH_JSON_FIELDS:
-                if field in ['file_list', 'site_id_list']:
+                if field in ['file_list', 'site_id_list', 'reference_document_ids']:
                     if not isinstance(value, list):
                         raise ValueError(f'{field} must be an array')
                     normalized[field] = value
@@ -647,6 +663,8 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
     redis_fields = {}
     all_fields = task_setting.to_hmset_fields()
     for field in normalized:
+        if field == 'reference_document_ids':
+            continue
         redis_fields[field] = all_fields[field]
     redis_fields['revision'] = next_revision
     redis_fields['update_time'] = int(time.time())
@@ -667,7 +685,15 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
     # an otherwise valid partial POST into a distributed-lock dependency.
     # Concurrent requests intentionally use last-write-wins per supplied field.
     _save_task_revision(app_id, task_id, current_revision, snapshot, request_id)
-    redis.hmset(task_key, redis_fields)
+    if 'reference_document_ids' in normalized:
+        import lanying_seenical_materials as materials
+        try:
+            materials.set_references(app_id, 'plan', task_id, normalized['reference_document_ids'],
+                                     persist_owner=lambda: redis.hmset(task_key, redis_fields))
+        except materials.MaterialError as exc:
+            return {'result': 'error', 'message': str(exc)}
+    else:
+        redis.hmset(task_key, redis_fields)
 
     new_task_info = get_task(app_id, task_id)
     title_inputs = {'prompt', 'article_prompt', 'article_language', 'keywords', 'file_list'}
@@ -982,6 +1008,8 @@ def get_task(app_id, task_id):
             dto['article_language_scoped'] = 'off'
         if 'article_language' not in dto:
             dto['article_language'] = 'auto'
+        import lanying_seenical_materials
+        dto['reference_document_ids'] = lanying_seenical_materials.reference_ids(app_id, 'plan', task_id)
         return dto
     return None
 
@@ -1071,9 +1099,16 @@ def delete_task(app_id, task_id):
         return {'result': 'error', 'message': 'task_id not exist'}
     result = get_task_run_list(app_id, task_id)
     task_run_list = result['data']['list']
+    if any(_run_has_active_materials(run) for run in task_run_list):
+        return {'result': 'error', 'message': 'material_run_active'}
+    if any(run.get('preview_id') and get_preview(app_id, run['preview_id']) is not None
+           for run in task_run_list):
+        return {'result': 'error', 'message': 'task_run has preview'}
     for task_run in task_run_list:
         task_run_id = task_run['task_run_id']
-        delete_task_run(app_id, task_run_id)
+        deleted = delete_task_run(app_id, task_run_id)
+        if deleted['result'] != 'ok':
+            return deleted
     
     schedule_id = task_info.get('schedule_id', '')
     if schedule_id != '':
@@ -1083,9 +1118,21 @@ def delete_task(app_id, task_id):
     redis = lanying_redis.get_redis_connection()
     task_key = get_task_key(app_id, task_id)
     task_list_key = get_task_list_key(app_id)
-    redis.lrem(task_list_key, 1, task_id)
-    redis.delete(task_key)
+    import lanying_seenical_materials
+    def persist_delete():
+        with redis.pipeline(transaction=True) as pipe:
+            pipe.lrem(task_list_key, 1, task_id)
+            pipe.delete(task_key)
+            pipe.execute()
+    try:
+        lanying_seenical_materials.release_owner(app_id, 'plan', task_id, persist_owner=persist_delete)
+    except Exception:
+        # An EXEC reply can be lost after Redis has deleted the record. The
+        # worker reconciles only confirmed missing owners before index cleanup.
+        lanying_seenical_materials.enqueue(app_id)
+        raise
     delete_loop_conversation_binding(app_id, task_id)
+    return {'result': 'ok', 'data': {'success': True}}
 
 ## TASK RUN
 
@@ -1237,11 +1284,56 @@ def send_task_run_notification(app_id, task_run_id, event):
     return 0
 
 
+def transition_run_dispatch(app_id, task_run_id, dispatch_id, cancel=False):
+    """Fence a failed/old queue delivery before it can consume run inputs."""
+    from redis.exceptions import WatchError
+    key = get_task_run_key(app_id, task_run_id)
+    redis = lanying_redis.get_redis_connection()
+    for _ in range(5):
+        try:
+            with redis.pipeline() as pipe:
+                pipe.watch(key)
+                run = lanying_redis.redis_hgetall(pipe, key)
+                if not run:
+                    return False
+                if not run.get('dispatch_id'):
+                    return not cancel  # Previously queued jobs retain their behavior.
+                if run['dispatch_id'] != dispatch_id or run.get('dispatch_state') == 'cancelled':
+                    return False
+                if run.get('dispatch_state') == 'claimed':
+                    return not cancel
+                pipe.multi()
+                pipe.hset(key, 'dispatch_state', 'cancelled' if cancel else 'claimed')
+                if cancel:
+                    pipe.hset(key, 'status', 'error')
+                    pipe.hset(key, 'error_message', 'task queue unavailable')
+                pipe.execute()
+                return True
+        except WatchError:
+            continue
+    raise RuntimeError('task dispatch busy')
+
+
+def cancel_unclaimed_run(app_id, task_run_id, dispatch_id):
+    if not transition_run_dispatch(app_id, task_run_id, dispatch_id, cancel=True):
+        return False
+    import lanying_seenical_materials as materials
+    try:
+        materials.release_owner(app_id, 'run', task_run_id)
+    except Exception:
+        logging.exception('failed to release cancelled run materials | app_id:%s run_id:%s', app_id, task_run_id)
+        materials.enqueue(app_id)
+    return True
+
+
 def run_task(app_id, task_id, countdown=0):
     logging.info(f"run task start | app_id:{app_id}, task_id:{task_id}")
     task_info = get_task(app_id, task_id)
     if task_info is None:
         return {'result': 'error', 'message': 'task_id not exist'}
+    import lanying_seenical_materials as materials
+    task_run_id = None
+    dispatch_id = uuid.uuid4().hex
     try:
         now = int(time.time())
         redis = lanying_redis.get_redis_connection()
@@ -1250,10 +1342,17 @@ def run_task(app_id, task_id, countdown=0):
         article_language = resolve_article_language(task_info)
         task_run_id = generate_task_run_id(task_id)
         user_id = generate_dummy_user_id()
+        material_snapshot = {key: task_info[key] for key in [
+            'chatbot_id', 'prompt', 'article_prompt', 'article_language', 'keywords',
+            'file_list', 'word_count_min', 'word_count_max', 'image_count', 'article_count',
+            'embedding_condition', 'reference_document_ids'] if key in task_info}
         notification_fields = _task_run_notification_route(app_id, task_info)
         redis.hmset(get_task_run_key(app_id, task_run_id), dict({
+            'material_input_snapshot': json.dumps(material_snapshot, ensure_ascii=False),
             'task_run_id': task_run_id,
             'status': 'wait',
+            'dispatch_id': dispatch_id,
+            'dispatch_state': 'waiting',
             'create_time': now,
             'task_id': task_id,
             'user_id': user_id,
@@ -1265,9 +1364,11 @@ def run_task(app_id, task_id, countdown=0):
             'notification_attempt': 1,
         }, **notification_fields))
         redis.rpush(get_task_run_list_key(app_id, task_id), task_run_id)
+        materials.set_references(app_id, 'run', task_run_id,
+                                 task_info.get('reference_document_ids', []), require_ready=True)
         set_admin_token(app_id)
         from lanying_tasks import grow_ai_run_task
-        grow_ai_run_task.apply_async(args = [app_id, task_run_id], countdown=countdown)
+        grow_ai_run_task.apply_async(args=[app_id, task_run_id, dispatch_id], countdown=countdown)
         logging.info(f"run task finish | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}")
         return {
             'result': 'ok',
@@ -1275,31 +1376,68 @@ def run_task(app_id, task_id, countdown=0):
                 'task_run_id': task_run_id
             }
         }
+    except materials.MaterialError as e:
+        if task_run_id:
+            cancel_unclaimed_run(app_id, task_run_id, dispatch_id)
+        return {'result': 'error', 'message': str(e)}
     except Exception as e:
         logging.exception(e)
+        if task_run_id and not cancel_unclaimed_run(app_id, task_run_id, dispatch_id):
+            run = get_task_run(app_id, task_run_id) or {}
+            if run.get('dispatch_id') == dispatch_id and run.get('dispatch_state') == 'claimed':
+                return {'result': 'ok', 'data': {'task_run_id': task_run_id}}
         return {'result': 'error', 'message': 'internal error'}
 
 def run_cycle_task(app_id, task_id):
     logging.info(f"run_cycle_task run | app_id:{app_id}, task_id:{task_id}")
 
+def _run_has_active_materials(run):
+    return (run.get('status') in ['wait', 'running', 'retry', 'continue']
+            and bool(json.loads(run.get('material_input_snapshot', '{}')).get('reference_document_ids')))
+
+
 def delete_task_run(app_id, task_run_id):
     task_run = get_task_run(app_id, task_run_id)
     if task_run is None:
         return {'result': 'ok', 'data':{'success': True}}
+    if _run_has_active_materials(task_run):
+        return {'result': 'error', 'message': 'material_run_active'}
     preview_id = task_run.get('preview_id', '')
     if preview_id and get_preview(app_id, preview_id) is not None:
         return {'result': 'error', 'message': 'task_run has preview'}
-    file_size = task_run.get('file_size', 0)
-    incrby_service_usage(app_id, 'storage_size', -file_size)
     task_id = task_run['task_id']
     redis = lanying_redis.get_redis_connection()
     task_run_list_key = get_task_run_list_key(app_id, task_id)
-    redis.lrem(task_run_list_key, 1, task_run_id)
     task_run_key = get_task_run_key(app_id, task_run_id)
-    redis.delete(task_run_key)
+    usage_keys = get_service_statistic_key_list(app_id, 'storage_size')
+    import lanying_seenical_materials
+    def persist_delete():
+        with redis.pipeline(transaction=True) as pipe:
+            # Recheck the record inside the transaction: a repeated request
+            # may have read its snapshot before the first deletion completed.
+            pipe.watch(task_run_key)
+            current = lanying_redis.redis_hgetall(pipe, task_run_key)
+            if not current:
+                pipe.unwatch()
+                return
+            if _run_has_active_materials(current):
+                raise lanying_seenical_materials.MaterialError('material_run_active')
+            if current.get('preview_id') and get_preview(app_id, current['preview_id']) is not None:
+                raise lanying_seenical_materials.MaterialError('task_run has preview')
+            pipe.multi()
+            for key in usage_keys:
+                pipe.incrby(key, -int(current.get('file_size', 0)))
+            pipe.lrem(task_run_list_key, 1, task_run_id)
+            pipe.delete(task_run_key)
+            pipe.execute()
+    try:
+        lanying_seenical_materials.release_owner(app_id, 'run', task_run_id, persist_owner=persist_delete)
+    except Exception:
+        lanying_seenical_materials.enqueue(app_id)
+        raise
     return {'result': 'ok', 'data':{'success': True}}
 
-def do_run_task(app_id, task_run_id, has_retry_times):
+def do_run_task(app_id, task_run_id, has_retry_times, dispatch_id=None):
     try:
         update_task_run_field(app_id, task_run_id, "status", "running")
         send_task_run_notification(app_id, task_run_id, 'started')
@@ -1321,7 +1459,7 @@ def do_run_task(app_id, task_run_id, has_retry_times):
                 return result
         elif result['result'] == 'continue':
             from lanying_tasks import grow_ai_run_task
-            grow_ai_run_task.apply_async(args = [app_id, task_run_id], countdown=1)
+            grow_ai_run_task.apply_async(args=[app_id, task_run_id, dispatch_id], countdown=1)
             return result
         elif result['result'] == 'ok':
             increase_task_run_field(app_id, task_run_id, "success_times", 1)
@@ -1532,6 +1670,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     task = get_task(app_id, task_id)
     if task is None:
         return {'result': 'error', 'message': 'task not exist'}
+    task.update(json.loads(task_run.get('material_input_snapshot', '{}')))
     chatbot_id = task['chatbot_id']
     article_count = task_run['article_count']
     chatbot_info = lanying_chatbot.get_chatbot(app_id, chatbot_id)
@@ -2865,15 +3004,33 @@ def task_run_retry(app_id, task_run_id):
         return {'result': 'error', 'message': 'task_run not exist'}
     if task_run['status'] != 'error':
         return {'result': 'error', 'message': 'task_run status cannot retry'}
-    update_task_run_field(
-        app_id, task_run_id, "notification_attempt",
-        int(task_run.get('notification_attempt', 1) or 1) + 1)
-    update_task_run_field(app_id, task_run_id, "notification_last_error", '')
-    update_task_run_field(app_id, task_run_id, "status", "wait")
-    update_task_run_field(app_id, task_run_id, "update_time", now)
-    set_admin_token(app_id)
-    from lanying_tasks import grow_ai_run_task
-    grow_ai_run_task.apply_async(args = [app_id, task_run_id], countdown=2)
+    import lanying_seenical_materials as materials
+    snapshot = json.loads(task_run.get('material_input_snapshot', '{}'))
+    # Prevent a cleanup worker from mistaking newly reacquired references for
+    # those of the previous terminal attempt.
+    dispatch_id = uuid.uuid4().hex
+    lanying_redis.get_redis_connection().hmset(get_task_run_key(app_id, task_run_id), {
+        'status': 'wait', 'dispatch_id': dispatch_id, 'dispatch_state': 'waiting'})
+    try:
+        materials.set_references(app_id, 'run', task_run_id,
+                                 snapshot.get('reference_document_ids', []), require_ready=True)
+        update_task_run_field(app_id, task_run_id, 'notification_attempt',
+                             int(task_run.get('notification_attempt', 1) or 1) + 1)
+        update_task_run_field(app_id, task_run_id, 'notification_last_error', '')
+        update_task_run_field(app_id, task_run_id, 'update_time', now)
+        set_admin_token(app_id)
+        from lanying_tasks import grow_ai_run_task
+        grow_ai_run_task.apply_async(args=[app_id, task_run_id, dispatch_id], countdown=2)
+    except materials.MaterialError as exc:
+        cancel_unclaimed_run(app_id, task_run_id, dispatch_id)
+        return {'result': 'error', 'message': str(exc)}
+    except Exception:
+        logging.exception('task retry dispatch failed | app_id:%s run_id:%s', app_id, task_run_id)
+        if cancel_unclaimed_run(app_id, task_run_id, dispatch_id):
+            return {'result': 'error', 'message': 'task queue unavailable'}
+        latest = get_task_run(app_id, task_run_id) or {}
+        if latest.get('dispatch_id') != dispatch_id or latest.get('dispatch_state') != 'claimed':
+            return {'result': 'error', 'message': 'task queue unavailable'}
     return {'result': 'ok', 'data':{'success': True}}
 
 def get_download_file(file_sign):
@@ -2977,6 +3134,8 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
                 }
             }
         clean_user_message_count(app_id, from_user_id)
+        if (get_task_run(app_id, task_run_id) or {}).get('material_input_snapshot'):
+            prompt_ext['seenical_task_run_id'] = task_run_id
         logging.info(f"generate_article start | i={i}, app_id:{app_id}, task_run_id:{task_run_id}")
         text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, prompt_ext)
         if text_result['result'] == 'error':
@@ -3269,6 +3428,14 @@ def format_ai_message_result(result):
 def update_task_run_field(app_id, task_run_id, field, value):
     redis = lanying_redis.get_redis_connection()
     redis.hset(get_task_run_key(app_id, task_run_id), field, value)
+    if field == 'status' and value in ['success', 'error']:
+        import lanying_seenical_materials
+        try:
+            lanying_seenical_materials.release_owner(app_id, 'run', task_run_id)
+        except Exception:
+            # A completed generation must not be retried because reference cleanup failed.
+            logging.exception('failed to release run materials | app_id:%s run_id:%s', app_id, task_run_id)
+            lanying_seenical_materials.enqueue(app_id)
 
 def increase_task_run_field(app_id, task_run_id, field, value):
     redis = lanying_redis.get_redis_connection()

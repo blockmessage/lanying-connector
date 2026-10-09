@@ -31,6 +31,32 @@ def create_app():
     return app
 app = create_app()
 lanying_logging.register_http_logging(app)
+
+
+@app.before_request
+def protect_internal_material_library():
+    # Private material management does not accept a client-selected library.
+    # Generic KB APIs must not enumerate, modify, publish or bind the internal
+    # whole-App store. Download is separately authorized/ticketed by Butler.
+    if not request.path.startswith('/service/') or '/agent_tools/' in request.path:
+        return None
+    if request.path.endswith(('/download_embedding_doc', '/prepare_embedding_doc_download')):
+        return None
+    def contains_internal(value, embedding_reference=False):
+        if isinstance(value, dict):
+            return any(contains_internal(item, embedding_reference or key in {'embeddings', 'embedding_uuid', 'embedding_ids'})
+                       for key, item in value.items())
+        if isinstance(value, list):
+            return any(contains_internal(item, embedding_reference) for item in value)
+        if embedding_reference and str(value).isdigit():
+            import lanying_embedding
+            if (lanying_embedding.get_embedding_uuid_info(str(value)) or {}).get('type') == 'seenical_session':
+                return True
+        return value == '__seenical_session_materials__'
+    data = request.get_json(silent=True) or {}
+    if contains_internal(data) or contains_internal(request.args.to_dict()):
+        return app.make_response({'code': 400, 'message': 'internal knowledge library is private'})
+
 import wechat_official_account_service
 app.register_blueprint(wechat_official_account_service.bp)
 import openai_service

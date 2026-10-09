@@ -117,6 +117,8 @@ def create_task():
     data = json.loads(text)
     app_id = str(data['app_id'])
     name = str(data['name'])
+    if 'reference_document_ids' in data and not isinstance(data['reference_document_ids'], list):
+        return make_response({'code': 400, 'message': 'invalid_reference_document_ids'})
     chatbot_id = str(data['chatbot_id'])
     prompt = str(data['prompt'])
     note = str(data.get('note', prompt))
@@ -150,6 +152,7 @@ def create_task():
     task_setting = lanying_grow_ai.TaskSetting(
         app_id = app_id,
         name = name,
+        reference_document_ids = data.get('reference_document_ids'),
         note = note,
         chatbot_id = chatbot_id,
         prompt = prompt,
@@ -208,7 +211,7 @@ def configure_task():
         'auto_deploy', 'site_id_list', 'target_dir', 'target_summary_dir',
         'commit_type', 'embedding_condition'
     }
-    if not legacy_required.issubset(data):
+    if not legacy_required.issubset(data) or 'reference_document_ids' in data:
         changes = {
             key: value for key, value in data.items()
             if key not in ['app_id', 'task_id']

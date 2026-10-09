@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -114,6 +115,135 @@ def task(revision=4, schedule="off"):
 class GrowAIPatchTest(unittest.TestCase):
     def setUp(self):
         self.module = load_grow_ai()
+
+    def test_plan_delete_checks_preview_before_deleting_any_run(self):
+        runs = [{'task_run_id': 'first', 'status': 'success'},
+                {'task_run_id': 'second', 'status': 'success', 'preview_id': 'preview'}]
+        with mock.patch.object(self.module, 'get_task', return_value=task()), \
+                mock.patch.object(self.module, 'get_task_run_list', return_value={'data': {'list': runs}}), \
+                mock.patch.object(self.module, 'get_preview', return_value={}), \
+                mock.patch.object(self.module, 'delete_task_run') as delete:
+            self.assertEqual(self.module.delete_task('app', 'task')['message'], 'task_run has preview')
+            delete.assert_not_called()
+
+    def test_plan_delete_stops_when_child_deletion_is_rejected(self):
+        with mock.patch.object(self.module, 'get_task', return_value=task()), \
+                mock.patch.object(self.module, 'get_task_run_list',
+                                  return_value={'data': {'list': [{'task_run_id': 'run', 'status': 'success'}]}}), \
+                mock.patch.object(self.module, 'delete_task_run',
+                                  return_value={'result': 'error', 'message': 'material_run_active'}), \
+                mock.patch.object(self.module.lanying_redis, 'get_redis_connection') as redis:
+            self.assertEqual(self.module.delete_task('app', 'task')['result'], 'error')
+            redis.assert_not_called()
+
+    def test_queue_failure_cancels_run_releases_materials_and_fences_late_delivery(self):
+        current = dict(task(), reference_document_ids=['1-1'])
+        state = {}
+        redis = mock.MagicMock()
+        redis.hmset.side_effect = lambda k, v: state.update(v)
+        pipe = mock.MagicMock()
+        pipe.__enter__.return_value = pipe
+        pipe.hset.side_effect = lambda k, f, v: state.update({f: v})
+        redis.pipeline.return_value = pipe
+        materials = types.SimpleNamespace(MaterialError=ValueError, set_references=mock.Mock(),
+                                          release_owner=mock.Mock(), enqueue=mock.Mock())
+        job = types.SimpleNamespace(apply_async=mock.Mock(side_effect=RuntimeError('queue down')))
+        with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials,
+                                          'lanying_tasks': types.SimpleNamespace(grow_ai_run_task=job)}), \
+                mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(self.module.lanying_redis, 'redis_hgetall', create=True, side_effect=lambda p, k: dict(state)), \
+                mock.patch.object(self.module, 'get_task', return_value=current), \
+                mock.patch.object(self.module, 'get_task_run', side_effect=lambda *a: dict(state)), \
+                mock.patch.object(self.module, 'generate_task_run_id', return_value='run'), \
+                mock.patch.object(self.module, 'generate_dummy_user_id', return_value='user'), \
+                mock.patch.object(self.module, '_task_run_notification_route', return_value={}), \
+                mock.patch.object(self.module, 'resolve_article_language', return_value='en'), \
+                mock.patch.object(self.module, 'set_admin_token'), \
+                mock.patch.object(self.module, 'update_task_run_field', side_effect=lambda a, r, f, v: state.update({f: v})):
+            result = self.module.run_task('app', 'task')
+            self.assertEqual(result['result'], 'error')
+            self.assertEqual(state['status'], 'error')
+            materials.release_owner.assert_called_once_with('app', 'run', 'run')
+            old_dispatch = state['dispatch_id']
+            self.assertFalse(self.module.transition_run_dispatch('app', 'run', old_dispatch))
+            # Manual retry is possible, and another publish failure is recoverable.
+            result = self.module.task_run_retry('app', 'run')
+            self.assertEqual(result['result'], 'error')
+            self.assertEqual(state['status'], 'error')
+            self.assertEqual(materials.release_owner.call_count, 2)
+            self.assertNotEqual(state['dispatch_id'], old_dispatch)
+            self.assertFalse(self.module.transition_run_dispatch('app', 'run', old_dispatch))
+
+    def test_dispatch_cannot_cancel_materials_already_claimed_by_worker(self):
+        state = {'dispatch_id': 'current', 'dispatch_state': 'waiting'}
+        pipe = mock.MagicMock()
+        pipe.__enter__.return_value = pipe
+        pipe.hset.side_effect = lambda k, f, v: state.update({f: v})
+        redis = mock.Mock(pipeline=lambda: pipe)
+        with mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(self.module.lanying_redis, 'redis_hgetall', create=True, side_effect=lambda p, k: dict(state)):
+            self.assertFalse(self.module.transition_run_dispatch('app', 'run', 'old-delivery'))
+            self.assertTrue(self.module.transition_run_dispatch('app', 'run', 'current'))
+            self.assertFalse(self.module.cancel_unclaimed_run('app', 'run', 'current'))
+            self.assertEqual(state['dispatch_state'], 'claimed')
+            self.assertTrue(self.module.transition_run_dispatch('app', 'run', 'current'))
+
+    def test_material_patch_uses_mysql_and_omission_preserves_references(self):
+        current = task()
+        materials = types.SimpleNamespace(MaterialError=ValueError, set_references=mock.Mock(
+            side_effect=lambda *args, **kwargs: kwargs['persist_owner']()))
+        with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials}), \
+                mock.patch.object(self.module, 'get_task', return_value=current), \
+                mock.patch.object(self.module, 'check_task_content_security', return_value={'result': 'ok'}), \
+                mock.patch.object(self.module, 'update_task_field'):
+            for changes in [{'name': 'Renamed'}, {'reference_document_ids': []}, {'reference_document_ids': ['1-1']}]:
+                redis = FakeRedis(4)
+                materials.set_references.reset_mock()
+                with mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis):
+                    result = self.module.patch_task('app', 'task', changes)
+                self.assertEqual(result['result'], 'ok')
+                self.assertNotIn('file_list', redis.hmset_calls[0][1])
+                self.assertNotIn('schedule', redis.hmset_calls[0][1])
+                self.assertNotIn('reference_document_ids', redis.hmset_calls[0][1])
+                if 'reference_document_ids' in changes:
+                    materials.set_references.assert_called_once_with('app', 'plan', 'task', changes['reference_document_ids'],
+                                                                     persist_owner=mock.ANY)
+                else:
+                    materials.set_references.assert_not_called()
+
+    def test_material_cleanup_error_does_not_change_terminal_generation_result(self):
+        redis = mock.Mock()
+        materials = types.SimpleNamespace(release_owner=mock.Mock(side_effect=RuntimeError('MySQL unavailable')), enqueue=mock.Mock())
+        with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials}), \
+                mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis):
+            self.module.update_task_run_field('app', 'run', 'status', 'success')
+        redis.hset.assert_called_once_with(self.module.get_task_run_key('app', 'run'), 'status', 'success')
+        materials.enqueue.assert_called_once_with('app')
+
+    def test_run_snapshots_input_and_acquires_materials_before_queueing(self):
+        current = dict(task(), reference_document_ids=['1-1'])
+        redis = mock.Mock()
+        events = []
+        materials = types.SimpleNamespace(MaterialError=ValueError,
+            set_references=mock.Mock(side_effect=lambda *a, **k: events.append('acquire')))
+        job = types.SimpleNamespace(apply_async=mock.Mock(side_effect=lambda *a, **k: events.append('queue')))
+        with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials,
+                                          'lanying_tasks': types.SimpleNamespace(grow_ai_run_task=job)}), \
+                mock.patch.object(self.module, 'get_task', return_value=current), \
+                mock.patch.object(self.module, 'generate_task_run_id', return_value='run'), \
+                mock.patch.object(self.module, 'generate_dummy_user_id', return_value='9'), \
+                mock.patch.object(self.module, '_task_run_notification_route', return_value={}), \
+                mock.patch.object(self.module, 'set_admin_token'), \
+                mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis):
+            result = self.module.run_task('app', 'task')
+        self.assertEqual(result['result'], 'ok')
+        self.assertEqual(events, ['acquire', 'queue'])
+        snapshot = json.loads(redis.hmset.call_args.args[1]['material_input_snapshot'])
+        current['article_prompt'] = 'Changed after enqueue'
+        current['reference_document_ids'].clear()
+        self.assertEqual(snapshot['article_prompt'], 'Old article prompt')
+        self.assertEqual(snapshot['reference_document_ids'], ['1-1'])
+        self.assertEqual(snapshot['file_list'], [])
 
     def test_patch_only_writes_requested_fields_and_keeps_paused_schedule(self):
         current = task()

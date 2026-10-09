@@ -130,6 +130,38 @@ class ChatbotAccessTests(unittest.TestCase):
     def setUp(self):
         self.module, self.fake_redis = _load_lanying_chatbot()
 
+    def test_delete_releases_material_sessions_and_preflights_storage(self):
+        materials = types.SimpleNamespace(storage=types.SimpleNamespace(is_enabled=lambda: True),
+            reference_ids=mock.Mock(return_value=[]), release_chatbot_sessions=mock.Mock(), enqueue=mock.Mock())
+        plugin = types.SimpleNamespace(delete_chatbot_plugin_bind_relation=mock.Mock())
+        bot = {'capsule_id': 'capsule', 'name': 'bot', 'user_id': 'user'}
+        with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials, 'lanying_ai_plugin': plugin}), \
+                mock.patch.object(self.module, 'get_chatbot', return_value=bot), \
+                mock.patch.object(self.module.lanying_ai_capsule, 'get_capsule', create=True, return_value=None), \
+                mock.patch.object(self.fake_redis, 'rename', create=True) as rename:
+            result = self.module.delete_chatbot('app', 'bot-id')
+            self.assertEqual(result['result'], 'ok')
+            materials.release_chatbot_sessions.assert_called_once_with('app', 'bot-id')
+            rename.reset_mock()
+            materials.reference_ids.side_effect = RuntimeError('database unavailable')
+            with self.assertRaises(RuntimeError):
+                self.module.delete_chatbot('app', 'bot-id')
+            rename.assert_not_called()
+
+    def test_delete_enqueues_reconciliation_when_reference_release_fails(self):
+        materials = types.SimpleNamespace(storage=types.SimpleNamespace(is_enabled=lambda: True),
+            reference_ids=mock.Mock(return_value=[]),
+            release_chatbot_sessions=mock.Mock(side_effect=RuntimeError('database unavailable')), enqueue=mock.Mock())
+        plugin = types.SimpleNamespace(delete_chatbot_plugin_bind_relation=mock.Mock())
+        bot = {'capsule_id': 'capsule', 'name': 'bot', 'user_id': 'user'}
+        with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials, 'lanying_ai_plugin': plugin}), \
+                mock.patch.object(self.module, 'get_chatbot', return_value=bot), \
+                mock.patch.object(self.module.lanying_ai_capsule, 'get_capsule', create=True, return_value=None), \
+                mock.patch.object(self.fake_redis, 'rename', create=True):
+            with self.assertRaises(RuntimeError):
+                self.module.delete_chatbot('app', 'bot-id')
+            materials.enqueue.assert_called_once_with('app')
+
     def create_chatbot(self, access_type="public", user_id=1001, access_list="", show_in_support=None):
         m = self.module
         return m.create_chatbot(

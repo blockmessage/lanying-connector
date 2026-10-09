@@ -153,6 +153,21 @@ def _require_auth():
     return make_response({'code': 401, 'message': 'bad authorization'})
 
 
+@bp.route('/service/agent_tools/seenical/conversations/materials', defaults={'operation': 'list'}, methods=['POST'])
+@bp.route('/service/agent_tools/seenical/conversations/materials/<operation>', methods=['POST'])
+def seenical_materials(operation):
+    denied = _require_auth()
+    if denied:
+        return denied
+    import lanying_seenical_materials as materials
+    data = _body()
+    try:
+        result = materials.material_api(str(data.get('app_id', '')), _actor(data), operation, data)
+        return _response({'result': 'ok', 'data': result})
+    except materials.MaterialError as exc:
+        return _response({'result': 'error', 'message': str(exc)})
+
+
 @bp.route('/service/agent_tools/capabilities', methods=['POST'])
 def capabilities():
     denied = _require_auth()

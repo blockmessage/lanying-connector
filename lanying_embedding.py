@@ -52,13 +52,26 @@ class IgnoringScriptConverter(MarkdownConverter):
 def md(html, **options):
     return IgnoringScriptConverter(**options).convert(html)
 
-def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor, model, type='text'):
+def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_ids, preset_name, overlapping_size, vendor, model, type='text', reserved_uuid=None):
+    if reserved_uuid is not None and type != 'seenical_session':
+        raise ValueError('reserved UUID is only for internal material libraries')
     db_type = get_embedding_default_db_type(app_id)
     logging.info(f"start create embedding: app_id:{app_id}, embedding_name:{embedding_name}, max_block_size:{max_block_size},algo:{algo},admin_user_ids:{admin_user_ids},preset_name:{preset_name}, vendor:{vendor}, embedding_db_type: {db_type}")
     if app_id is None:
         app_id = ""
     old_embedding_name_info = get_embedding_name_info(app_id, embedding_name)
     if old_embedding_name_info:
+        if type == 'seenical_session' and old_embedding_name_info.get('type') == type:
+            # The MySQL owner row may have rolled back after Redis metadata was
+            # written. Complete index creation without resetting counters/IDs.
+            info = get_embedding_uuid_info(old_embedding_name_info['embedding_uuid'])
+            if reserved_uuid and str(old_embedding_name_info['embedding_uuid']) != str(reserved_uuid):
+                return {'result': 'error', 'message': 'internal embedding identity mismatch'}
+            model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
+            if not info or not model_config or info.get('vendor') != vendor or info.get('model') != model:
+                return {'result': 'error', 'message': 'internal embedding metadata unavailable'}
+            _create_embedding_index(info, model_config['dim'], idempotent=True)
+            return {'result': 'ok', 'embedding_uuid': old_embedding_name_info['embedding_uuid']}
         return {'result':"error", 'message': 'embedding_name exist'}
     model_config = lanying_vendor.get_embedding_model_config(app_id, vendor, model)
     if model_config is None:
@@ -67,11 +80,11 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
     model_dim = model_config['dim']
     now = int(time.time())
     redis = lanying_redis.get_redis_stack_connection()
-    embedding_uuid = generate_embedding_id()
+    embedding_uuid = reserved_uuid or generate_embedding_id()
     index_key = get_embedding_index_key(embedding_uuid)
     data_prefix_key = get_embedding_data_prefix_key(embedding_uuid)
     db_table_name = f"embedding_{embedding_uuid}_{app_id}"
-    redis.hmset(get_embedding_name_key(app_id, embedding_name), {
+    name_fields = {
         "app_id":app_id,
         "embedding_name": embedding_name,
         "embedding_uuid": embedding_uuid,
@@ -83,11 +96,8 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
         "embedding_max_tokens":8192 if type == 'function' else 2048,
         "embedding_max_blocks":5,
         "embedding_content": "请严格按照下面的知识回答我之后的所有问题:"
-    })
-    if type != 'function':
-        redis.rpush(get_embedding_names_key(app_id), embedding_name)
-    redis.hmset(get_embedding_uuid_key(embedding_uuid),
-                {"app_id": app_id,
+    }
+    uuid_fields = {"app_id": app_id,
                  "embedding_name": embedding_name,
                 "index": index_key,
                 "prefix": data_prefix_key,
@@ -105,21 +115,47 @@ def create_embedding(app_id, embedding_name, max_block_size, algo, admin_user_id
                 "type": type,
                 "db_type": db_type,
                 "db_table_name": db_table_name,
-                "status": "ok"})
-    if db_type == 'redis':
-        result = redis.execute_command("FT.CREATE", index_key, "prefix", "1", data_prefix_key, "SCHEMA","text","TEXT", "doc_id", "TAG", "embedding","VECTOR", "HNSW", "6", "TYPE", "FLOAT64","DIM", f"{model_dim}", "DISTANCE_METRIC",algo)
-        logging.info(f"create_embedding success: app_id:{app_id}, embedding_name:{embedding_name}, embedding_uuid:{embedding_uuid} ft.create.result{result}")
-    elif db_type == 'pgvector':
+                "status": "ok"}
+    if type == 'seenical_session':
+        # A retry must see either both initial hashes or neither, never a name
+        # entry that prevents completing the missing UUID metadata.
+        with redis.pipeline(transaction=True) as pipe:
+            pipe.hmset(get_embedding_name_key(app_id, embedding_name), name_fields)
+            pipe.hmset(get_embedding_uuid_key(embedding_uuid), uuid_fields)
+            pipe.execute()
+    else:
+        redis.hmset(get_embedding_name_key(app_id, embedding_name), name_fields)
+        if type != 'function':
+            redis.rpush(get_embedding_names_key(app_id), embedding_name)
+        redis.hmset(get_embedding_uuid_key(embedding_uuid), uuid_fields)
+    _create_embedding_index({'db_type': db_type, 'index': index_key, 'prefix': data_prefix_key,
+                             'db_table_name': db_table_name, 'algo': algo}, model_dim)
+    update_app_embedding_admin_users(app_id, admin_user_ids)
+    if type != 'seenical_session':
+        bind_preset_name(app_id, preset_name, embedding_name)
+    return {'result':'ok', 'embedding_uuid':embedding_uuid}
+
+
+def _create_embedding_index(info, model_dim, idempotent=False):
+    if info['db_type'] == 'redis':
+        redis = lanying_redis.get_redis_stack_connection()
+        try:
+            redis.execute_command("FT.CREATE", info['index'], "prefix", "1", info['prefix'],
+                "SCHEMA", "text", "TEXT", "doc_id", "TAG", "embedding", "VECTOR", "HNSW", "6",
+                "TYPE", "FLOAT64", "DIM", f"{model_dim}", "DISTANCE_METRIC", info['algo'])
+        except Exception as error:
+            if not idempotent or 'index already exists' not in str(error).lower():
+                raise
+    elif info['db_type'] == 'pgvector':
+        db_table_name = info['db_table_name']
+        optional = 'IF NOT EXISTS ' if idempotent else ''
         with lanying_pgvector.connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"CREATE TABLE {db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
-            cursor.execute(f"CREATE INDEX {db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
-            cursor.execute(f"CREATE INDEX {db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
+            cursor.execute(f"CREATE TABLE {optional}{db_table_name} (id bigserial PRIMARY KEY, embedding vector({model_dim}), content text, doc_id varchar(100),num_of_tokens int, summary text,text_hash varchar(100),question text,function text, reference text, block_id varchar(100), tags jsonb DEFAULT '{{}}'::jsonb);")
+            cursor.execute(f"CREATE INDEX {optional}{db_table_name}_index_doc_id ON {db_table_name} (doc_id);")
+            cursor.execute(f"CREATE INDEX {optional}{db_table_name}_index_embedding ON {db_table_name} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);")
             conn.commit()
             cursor.close()
-    update_app_embedding_admin_users(app_id, admin_user_ids)
-    bind_preset_name(app_id, preset_name, embedding_name)
-    return {'result':'ok', 'embedding_uuid':embedding_uuid}
 
 def maybe_add_table_tags(embedding_uuid):
     embedding_uuid_info = get_embedding_uuid_info(embedding_uuid)
@@ -474,6 +510,8 @@ def search_in_redis(app_id, embedding_name, doc_id, embedding, max_tokens, max_b
     redis = lanying_redis.get_redis_stack_connection()
     if len(doc_ids) > 0:
         base_query = query_by_doc_ids(doc_ids)
+        if not is_fulldoc:
+            base_query = f"({base_query})=>[KNN {page_size} @embedding $vector AS vector_score]"
     elif doc_id == "":
         base_query = f"*=>[KNN {page_size} @embedding $vector AS vector_score]"
     elif is_fulldoc:
@@ -1685,14 +1723,11 @@ def delete_embedding_block(app_id, embedding_name, doc_id, block_id):
             redis.delete(key)
 
 def query_by_doc_id(doc_id):
-    if len(doc_id) < 30:
-        new_doc_id = doc_id.replace('-','\\-')
-        return "@doc_id:{"+new_doc_id+"}"
-    else: # for deprecated doc_id format
-        return "@doc_id:{"+doc_id+"}"
+    # Both current and legacy IDs are TAG values, regardless of their length.
+    return query_by_doc_ids([doc_id])
 
 def query_by_doc_ids(doc_ids):
-    doc_ids_str = ','.join(doc_ids)
+    doc_ids_str = '|'.join(doc_ids)
     new_doc_ids_str = doc_ids_str.replace('-','\\-')
     return "@doc_id:{"+new_doc_ids_str+"}"
 

@@ -127,6 +127,16 @@ def public_skill_catalog_recovery_task():
     return {'result': 'ok', 'data': {'status': 'requeued'}}
 
 
+@slow_queue.task(bind=True, acks_late=True, reject_on_worker_lost=True, max_retries=3)
+def seenical_materials_task(self, app_id):
+    import lanying_seenical_materials
+    try:
+        lanying_seenical_materials.process_pending(app_id, str(self.request.id))
+    except Exception as exc:
+        lanying_seenical_materials.mark_worker_interrupted(app_id, str(self.request.id))
+        raise self.retry(exc=exc, countdown=15)
+
+
 @normal_queue.task(acks_late=True)
 def resume_agent_tool_request_task(app_id, request_id):
     redis = lanying_redis.get_redis_connection()
@@ -555,10 +565,12 @@ def process_function_embeddings(app_id, plugin_id, function_ids):
 
 global_grow_ai_max_retries = 2
 @slow_queue.task(bind=True, max_retries=global_grow_ai_max_retries)
-def grow_ai_run_task(self, app_id, task_run_id):
+def grow_ai_run_task(self, app_id, task_run_id, dispatch_id=None):
     has_retry_times = (self.request.retries != global_grow_ai_max_retries)
     try:
-        lanying_grow_ai.do_run_task(app_id, task_run_id, has_retry_times)
+        if not lanying_grow_ai.transition_run_dispatch(app_id, task_run_id, dispatch_id):
+            return
+        lanying_grow_ai.do_run_task(app_id, task_run_id, has_retry_times, dispatch_id)
     except Exception as e:
         raise self.retry(exc=e, countdown=5)
 

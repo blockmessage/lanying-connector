@@ -84,6 +84,7 @@ PLAN_CHANGE_PROPERTIES = {
     'cycle_interval': {'type': 'integer'},
     'title_reuse': {'type': 'string', 'enum': ['on', 'off']},
     'site_id_list': {'type': 'array', 'items': {'type': 'string'}},
+    'reference_document_ids': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 500},
     'target_dir': {'type': 'string'},
     'commit_type': {'type': 'string', 'enum': ['branch', 'pull_request']},
     'target_summary_dir': {'type': 'string'},
@@ -907,6 +908,7 @@ def _plan_create(app_id, arguments, request_info):
         cycle_type=str(arguments.get('cycle_type', 'none')),
         cycle_interval=max(3600, int(arguments.get('cycle_interval', 86400))),
         file_list=list(arguments.get('file_list', [])),
+        reference_document_ids=arguments.get('reference_document_ids'),
         deploy=dict(arguments.get('deploy', {'type': 'none'})),
         title_reuse=str(arguments.get('title_reuse', 'off')),
         site_id_list=site_ids,
@@ -2719,7 +2721,7 @@ def _validate_seenical_conversation(app_id, actor, data, task=None):
     conversation_type = str(data.get('conversation_type', '')).strip().upper()
     conversation_id = str(data.get('conversation_id', '')).strip()
     seenical_session_id = str(data.get('seenical_session_id', '')).strip()
-    if conversation_type != 'GROUPCHAT':
+    if conversation_type not in ['GROUPCHAT', 'CHAT']:
         return {'result': 'error', 'message': 'invalid conversation_type'}
     if not conversation_id.isdigit():
         return {'result': 'error', 'message': 'invalid conversation_id'}
@@ -2739,6 +2741,17 @@ def _validate_seenical_conversation(app_id, actor, data, task=None):
     if not chatbot:
         return {'result': 'error', 'message': 'chatbot not exist'}
     agent_user_id = str(chatbot.get('user_id', ''))
+
+    if conversation_type == 'CHAT':
+        if task or conversation_id != agent_user_id or seenical_session_id != 'primary:' + chatbot_id:
+            return {'result': 'error', 'message': 'Seenical conversation metadata mismatch'}
+        return {'result': 'ok', 'data': {
+            'schema_version': SCHEMA_VERSION, 'task_id': '', 'chatbot_id': chatbot_id,
+            'agent_user_id': agent_user_id, 'conversation_type': 'CHAT',
+            'conversation_id': agent_user_id, 'conversation_name': str(chatbot.get('name', '')),
+            'seenical_session_id': seenical_session_id, 'bound_im_user_id': bound_im_user_id,
+            'updated_at': int(time.time()),
+        }}
 
     group_result = lanying_im_api.get_group_info(app_id, conversation_id)
     if (not isinstance(group_result, dict)
@@ -2848,6 +2861,8 @@ def unregister_seenical_conversation(app_id, actor, data):
         bound_im_user_id)
     if result.get('result') != 'ok':
         return result
+    import lanying_seenical_materials
+    lanying_seenical_materials.release_owner(app_id, 'session', seenical_session_id)
     return {'result': 'ok', 'data': {
         'seenical_session_id': seenical_session_id,
         'conversation_type': conversation_type,

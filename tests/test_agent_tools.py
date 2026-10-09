@@ -446,6 +446,25 @@ class AgentToolsTest(unittest.TestCase):
         deactivate.assert_called_once_with(
             "app", "session-a", "GROUPCHAT", "1001", "22")
 
+    def test_primary_material_conversation_requires_canonical_agent_identity(self):
+        data = {'conversation_type': 'CHAT', 'conversation_id': '33',
+                'seenical_session_id': 'primary:bot-a', 'chatbot_id': 'bot-a'}
+        with mock.patch.object(self.module, 'get_im_binding_projection',
+                               return_value={'status': 'BOUND', 'im_user_id': '22'}), \
+             mock.patch.object(self.module.lanying_chatbot, 'get_chatbot',
+                               return_value={'user_id': '33', 'name': 'Agent'}), \
+             mock.patch.object(self.module.lanying_im_api, 'get_group_info') as group:
+            validate = self.module._validate_seenical_conversation
+            self.assertEqual('ok', validate('app', {'im_user_id': '22'}, data)['result'])
+            self.assertEqual('error', validate('app', {'im_user_id': '23'}, data)['result'])
+            self.assertEqual('error', validate('app', {'im_user_id': '22'},
+                             dict(data, conversation_id='44'))['result'])
+            self.assertEqual('error', validate('app', {'im_user_id': '22'},
+                             dict(data, seenical_session_id='primary:other'))['result'])
+            self.assertEqual('error', validate('app', {'im_user_id': '22'}, data,
+                             {'chatbot_id': 'bot-a', 'task_id': '1'})['result'])
+            group.assert_not_called()
+
     def test_unregister_seenical_conversation_rejects_unbound_actor(self):
         self.bind_app(user_id="22")
         with mock.patch.object(self.module, "_redis", return_value=self.redis), \
