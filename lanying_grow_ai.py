@@ -1345,7 +1345,7 @@ def run_task(app_id, task_id, countdown=0):
         material_snapshot = {key: task_info[key] for key in [
             'chatbot_id', 'prompt', 'article_prompt', 'article_language', 'keywords',
             'file_list', 'word_count_min', 'word_count_max', 'image_count', 'article_count',
-            'embedding_condition', 'reference_document_ids'] if key in task_info}
+            'embedding_condition', 'reference_document_ids', 'title_reuse'] if key in task_info}
         notification_fields = _task_run_notification_route(app_id, task_info)
         redis.hmset(get_task_run_key(app_id, task_run_id), dict({
             'material_input_snapshot': json.dumps(material_snapshot, ensure_ascii=False),

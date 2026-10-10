@@ -238,12 +238,26 @@ class GrowAIPatchTest(unittest.TestCase):
             result = self.module.run_task('app', 'task')
         self.assertEqual(result['result'], 'ok')
         self.assertEqual(events, ['acquire', 'queue'])
-        snapshot = json.loads(redis.hmset.call_args.args[1]['material_input_snapshot'])
+        run = dict(redis.hmset.call_args.args[1], start_from=0)
+        snapshot = json.loads(run['material_input_snapshot'])
         current['article_prompt'] = 'Changed after enqueue'
         current['reference_document_ids'].clear()
+        current['title_reuse'] = 'off'
         self.assertEqual(snapshot['article_prompt'], 'Old article prompt')
         self.assertEqual(snapshot['reference_document_ids'], ['1-1'])
         self.assertEqual(snapshot['file_list'], [])
+        self.assertEqual(snapshot['title_reuse'], 'on')
+        # The worker must use this run's policy, not the edited plan's policy.
+        redis.hexists.return_value = False
+        with mock.patch.object(self.module, 'get_task_run', return_value=run), \
+                mock.patch.object(self.module, 'get_task', return_value=current), \
+                mock.patch.object(self.module.lanying_chatbot, 'get_chatbot', return_value={'user_id': '9'}, create=True), \
+                mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(self.module, 'parse_file_keywords', return_value=[]), \
+                mock.patch.object(self.module, 'find_title', return_value={'result': 'error', 'message': 'stop'}) as find, \
+                mock.patch.object(self.module, 'make_task_run_result_zip_file'):
+            self.module.do_run_task_internal('app', 'run', False)
+        self.assertEqual(find.call_args.args[4], 'on')
 
     def test_patch_only_writes_requested_fields_and_keeps_paused_schedule(self):
         current = task()
