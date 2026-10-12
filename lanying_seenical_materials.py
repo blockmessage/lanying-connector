@@ -25,6 +25,7 @@ MAX_FILE_BYTES = 30 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 200
 INTERNAL_TYPE = 'seenical_session'
+INTERNAL_NAME = '__seenical_session_materials__'
 BUSY = {'indexing', 'cleaning'}
 
 
@@ -59,7 +60,7 @@ def _space(conn, app_id, lock=False):
 def ensure_space(app_id):
     """Reserve an identity without requiring a usable model or vector service."""
     import lanying_embedding as embedding
-    name = '__seenical_session_materials__'
+    name = INTERNAL_NAME
     with _engine().begin() as conn:
         conn.execute(text('INSERT IGNORE INTO seenical_material_space '
                           '(app_id,embedding_name) VALUES (:a,:n)'), {'a': str(app_id), 'n': name})
@@ -639,10 +640,24 @@ def _index_document(app_id, space, doc):
             raise MaterialError('material_processing_failed')
 
 
+def material_usage(app_id):
+    """Read charged index storage, not retained source files or reference counts."""
+    import lanying_embedding as embedding
+    import lanying_redis
+    usage = dict(embedding.get_embedding_usage(app_id))
+    info = embedding.get_embedding_name_info(app_id, INTERNAL_NAME)
+    size = 0
+    if info and info.get('type') == INTERNAL_TYPE:
+        redis = lanying_redis.get_redis_stack_connection()
+        size = int(redis.hget(embedding.get_embedding_uuid_key(info['embedding_uuid']),
+                             'storage_file_size') or 0)
+    usage['session_storage_file_size'] = size
+    return usage
+
+
 def material_api(app_id, actor, operation, data):
     if operation == 'usage':
-        import lanying_embedding
-        return lanying_embedding.get_embedding_usage(app_id)
+        return material_usage(app_id)
     session_id = str(data.get('seenical_session_id', ''))
     authorized_conversation(app_id, actor, session_id)
     active_ids = reference_ids(app_id, 'session', session_id)
@@ -682,8 +697,7 @@ def material_api(app_id, actor, operation, data):
                     'SELECT owner_type,owner_id FROM seenical_material_reference '
                     'WHERE app_id=:a AND doc_id=:d AND active=1'), {'a': app_id, 'd': doc_id}).mappings()]
                 values.append(value)
-        import lanying_embedding
-        usage = lanying_embedding.get_embedding_usage(app_id)
+        usage = material_usage(app_id)
         return {'list': values, 'total': len(ids), 'reference_document_ids': active_ids,
                 'processing': processing, 'usage': usage}
     if operation == 'inherit':

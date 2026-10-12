@@ -530,7 +530,8 @@ class MaterialReferencesTest(unittest.TestCase):
         m.set_references('a', 'session', 's', ['1-1'])
         m.release_owner('a', 'session', 's')
         self.set_state('cleaning')
-        embedding = types.SimpleNamespace(get_embedding_usage=lambda app: {'storage_file_size': 100})
+        embedding = types.SimpleNamespace(get_embedding_usage=lambda app: {'storage_file_size': 100},
+                                          get_embedding_name_info=lambda *args: None)
         with mock.patch.dict('sys.modules', {'lanying_embedding': embedding}), \
                 mock.patch.object(m, 'authorized_conversation', return_value={}):
             value = m.material_api('a', {}, 'list', {'seenical_session_id': 's'})
@@ -663,6 +664,7 @@ class MaterialReferencesTest(unittest.TestCase):
             conn.execute(text("UPDATE seenical_material SET filename='docs.zip',object_name='original.zip',file_size=80 WHERE doc_id='1-1'"))
         m.set_references('a', 'session', 's', ['1-1'])
         embedding = types.SimpleNamespace(get_embedding_usage=lambda app: {'storage_file_size': 9000},
+            get_embedding_name_info=lambda *args: None,
             get_doc=lambda *args: {'archive_document_count': '2', 'archive_skipped_count': '1',
                                    'archive_indexed_size': '9000'})
         with mock.patch.dict('sys.modules', {'lanying_embedding': embedding}), \
@@ -770,6 +772,30 @@ class FakePipeline:
 
 
 class UsageTest(unittest.TestCase):
+    def test_usage_reports_app_scoped_index_charge_and_preserves_total(self):
+        embedding = types.SimpleNamespace(
+            get_embedding_usage=mock.Mock(return_value={'storage_file_size': '10000', 'storage_file_size_max': '12000'}),
+            get_embedding_name_info=mock.Mock(return_value={'type': m.INTERNAL_TYPE, 'embedding_uuid': '42'}),
+            get_embedding_uuid_key=lambda uuid: 'library:' + uuid)
+        redis = mock.Mock()
+        redis.hget.return_value = b'7000'
+        with mock.patch.dict('sys.modules', {'lanying_embedding': embedding,
+                'lanying_redis': types.SimpleNamespace(get_redis_stack_connection=lambda: redis)}):
+            value = m.material_api('app-a', {}, 'usage', {'app_id': 'other-app'})
+            self.assertEqual(value, {'storage_file_size': '10000', 'storage_file_size_max': '12000',
+                                     'session_storage_file_size': 7000})
+            embedding.get_embedding_name_info.assert_called_once_with('app-a', m.INTERNAL_NAME)
+            embedding.get_embedding_usage.assert_called_once_with('app-a')
+            redis.hget.assert_called_once_with('library:42', 'storage_file_size')
+            # Cleanup releases the index charge even while source files remain.
+            redis.hget.return_value = b'0'
+            self.assertEqual(m.material_usage('app-a')['session_storage_file_size'], 0)
+            for info in [None, {'type': 'ordinary', 'embedding_uuid': '43'}]:
+                embedding.get_embedding_name_info.return_value = info
+                redis.hget.reset_mock()
+                self.assertEqual(m.material_usage('app-a')['session_storage_file_size'], 0)
+                redis.hget.assert_not_called()
+
     def test_repeated_reserve_and_cleanup_are_idempotent(self):
         redis = types.SimpleNamespace(data={})
         redis.pipeline = lambda: FakePipeline(redis)
