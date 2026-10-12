@@ -234,12 +234,135 @@ class MaterialReferencesTest(unittest.TestCase):
         with self.assertRaises(m.MaterialError):
             m.set_references('b', 'plan', 'p', ['1-1'])
 
-    def test_pending_document_can_be_saved_but_cannot_run(self):
+    def test_pending_plan_reference_is_kept_when_run_skips_it(self):
         self.set_state('pending')
         m.set_references('a', 'plan', 'p', ['1-1'])
-        with self.assertRaises(m.MaterialError):
-            m.set_references('a', 'run', 'r', ['1-1'], require_ready=True)
+        self.assertEqual(m.set_references('a', 'run', 'r', ['1-1'], ready_only=True), [])
         self.assertEqual(m.reference_ids('a', 'run', 'r'), [])
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-1'])
+
+    def test_run_skips_unavailable_indexes_but_keeps_ready_documents(self):
+        for state in ['pending', 'indexing', 'failed', 'cleaning', 'cleanup_pending', 'cleanup_failed', 'unindexed']:
+            with self.subTest(state=state):
+                self.set_state(state, '1-2')
+                self.assertEqual(m.set_references('a', 'run', 'r', ['1-1', '1-2'], ready_only=True), ['1-1'])
+                self.assertEqual(m.reference_ids('a', 'run', 'r'), ['1-1'])
+
+    def test_skipping_unready_indexes_does_not_skip_app_or_document_validation(self):
+        m.set_references('a', 'run', 'r', ['1-1'], ready_only=True)
+        self.set_state('failed', '1-2')
+        with self.assertRaisesRegex(m.MaterialError, 'material_not_found'):
+            m.set_references('a', 'run', 'r', ['1-2', 'other-app-document'], ready_only=True)
+        self.assertEqual(m.reference_ids('a', 'run', 'r'), ['1-1'])
+        with self.assertRaisesRegex(m.MaterialError, 'material_not_found'):
+            m.set_references('b', 'run', 'r', ['1-1'], ready_only=True)
+
+    def test_run_snapshot_warnings_and_retry_recheck_original_inputs(self):
+        from test_grow_ai_patch import load_grow_ai
+        grow = load_grow_ai()
+        state = {}
+        redis = mock.Mock()
+        redis.hmset.side_effect = lambda key, fields: state.update(fields)
+        m.set_references('a', 'plan', 'p', ['1-1', '1-2'])
+        self.set_state('failed', '1-2')
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis):
+            grow.prepare_run_materials('a', 'r', {'reference_document_ids': ['1-1', '1-2'], 'chatbot_id': '10'})
+            snapshot = json.loads(state['material_input_snapshot'])
+            self.assertEqual(snapshot['reference_document_ids'], ['1-1'])
+            self.assertEqual(snapshot['requested_reference_document_ids'], ['1-1', '1-2'])
+            self.assertEqual(state['material_skipped_count'], 1)
+            self.assertEqual(state['material_used_count'], 1)
+            self.assertIn('当时不可用', grow._loop_notification_text('success', state)['detail'])
+            self.set_state('pending', '1-1')
+            grow.prepare_run_materials('a', 'r', snapshot)
+            self.assertEqual(json.loads(state['material_input_snapshot'])['reference_document_ids'], [])
+            self.assertEqual(state['material_skipped_count'], 2)
+            self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-1', '1-2'])
+            # An explicit retry checks original inputs, not the empty filtered list.
+            self.set_state('ready', '1-1')
+            self.set_state('ready', '1-2')
+            grow.prepare_run_materials('a', 'r', json.loads(state['material_input_snapshot']))
+            self.assertEqual(m.reference_ids('a', 'run', 'r'), ['1-1', '1-2'])
+            self.assertEqual(state['material_skipped_count'], 0)
+            self.assertNotIn('当时不可用', grow._loop_notification_text('success', state)['detail'])
+
+    def test_partial_manual_retry_keeps_warning_for_previously_generated_articles(self):
+        from test_grow_ai_patch import load_grow_ai
+        grow = load_grow_ai()
+        state = {'status': 'error', 'article_success_count': '1', 'start_from': 1}
+        redis = mock.Mock()
+        redis.hmset.side_effect = lambda key, fields: state.update(fields)
+        self.set_state('pending', '1-1')
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis):
+            grow.prepare_run_materials('a', 'r', {'chatbot_id': '10', 'reference_document_ids': ['1-1']})
+        self.assertEqual(state['material_skipped_count'], 1)
+        self.set_state('ready', '1-1')
+        job = mock.Mock()
+        with mock.patch.dict('sys.modules', {'lanying_tasks': types.SimpleNamespace(grow_ai_run_task=job)}), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'get_task_run', side_effect=lambda *args: dict(state)), \
+                mock.patch.object(grow, 'set_admin_token'):
+            result = grow.task_run_retry('a', 'r')
+        self.assertEqual(result['result'], 'ok')
+        job.apply_async.assert_called_once()
+        self.assertEqual(state['article_success_count'], '1')
+        self.assertEqual(state['start_from'], 1)
+        self.assertEqual(state['material_skipped_count'], 1)
+        self.assertEqual(state['material_used_count'], 1)
+        self.assertEqual(json.loads(state['material_input_snapshot'])['reference_document_ids'], ['1-1'])
+        notification = grow._loop_notification_text('success', state)
+        self.assertIn('当时不可用', notification['detail'])
+        self.assertIn('at the time', notification['detail_en'])
+
+    def test_retry_with_no_articles_and_new_run_recalculate_warnings(self):
+        from test_grow_ai_patch import load_grow_ai
+        grow = load_grow_ai()
+        state = {}
+        redis = mock.Mock()
+        redis.hmset.side_effect = lambda key, fields: state.update(fields)
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis):
+            grow.prepare_run_materials('a', 'r', {'reference_document_ids': ['1-1']}, previous_run={
+                'article_success_count': '0', 'material_skipped_count': 1})
+            self.assertEqual(state['material_skipped_count'], 0)
+            grow.prepare_run_materials('a', 'new-run', {'reference_document_ids': ['1-1']})
+            self.assertEqual(state['material_skipped_count'], 0)
+            self.assertNotIn('当时不可用', grow._loop_notification_text('success', state)['detail'])
+
+    def test_legacy_retry_does_not_create_unverifiable_material_context(self):
+        from test_grow_ai_patch import load_grow_ai
+        grow = load_grow_ai()
+        redis = mock.Mock()
+        snapshot = {}
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis):
+            grow.prepare_run_materials('a', 'old-run', snapshot)
+        self.assertEqual(snapshot, {})
+        redis.hmset.assert_not_called()
+
+    def test_run_queues_generation_even_when_all_saved_materials_are_unready(self):
+        from test_grow_ai_patch import load_grow_ai, task
+        grow = load_grow_ai()
+        current = dict(task(), reference_document_ids=['1-1', '1-2'])
+        self.set_state('pending', '1-1')
+        self.set_state('failed', '1-2')
+        m.set_references('a', 'plan', 'task', ['1-1', '1-2'])
+        state = {}
+        redis = mock.Mock()
+        redis.hmset.side_effect = lambda key, fields: state.update(fields)
+        job = mock.Mock()
+        with mock.patch.dict('sys.modules', {'lanying_tasks': types.SimpleNamespace(grow_ai_run_task=job)}), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'get_task', return_value=current), \
+                mock.patch.object(grow, 'generate_task_run_id', return_value='run'), \
+                mock.patch.object(grow, 'generate_dummy_user_id', return_value='9'), \
+                mock.patch.object(grow, '_task_run_notification_route', return_value={}), \
+                mock.patch.object(grow, 'set_admin_token'):
+            result = grow.run_task('a', 'task')
+        self.assertEqual(result, {'result': 'ok', 'data': {'task_run_id': 'run'}})
+        job.apply_async.assert_called_once()
+        self.assertEqual(json.loads(state['material_input_snapshot'])['reference_document_ids'], [])
+        self.assertEqual(state['material_skipped_count'], 2)
+        self.assertEqual(m.reference_ids('a', 'plan', 'task'), ['1-1', '1-2'])
+        self.assertEqual(m.reference_ids('a', 'run', 'run'), [])
 
     def test_busy_cleanup_cannot_be_referenced(self):
         for state in ['cleaning', 'cleanup_pending', 'cleanup_failed', 'unindexed']:
@@ -356,6 +479,31 @@ class MaterialReferencesTest(unittest.TestCase):
             value = m.retrieval_scope({'appId': 'a', 'type': 'CHAT'}, {})
             self.assertEqual(value['doc_ids'], [])
             self.assertEqual(value['unready_count'], 1)
+
+    def test_run_retrieval_skips_late_unready_documents_and_records_warning(self):
+        from test_grow_ai_patch import load_grow_ai
+        grow = load_grow_ai()
+        m.set_references('a', 'run', 'r', ['1-1', '1-2'], ready_only=True)
+        self.set_state('failed', '1-2')
+        run = {'status': 'running', 'user_id': '9', 'material_used_count': 2,
+               'material_skipped_count': 0, 'material_input_snapshot': json.dumps({
+                   'chatbot_id': '10', 'reference_document_ids': ['1-1', '1-2']})}
+        redis = mock.Mock()
+        redis.hmset.side_effect = lambda key, fields: run.update(fields)
+        embedding = types.SimpleNamespace(get_embedding_name_info=lambda *args: {'embedding_name': 'internal'})
+        message = {'appId': 'a', 'from': {'uid': '9'}, 'to': {'uid': '11'}, 'ext': {'seenical_task_run_id': 'r'}}
+        with mock.patch.dict('sys.modules', {'lanying_grow_ai': grow, 'lanying_embedding': embedding}), \
+                mock.patch.object(grow, 'get_task_run', return_value=run), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis):
+            scope = m.retrieval_scope(message, {'chatbot_id': '10', 'user_id': '11'})
+            self.assertEqual(scope['doc_ids'], ['1-1'])
+            self.assertEqual(run['material_skipped_count'], 1)
+            self.set_state('failed', '1-1')
+            scope = m.retrieval_scope(message, {'chatbot_id': '10', 'user_id': '11'})
+            self.assertEqual(scope['doc_ids'], [])
+            self.assertEqual(run['material_skipped_count'], 2)
+            self.assertEqual(run['material_used_count'], 0)
+            self.assertNotIn('embedding_name', scope)
 
     def test_group_reader_must_still_be_member(self):
         m.set_references('a', 'session', 's', ['1-1'])

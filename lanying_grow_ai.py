@@ -1195,12 +1195,15 @@ def _loop_notification_text(event, task_run):
         }
     if event == 'success':
         count = int(task_run.get('article_success_count', 0) or 0)
+        skipped = int(task_run.get('material_skipped_count', 0) or 0)
+        warning = f'；提示：本批次有文章未使用 {skipped} 份当时不可用的参考资料' if skipped else ''
+        warning_en = f'; Note: one or more articles did not use {skipped} reference material(s) that were unavailable at the time' if skipped else ''
         return {
             'type': 'loop_success',
             'title': 'LOOP 已成功完成',
             'title_en': 'LOOP completed successfully',
-            'detail': f'已生成 {count} 篇文章',
-            'detail_en': f'Generated {count} article(s)',
+            'detail': f'已生成 {count} 篇文章{warning}',
+            'detail_en': f'Generated {count} article(s){warning_en}',
         }
     error = str(task_run.get('error_message', '')).lower()
     if 'quota_not_enough' in error or 'quota' in error:
@@ -1326,6 +1329,36 @@ def cancel_unclaimed_run(app_id, task_run_id, dispatch_id):
     return True
 
 
+def prepare_run_materials(app_id, task_run_id, snapshot, previous_run=None):
+    import lanying_seenical_materials as materials
+    if not snapshot:
+        # Old runs have no verified material context; keep their IM path unchanged.
+        materials.set_references(app_id, 'run', task_run_id, [], ready_only=True)
+        return
+    # Preserve the saved input set for manual retries without changing the plan.
+    requested = snapshot.get('requested_reference_document_ids', snapshot.get('reference_document_ids', []))
+    ready = materials.set_references(app_id, 'run', task_run_id, requested, ready_only=True)
+    snapshot['requested_reference_document_ids'] = requested
+    snapshot['reference_document_ids'] = ready
+    skipped = len(set(requested)) - len(ready)
+    if previous_run and int(previous_run.get('article_success_count', 0) or 0) > 0:
+        # A manual retry resumes, rather than regenerating, completed articles.
+        skipped = max(skipped, int(previous_run.get('material_skipped_count', 0) or 0))
+    lanying_redis.get_redis_connection().hmset(get_task_run_key(app_id, task_run_id), {
+        'material_input_snapshot': json.dumps(snapshot, ensure_ascii=False),
+        'material_skipped_count': skipped,
+        'material_used_count': len(ready),
+    })
+
+
+def record_run_material_availability(app_id, task_run_id, run, requested_count, ready_count):
+    # Retain a warning if an index becomes unavailable during this run.
+    lanying_redis.get_redis_connection().hmset(get_task_run_key(app_id, task_run_id), {
+        'material_skipped_count': max(int(run.get('material_skipped_count', 0) or 0), requested_count - ready_count),
+        'material_used_count': min(int(run.get('material_used_count', ready_count)), ready_count),
+    })
+
+
 def run_task(app_id, task_id, countdown=0):
     logging.info(f"run task start | app_id:{app_id}, task_id:{task_id}")
     task_info = get_task(app_id, task_id)
@@ -1364,8 +1397,7 @@ def run_task(app_id, task_id, countdown=0):
             'notification_attempt': 1,
         }, **notification_fields))
         redis.rpush(get_task_run_list_key(app_id, task_id), task_run_id)
-        materials.set_references(app_id, 'run', task_run_id,
-                                 task_info.get('reference_document_ids', []), require_ready=True)
+        prepare_run_materials(app_id, task_run_id, material_snapshot)
         set_admin_token(app_id)
         from lanying_tasks import grow_ai_run_task
         grow_ai_run_task.apply_async(args=[app_id, task_run_id, dispatch_id], countdown=countdown)
@@ -3012,8 +3044,7 @@ def task_run_retry(app_id, task_run_id):
     lanying_redis.get_redis_connection().hmset(get_task_run_key(app_id, task_run_id), {
         'status': 'wait', 'dispatch_id': dispatch_id, 'dispatch_state': 'waiting'})
     try:
-        materials.set_references(app_id, 'run', task_run_id,
-                                 snapshot.get('reference_document_ids', []), require_ready=True)
+        prepare_run_materials(app_id, task_run_id, snapshot, previous_run=task_run)
         update_task_run_field(app_id, task_run_id, 'notification_attempt',
                              int(task_run.get('notification_attempt', 1) or 1) + 1)
         update_task_run_field(app_id, task_run_id, 'notification_last_error', '')
@@ -3452,7 +3483,8 @@ def get_task_run(app_id, task_run_id):
     if "create_time" in info:
         dto = {}
         for key,value in info.items():
-            if key in ['create_time', 'article_cursor', 'article_count', 'file_size', 'start_from']:
+            if key in ['create_time', 'article_cursor', 'article_count', 'file_size', 'start_from',
+                       'material_skipped_count', 'material_used_count']:
                 dto[key] = int(value)
             elif key in ["text_message_quota_usage", "image_message_quota_usage"]:
                 dto[key] = float(value)

@@ -145,7 +145,7 @@ class GrowAIPatchTest(unittest.TestCase):
         pipe.__enter__.return_value = pipe
         pipe.hset.side_effect = lambda k, f, v: state.update({f: v})
         redis.pipeline.return_value = pipe
-        materials = types.SimpleNamespace(MaterialError=ValueError, set_references=mock.Mock(),
+        materials = types.SimpleNamespace(MaterialError=ValueError, set_references=mock.Mock(return_value=['1-1']),
                                           release_owner=mock.Mock(), enqueue=mock.Mock())
         job = types.SimpleNamespace(apply_async=mock.Mock(side_effect=RuntimeError('queue down')))
         with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials,
@@ -224,8 +224,10 @@ class GrowAIPatchTest(unittest.TestCase):
         current = dict(task(), reference_document_ids=['1-1'])
         redis = mock.Mock()
         events = []
-        materials = types.SimpleNamespace(MaterialError=ValueError,
-            set_references=mock.Mock(side_effect=lambda *a, **k: events.append('acquire')))
+        def acquire(*args, **kwargs):
+            events.append('acquire')
+            return list(args[3])
+        materials = types.SimpleNamespace(MaterialError=ValueError, set_references=mock.Mock(side_effect=acquire))
         job = types.SimpleNamespace(apply_async=mock.Mock(side_effect=lambda *a, **k: events.append('queue')))
         with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials,
                                           'lanying_tasks': types.SimpleNamespace(grow_ai_run_task=job)}), \
@@ -238,7 +240,10 @@ class GrowAIPatchTest(unittest.TestCase):
             result = self.module.run_task('app', 'task')
         self.assertEqual(result['result'], 'ok')
         self.assertEqual(events, ['acquire', 'queue'])
-        run = dict(redis.hmset.call_args.args[1], start_from=0)
+        materials.set_references.assert_called_once_with('app', 'run', 'run', ['1-1'], ready_only=True)
+        run = {'start_from': 0}
+        for call in redis.hmset.call_args_list:
+            run.update(call.args[1])
         snapshot = json.loads(run['material_input_snapshot'])
         current['article_prompt'] = 'Changed after enqueue'
         current['reference_document_ids'].clear()

@@ -119,7 +119,8 @@ def _set_state(conn, app_id, doc_id, status, error=''):
                  {'a': str(app_id), 'd': doc_id, 's': status, 'e': error})
 
 
-def set_references(app_id, owner_type, owner_id, values, require_ready=False, persist_owner=None):
+def set_references(app_id, owner_type, owner_id, values, require_ready=False, persist_owner=None,
+                   ready_only=False):
     """Roll back reference changes if persisting their owning resource fails.
 
     This does not make MySQL and Redis a distributed transaction; it prevents
@@ -129,37 +130,44 @@ def set_references(app_id, owner_type, owner_id, values, require_ready=False, pe
     if not storage.is_enabled() and not values:
         if persist_owner:
             persist_owner()
-        return
+        return [] if ready_only else None
     with _engine().begin() as conn:
         space = _space(conn, app_id, True)
         if not space and not values:
             if persist_owner:
                 persist_owner()
-            return
+            return [] if ready_only else None
         if values and not space:
             raise MaterialError('material_not_found')
         current = {r[0] for r in conn.execute(text('SELECT doc_id FROM seenical_material_reference '
             'WHERE app_id=:a AND owner_type=:t AND owner_id=:o AND active=1'),
             {'a': str(app_id), 't': owner_type, 'o': str(owner_id)}).all()}
+        selected = []
         for doc_id in values:
             doc = _document(conn, app_id, doc_id)
             if not doc:
                 raise MaterialError('material_not_found')
+            # Skipping an index never bypasses document/App validation.
+            if ready_only and doc['status'] != 'ready':
+                continue
             if doc_id not in current and doc['status'] in {'cleaning', 'cleanup_failed', 'cleanup_pending', 'unindexed'}:
                 raise MaterialError('material_cleaning')
             if require_ready and doc['status'] != 'ready':
                 raise MaterialError('material_not_ready')
+            selected.append(doc_id)
         params = {'a': str(app_id), 't': owner_type, 'o': str(owner_id)}
         conn.execute(text('UPDATE seenical_material_reference SET active=0 '
                           'WHERE app_id=:a AND owner_type=:t AND owner_id=:o'), params)
-        for doc_id in values:
+        for doc_id in selected:
             conn.execute(text('INSERT INTO seenical_material_reference '
                 '(app_id,owner_type,owner_id,doc_id,active) VALUES (:a,:t,:o,:d,1) '
                 'ON DUPLICATE KEY UPDATE active=1'), dict(params, d=doc_id))
         if persist_owner:
             persist_owner()
-    if owner_type != 'run' or not values:
+    if owner_type != 'run' or not selected:
         enqueue(app_id)
+    if ready_only:
+        return selected
 
 
 def release_owner(app_id, owner_type, owner_id, persist_owner=None):
@@ -759,9 +767,13 @@ def retrieval_scope(msg, chatbot):
         return {'doc_ids': [], 'removed_count': removed_count} if removed_count else None
     with _engine().connect() as conn:
         space = _space(conn, app_id)
-        ready = [d for d in ids if _document(conn, app_id, d)['status'] == 'ready']
+        documents = [_document(conn, app_id, doc_id) for doc_id in ids]
+        if any(doc is None for doc in documents):
+            raise MaterialError('material_not_found')
+        ready = [doc['doc_id'] for doc in documents if doc['status'] == 'ready']
     if run_id and len(ready) != len(ids):
-        raise MaterialError('material_not_ready')
+        requested = snapshot.get('requested_reference_document_ids', ids)
+        lanying_grow_ai.record_run_material_availability(app_id, run_id, run, len(set(requested)), len(ready))
     if not ready:
         return {'doc_ids': [], 'unready_count': len(ids), 'removed_count': removed_count}
     import lanying_embedding
