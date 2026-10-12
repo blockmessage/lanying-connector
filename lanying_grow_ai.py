@@ -1196,8 +1196,15 @@ def _loop_notification_text(event, task_run):
     if event == 'success':
         count = int(task_run.get('article_success_count', 0) or 0)
         skipped = int(task_run.get('material_skipped_count', 0) or 0)
-        warning = f'；提示：本批次有文章未使用 {skipped} 份当时不可用的参考资料' if skipped else ''
-        warning_en = f'; Note: one or more articles did not use {skipped} reference material(s) that were unavailable at the time' if skipped else ''
+        warning = ''
+        warning_en = ''
+        if skipped:
+            if count:
+                warning = f'；部分文章未能参考 {skipped} 份当时不可用的资料，可能缺少相关信息'
+                warning_en = f'; Some articles could not reference {skipped} material(s) unavailable at the time and may be missing relevant information'
+            else:
+                warning = f'；有 {skipped} 份参考资料在启动时不可用'
+                warning_en = f'; {skipped} reference material(s) were unavailable at startup'
         return {
             'type': 'loop_success',
             'title': 'LOOP 已成功完成',

@@ -272,7 +272,7 @@ class MaterialReferencesTest(unittest.TestCase):
             self.assertEqual(snapshot['requested_reference_document_ids'], ['1-1', '1-2'])
             self.assertEqual(state['material_skipped_count'], 1)
             self.assertEqual(state['material_used_count'], 1)
-            self.assertIn('当时不可用', grow._loop_notification_text('success', state)['detail'])
+            self.assertIn('当时不可用', grow._loop_notification_text('success', dict(state, article_success_count=1))['detail'])
             self.set_state('pending', '1-1')
             grow.prepare_run_materials('a', 'r', snapshot)
             self.assertEqual(json.loads(state['material_input_snapshot'])['reference_document_ids'], [])
@@ -313,6 +313,20 @@ class MaterialReferencesTest(unittest.TestCase):
         notification = grow._loop_notification_text('success', state)
         self.assertIn('当时不可用', notification['detail'])
         self.assertIn('at the time', notification['detail_en'])
+
+    def test_material_notification_explains_impact_without_normal_noise(self):
+        from test_grow_ai_patch import load_grow_ai
+        grow = load_grow_ai()
+        ready = grow._loop_notification_text('success', {'article_success_count': 1, 'material_skipped_count': 0})
+        self.assertEqual(ready['detail'], '已生成 1 篇文章')
+        self.assertEqual(ready['detail_en'], 'Generated 1 article(s)')
+        partial = grow._loop_notification_text('success', {'article_success_count': 1, 'material_skipped_count': 2})
+        self.assertIn('部分文章', partial['detail'])
+        self.assertIn('可能缺少相关信息', partial['detail'])
+        self.assertIn('may be missing relevant information', partial['detail_en'])
+        empty = grow._loop_notification_text('success', {'article_success_count': 0, 'material_skipped_count': 2})
+        self.assertNotIn('部分文章', empty['detail'])
+        self.assertNotIn('Some articles', empty['detail_en'])
 
     def test_retry_with_no_articles_and_new_run_recalculate_warnings(self):
         from test_grow_ai_patch import load_grow_ai
