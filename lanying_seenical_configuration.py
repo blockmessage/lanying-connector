@@ -39,8 +39,11 @@ def handle(app_id, actor, data, save=False):
         if engine is None:
             raise RuntimeError('Configuration storage is disabled')
         if save:
-            if set(data) - {'seenical_session_id', 'configuration', 'initial_configuration'}:
+            if set(data) - {'seenical_session_id', 'configuration', 'initial_configuration', 'create_only'}:
                 raise ValueError('Invalid conversation configuration fields')
+            create_only = data.get('create_only', False)
+            if type(create_only) is not bool or (create_only and 'initial_configuration' in data):
+                raise ValueError('Invalid conversation configuration migration')
             session_id = str(data.get('seenical_session_id', ''))
             binding = by_id.get(session_id)
             if not binding or tools._validate_seenical_conversation(app_id, actor, binding).get('result') != 'ok':
@@ -50,6 +53,30 @@ def handle(app_id, actor, data, save=False):
             if not isinstance(changes, dict) or not changes or not isinstance(initial, dict):
                 raise ValueError('Invalid conversation configuration fields')
             params['seenical_session_id'] = session_id
+            if create_only:
+                try:
+                    configuration = validate_configuration(changes)
+                except ValueError as error:
+                    # Only a validated conversation may open its retained legacy
+                    # draft for correction. No invalid settings are persisted.
+                    logging.info('Seenical legacy configuration needs correction | app_id:%s | session_id:%s | reason:%s',
+                                 app_id, session_id, str(error))
+                    return {'result': 'ok', 'data': {'seenical_session_id': session_id,
+                                                    'migration_status': 'needs_correction'}}
+                params['configuration'] = json.dumps(configuration, ensure_ascii=False)
+                with engine.begin() as conn:
+                    # The unique key arbitrates first migration across browsers/nodes.
+                    # Never replace a saved row, even when the earlier GET was empty.
+                    conn.execute(text('''INSERT INTO seenical_conversation_configuration
+                        (app_id, seenical_session_id, bound_im_user_id, configuration)
+                        VALUES (:app_id, :seenical_session_id, :bound_im_user_id, :configuration)
+                        ON DUPLICATE KEY UPDATE configuration=configuration'''), params)
+                    row = conn.execute(text('''SELECT configuration FROM seenical_conversation_configuration
+                        WHERE app_id=:app_id AND bound_im_user_id=:bound_im_user_id
+                        AND seenical_session_id=:seenical_session_id FOR UPDATE'''), params).mappings().first()
+                    configuration = json.loads(row['configuration'])
+                logging.info('Seenical legacy configuration synchronized | app_id:%s | session_id:%s', app_id, session_id)
+                return {'result': 'ok', 'data': {'seenical_session_id': session_id, 'configuration': configuration}}
             with engine.begin() as conn:
                 row = conn.execute(text('''SELECT configuration FROM seenical_conversation_configuration
                     WHERE app_id=:app_id AND bound_im_user_id=:bound_im_user_id
@@ -96,6 +123,8 @@ def handle(app_id, actor, data, save=False):
                 unavailable.append(row['seenical_session_id'])
         return {'result': 'ok', 'data': {'list': values, 'unavailable_session_ids': unavailable}}
     except ValueError as error:
+        if save and isinstance(data, dict) and data.get('create_only') is True:
+            logging.warning('Seenical legacy configuration migration rejected | app_id:%s | reason:%s', app_id, str(error))
         return {'result': 'error', 'message': str(error)}
     except Exception as error:
         # Database exceptions can contain prompt text in bound parameters.

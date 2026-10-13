@@ -24,6 +24,8 @@ class SQLiteConnection:
     def execute(self, sql, params):
         statement = str(sql).replace('ON DUPLICATE KEY UPDATE configuration=VALUES(configuration)',
                                     'ON CONFLICT(app_id, seenical_session_id, bound_im_user_id) DO UPDATE SET configuration=excluded.configuration')
+        statement = statement.replace('ON DUPLICATE KEY UPDATE configuration=configuration',
+                                      'ON CONFLICT(app_id, seenical_session_id, bound_im_user_id) DO NOTHING')
         return self.conn.execute(text(statement.replace(' FOR UPDATE', '')), params)
 
 
@@ -88,6 +90,45 @@ class ConfigurationTest(unittest.TestCase):
         self.assertEqual({'prompt': 'new topic', 'keywords': 'new title', 'contentLanguage': 'en', 'sessionPrompt': 'summary'}, updated)
         request['configuration'] = {'sessionPrompt': None}
         self.assertEqual('error', configuration.handle('app', self.actor, request, True)['result'])
+
+    def test_legacy_migration_only_creates_missing_configuration(self):
+        request = {'seenical_session_id': 'primary:a', 'create_only': True,
+                   'configuration': {'prompt': 'legacy topic', 'sessionPrompt': 'legacy prompt', 'keywords': 'old title'}}
+        first = configuration.handle('app', self.actor, request, True)
+        self.assertEqual(request['configuration'], first['data']['configuration'])
+        # Repeated migration, or another browser with a different copy, cannot overwrite it.
+        request['configuration'] = {'prompt': 'another browser', 'sessionPrompt': 'stale prompt'}
+        self.assertEqual(first['data'], configuration.handle('app', self.actor, request, True)['data'])
+        self.save(value={'prompt': 'edited on server', 'sessionPrompt': '', 'keywords': ''})
+        latest = configuration.handle('app', self.actor, request, True)['data']['configuration']
+        self.assertEqual({'prompt': 'edited on server', 'sessionPrompt': '', 'keywords': ''}, latest)
+        self.assertEqual(latest, configuration.handle('app', self.actor, {})['data']['list'][0]['configuration'])
+
+    def test_migration_rejects_invalid_flags_and_untrusted_ownership(self):
+        request = {'seenical_session_id': 'primary:a', 'create_only': True, 'configuration': {'prompt': 'legacy'}}
+        for app, actor, session in [('other', self.actor, 'primary:a'), ('app', {'im_user_id': '999'}, 'primary:a'),
+                                    ('app', self.actor, 'unknown')]:
+            self.assertEqual('error', configuration.handle(app, actor, dict(request, seenical_session_id=session), True)['result'])
+        for flag in ['true', None, 1]:
+            self.assertEqual('error', configuration.handle('app', self.actor, dict(request, create_only=flag), True)['result'])
+        self.assertEqual('error', configuration.handle('app', self.actor, dict(request, initial_configuration={}), True)['result'])
+        self.tools._validate_seenical_conversation.return_value = {'result': 'error'}
+        self.assertEqual('error', configuration.handle('app', self.actor, request, True)['result'])
+        self.assertEqual([], configuration.handle('app', self.actor, {})['data']['list'])
+
+    def test_invalid_legacy_template_can_be_corrected_without_persisting_it(self):
+        for value in [{'prompt': 'legacy', 'wordMin': 3000, 'wordMax': 2400},
+                      {'prompt': ''}, {'prompt': 'legacy', 'sessionPrompt': 'x' * 5001}]:
+            request = {'seenical_session_id': 'primary:a', 'create_only': True, 'configuration': value}
+            result = configuration.handle('app', self.actor, request, True)
+            self.assertEqual('ok', result['result'])
+            self.assertEqual('needs_correction', result['data']['migration_status'])
+            self.assertNotIn('configuration', result['data'])
+            self.assertEqual([], configuration.handle('app', self.actor, {})['data']['list'])
+            # Regular saves still reject invalid fields, rather than claiming success.
+            self.assertEqual('error', self.save(value=value)['result'])
+        corrected = {'prompt': 'legacy', 'wordMin': 3000, 'wordMax': 4000}
+        self.assertEqual(corrected, self.save(value=corrected)['data']['configuration'])
 
     def test_targeted_read_does_not_check_unrelated_group(self):
         self.save()
