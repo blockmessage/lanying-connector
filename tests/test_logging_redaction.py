@@ -9,6 +9,23 @@ import lanying_utils
 
 
 class LoggingRedactionTests(unittest.TestCase):
+    def test_inherited_history_bodies_are_not_logged(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.post('/service/agent_tools/seenical/conversations/history/inherit')
+        def api():
+            from flask import jsonify, request
+            return jsonify({'code': 200, 'data': request.get_json()})
+
+        with self.assertLogs(level='INFO') as captured:
+            response = app.test_client().post(
+                '/service/agent_tools/seenical/conversations/history/inherit',
+                json={'messages': [{'text': 'private-history-text'}]})
+        self.assertEqual(200, response.status_code)
+        self.assertNotIn('private-history-text', '\n'.join(captured.output))
+        self.assertIn('inherited conversation history', '\n'.join(captured.output))
+
     def test_url_for_log_drops_query_and_fragment(self):
         sanitized = lanying_utils.url_for_log(
             'https://user:password@example.com/callback'

@@ -147,6 +147,20 @@ def unregister_seenical_conversation():
         str(data.get('app_id', '')), _actor(data), data))
 
 
+@bp.route('/service/agent_tools/seenical/conversations/history', defaults={'operation': 'read'}, methods=['POST'])
+@bp.route('/service/agent_tools/seenical/conversations/history/inherit', defaults={'operation': 'inherit'}, methods=['POST'])
+def seenical_inherited_history(operation):
+    denied = _require_auth()
+    if denied:
+        return denied
+    import lanying_seenical_history
+    if len(request.get_data(cache=True)) > lanying_seenical_history.MAX_BYTES + 65536:
+        return _response({'result': 'error', 'message': 'Inherited history exceeds the supported size'})
+    data = _body()
+    return _response(lanying_seenical_history.handle(
+        str(data.get('app_id', '')), _actor(data), data, save=operation == 'inherit'))
+
+
 def _require_auth():
     if _authorized():
         return None
