@@ -371,6 +371,7 @@ def get_group_info(app_id, group_id):
             apiEndpoint + '/group/info',
             headers=headers,
             params={'group_id': str(group_id)},
+            timeout=(3.0, 5.0),
         )
         try:
             result = response.json()

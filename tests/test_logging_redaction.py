@@ -14,17 +14,20 @@ class LoggingRedactionTests(unittest.TestCase):
         lanying_logging.register_http_logging(app)
 
         @app.post('/service/agent_tools/seenical/conversations/history/inherit')
+        @app.post('/service/agent_tools/seenical/conversations/configuration')
+        @app.post('/service/agent_tools/seenical/conversations/configurations')
         def api():
             from flask import jsonify, request
             return jsonify({'code': 200, 'data': request.get_json()})
 
-        with self.assertLogs(level='INFO') as captured:
-            response = app.test_client().post(
-                '/service/agent_tools/seenical/conversations/history/inherit',
-                json={'messages': [{'text': 'private-history-text'}]})
-        self.assertEqual(200, response.status_code)
-        self.assertNotIn('private-history-text', '\n'.join(captured.output))
-        self.assertIn('inherited conversation history', '\n'.join(captured.output))
+        for path in ['history/inherit', 'configuration', 'configurations']:
+            with self.assertLogs(level='INFO') as captured:
+                response = app.test_client().post(
+                    '/service/agent_tools/seenical/conversations/' + path,
+                    json={'messages': [{'text': 'private-history-text'}]})
+            self.assertEqual(200, response.status_code)
+            self.assertNotIn('private-history-text', '\n'.join(captured.output))
+            self.assertIn('inherited conversation history', '\n'.join(captured.output))
 
     def test_url_for_log_drops_query_and_fragment(self):
         sanitized = lanying_utils.url_for_log(

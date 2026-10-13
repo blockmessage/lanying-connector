@@ -161,6 +161,22 @@ def seenical_inherited_history(operation):
         str(data.get('app_id', '')), _actor(data), data, save=operation == 'inherit'))
 
 
+@bp.route('/service/agent_tools/seenical/conversations/configurations', defaults={'save': False}, methods=['POST'])
+@bp.route('/service/agent_tools/seenical/conversations/configuration', defaults={'save': True}, methods=['POST'])
+def seenical_conversation_configuration(save):
+    denied = _require_auth()
+    if denied:
+        return denied
+    import lanying_seenical_configuration
+    if len(request.get_data(cache=True)) > 512 * 1024:
+        return _response({'result': 'error', 'message': 'Conversation configuration is too large'})
+    data = _body()
+    payload = {key: value for key, value in data.items()
+               if key not in ('app_id', 'actor_subject_id', 'actor_tenement_id', 'actor_role', 'im_user_id', 'client_instance_id')}
+    return _response(lanying_seenical_configuration.handle(
+        str(data.get('app_id', '')), _actor(data), payload, save=save))
+
+
 def _require_auth():
     if _authorized():
         return None

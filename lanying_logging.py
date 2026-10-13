@@ -107,7 +107,8 @@ def format_log_value(value, max_chars=HTTP_LOG_MAX_CHARS):
 
 
 def _request_body_for_log(request):
-    if request.path.startswith('/service/agent_tools/seenical/conversations/history'):
+    if request.path.startswith(('/service/agent_tools/seenical/conversations/history',
+                                '/service/agent_tools/seenical/conversations/configuration')):
         return {'_omitted': 'inherited conversation history'}
     content_length = request.content_length
     if content_length is not None and content_length > HTTP_LOG_MAX_BODY_BYTES:
@@ -234,7 +235,8 @@ def register_http_logging(app):
                 duration_ms,
                 response.content_type or '',
                 format_log_value({'_omitted': 'inherited conversation history'}
-                                 if request.path.startswith('/service/agent_tools/seenical/conversations/history')
+                                 if request.path.startswith(('/service/agent_tools/seenical/conversations/history',
+                                                             '/service/agent_tools/seenical/conversations/configuration'))
                                  else _response_body_for_log(response)))
         except Exception:
             logging.warning(

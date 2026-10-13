@@ -108,6 +108,7 @@ class LanyingImApiTests(unittest.TestCase):
             "https://api.example.com/group/info",
             headers={"app_id": "app-id", "group_id": "9", "access-token": "admin-token"},
             params={"group_id": "9"},
+            timeout=(3.0, 5.0),
         )
 
     def test_filter_group_member_ids_returns_only_ratel_matches(self):
