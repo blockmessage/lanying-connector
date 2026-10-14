@@ -199,6 +199,9 @@ def set_task_schedule(app_id, task_id, schedule, message='manual'):
 def open_service(app_id, product_id, price, website_storage_limit, website_traffic_limit):
     service_status_key = get_service_status_key(app_id)
     redis = lanying_redis.get_redis_connection()
+    # Keep existing whole-GB values readable by older nodes during rollout.
+    if float(website_traffic_limit).is_integer():
+        website_traffic_limit = int(website_traffic_limit)
     now_datetime = datetime.now()
     if price > 0:
         pay_start_date = now_datetime.strftime('%Y-%m-%d')
@@ -246,7 +249,9 @@ def get_service_status(app_id):
     if 'create_time' in info:
         dto = {}
         for key,value in info.items():
-            if key in ['create_time', 'product_id', 'article_num', 'storage_size', 'website_storage_limit', 'website_traffic_limit']:
+            if key == 'website_traffic_limit':
+                dto[key] = float(value)
+            elif key in ['create_time', 'product_id', 'article_num', 'storage_size', 'website_storage_limit']:
                 dto[key] = int(value)
             else:
                 dto[key] = value
@@ -1525,7 +1530,10 @@ def get_website_storage_limit(app_id):
     return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_website_storage_limit')
 
 def get_website_traffic_limit(app_id):
-    return lanying_config.get_app_config_int_from_redis(app_id, 'lanying_connector.grow_ai_website_traffic_limit')
+    redis = lanying_redis.get_redis_stack_connection()
+    key = lanying_config.get_redis_app_config_key(app_id)
+    value = lanying_redis.redis_hget(redis, key, 'lanying_connector.grow_ai_website_traffic_limit')
+    return float(value or 0)
 
 def is_deduct_failed(app_id):
     return lanying_config.get_app_config_boolean_from_redis(app_id, 'lanying_connector.new_deduct_failed', False)
@@ -3745,7 +3753,11 @@ def check_deploy(deploy_code, release_size):
     new_website_storage = total_website_storage - old_website_storage + release_size
     new_website_storage_mb = new_website_storage / 1024 / 1024
     logging.info(f"check_deploy calc website_storage | old_website_storage:{old_website_storage}, total_website_storage:{total_website_storage}, new_website_storage_mb:{new_website_storage_mb}")
-    if new_website_storage_mb >= website_storage_limit:
+    # Free hosting permits reaching the quota exactly and reducing existing usage.
+    # Never force a customer to delete their site just to publish a smaller release.
+    free_release_fits = product_id == 9851 and (
+        new_website_storage_mb <= website_storage_limit or new_website_storage <= total_website_storage)
+    if new_website_storage_mb >= website_storage_limit and not free_release_fits:
         update_site_field(app_id, site_id, "deploy_result", "failed")
         update_site_field(app_id, site_id, "deploy_failed_reason", "website storage limit reached")
         return {'result': 'error', 'message': f'website storage limit reached : {new_website_storage_mb}/{website_storage_limit}'}
