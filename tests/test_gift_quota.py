@@ -51,6 +51,8 @@ class GiftQuotaTest(unittest.TestCase):
         gifts.metadata.create_all(self.engine)
         self.engine_patch=mock.patch.object(gifts,'engine',return_value=self.engine)
         self.flag=mock.patch.object(gifts,'enabled',return_value=True)
+        self.gift_flag=mock.patch.object(gifts,'gift_enabled',return_value=True)
+        self.gift_flag.start(); self.addCleanup(self.gift_flag.stop)
         self.engine_patch.start(); self.flag.start()
         self.addCleanup(self.engine_patch.stop); self.addCleanup(self.flag.stop)
         self.addCleanup(self.engine.dispose)

@@ -98,7 +98,7 @@ def gift_quota_settlement_retry():
                 from services import openai_service
                 import requests
                 data = openai_service.get_message_limit_state(app_id)
-                if data.get('message_count_quota', 0) > 100:
+                if data.get('message_count_quota', 0) > 100 or lanying_gift_quota.purchases_enabled():
                     endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
                     requests.post(endpoint + '/app/lanying_connector_event', headers={'app_id': app_id},
                                   json={'app_id': app_id, 'event': 'message_count_quota_reached', 'data': data}, timeout=10)

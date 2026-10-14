@@ -40,6 +40,7 @@ import mimetypes
 import lanying_image
 from lanying_async import executor
 import lanying_message_quota_usage
+import lanying_message_credits
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import base64
 import lanying_grow_ai
@@ -3872,7 +3873,12 @@ def _record_quota_statistics(redis, app_id, config, quota, api_key_type, counter
             add_quota(redis, key, 'message_count_quota', quota)
     # Existing purchase callback must see discounted, not gross, usage.
     total = lanying_gift_quota.billable_used(keys[0], _gross_quota(redis, keys[0]))
-    if total > 100 and (total+99)//100 != (total-quota+99)//100:
+    legacy_due = total > 100 and (total+99)//100 != (total-quota+99)//100
+    allowance = config.get('message_per_month', 0) + redis.hincrby(keys[0], 'message_count_quota_buy', 0)
+    purchase_due = (lanying_gift_quota.purchases_enabled()
+                    and total > allowance and lanying_message_credits.remaining(app_id) <= 0
+                    and lanying_message_credits.auto_recharge(app_id, config))
+    if legacy_due or purchase_due:
         notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
     return True
 
@@ -3886,7 +3892,8 @@ def _gross_quota(redis, key):
 def _gift_allowance(app_id, key, gross, redis):
     if not lanying_gift_quota.enabled():
         return gross, 0
-    return lanying_gift_quota.billable_used(key, _gross_quota(redis, key)), lanying_gift_quota.status(app_id)['remaining']
+    return (lanying_gift_quota.billable_used(key, _gross_quota(redis, key)),
+            (lanying_gift_quota.status(app_id)['remaining'] or 0) + lanying_message_credits.remaining(app_id))
 
 def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
     # A positive balance permits this call even if its actual cost is larger.
@@ -3897,11 +3904,21 @@ def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
         return True
     # Preserve the existing paid-package PAYG buffer. An explicit disabled
     # extra-price setting must not make that buffer available.
-    extra_price = config.get('enable_extra_price', config.get('product_id', 0) > 7001)
-    payg_enabled = str(extra_price).lower() in ('1', 'true', 'on')
-    return config.get('product_id', 0) > 7001 and payg_enabled and used < allowance + 300
+    app_id = config.get('_quota_app_id', '')
+    if not lanying_message_credits.auto_recharge(app_id, config):
+        return False
+    if lanying_gift_quota.purchases_enabled() and lanying_message_credits.has_preference(app_id):
+        # Exhausted credits are replenished before the next provider call.
+        # This also allows recovery after adding balance without generating
+        # further unpaid content or permanently disabling the App.
+        if not notify_butler(app_id, 'message_count_quota_reached', {}):
+            return False
+        return (lanying_message_credits.remaining(app_id) > 0
+                or used < config.get('message_per_month', 0) + redis.hincrby(key, 'message_count_quota_buy', 0))
+    return config.get('product_id', 0) > 7001 and used < allowance + 300
 
 def check_deduct_message_quota(app_id, config, quota):
+    config = dict(config, _quota_app_id=app_id)
     product_id = config.get('product_id', 0)
     if product_id == 0:
         return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
@@ -3934,6 +3951,7 @@ def deduct_message_quota(app_id, config, quota, api_key_type, origin):
         logging.error(f"deduct_message_quota skip | app_id={app_id}, quota={quota}, api_key_type={api_key_type}, origin:{origin}")
 
 def check_message_limit(app_id, config, model_config, is_chat):
+    config = dict(config, _quota_app_id=app_id)
     product_id = config.get('product_id', 0)
     if product_id == 0:
         return {'result':'error', 'code': 'bad_product_id', 'msg': lanying_config.get_message_404(app_id)}
@@ -4116,8 +4134,13 @@ def get_message_limit_state(app_id):
                 ret['message_count_quota_total'] = float(_gross_quota(redis, key))
                 ret['message_count_quota'] = lanying_gift_quota.billable_used(key, ret['message_count_quota_total'])
                 gift = lanying_gift_quota.status(app_id)
-                ret['gift_quota_remaining'] = gift['remaining']
+                ret['gift_quota_remaining'] = gift['remaining'] or 0
                 ret['gift_quota_expires_epoch'] = gift['expires_epoch']
+                purchased = lanying_gift_quota.status(app_id, purchased=True)
+                ret['purchased_credit_remaining'] = purchased['remaining'] or 0
+                ret['purchased_credit_expires_epoch'] = purchased['expires_epoch']
+                ret['message_count_quota_buy'] = ret.get('message_count_quota_buy', 0) + int(purchased['remaining'] or 0)
+            ret['quota_period'] = get_message_quota_period(config)
             return ret
     return {}
 
@@ -4173,19 +4196,27 @@ def calc_used_text_size(preset, response, model_config):
         logging.info(f"preset: {preset}, reponse: {response}, model_config: {model_config}")
     return text_size
 
-def get_message_statistic_keys(config, app_id):
+def get_message_quota_period(config):
     now = datetime.now()
     month_start_date = datetime(now.year, now.month, 1)
     if 'start_date' in config:
         pay_start_date = datetime.strptime(config['start_date'], '%Y-%m-%d')
     else:
         pay_start_date = month_start_date
+    end_date = pay_start_date + relativedelta(months=1)
     while now >= pay_start_date:
         end_date = pay_start_date + relativedelta(months=1)
         if now >= pay_start_date and now < end_date:
             break
         else:
             pay_start_date = end_date
+    return {'start': pay_start_date.strftime('%Y-%m-%d'), 'end': end_date.strftime('%Y-%m-%d'),
+            'expires_epoch': int(end_date.timestamp())}
+
+def get_message_statistic_keys(config, app_id):
+    now = datetime.now()
+    month_start_date = datetime(now.year, now.month, 1)
+    pay_start_date = datetime.strptime(get_message_quota_period(config)['start'], '%Y-%m-%d')
     pay_start_key = f"lanying:connector:statistics:message:pay_start_date:{app_id}:{pay_start_date.strftime('%Y-%m-%d')}"
     month_start_key = f"lanying:connector:statistics:message:month_start_date:{app_id}:{month_start_date.strftime('%Y-%m-%d')}"
     everyday_key = f"lanying:connector:statistics:message:everyday:{app_id}:{now.strftime('%Y-%m-%d')}"
@@ -4203,10 +4234,12 @@ def notify_butler(app_id, event, data):
     try:
         sendResponse = requests.post(f"{endpoint}/app/lanying_connector_event",
                                         headers={'app_id': app_id},
-                                        json={'app_id':app_id, 'event':event, 'data':data})
+                                        json={'app_id':app_id, 'event':event, 'data':data}, timeout=10)
         logging.info(sendResponse)
+        return sendResponse.ok and sendResponse.json().get('code') == 200
     except Exception as e:
         logging.info(e)
+        return False
 
 def ensure_even(num):
     if num % 2 == 1:

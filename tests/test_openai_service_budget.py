@@ -634,12 +634,49 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
                           'enable_extra_price': payg, 'quota_pre_check': 30}
                 with mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=redis, create=True), \
                      mock.patch.object(m, '_gift_allowance', return_value=(used, gift)), \
+                     mock.patch.object(m.lanying_message_credits, 'auto_recharge', return_value=bool(payg) and product > 7001), \
+                     mock.patch.object(m.lanying_gift_quota, 'purchases_enabled', return_value=False), \
                      mock.patch.object(m, 'check_daily_quota_fuse_limit', return_value={'result':'ok'}), \
                      mock.patch.object(m.lanying_config, 'get_message_quota_not_enough', return_value='no quota', create=True):
                     model_result = m.check_message_limit('app', config, {'api_key_type':'share', 'quota':30}, False)
                     search_result = m.check_deduct_message_quota('app', config, 30)
                 self.assertEqual(allowed, model_result['result'] == 'ok')
                 self.assertEqual(allowed, search_result['result'] == 'ok')
+
+    def test_purchased_credit_mode_requires_successful_refill_before_new_call(self):
+        m = importlib.import_module('openai_service')
+        redis = mock.Mock()
+        redis.hincrby.return_value = 0
+        config = {'message_per_month': 30, 'product_id': 7001, '_quota_app_id': 'app'}
+        with mock.patch.object(m.lanying_gift_quota, 'purchases_enabled', return_value=True), \
+             mock.patch.object(m.lanying_message_credits, 'has_preference', return_value=True), \
+             mock.patch.object(m.lanying_message_credits, 'auto_recharge', return_value=True), \
+             mock.patch.object(m, 'notify_butler', return_value=False) as notify, \
+             mock.patch.object(m.lanying_message_credits, 'remaining', return_value=1000):
+            self.assertFalse(m._has_message_quota_remaining(redis, 'key', config, 30, 0))
+            notify.assert_called_once()
+        with mock.patch.object(m.lanying_gift_quota, 'purchases_enabled', return_value=True), \
+             mock.patch.object(m.lanying_message_credits, 'has_preference', return_value=True), \
+             mock.patch.object(m.lanying_message_credits, 'auto_recharge', return_value=True), \
+             mock.patch.object(m, 'notify_butler', return_value=True), \
+             mock.patch.object(m.lanying_message_credits, 'remaining', return_value=1000):
+            self.assertTrue(m._has_message_quota_remaining(redis, 'key', config, 30, 0))
+        with mock.patch.object(m.lanying_message_credits, 'auto_recharge', return_value=False), \
+             mock.patch.object(m, 'notify_butler') as notify:
+            self.assertFalse(m._has_message_quota_remaining(redis, 'key', config, 30, 0))
+            notify.assert_not_called()
+
+    def test_unconfigured_paid_apps_keep_the_original_buffer_with_feature_enabled(self):
+        m = importlib.import_module('openai_service')
+        redis=mock.Mock(); redis.hincrby.return_value=0
+        config={'product_id':7002,'message_per_month':30,'_quota_app_id':'app'}
+        with mock.patch.object(m.lanying_gift_quota,'purchases_enabled',return_value=True), \
+             mock.patch.object(m.lanying_message_credits,'auto_recharge',return_value=True), \
+             mock.patch.object(m.lanying_message_credits,'has_preference',return_value=False), \
+             mock.patch.object(m,'notify_butler') as notify:
+            self.assertTrue(m._has_message_quota_remaining(redis,'key',config,30,0))
+            self.assertFalse(m._has_message_quota_remaining(redis,'key',config,330,0))
+            notify.assert_not_called()
 
     def test_daily_quota_fuse_defaults_to_ten_percent_with_minimum_one(self):
         try:

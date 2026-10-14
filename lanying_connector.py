@@ -398,6 +398,43 @@ def gift_quota(operation):
         logging.warning('gift quota request unavailable | operation=%s', operation)
         return {'code': 503, 'message': 'gift quota temporarily unavailable'}, 503
 
+@app.route('/service/openai/message_credits/<operation>', methods=['POST'])
+def message_credits(operation):
+    import lanying_gift_quota
+    import lanying_message_credits
+    if not accessToken or request.headers.get('access-token', '') != accessToken:
+        return {'code': 401, 'message': 'bad authorization'}, 401
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('app_id'), str) or not data['app_id']:
+        return {'code': 400, 'message': 'invalid request'}, 400
+    try:
+        app_id = data['app_id']
+        if operation == 'settings' and set(data) == {'app_id', 'auto_recharge'}:
+            result = lanying_message_credits.set_preference(app_id, data['auto_recharge'])
+        elif operation == 'state' and set(data) == {'app_id'}:
+            config = lanying_config.get_lanying_connector(app_id) or {}
+            if not config.get('product_id'):
+                return {'code': 400, 'message': 'AI service is inactive'}, 400
+            module = get_service_module('openai')
+            result = module.get_message_limit_state(app_id)
+            result['auto_recharge'] = lanying_message_credits.auto_recharge(app_id, config)
+            result['purchase_enabled'] = lanying_gift_quota.purchases_enabled()
+        elif operation == 'grant' and set(data) == {'app_id', 'business_id', 'points', 'expires_epoch', 'source'}:
+            result = lanying_gift_quota.grant_purchase(data['business_id'], app_id, data['points'],
+                                                   data['expires_epoch'], data['source'])
+        else:
+            return {'code': 400, 'message': 'invalid request'}, 400
+        return {'code': 200, 'data': result}
+    except lanying_gift_quota.PurchaseExpired:
+        # Internal callers use the existing JSON-envelope protocol. Keep the
+        # business error readable by Butler's HttpProxy (which rejects HTTP 4xx).
+        return {'code': 400, 'message': 'purchase expired before delivery', 'error_code': 'MESSAGE_CREDIT_EXPIRED'}
+    except (ValueError, TypeError):
+        return {'code': 400, 'message': 'invalid credits'}, 400
+    except Exception:
+        logging.warning('message credits unavailable | operation=%s', operation)
+        return {'code': 503, 'message': 'message credits unavailable'}, 503
+
 @app.route("/service/<string:service>/get_message_limit_state", methods=["POST"])
 def get_message_limit_state(service):
     headerToken = request.headers.get('access-token', "")

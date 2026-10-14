@@ -25,6 +25,7 @@ grants = Table('message_quota_gift', metadata,
     Column('remaining', Numeric(20, 4), nullable=False),
     Column('granted_epoch', BigInteger, nullable=False),
     Column('expires_epoch', BigInteger, nullable=False))
+grants.append_column(Column('credit_source', String(16), nullable=False, default='invitation'))
 usage = Table('message_quota_gift_usage', metadata,
     Column('usage_id', String(64), primary_key=True),
     Column('app_id', String(64), nullable=False),
@@ -33,13 +34,21 @@ usage = Table('message_quota_gift_usage', metadata,
     Column('arguments_hash', String(64), nullable=False),
     Column('gift_used', Numeric(20, 4), nullable=False),
     Column('applied', Boolean, nullable=False, default=False))
+usage.append_column(Column('purchase_used', Numeric(20, 4), nullable=False, default=0))
 offsets = Table('message_quota_gift_offset', metadata,
     Column('usage_id', String(64), primary_key=True),
     Column('statistic_key', String(255), primary_key=True),
     Column('gift_used', Numeric(20, 4), nullable=False))
+offsets.append_column(Column('purchase_used', Numeric(20, 4), nullable=False, default=0))
 
 def enabled():
+    return gift_enabled() or purchases_enabled()
+
+def gift_enabled():
     return os.getenv('SEENICAL_GIFT_QUOTA_ENABLED', 'off').lower() in ('on', 'true', '1')
+
+def purchases_enabled():
+    return os.getenv('SEENICAL_MESSAGE_CREDITS_ENABLED', 'off').lower() in ('on', 'true', '1')
 
 def engine():
     value = lanying_agent_tools_storage.get_engine()
@@ -62,7 +71,7 @@ def _ignore(conn, table, values):
     return conn.execute(stmt.values(**values)).rowcount
 
 def grant(business_id, app_id, points, now=None):
-    if not enabled():
+    if not gift_enabled():
         raise ValueError('gift quota feature disabled')
     points = amount(points)
     if not str(business_id).startswith('seenical-invitation:') or len(str(business_id)) > 96 or not app_id or points <= 0 or points != int(points):
@@ -76,12 +85,43 @@ def grant(business_id, app_id, points, now=None):
             raise ValueError('grant identity mismatch')
         return dict(business_id=business_id, expires_epoch=row['expires_epoch'])
 
-def status(app_id, now=None):
-    if not enabled():
+class PurchaseExpired(ValueError):
+    pass
+
+def grant_purchase(business_id, app_id, points, expires_epoch, source, now=None):
+    """Butler freezes the expiry and identity; retries cannot move a purchase."""
+    import re
+    if not purchases_enabled():
+        raise ValueError('purchased credits disabled')
+    points = amount(points)
+    if (not re.fullmatch(r'seenical-message-credit:[0-9a-f]{32}', str(business_id))
+            or not app_id or source not in ('manual', 'auto') or points <= 0
+            or points != int(points) or isinstance(expires_epoch, bool)):
+        raise ValueError('invalid purchase grant')
+    expires_epoch = int(expires_epoch)
+    now = int(time.time()) if now is None else int(now)
+    with engine().begin() as conn:
+        row = conn.execute(select(grants).where(grants.c.business_id == business_id)).mappings().first()
+        if row is None:
+            if expires_epoch <= now:
+                raise PurchaseExpired('purchase expired')
+            if expires_epoch > now + 32*86400:
+                raise ValueError('invalid purchase expiry')
+            _ignore(conn, grants, dict(business_id=business_id, app_id=app_id, points=points,
+                remaining=points, granted_epoch=now, expires_epoch=expires_epoch, credit_source=source))
+            row = conn.execute(select(grants).where(grants.c.business_id == business_id).with_for_update()).mappings().one()
+        if (row['app_id'] != app_id or row['points'] != points
+                or row['expires_epoch'] != expires_epoch or row['credit_source'] != source):
+            raise ValueError('purchase identity mismatch')
+        return dict(business_id=business_id, expires_epoch=row['expires_epoch'], granted=True)
+
+def status(app_id, now=None, purchased=False):
+    if not enabled() or not (purchases_enabled() if purchased else gift_enabled()):
         return dict(remaining=None, expires_epoch=None, enabled=False)
     now = int(time.time()) if now is None else int(now)
     with engine().connect() as conn:
         rows = conn.execute(select(grants).where(grants.c.app_id == app_id,
+            grants.c.credit_source.in_(['manual', 'auto']) if purchased else grants.c.credit_source == 'invitation',
             grants.c.expires_epoch > now, grants.c.remaining > 0)).mappings().all()
     return dict(remaining=float(sum((r['remaining'] for r in rows), Decimal(0))),
                 expires_epoch=min((r['expires_epoch'] for r in rows), default=None))
@@ -90,7 +130,7 @@ def billable_used(statistic_key, gross):
     if not enabled():
         return gross
     with engine().connect() as conn:
-        offset = conn.execute(select(func.coalesce(func.sum(offsets.c.gift_used), 0))
+        offset = conn.execute(select(func.coalesce(func.sum(offsets.c.gift_used + offsets.c.purchase_used), 0))
             .where(offsets.c.statistic_key == statistic_key)).scalar_one()
     # Legacy counters and Butler expect integer message quota; preserve rounding.
     return max(0, int(Decimal(str(gross)) - Decimal(str(offset))))
@@ -109,24 +149,29 @@ def settle(payload):
         if row['arguments_hash'] != arguments_hash:
             raise ValueError('usage identity mismatch')
         if not inserted:
-            return dict(gift_used=float(row['gift_used']), applied=row['applied'])
+            return dict(gift_used=float(row['gift_used']), purchase_used=float(row['purchase_used']), applied=row['applied'])
         now = int(payload['occurred_epoch'])
         rows = conn.execute(select(grants).where(grants.c.app_id == payload['app_id'],
+            grants.c.credit_source.in_((['invitation'] if gift_enabled() else [])
+                                     + (['manual', 'auto'] if purchases_enabled() else [])),
             grants.c.granted_epoch <= now, grants.c.expires_epoch > now,
-            grants.c.remaining > 0).order_by(grants.c.expires_epoch)
+            grants.c.remaining > 0).order_by((grants.c.credit_source != 'invitation'), grants.c.expires_epoch, grants.c.business_id)
             .with_for_update()).mappings().all()
         gift = Decimal(0)
+        purchased = Decimal(0)
         for r in rows:
-            take = min(used-gift, r['remaining'])
+            take = min(used-gift-purchased, r['remaining'])
             if take <= 0:
                 break
             conn.execute(update(grants).where(grants.c.business_id == r['business_id'])
                 .values(remaining=r['remaining']-take))
-            gift += take
-        conn.execute(update(usage).where(usage.c.usage_id == payload['usage_id']).values(gift_used=gift))
+            if r['credit_source'] == 'invitation': gift += take
+            else: purchased += take
+        conn.execute(update(usage).where(usage.c.usage_id == payload['usage_id']).values(gift_used=gift, purchase_used=purchased))
         for key in set(payload['keys']):
-            conn.execute(insert(offsets).values(usage_id=payload['usage_id'], statistic_key=key, gift_used=gift))
-        return dict(gift_used=float(gift), applied=False)
+            conn.execute(insert(offsets).values(usage_id=payload['usage_id'], statistic_key=key,
+                                               gift_used=gift, purchase_used=purchased))
+        return dict(gift_used=float(gift), purchase_used=float(purchased), applied=False)
 
 def mark_applied(usage_id):
     with engine().begin() as conn:

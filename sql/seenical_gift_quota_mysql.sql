@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS message_quota_gift (
   remaining DECIMAL(20,4) NOT NULL,
   granted_epoch BIGINT NOT NULL,
   expires_epoch BIGINT NOT NULL,
+  credit_source VARCHAR(16) NOT NULL DEFAULT 'invitation',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY app_active (app_id, expires_epoch)
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS message_quota_gift_usage (
   occurred_epoch BIGINT NOT NULL,
   arguments_hash CHAR(64) NOT NULL,
   gift_used DECIMAL(20,4) NOT NULL,
+  purchase_used DECIMAL(20,4) NOT NULL DEFAULT 0,
   applied TINYINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -25,6 +27,7 @@ CREATE TABLE IF NOT EXISTS message_quota_gift_offset (
   usage_id VARCHAR(64) NOT NULL,
   statistic_key VARCHAR(255) NOT NULL,
   gift_used DECIMAL(20,4) NOT NULL,
+  purchase_used DECIMAL(20,4) NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (usage_id, statistic_key),
