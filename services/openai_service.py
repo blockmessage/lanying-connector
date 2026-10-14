@@ -3854,6 +3854,7 @@ def _record_quota_statistics(redis, app_id, config, quota, api_key_type, counter
             payload = {'usage_id': uuid.uuid4().hex, 'app_id': app_id, 'quota': float(quota),
                        'keys': keys, 'api_key_type': 'share' if api_key_type == 'share' else 'self',
                        'counters': counters or {}, 'origin': origin,
+                       'package_allowance': config.get('message_per_month', 0) + redis.hincrby(keys[0], 'message_count_quota_buy', 0),
                        'occurred_epoch': int(time.time())}
             if include_capsules:
                 payload['capsule_statistics'] = _capsule_statistics_snapshot(
@@ -3872,7 +3873,7 @@ def _record_quota_statistics(redis, app_id, config, quota, api_key_type, counter
             add_quota(redis, key, 'message_count_quota_share' if api_key_type == 'share' else 'message_count_quota_self', quota)
             add_quota(redis, key, 'message_count_quota', quota)
     # Existing purchase callback must see discounted, not gross, usage.
-    total = lanying_gift_quota.billable_used(keys[0], _gross_quota(redis, keys[0]))
+    total = lanying_gift_quota.billable_used(keys[0], _gross_quota(redis, keys[0]), redis)
     legacy_due = total > 100 and (total+99)//100 != (total-quota+99)//100
     allowance = config.get('message_per_month', 0) + redis.hincrby(keys[0], 'message_count_quota_buy', 0)
     purchase_due = (lanying_gift_quota.purchases_enabled()
@@ -3892,7 +3893,7 @@ def _gross_quota(redis, key):
 def _gift_allowance(app_id, key, gross, redis):
     if not lanying_gift_quota.enabled():
         return gross, 0
-    return (lanying_gift_quota.billable_used(key, _gross_quota(redis, key)),
+    return (lanying_gift_quota.billable_used(key, _gross_quota(redis, key), redis),
             (lanying_gift_quota.status(app_id)['remaining'] or 0) + lanying_message_credits.remaining(app_id))
 
 def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
@@ -4132,7 +4133,7 @@ def get_message_limit_state(app_id):
                 ret[k.decode('utf-8')] = int(v.decode('utf-8'))
             if lanying_gift_quota.enabled():
                 ret['message_count_quota_total'] = float(_gross_quota(redis, key))
-                ret['message_count_quota'] = lanying_gift_quota.billable_used(key, ret['message_count_quota_total'])
+                ret['message_count_quota'] = lanying_gift_quota.billable_used(key, ret['message_count_quota_total'], redis)
                 gift = lanying_gift_quota.status(app_id)
                 ret['gift_quota_remaining'] = gift['remaining'] or 0
                 ret['gift_quota_expires_epoch'] = gift['expires_epoch']

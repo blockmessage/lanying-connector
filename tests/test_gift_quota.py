@@ -19,7 +19,9 @@ class FakeRedis:
         existed = field in self.hashes.get(key,{})
         self.hashes.get(key, {}).pop(field, None)
         return int(existed)
-    def hget(self,key,field): return self.hashes.get(key,{}).get(field)
+    def hget(self,key,field):
+        if self.in_multi: self.commands.append(('hget', (key, field))); return self
+        return self.hashes.get(key,{}).get(field)
     def hsetnx(self,key,field,value):
         if field in self.hashes.get(key,{}): return 0
         self.hset(key,field,value); return 1
@@ -31,7 +33,9 @@ class FakeRedis:
         value = float(self.hget(key, field) or 0) + amount
         self.hset(key, field, value); return value
     def hscan(self, key, cursor=0, count=100): return 0, self.hashes.get(key, {}).copy()
-    def exists(self, key): return key in self.values
+    def exists(self, key):
+        if self.in_multi: self.commands.append(('exists', (key,))); return self
+        return key in self.values
     def setex(self, key, seconds, value):
         if self.in_multi: self.commands.append(('setex', (key, seconds, value)))
         else: self.values[key] = value
@@ -42,7 +46,7 @@ class FakeRedis:
     def multi(self): self.in_multi = True
     def execute(self):
         commands=self.commands; self.commands=[]; self.in_multi=False
-        for method, args in commands: getattr(self, method)(*args)
+        return [getattr(self, method)(*args) for method, args in commands]
 
 
 class GiftQuotaTest(unittest.TestCase):
