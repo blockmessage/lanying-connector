@@ -48,6 +48,7 @@ import lanying_openclaw
 import lanying_openai_compat
 import lanying_agent_tools
 import lanying_operational_storage
+import lanying_gift_quota
 from lanying_ai_chat_pipeline import (
     ChatHandlerResult, ModelResponse, PresetResolution, Prompt, ReplyResult,
     ToolRunResult,
@@ -3650,7 +3651,8 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 if message_count_quota < 0:
                     message_count_quota = 0
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
-                key_count = 0
+                if not _record_quota_statistics(redis, app_id, config, message_count_quota, api_key_type, {'image_message_count': 1}, response):
+                    return
                 add_quota_used_statistic(app_id, message_count_quota)
                 add_message_quota_usage_log({
                     'app_id': app_id,
@@ -3668,16 +3670,6 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                     'product_id': int(config.get('product_id', 0) or 0),
                     'extra_metadata': {},
                 })
-                for key in get_message_statistic_keys(config, app_id):
-                    key_count += 1
-                    redis.hincrby(key, 'image_message_count', 1)
-                    if api_key_type == 'share':
-                        add_quota(redis, key, 'message_count_quota_share', message_count_quota)
-                    else:
-                        add_quota(redis, key, 'message_count_quota_self', message_count_quota)
-                    new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
-                    if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
-                        notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
                 maybe_trace_message_quota_usage(config, message_count_quota)
             else:
                 logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, model_config:{model_config}")
@@ -3693,7 +3685,8 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                     speech_to_text_duration = config.get('speech_to_text_duration', 0)
                     logging.info(f"speech_to_text response | duration={speech_to_text_duration}, response:{response}")
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
-                key_count = 0
+                if not _record_quota_statistics(redis, app_id, config, message_count_quota, api_key_type, {f'{model_type}_message_count': 1}, response):
+                    return
                 add_quota_used_statistic(app_id, message_count_quota)
                 add_message_quota_usage_log({
                     'app_id': app_id,
@@ -3713,16 +3706,6 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                         'speech_to_text_duration': int(config.get('speech_to_text_duration', 0) or 0) if model_type == 'speech_to_text' else 0
                     },
                 })
-                for key in get_message_statistic_keys(config, app_id):
-                    key_count += 1
-                    redis.hincrby(key, f'{model_type}_message_count', 1)
-                    if api_key_type == 'share':
-                        add_quota(redis, key, 'message_count_quota_share', message_count_quota)
-                    else:
-                        add_quota(redis, key, 'message_count_quota_self', message_count_quota)
-                    new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
-                    if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
-                        notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
                 maybe_trace_message_quota_usage(config, message_count_quota)
             else:
                 logging.error(f"skip image statistic | app_id:{app_id}, preset:{preset}, response:{response}, api_key_type:{api_key_type}, vendor:{vendor}, model_config:{model_config}")
@@ -3762,7 +3745,8 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                 return
             if redis:
                 logging.info(f"add message statistic: app_id={app_id}, vendor={vendor}, model={model}, content_security={content_security}, completion_tokens={completion_tokens}, prompt_tokens={prompt_tokens}, total_tokens={total_tokens},text_size={text_size}, message_count_quota={message_count_quota}, api_key_type={api_key_type}")
-                key_count = 0
+                if not _record_quota_statistics(redis, app_id, config, message_count_quota, api_key_type, {'total_tokens': total_tokens, 'text_size': text_size, 'message_count': 1}, response, include_capsules=True):
+                    return
                 add_quota_used_statistic(app_id, message_count_quota)
                 add_message_quota_usage_log({
                     'app_id': app_id,
@@ -3780,21 +3764,10 @@ def add_message_statistic(app_id, config, preset, response, model_config):
                     'product_id': int(product_id or 0),
                     'extra_metadata': {},
                 })
-                for key in get_message_statistic_keys(config, app_id):
-                    key_count += 1
-                    redis.hincrby(key, 'total_tokens', total_tokens)
-                    redis.hincrby(key, 'text_size', text_size)
-                    redis.hincrby(key, 'message_count', 1)
-                    if api_key_type == 'share':
-                        add_quota(redis, key, 'message_count_quota_share', message_count_quota)
-                    else:
-                        add_quota(redis, key, 'message_count_quota_self', message_count_quota)
-                    new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
-                    if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
-                        notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
                 maybe_trace_message_quota_usage(config, message_count_quota)
                 try:
-                    maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
+                    if not lanying_gift_quota.enabled():
+                        maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, api_key_type)
                 except Exception as e:
                     logging.exception(e)
             else:
@@ -3814,13 +3787,11 @@ def maybe_statistic_ai_capsule(config, app_id, product_id, message_count_quota, 
         if capsule:
             statistic_capsule(capsule, app_id, product_id, message_count_quota, api_key_type)
 
-def statistic_capsule(capsule, app_id, product_id, message_count_quota, api_key_type):
-    now = datetime.now()
+def _capsule_statistic_entry(capsule, app_id, product_id, api_key_type, now):
     capsule_app_id = capsule['app_id']
     capsule_id = capsule['capsule_id']
     everymonth_key = lanying_ai_capsule.statistic_capsule_key(capsule_app_id, now)
     app_ids_key = lanying_ai_capsule.statistic_capsule_app_ids_key(now)
-    redis = lanying_redis.get_redis_connection()
     field = json.dumps({
         'capsule_id': capsule_id,
         'product_id': product_id,
@@ -3828,8 +3799,28 @@ def statistic_capsule(capsule, app_id, product_id, message_count_quota, api_key_
         'day': now.strftime('%Y-%m-%d'),
         'app_id': app_id
     })
-    redis.hincrbyfloat(everymonth_key, field, message_count_quota)
-    redis.hincrby(app_ids_key, capsule_app_id, 1)
+    return {'key': everymonth_key, 'field': field,
+            'app_ids_key': app_ids_key, 'capsule_app_id': capsule_app_id}
+
+def _capsule_statistics_snapshot(config, app_id, product_id, api_key_type, occurred_epoch):
+    # Freeze both owner and accounting period before queuing. A later retry
+    # must not re-read edited/deleted capsule metadata or credit another month.
+    now = datetime.fromtimestamp(occurred_epoch)
+    entries = []
+    for name, getter_name in (
+            ('linked_publish_capsule_id', 'get_publish_capsule'),
+            ('linked_capsule_id', 'get_capsule')):
+        if name in config:
+            capsule = getattr(lanying_ai_capsule, getter_name)(config[name])
+            if capsule:
+                entries.append(_capsule_statistic_entry(capsule, app_id, product_id, api_key_type, now))
+    return entries
+
+def statistic_capsule(capsule, app_id, product_id, message_count_quota, api_key_type):
+    entry = _capsule_statistic_entry(capsule, app_id, product_id, api_key_type, datetime.now())
+    redis = lanying_redis.get_redis_connection()
+    redis.hincrbyfloat(entry['key'], entry['field'], message_count_quota)
+    redis.hincrby(entry['app_ids_key'], entry['capsule_app_id'], 1)
 
 def add_quota(redis, key, field, quota):
     if isinstance(quota, int):
@@ -3844,29 +3835,91 @@ def add_quota(redis, key, field, quota):
         else:
             return redis.hincrby(key, field, 0)
 
+def _record_quota_statistics(redis, app_id, config, quota, api_key_type, counters=None, response=None, origin=None, include_capsules=False):
+    keys = get_message_statistic_keys(config, app_id)
+    if lanying_gift_quota.enabled():
+        # Only a server-created tuple is a trusted cache: provider JSON can
+        # contain reserved-looking names, but cannot supply a Python tuple.
+        cached = response.get('_seenical_quota_settlement') if isinstance(response, dict) else None
+        if isinstance(cached, tuple) and len(cached) == 1 and isinstance(cached[0], dict):
+            payload = cached[0]
+            if payload['app_id'] != app_id:
+                raise ValueError('quota response belongs to another App')
+            if (payload['quota'] != float(quota)
+                    or payload['api_key_type'] != ('share' if api_key_type == 'share' else 'self')
+                    or payload['counters'] != (counters or {}) or payload['origin'] != origin):
+                raise ValueError('quota response accounting changed')
+        else:
+            payload = {'usage_id': uuid.uuid4().hex, 'app_id': app_id, 'quota': float(quota),
+                       'keys': keys, 'api_key_type': 'share' if api_key_type == 'share' else 'self',
+                       'counters': counters or {}, 'origin': origin,
+                       'occurred_epoch': int(time.time())}
+            if include_capsules:
+                payload['capsule_statistics'] = _capsule_statistics_snapshot(
+                    config, app_id, config.get('product_id', 0), api_key_type, payload['occurred_epoch'])
+            if isinstance(response, dict):
+                response['_seenical_quota_settlement'] = (payload,)
+        changed = lanying_gift_quota.apply_statistics(redis, payload)
+        if not changed:
+            return False
+    else:
+        for key in keys:
+            for field, value in (counters or {}).items():
+                redis.hincrby(key, field, int(value))
+            if origin:
+                add_quota(redis, key, origin, quota)
+            add_quota(redis, key, 'message_count_quota_share' if api_key_type == 'share' else 'message_count_quota_self', quota)
+            add_quota(redis, key, 'message_count_quota', quota)
+    # Existing purchase callback must see discounted, not gross, usage.
+    total = lanying_gift_quota.billable_used(keys[0], _gross_quota(redis, keys[0]))
+    if total > 100 and (total+99)//100 != (total-quota+99)//100:
+        notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+    return True
+
+def _gross_quota(redis, key):
+    from decimal import Decimal
+    whole = redis.hincrby(key, 'message_count_quota', 0)
+    if not lanying_gift_quota.enabled():
+        return whole
+    return Decimal(whole) + Decimal(int(redis.hget(key, 'message_count_quota_float') or 0)) / 10000
+
+def _gift_allowance(app_id, key, gross, redis):
+    if not lanying_gift_quota.enabled():
+        return gross, 0
+    return lanying_gift_quota.billable_used(key, _gross_quota(redis, key)), lanying_gift_quota.status(app_id)['remaining']
+
+def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
+    # A positive balance permits this call even if its actual cost is larger.
+    # Credits never become negative; uncovered usage stays in the normal ledger.
+    purchased = redis.hincrby(key, 'message_count_quota_buy', 0)
+    allowance = config.get('message_per_month', 0) + purchased
+    if gift_remaining > 0 or used < allowance:
+        return True
+    # Preserve the existing paid-package PAYG buffer. An explicit disabled
+    # extra-price setting must not make that buffer available.
+    extra_price = config.get('enable_extra_price', config.get('product_id', 0) > 7001)
+    payg_enabled = str(extra_price).lower() in ('1', 'true', 'on')
+    return config.get('product_id', 0) > 7001 and payg_enabled and used < allowance + 300
+
 def check_deduct_message_quota(app_id, config, quota):
-    message_per_month = config.get('message_per_month', 0)
     product_id = config.get('product_id', 0)
     if product_id == 0:
         return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
-    enable_extra_price = False
-    if product_id > 7001:
-        enable_extra_price = True
     redis = lanying_redis.get_redis_connection()
     if redis:
         key = get_message_statistic_keys(config, app_id)[0]
         message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
+        try:
+            message_count_quota, gift_remaining = _gift_allowance(app_id, key, message_count_quota, redis)
+        except Exception:
+            return {'result': 'error', 'code': 'gift_quota_unavailable', 'message': 'Quota is temporarily unavailable', 'msg': 'Quota is temporarily unavailable'}
         daily_limit_res = check_daily_quota_fuse_limit(app_id, config, redis, quota)
         if daily_limit_res['result'] == 'error':
             return daily_limit_res
-        if message_count_quota + quota <= message_per_month:
+        if _has_message_quota_remaining(redis, key, config, message_count_quota, gift_remaining):
             return {'result':'ok', 'api_key_type':'share'}
         else:
-            message_count_quota_buy = redis.hincrby(key, 'message_count_quota_buy', 0)
-            if enable_extra_price  and message_count_quota + quota < message_per_month + message_count_quota_buy + 300:
-                return {'result':'ok', 'api_key_type':'share'}
-            else:
-                return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
+            return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
     else:
         return {'result':'error', 'code':'LanyingInternalError','message': 'Lanying internal error'}
 
@@ -3876,35 +3929,22 @@ def deduct_message_quota(app_id, config, quota, api_key_type, origin):
     redis = lanying_redis.get_redis_connection()
     if redis:
         logging.info(f"deduct_message_quota start | app_id={app_id}, quota={quota}, api_key_type={api_key_type}, origin:{origin}")
-        key_count = 0
-        for key in get_message_statistic_keys(config, app_id):
-            key_count += 1
-            try:
-                add_quota(redis, key, origin, quota)
-            except Exception as e:
-                logging.exception(e)
-            if api_key_type == 'share':
-                add_quota(redis, key, 'message_count_quota_share', message_count_quota)
-            else:
-                add_quota(redis, key, 'message_count_quota_self', message_count_quota)
-            new_message_count_quota = add_quota(redis, key, 'message_count_quota', message_count_quota)
-            if key_count == 1 and new_message_count_quota > 100 and (new_message_count_quota+99) // 100 != (new_message_count_quota - message_count_quota+99) // 100:
-                notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
+        _record_quota_statistics(redis, app_id, config, quota, api_key_type, origin=origin)
     else:
         logging.error(f"deduct_message_quota skip | app_id={app_id}, quota={quota}, api_key_type={api_key_type}, origin:{origin}")
 
 def check_message_limit(app_id, config, model_config, is_chat):
-    message_per_month = config.get('message_per_month', 0)
     product_id = config.get('product_id', 0)
     if product_id == 0:
         return {'result':'error', 'code': 'bad_product_id', 'msg': lanying_config.get_message_404(app_id)}
-    enable_extra_price = False
-    if product_id > 7001:
-        enable_extra_price = True
     redis = lanying_redis.get_redis_connection()
     if redis:
         key = get_message_statistic_keys(config, app_id)[0]
         message_count_quota = redis.hincrby(key, 'message_count_quota', 0)
+        try:
+            message_count_quota, gift_remaining = _gift_allowance(app_id, key, message_count_quota, redis)
+        except Exception:
+            return {'result': 'error', 'code': 'gift_quota_unavailable', 'message': 'Quota is temporarily unavailable', 'msg': 'Quota is temporarily unavailable'}
         quota_pre_check = config.get('quota_pre_check', 0)
         daily_quota_pre_check = quota_pre_check
         if not daily_quota_pre_check:
@@ -3913,13 +3953,10 @@ def check_message_limit(app_id, config, model_config, is_chat):
         if daily_limit_res['result'] == 'error':
             return daily_limit_res
         api_key_type = model_config['api_key_type']
-        if message_count_quota + quota_pre_check < message_per_month:
+        if _has_message_quota_remaining(redis, key, config, message_count_quota, gift_remaining):
             return {'result':'ok', 'api_key_type': api_key_type}
         else:
-            message_count_quota_buy = redis.hincrby(key, 'message_count_quota_buy', 0)
-            if enable_extra_price and message_count_quota + quota_pre_check < message_per_month + message_count_quota_buy + 300:
-                return {'result':'ok', 'api_key_type': api_key_type}
-            elif is_chat:
+            if is_chat:
                 msgs = []
                 error_msg = lanying_config.get_message_no_quota(app_id)
                 msgs.append(error_msg)
@@ -4075,6 +4112,12 @@ def get_message_limit_state(app_id):
             ret = {}
             for k,v in kvs.items():
                 ret[k.decode('utf-8')] = int(v.decode('utf-8'))
+            if lanying_gift_quota.enabled():
+                ret['message_count_quota_total'] = float(_gross_quota(redis, key))
+                ret['message_count_quota'] = lanying_gift_quota.billable_used(key, ret['message_count_quota_total'])
+                gift = lanying_gift_quota.status(app_id)
+                ret['gift_quota_remaining'] = gift['remaining']
+                ret['gift_quota_expires_epoch'] = gift['expires_epoch']
             return ret
     return {}
 

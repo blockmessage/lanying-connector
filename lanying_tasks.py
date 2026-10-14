@@ -41,6 +41,10 @@ slow_queue = Celery('slow_queue',
              broker=lanying_redis.get_slow_task_redis_server())
 slow_queue.conf.timezone = 'Asia/Shanghai'
 slow_queue.conf.beat_schedule = {
+    'gift_quota_settlement_retry': {
+        'task': 'lanying_tasks.gift_quota_settlement_retry',
+        'schedule': crontab(minute='*')
+    },
     'lanying_schedule_task': {
         'task': 'lanying_tasks.lanying_schedule_task',
         'schedule': crontab(minute='*/10')
@@ -83,6 +87,24 @@ def initialize_worker_process(**_kwargs):
         bool(os.getenv('LANYING_CONNECTOR_AZURE_PROXY_DOMAIN')),
         bool(os.getenv('LANYING_CONNECTOR_AWS_PROXY_API_BASE')),
         bool(os.getenv('LANYING_CONNECTOR_CLAUDE_PROXY_API_BASE')))
+
+
+@slow_queue.task
+def gift_quota_settlement_retry():
+    import lanying_gift_quota
+    if lanying_gift_quota.enabled():
+        try:
+            def notify_recovered(app_id):
+                from services import openai_service
+                import requests
+                data = openai_service.get_message_limit_state(app_id)
+                if data.get('message_count_quota', 0) > 100:
+                    endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
+                    requests.post(endpoint + '/app/lanying_connector_event', headers={'app_id': app_id},
+                                  json={'app_id': app_id, 'event': 'message_count_quota_reached', 'data': data}, timeout=10)
+            lanying_gift_quota.retry_pending(lanying_redis.get_redis_connection(), on_applied=notify_recovered)
+        except Exception:
+            logging.warning('gift quota settlement remains pending')
 # normal_queue.conf.update(
 #     task_acks_late=True,
 # )

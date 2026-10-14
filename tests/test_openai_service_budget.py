@@ -609,6 +609,38 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'ext': '{"openclaw":{"type":"session_transcript_observed","session":"agent:main"}}'
         }))
 
+    def test_quota_admission_uses_positive_balance_not_estimated_cost(self):
+        m = importlib.import_module('openai_service')
+        class FakeRedis:
+            def hincrby(self, key, field, amount):
+                return 0
+        redis = FakeRedis()
+        cases = [
+            # used, gift, purchased, product, extra price, allowed
+            (29, 0, 0, 7001, 0, True),
+            (30, 0, 0, 7001, 0, False),
+            (59, 0, 0, 7001, 0, False),
+            (31, .5, 0, 7001, 0, True),
+            (31, 0, 2, 7001, 0, True),
+            (32, 0, 2, 7001, 0, False),
+            (30, 0, 0, 7002, 0, False),
+            (30, 0, 0, 7002, 1, True),
+            (330, 0, 0, 7002, 1, False),
+        ]
+        for used, gift, purchased, product, payg, allowed in cases:
+            with self.subTest(used=used, gift=gift, purchased=purchased, payg=payg):
+                redis.hincrby = lambda key, field, amount: purchased if field == 'message_count_quota_buy' else used
+                config = {'message_per_month': 30, 'product_id': product,
+                          'enable_extra_price': payg, 'quota_pre_check': 30}
+                with mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=redis, create=True), \
+                     mock.patch.object(m, '_gift_allowance', return_value=(used, gift)), \
+                     mock.patch.object(m, 'check_daily_quota_fuse_limit', return_value={'result':'ok'}), \
+                     mock.patch.object(m.lanying_config, 'get_message_quota_not_enough', return_value='no quota', create=True):
+                    model_result = m.check_message_limit('app', config, {'api_key_type':'share', 'quota':30}, False)
+                    search_result = m.check_deduct_message_quota('app', config, 30)
+                self.assertEqual(allowed, model_result['result'] == 'ok')
+                self.assertEqual(allowed, search_result['result'] == 'ok')
+
     def test_daily_quota_fuse_defaults_to_ten_percent_with_minimum_one(self):
         try:
             m = importlib.import_module('openai_service')

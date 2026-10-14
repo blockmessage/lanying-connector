@@ -369,6 +369,35 @@ def buy_message_quota(service):
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
 
+
+@app.route("/service/openai/gift_quota/<operation>", methods=["POST"])
+def gift_quota(operation):
+    import lanying_gift_quota
+    if not accessToken or request.headers.get('access-token', '') != accessToken:
+        return {'code': 401, 'message': 'bad authorization'}, 401
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return {'code': 400, 'message': 'bad request'}, 400
+    try:
+        app_id = str(data.get('app_id', '')).strip()
+        if not app_id:
+            return {'code': 400, 'message': 'bad request'}, 400
+        if operation == 'grant' and set(data) == {'business_id', 'app_id', 'points'}:
+            config = lanying_config.get_lanying_connector(app_id)
+            if not config or not int(config.get('product_id', 0)):
+                return {'code': 400, 'message': 'AI service is inactive'}, 400
+            result = lanying_gift_quota.grant(data['business_id'], app_id, data['points'])
+        elif operation == 'status' and set(data) == {'app_id'}:
+            result = lanying_gift_quota.status(app_id)
+        else:
+            return {'code': 400, 'message': 'bad request'}, 400
+        return {'code': 200, 'data': result}
+    except (ValueError, TypeError):
+        return {'code': 400, 'message': 'invalid quota grant'}, 400
+    except Exception:
+        logging.warning('gift quota request unavailable | operation=%s', operation)
+        return {'code': 503, 'message': 'gift quota temporarily unavailable'}, 503
+
 @app.route("/service/<string:service>/get_message_limit_state", methods=["POST"])
 def get_message_limit_state(service):
     headerToken = request.headers.get('access-token', "")

@@ -1,0 +1,32 @@
+CREATE TABLE IF NOT EXISTS message_quota_gift (
+  business_id VARCHAR(96) NOT NULL PRIMARY KEY,
+  app_id VARCHAR(64) NOT NULL,
+  points DECIMAL(20,4) NOT NULL,
+  remaining DECIMAL(20,4) NOT NULL,
+  granted_epoch BIGINT NOT NULL,
+  expires_epoch BIGINT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY app_active (app_id, expires_epoch)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS message_quota_gift_usage (
+  usage_id VARCHAR(64) NOT NULL PRIMARY KEY,
+  app_id VARCHAR(64) NOT NULL,
+  quota DECIMAL(20,4) NOT NULL,
+  occurred_epoch BIGINT NOT NULL,
+  arguments_hash CHAR(64) NOT NULL,
+  gift_used DECIMAL(20,4) NOT NULL,
+  applied TINYINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY app_usage (app_id, occurred_epoch)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS message_quota_gift_offset (
+  usage_id VARCHAR(64) NOT NULL,
+  statistic_key VARCHAR(255) NOT NULL,
+  gift_used DECIMAL(20,4) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (usage_id, statistic_key),
+  KEY statistic_offset (statistic_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
