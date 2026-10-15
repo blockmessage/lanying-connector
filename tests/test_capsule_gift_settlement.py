@@ -127,7 +127,10 @@ class CapsuleGiftSettlementTest(unittest.TestCase):
 
     def test_feature_off_keeps_legacy_income_statistics(self):
         self.flag.return_value = False
-        self.record()
+        with mock.patch.dict(self.gifts.os.environ, {
+                'SEENICAL_GIFT_QUOTA_ENABLED': 'off',
+                'SEENICAL_MESSAGE_CREDITS_ENABLED': 'off'}):
+            self.record()
         self.legacy.assert_called_once_with(self.config,'app',7002,30,'share')
         self.lookup.assert_not_called()
         self.assertFalse(self.redis.hgetall(self.gifts.PENDING_KEY))

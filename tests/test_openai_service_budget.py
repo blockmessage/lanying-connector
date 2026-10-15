@@ -764,7 +764,8 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         config = {'message_per_month': 30, 'product_id': 7002}
         model_config = {'api_key_type': 'share', 'quota': 1}
 
-        with mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=fake_redis, create=True):
+        with mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=fake_redis, create=True), \
+                mock.patch.object(m, '_gift_allowance', return_value=(0, 0)):
             chat_res = m.check_message_limit('app-daily', config, model_config, True)
             api_res = m.check_deduct_message_quota('app-daily', config, 1)
 
@@ -1178,7 +1179,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         with (
             mock.patch.object(m.lanying_redis, 'get_redis_connection', return_value=FakeRedis(), create=True),
             mock.patch.object(m, 'get_message_statistic_keys', return_value=['stat-key']),
-            mock.patch.object(m, 'add_quota', return_value=0),
+            mock.patch.object(m, '_record_quota_statistics', return_value=True),
             mock.patch.object(m, 'calc_used_text_size', return_value=12),
             mock.patch.object(m, 'calc_message_quota', return_value=1.5),
             mock.patch.object(m, 'add_quota_used_statistic'),

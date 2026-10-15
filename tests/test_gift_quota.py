@@ -7,6 +7,31 @@ from redis.exceptions import WatchError
 import lanying_gift_quota as gifts
 
 
+class QuotaFeatureFlagTest(unittest.TestCase):
+    def test_gift_and_purchase_features_default_to_enabled(self):
+        with mock.patch.dict(gifts.os.environ, {}, clear=True):
+            self.assertTrue(gifts.gift_enabled())
+            self.assertTrue(gifts.purchases_enabled())
+            self.assertTrue(gifts.enabled())
+
+    def test_explicit_overrides_still_control_each_feature(self):
+        with mock.patch.dict(gifts.os.environ, {
+                'SEENICAL_GIFT_QUOTA_ENABLED': 'off',
+                'SEENICAL_MESSAGE_CREDITS_ENABLED': 'on'}, clear=True):
+            self.assertFalse(gifts.gift_enabled())
+            self.assertTrue(gifts.purchases_enabled())
+            self.assertTrue(gifts.enabled())
+        with mock.patch.dict(gifts.os.environ, {
+                'SEENICAL_GIFT_QUOTA_ENABLED': 'true',
+                'SEENICAL_MESSAGE_CREDITS_ENABLED': 'false'}, clear=True):
+            self.assertTrue(gifts.gift_enabled())
+            self.assertFalse(gifts.purchases_enabled())
+        with mock.patch.dict(gifts.os.environ, {
+                'SEENICAL_GIFT_QUOTA_ENABLED': 'off',
+                'SEENICAL_MESSAGE_CREDITS_ENABLED': 'off'}, clear=True):
+            self.assertFalse(gifts.enabled())
+
+
 class FakeRedis:
     def __init__(self):
         self.hashes, self.values = {}, {}
@@ -57,6 +82,9 @@ class GiftQuotaTest(unittest.TestCase):
         self.flag=mock.patch.object(gifts,'enabled',return_value=True)
         self.gift_flag=mock.patch.object(gifts,'gift_enabled',return_value=True)
         self.gift_flag.start(); self.addCleanup(self.gift_flag.stop)
+        # This suite exercises gift-only accounting; purchased-credit accounting has its own suite.
+        self.purchase_flag=mock.patch.object(gifts,'purchases_enabled',return_value=False)
+        self.purchase_flag.start(); self.addCleanup(self.purchase_flag.stop)
         self.engine_patch.start(); self.flag.start()
         self.addCleanup(self.engine_patch.stop); self.addCleanup(self.flag.stop)
         self.addCleanup(self.engine.dispose)

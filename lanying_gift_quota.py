@@ -51,10 +51,10 @@ def enabled():
     return gift_enabled() or purchases_enabled()
 
 def gift_enabled():
-    return os.getenv('SEENICAL_GIFT_QUOTA_ENABLED', 'off').lower() in ('on', 'true', '1')
+    return os.getenv('SEENICAL_GIFT_QUOTA_ENABLED', 'on').lower() in ('on', 'true', '1')
 
 def purchases_enabled():
-    return os.getenv('SEENICAL_MESSAGE_CREDITS_ENABLED', 'off').lower() in ('on', 'true', '1')
+    return os.getenv('SEENICAL_MESSAGE_CREDITS_ENABLED', 'on').lower() in ('on', 'true', '1')
 
 def engine():
     value = lanying_agent_tools_storage.get_engine()
