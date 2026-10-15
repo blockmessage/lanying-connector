@@ -240,8 +240,12 @@ def _install_fake_openai_service_local_modules_if_needed():
         'lanying_operational_storage',
     ]
     for name in module_names:
-        if name not in sys.modules:
-            sys.modules[name] = types.ModuleType(name)
+        # Never overwrite attributes on a real module already held by another suite.
+        # Keep available helpers, but give this suite its own module namespace.
+        module = types.ModuleType(name)
+        if name in sys.modules:
+            module.__dict__.update(vars(sys.modules[name]))
+        sys.modules[name] = module
 
     def safe_json_loads(value, default=None):
         if value is None or value == '':
@@ -318,6 +322,14 @@ def _install_fake_openai_service_local_modules_if_needed():
 class OpenAIServiceBudgetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        modules = mock.patch.dict(sys.modules)
+        modules.start()
+        cls.addClassCleanup(modules.stop)
+        paths = mock.patch.object(sys, 'path', list(sys.path))
+        paths.start()
+        cls.addClassCleanup(paths.stop)
+        # Import against this suite's dependencies, not a previous suite's service cache.
+        sys.modules.pop('openai_service', None)
         _install_fake_tiktoken_if_needed()
         _install_fake_requests_if_needed()
         _install_fake_openai_if_needed()
