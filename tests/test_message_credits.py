@@ -111,6 +111,21 @@ class MessageCreditTest(unittest.TestCase):
         self.assertEqual(985,credits.status('a',now=120,purchased=True)['remaining'])
         self.assertEqual(30,credits.billable_used('shared-period',45,self.redis))
 
+    def test_first_rollout_without_grants_preserves_interleaved_legacy_usage(self):
+        # Final feature settings can be present at first deployment, provided
+        # grants/purchases are not opened until every consumer has been updated.
+        self.redis.hincrby('shared-period','message_count_quota',10)
+        payload=dict(usage_id='new-node',app_id='a',quota=5,occurred_epoch=110,
+                     keys=['shared-period'],api_key_type='share',package_allowance=30)
+        credits.apply_statistics(self.redis,payload)
+        self.redis.hincrby('shared-period','message_count_quota',20)
+        self.assertEqual(35,credits.billable_used('shared-period',35,self.redis))
+        payload=dict(payload,usage_id='new-node-again',quota=2)
+        credits.apply_statistics(self.redis,payload)
+        self.assertEqual(37,int(self.redis.hget('shared-period','message_count_quota')))
+        self.assertEqual(37,credits.billable_used('shared-period',37,self.redis))
+        self.assertEqual(0,credits.status('a',now=120,purchased=True)['remaining'])
+
     def test_reenable_reconciles_undelivered_gift_without_double_counting(self):
         credits.apply_statistics(self.redis,dict(usage_id='before',app_id='a',quota=10,occurred_epoch=110,
             keys=['shared-period'],api_key_type='share',package_allowance=30))
