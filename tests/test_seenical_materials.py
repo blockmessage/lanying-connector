@@ -772,6 +772,17 @@ class FakePipeline:
 
 
 class UsageTest(unittest.TestCase):
+    def test_unused_app_has_zero_storage_but_read_failure_propagates(self):
+        embedding = types.SimpleNamespace(
+            get_embedding_usage=mock.Mock(return_value={}),
+            get_embedding_name_info=mock.Mock(return_value=None))
+        with mock.patch.dict('sys.modules', {'lanying_embedding': embedding}):
+            self.assertEqual(m.material_usage('new-app'), {
+                'storage_file_size': 0, 'session_storage_file_size': 0})
+            embedding.get_embedding_usage.side_effect = RuntimeError('Redis unavailable')
+            with self.assertRaisesRegex(RuntimeError, 'Redis unavailable'):
+                m.material_usage('new-app')
+
     def test_usage_reports_app_scoped_index_charge_and_preserves_total(self):
         embedding = types.SimpleNamespace(
             get_embedding_usage=mock.Mock(return_value={'storage_file_size': '10000', 'storage_file_size_max': '12000'}),

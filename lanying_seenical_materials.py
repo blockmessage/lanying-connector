@@ -645,6 +645,9 @@ def material_usage(app_id):
     import lanying_embedding as embedding
     import lanying_redis
     usage = dict(embedding.get_embedding_usage(app_id))
+    # A successful empty Redis read means this App has never occupied storage.
+    # Keep connection/read failures visible instead of turning them into zero usage.
+    usage.setdefault('storage_file_size', 0)
     info = embedding.get_embedding_name_info(app_id, INTERNAL_NAME)
     size = 0
     if info and info.get('type') == INTERNAL_TYPE:
