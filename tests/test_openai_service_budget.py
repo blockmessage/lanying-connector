@@ -621,6 +621,54 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
             'ext': '{"openclaw":{"type":"session_transcript_observed","session":"agent:main"}}'
         }))
 
+    def test_invalid_quota_rejected_before_legacy_or_durable_statistics(self):
+        m = importlib.import_module('openai_service')
+        for enabled in (False, True):
+            for quota in (-1, -0.000001, float('nan'), float('inf'), -float('inf'), True):
+                with self.subTest(enabled=enabled, quota=quota), \
+                     mock.patch.object(m.lanying_gift_quota, 'enabled', return_value=enabled), \
+                     mock.patch.object(m.lanying_gift_quota, 'apply_statistics') as apply, \
+                     mock.patch.object(m, 'get_message_statistic_keys') as keys, \
+                     mock.patch.object(m, 'notify_butler') as notify:
+                    redis = mock.Mock()
+                    with self.assertRaises(ValueError):
+                        m._record_quota_statistics(redis, 'app', {}, quota, 'share', {'message_count': 1})
+                    keys.assert_not_called()
+                    apply.assert_not_called()
+                    notify.assert_not_called()
+                    self.assertEqual([], redis.mock_calls)
+
+    def test_invalid_quota_cannot_trigger_admission_or_purchase(self):
+        m = importlib.import_module('openai_service')
+        with mock.patch.object(m.lanying_redis, 'get_redis_connection', create=True) as connection, \
+             mock.patch.object(m, 'notify_butler') as notify:
+            for quota in (-1, float('nan'), float('inf'), True):
+                with self.assertRaises(ValueError):
+                    m.check_deduct_message_quota('app', {'product_id': 7001}, quota)
+            connection.assert_not_called()
+            notify.assert_not_called()
+
+    def test_zero_and_positive_statistics_keep_original_values(self):
+        from test_gift_quota import FakeRedis
+        m = importlib.import_module('openai_service')
+        for enabled in (False, True):
+            for quota in (0, 3, 0.12345):
+                with self.subTest(enabled=enabled, quota=quota), \
+                     mock.patch.object(m.lanying_gift_quota, 'enabled', return_value=enabled), \
+                     mock.patch.object(m.lanying_gift_quota, 'purchases_enabled', return_value=False), \
+                     mock.patch.object(m.lanying_gift_quota, 'billable_used', return_value=0), \
+                     mock.patch.object(m.lanying_gift_quota, 'apply_statistics', return_value=True) as apply, \
+                     mock.patch.object(m, 'get_message_statistic_keys', return_value=['key']):
+                    redis = FakeRedis()
+                    self.assertTrue(m._record_quota_statistics(redis, 'app', {}, quota, 'share', {'message_count': 1}))
+                    if enabled:
+                        self.assertEqual(quota, apply.call_args.args[1]['quota'])
+                    else:
+                        self.assertEqual(1, redis.hget('key', 'message_count'))
+                        self.assertEqual(round(quota * 10000),
+                                         int(redis.hget('key', 'message_count_quota') or 0) * 10000
+                                         + int(redis.hget('key', 'message_count_quota_float') or 0))
+
     def test_quota_admission_uses_positive_balance_not_estimated_cost(self):
         m = importlib.import_module('openai_service')
         class FakeRedis:

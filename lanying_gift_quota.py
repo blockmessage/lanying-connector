@@ -248,6 +248,8 @@ def apply_statistics(redis, payload):
     Retrying a interrupted delivery cannot re-spend the credit or re-increment
     Redis. The receipt bridges the MySQL commit/Redis EXEC acknowledgement gap.
     """
+    # Invalid input is not a transient failure and must not enter the retry queue.
+    amount(payload['quota'])
     serialized = json.dumps(payload, sort_keys=True, separators=(',', ':'))
     usage_id = payload['usage_id']
     new_pending = bool(redis.hsetnx(PENDING_KEY, usage_id, serialized))

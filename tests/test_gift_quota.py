@@ -153,6 +153,22 @@ class GiftQuotaTest(unittest.TestCase):
         self.assertEqual(3,redis.hashes['app-month']['message_count_quota'])
         self.assertEqual(2,gifts.status('app-1',now=200)['remaining'])
         self.assertFalse(redis.hashes[gifts.PENDING_KEY])
+    def test_invalid_quota_never_enters_queue_or_database(self):
+        for quota in (-1, -0.000001, float('nan'), float('inf'), -float('inf'), True):
+            with self.subTest(quota=quota):
+                redis=FakeRedis()
+                with mock.patch.object(gifts, 'settle') as settle:
+                    with self.assertRaises(ValueError):
+                        gifts.apply_statistics(redis, self.payload(quota=quota))
+                    settle.assert_not_called()
+                self.assertEqual({}, redis.hashes)
+                self.assertEqual({}, redis.values)
+    def test_zero_quota_still_records_usage_once(self):
+        redis=FakeRedis(); payload=self.payload(quota=0)
+        self.assertTrue(gifts.apply_statistics(redis, payload))
+        self.assertFalse(gifts.apply_statistics(redis, payload))
+        self.assertEqual(0, redis.hget('app-month', 'message_count_quota'))
+        self.assertEqual(1, redis.hget('app-month', 'message_count'))
     def test_database_failure_retries_quota_and_income_together(self):
         redis=FakeRedis(); payload=self.capsule_payload(); callback=mock.Mock()
         with mock.patch.object(gifts,'settle',side_effect=RuntimeError('database unavailable')):

@@ -3837,6 +3837,9 @@ def add_quota(redis, key, field, quota):
             return redis.hincrby(key, field, 0)
 
 def _record_quota_statistics(redis, app_id, config, quota, api_key_type, counters=None, response=None, origin=None, include_capsules=False):
+    # Validate before any counters change, including the legacy Redis-only path.
+    # Keep the original value so existing rounding and accounting stay unchanged.
+    lanying_gift_quota.amount(quota)
     keys = get_message_statistic_keys(config, app_id)
     if lanying_gift_quota.enabled():
         # Only a server-created tuple is a trusted cache: provider JSON can
@@ -3919,6 +3922,8 @@ def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
     return config.get('product_id', 0) > 7001 and used < allowance + 300
 
 def check_deduct_message_quota(app_id, config, quota):
+    # Invalid usage must not reach admission's automatic purchase callback.
+    lanying_gift_quota.amount(quota)
     config = dict(config, _quota_app_id=app_id)
     product_id = config.get('product_id', 0)
     if product_id == 0:
