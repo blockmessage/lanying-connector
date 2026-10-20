@@ -1461,6 +1461,57 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         add_history.assert_called_once_with(config, msg)
         self.assertEqual(history_events, ['reset', 'add'])
 
+    def test_small_context_model_switch_keeps_chat_and_group_history_usable(self):
+        m = importlib.import_module('openai_service')
+        compat = _load_real_openai_compat()
+        openai_models = importlib.import_module('lanying_vendor_openai').model_configs()
+        moonshot_models = importlib.import_module('lanying_vendor_moonshot').model_configs()
+        for model in ('gpt-4', 'moonshot-v1-8k'):
+            model_config = next(c for c in openai_models + moonshot_models
+                                if c['model'] == model)
+            saved = {'model': model, 'max_tokens': 8192}
+            effective = compat.limit_completion_tokens(saved, model_config)
+            with (
+                self.subTest(model=model),
+                mock.patch.object(m, 'calcMessagesTokens', return_value=20),
+                mock.patch.object(m, 'calcMessageTokens', return_value=5),
+                mock.patch.object(m, 'reversed_history_generator', return_value=iter([
+                    {'user': 'old question', 'assistant': 'old answer'}])),
+                mock.patch.object(m, 'reversed_group_history_generator', return_value=iter([
+                    {'from': '100', 'content': 'old question'}])),
+            ):
+                chat = m.loadHistory(
+                    {}, 'app', None, 'history', 'hello', [], 1,
+                    effective, {}, model_config, 'openai')
+                group = m.loadGroupHistory(
+                    {'send_from': '100', 'reply_from': '101'},
+                    'app', None, 'history', 'hello', [], 1,
+                    effective, {}, model_config, 'openai')
+            self.assertEqual('ok', chat['result'])
+            self.assertEqual('ok', group['result'])
+            self.assertTrue(list(chat['data']))
+            self.assertTrue(list(group['data']))
+            self.assertEqual(8192, saved['max_tokens'])
+
+    def test_small_context_model_still_rejects_oversized_input(self):
+        m = importlib.import_module('openai_service')
+        config = next(c for c in importlib.import_module('lanying_vendor_openai').model_configs()
+                      if c['model'] == 'gpt-4')
+        preset = _load_real_openai_compat().limit_completion_tokens(
+            {'model': 'gpt-4', 'max_tokens': 8192}, config)
+        with (
+            mock.patch.object(m, 'calcMessagesTokens', return_value=20),
+            mock.patch.object(m, 'calcMessageTokens', return_value=config['token_limit']),
+            mock.patch.object(m.lanying_config, 'get_message_too_long',
+                              return_value='too long', create=True),
+        ):
+            for loader in (m.loadHistory, m.loadGroupHistory):
+                result = loader(
+                    {'send_from': '100', 'reply_from': '101'},
+                    'app', None, 'history', 'long input', [], 1,
+                    preset, {}, config, 'openai')
+                self.assertEqual('message_too_long', result['code'])
+
     def test_chat_history_normalizes_completed_tool_trace_for_new_model(self):
         try:
             m = importlib.import_module('openai_service')

@@ -1317,6 +1317,9 @@ def normalize_chat_response(resp):
     return resp
 
 def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_config):
+    # Also covers direct callers, continuations and backup models whose output
+    # limit may be smaller than the original model's.
+    preset = lanying_openai_compat.limit_completion_tokens(preset, model_config)
     auth_info = prepare_info.get('auth_info', {}) if isinstance(prepare_info, dict) else {}
     try_times = 1 if auth_info.get('validation_mode') is True else 3
     for i in range(try_times):

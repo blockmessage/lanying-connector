@@ -1702,6 +1702,7 @@ def resume_client_tool_request(request_info, execution_result):
         model_config = lanying_vendor.get_chat_model_config(app_id, vendor, model)
         if model_config is None:
             raise ValueError('model configuration no longer exists')
+        preset = lanying_openai_compat.limit_completion_tokens(preset, model_config)
         auth_info = get_preset_auth_info(config, vendor, model_config)
         if auth_info is None:
             raise ValueError('model authorization no longer exists')
@@ -1881,6 +1882,9 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             preset['max_completion_tokens'] = expect_max_tokens
         else:
             preset['max_tokens'] = expect_max_tokens
+    # Apply after message-level overrides, before reserving output space for
+    # history/retrieval. Use the same effective budget as the vendor request.
+    preset = lanying_openai_compat.limit_completion_tokens(preset, model_config)
     if msg_type == 'CHAT' and 'prompt_ext' in lcExt and lcExt['prompt_ext']:
         customHistoryList = []
         for customHistory in lcExt['prompt_ext']:

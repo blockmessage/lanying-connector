@@ -2,6 +2,47 @@ import copy
 import json
 
 
+def limit_completion_tokens(preset, model_config):
+    """Limit output and reserve input space without changing the saved preset.
+
+    Keep max_tokens available to legacy vendor adapters when a preset copied
+    from a reasoning model contains only max_completion_tokens.
+    If output alone fills the context, fall back to half the window so prompts,
+    knowledge and history have room. Preserve otherwise valid output budgets.
+    The history loader still rejects inputs that exceed the remaining space.
+    """
+    result = dict(preset)
+    budget = preset.get('max_completion_tokens')
+    if budget is None:
+        budget = preset.get('max_tokens')
+    if budget is None:
+        return result
+    try:
+        value = int(budget)
+    except (TypeError, ValueError, OverflowError):
+        return result
+    if isinstance(budget, bool) or value <= 0:
+        return result
+    limit = (model_config or {}).get('max_output_tokens')
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError, OverflowError):
+        limit = 0
+    if limit > 0:
+        value = min(value, limit)
+    context_limit = (model_config or {}).get('token_limit')
+    try:
+        context_limit = int(context_limit)
+    except (TypeError, ValueError, OverflowError):
+        context_limit = 0
+    if context_limit > 1 and value >= context_limit:
+        value = context_limit // 2
+    result['max_tokens'] = value
+    if preset.get('max_completion_tokens') is not None:
+        result['max_completion_tokens'] = value
+    return result
+
+
 def normalize_finish_reason(finish_reason):
     if finish_reason is None:
         return None

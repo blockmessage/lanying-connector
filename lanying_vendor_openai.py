@@ -688,11 +688,13 @@ def encoding_for_model(model):
         return tiktoken.get_encoding("cl100k_base")
 
 def format_preset(preset, model_config):
+    preset = lanying_openai_compat.limit_completion_tokens(preset, model_config)
     model = preset.get('model', '')
     is_modern_reasoning_model = _is_modern_reasoning_model(model)
     support_fields = ['model', "messages", "tools", "tool_choice", "temperature", "top_p", "n", "stop", "presence_penalty", "frequency_penalty", "logit_bias", "user", "stream"]
     if is_modern_reasoning_model:
         support_fields.append("max_completion_tokens")
+        support_fields.append("reasoning_effort")
     else:
         support_fields.append("max_tokens")
     if 'tools' not in preset and 'functions' in preset:
