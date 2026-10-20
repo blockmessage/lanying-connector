@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS seenical_material (
   status varchar(32) NOT NULL DEFAULT 'pending',
   error_code varchar(64) NOT NULL DEFAULT '',
   worker_id varchar(128) NOT NULL DEFAULT '',
+  index_doc_id varchar(100) NOT NULL DEFAULT '',
+  replacement_id varchar(64) NOT NULL DEFAULT '',
   updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (app_id, doc_id),
   UNIQUE KEY uq_material_message (app_id, message_id)

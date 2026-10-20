@@ -159,6 +159,12 @@ def seenical_materials_task(self, app_id):
         raise self.retry(exc=exc, countdown=15)
 
 
+@slow_queue.task(acks_late=True, reject_on_worker_lost=True)
+def seenical_workspace_sync_task(app_id, actor, authorized_at):
+    import lanying_workspace_sync
+    lanying_workspace_sync.run(app_id, actor, authorized_at)
+
+
 @normal_queue.task(acks_late=True)
 def resume_agent_tool_request_task(app_id, request_id):
     redis = lanying_redis.get_redis_connection()

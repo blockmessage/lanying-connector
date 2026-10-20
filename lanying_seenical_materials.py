@@ -417,22 +417,26 @@ def stored_document_metadata(app_id, doc_id):
     return dict(doc, type='file', ext=os.path.splitext(doc['filename'])[1].lower())
 
 
-def _clear_index(app_id, space, doc):
+def index_document_id(doc):
+    return doc.get('index_doc_id') or doc['doc_id']
+
+
+def _clear_vectors(app_id, space, physical_id):
     import lanying_embedding as embedding
     import lanying_redis
     info = embedding.get_embedding_uuid_info(space['embedding_uuid'])
     if not info:
         # A source can be saved before the model/index has ever been available.
         # Never refund an existing reservation when index metadata is missing.
-        meta = embedding.get_doc(space['embedding_uuid'], doc['doc_id']) or {}
+        meta = embedding.get_doc(space['embedding_uuid'], physical_id) or {}
         if int(meta.get('storage_file_size', 0)):
             raise MaterialError('material_storage_unavailable')
-        return
+        return False
     try:
-        embedding.search_doc_data_and_delete(app_id, space['embedding_name'], doc['doc_id'],
+        embedding.search_doc_data_and_delete(app_id, space['embedding_name'], physical_id,
             info['index'], -1, info['db_type'], info.get('db_table_name', ''))
         if info['db_type'] == 'redis':
-            query = embedding.Query(embedding.query_by_doc_id(doc['doc_id'])).no_content().paging(0, 1).dialect(2)
+            query = embedding.Query(embedding.query_by_doc_id(physical_id)).no_content().paging(0, 1).dialect(2)
             if lanying_redis.get_redis_stack_connection().ft(info['index']).search(query).total:
                 raise MaterialError('material_cleanup_incomplete')
     except Exception as exc:
@@ -444,12 +448,25 @@ def _clear_index(app_id, space, doc):
         missing = missing or (info['db_type'] == 'pgvector' and isinstance(exc, UndefinedTable))
         if not missing:
             raise
+    return True
+
+
+def _clear_index(app_id, space, doc):
+    physical_id = index_document_id(doc)
+    confirmed = _clear_vectors(app_id, space, physical_id)
+    if confirmed is False and physical_id != doc['doc_id']:
+        import lanying_embedding as embedding
+        logical = embedding.get_doc(space['embedding_uuid'], doc['doc_id']) or {}
+        if int(logical.get('storage_file_size', 0)):
+            raise MaterialError('material_storage_unavailable')
+    if physical_id != doc['doc_id']:
+        update_usage(app_id, space['embedding_uuid'], physical_id, 0, clear=True)
     # One Redis transaction changes all usage levels, so worker redelivery
     # cannot double-refund or lose an App-level decrement after a crash.
     update_usage(app_id, space['embedding_uuid'], doc['doc_id'], 0, clear=True)
 
 
-def update_usage(app_id, embedding_uuid, doc_id, size, clear=False):
+def update_usage(app_id, embedding_uuid, doc_id, size, clear=False, release_only=False):
     import lanying_embedding as embedding
     import lanying_redis
     from redis.exceptions import WatchError
@@ -464,10 +481,12 @@ def update_usage(app_id, embedding_uuid, doc_id, size, clear=False):
                 meta = lanying_redis.redis_hgetall(pipe, doc_key)
                 usage = lanying_redis.redis_hgetall(pipe, app_key)
                 delta = size - int(meta.get('storage_file_size', 0))
+                if release_only and delta > 0:
+                    raise MaterialError('material_usage_changed')
                 total = int(usage.get('storage_file_size', 0)) + delta
                 limit = embedding.get_app_config_int(app_id, 'lanying_connector.storage_limit')
                 payg = embedding.get_app_config_int(app_id, 'lanying_connector.storage_payg') == 1
-                if not clear and (limit <= 0 or (not payg and total > limit * 1024 * 1024)):
+                if not clear and not release_only and (limit <= 0 or (not payg and total > limit * 1024 * 1024)):
                     raise MaterialError('material_storage_limit')
                 pipe.multi()
                 pipe.hincrby(app_key, 'storage_file_size', delta)
@@ -526,6 +545,10 @@ def process_pending(app_id, worker_id=''):
         with _engine().begin() as conn:
             space = _space(conn, app_id, True)
             doc = _document(conn, app_id, doc_id)
+            # A replacement owns cleanup until its candidate is committed or
+            # discarded. Reference changes still work; reclamation waits.
+            if doc.get('replacement_id'):
+                continue
             referenced = _has_references(conn, app_id, doc_id)
             recovering = bool(worker_id and doc.get('worker_id') == worker_id and doc['status'] in BUSY)
             interrupted = worker_interrupted(app_id, doc.get('worker_id'))
@@ -587,7 +610,7 @@ def process_pending(app_id, worker_id=''):
             enqueue(app_id)
 
 
-def _index_document(app_id, space, doc):
+def _index_document(app_id, space, doc, reserve_usage=None):
     import lanying_embedding as embedding
     import lanying_file_storage as files
     import lanying_config
@@ -613,6 +636,8 @@ def _index_document(app_id, space, doc):
         # Retain the source even when indexing cannot obtain quota. Source-only
         # files do not count towards knowledge storage until indexing starts.
         embedding_uuid = space['embedding_uuid']
+        logical_id = doc['doc_id']
+        doc = dict(doc, doc_id=index_document_id(doc))
         meta = embedding.get_doc(embedding_uuid, doc['doc_id'])
         object_name = doc['object_name'] or f'seenical/materials/{app_id}/{doc["doc_id"]}{ext}'
         if not meta or not meta.get('object_name'):
@@ -625,7 +650,10 @@ def _index_document(app_id, space, doc):
                                  ('archive_indexed_size', indexed_size)]:
                 embedding.update_doc_field(embedding_uuid, doc['doc_id'], field, value)
             # Compressed size is the download size, not the knowledge allowance.
-            update_usage(app_id, embedding_uuid, doc['doc_id'], indexed_size)
+            if reserve_usage:
+                reserve_usage(indexed_size)
+            else:
+                update_usage(app_id, embedding_uuid, logical_id, indexed_size)
             # A retry rebuilds the whole archive under the same document ID.
             for field in ['progress_total', 'progress_finish']:
                 embedding.update_doc_field(embedding_uuid, doc['doc_id'], field, 0)
@@ -633,11 +661,15 @@ def _index_document(app_id, space, doc):
                 embedding.process_embedding_file('', app_id, embedding_uuid, child_path,
                     name, doc['doc_id'], child_ext, source_filename=name)
         else:
-            update_usage(app_id, embedding_uuid, doc['doc_id'], size)
+            if reserve_usage:
+                reserve_usage(size)
+            else:
+                update_usage(app_id, embedding_uuid, logical_id, size)
             embedding.process_embedding_file('', app_id, embedding_uuid, path,
                                              doc['filename'], doc['doc_id'], ext)
         if embedding.get_doc(embedding_uuid, doc['doc_id']).get('status') != 'finish':
             raise MaterialError('material_processing_failed')
+        return indexed_size if archive else size
 
 
 def material_usage(app_id):
@@ -687,7 +719,8 @@ def material_api(app_id, actor, operation, data):
                 value = {k: doc[k] for k in ['doc_id', 'filename', 'file_size', 'status', 'error_code']}
                 if doc['filename'].lower().endswith('.zip'):
                     import lanying_embedding
-                    meta = lanying_embedding.get_doc(_space(conn, app_id)['embedding_uuid'], doc_id) or {}
+                    meta = lanying_embedding.get_doc(
+                        _space(conn, app_id)['embedding_uuid'], index_document_id(doc)) or {}
                     if 'archive_document_count' in meta:
                         value['archive_summary'] = {
                             'document_count': int(meta['archive_document_count']),
@@ -726,6 +759,8 @@ def material_api(app_id, actor, operation, data):
         with _engine().begin() as conn:
             _space(conn, app_id, True)
             doc = _document(conn, app_id, doc_id)
+            if doc.get('replacement_id'):
+                raise MaterialError('material_processing')
             if doc['status'] in BUSY and worker_interrupted(app_id, doc.get('worker_id')):
                 if operation == 'restore':
                     raise MaterialError('material_cleaning')
@@ -787,7 +822,7 @@ def retrieval_scope(msg, chatbot):
         documents = [_document(conn, app_id, doc_id) for doc_id in ids]
         if any(doc is None for doc in documents):
             raise MaterialError('material_not_found')
-        ready = [doc['doc_id'] for doc in documents if doc['status'] == 'ready']
+        ready = [index_document_id(doc) for doc in documents if doc['status'] == 'ready']
     if run_id and len(ready) != len(ids):
         requested = snapshot.get('requested_reference_document_ids', ids)
         lanying_grow_ai.record_run_material_availability(app_id, run_id, run, len(set(requested)), len(ready))

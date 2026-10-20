@@ -198,6 +198,25 @@ def seenical_materials(operation):
         return _response({'result': 'error', 'message': str(exc)})
 
 
+@bp.route('/service/agent_tools/writing_materials/<operation>', methods=['POST'])
+def writing_materials(operation):
+    denied = _require_auth()
+    if denied:
+        return denied
+    import lanying_writing_materials
+    import lanying_seenical_materials as materials
+    data = _body()
+    handler = {'manifest': lanying_writing_materials.manifest,
+               'download': lanying_writing_materials.download}.get(operation)
+    if handler is None:
+        return _response({'result': 'error', 'message': 'material_operation_invalid'})
+    try:
+        return _response({'result': 'ok', 'data': handler(
+            str(data.get('app_id', '')), _actor(data), data)})
+    except materials.MaterialError as exc:
+        return _response({'result': 'error', 'message': str(exc)})
+
+
 @bp.route('/service/agent_tools/capabilities', methods=['POST'])
 def capabilities():
     denied = _require_auth()
@@ -206,6 +225,24 @@ def capabilities():
     data = _body()
     return _response(lanying_agent_tools.register_capabilities(
         str(data.get('app_id', '')), _actor(data), data))
+
+
+@bp.route('/service/agent_tools/workspace/<operation>', methods=['POST'])
+def writing_workspace(operation):
+    denied = _require_auth()
+    if denied:
+        return denied
+    import lanying_workspace_sync as workspace
+    from lanying_seenical_materials import MaterialError
+    data = _body()
+    try:
+        if operation == 'candidates':
+            result = workspace.scheduled_candidates(data.get('after', ''))
+        else:
+            result = workspace.operation(str(data.get('app_id', '')), _actor(data), operation, data)
+        return _response({'result': 'ok', 'data': result})
+    except (workspace.SyncError, MaterialError) as exc:
+        return _response({'result': 'error', 'message': str(exc)})
 
 
 @bp.route('/service/agent_tools/configure', methods=['POST'])
