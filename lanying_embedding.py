@@ -22,7 +22,7 @@ import pdfplumber
 import lanying_config
 import lanying_pgvector
 from urllib.parse import urlparse
-from openai_token_counter import openai_token_counter
+import lanying_token_budget
 import lanying_chatbot
 import lanying_config
 import lanying_ai_capsule
@@ -2074,27 +2074,18 @@ def get_preset_names(app_id):
                 pass
         return preset_names
 
-def calc_functions_tokens(functions, model, vendor):
+def calc_functions_tokens(functions, model, vendor, app_id=''):
     if len(functions) == 0:
         return 0
     try:
-        if vendor == 'openai':
-            token_cnt = openai_token_counter(messages=[], functions=functions, model=model) - openai_token_counter(messages=[], model=model)
-        else:
-            token_cnt = openai_token_counter(messages=[], functions=functions) - openai_token_counter(messages=[])
-        return token_cnt
+        encoding = lanying_vendor.encoding_for_model(app_id, vendor, model)
+        return lanying_token_budget.count_functions(functions, encoding)
     except Exception as e:
-        error_text = str(e).strip().replace('\n', ' ')
-        if len(error_text) > 280:
-            error_text = error_text[:280] + '...'
-        logging.error(
-            f"calc_functions_tokens token counter failed | model:{model}, vendor:{vendor}, function_count:{len(functions)}, error_type:{type(e).__name__}, error_summary:{error_text}"
-        )
-        token_cnt = len(json.dumps(functions, ensure_ascii=False))
-        logging.info(
-            f"fallback token_cnt:{token_cnt} | model:{model}, vendor:{vendor}, function_count:{len(functions)}, reason:token_counter_validation_failed"
-        )
-        return token_cnt
+        # No schema/arguments in logs. Use the already loaded baseline tokenizer
+        # if the vendor tokenizer is unavailable, not character/byte length.
+        logging.warning("tool token estimate fallback | model:%s, vendor:%s, function_count:%s, error_type:%s",
+                        model, vendor, len(functions), type(e).__name__)
+        return lanying_token_budget.count_functions(functions, tokenizer)
 
 def calc_function_tokens(function, model, vendor):
     return calc_functions_tokens([function], model, vendor)

@@ -1,17 +1,23 @@
-from PIL import Image
+from PIL import Image, ImageFile
 import logging
 import math
 import base64
 from io import BytesIO
 import requests
+import time
 import lanying_utils
 import lanying_redis
 
+# Only probe headers for dimensions; never download an unbounded image body.
+IMAGE_PROBE_MAX_BYTES = 4 * 1024 * 1024
+IMAGE_PROBE_TIMEOUT = (3, 5)
+IMAGE_PROBE_SECONDS = 10
+
 def calculate_tokens(image_path, detail='auto'):
-    image_info = image_path[:256]
+    if detail == 'low':
+        return 85
     # 获取图像尺寸
     width, height = get_image_size_with_cache(image_path)
-    logging.info(f"calculate_image_tokens image size start | file: {image_info}, width: {width}, height: {height}, detail:{detail}")
 
     # 根据规则判断细节参数是否为自动
     if detail == 'auto':
@@ -26,7 +32,6 @@ def calculate_tokens(image_path, detail='auto'):
         tokens = 85
     elif detail == 'high':
         new_width,new_height = resize(width, height)
-        logging.info(f"calculate_image_tokens image resize | file: {image_info}, width: {width}, height: {height}, new_width: {new_width}, new_height:{new_height}")
         
         # 计算图像由多少个 512px 方形组成
         num_tiles = math.ceil(new_width / 512) * math.ceil(new_height / 512)
@@ -34,7 +39,8 @@ def calculate_tokens(image_path, detail='auto'):
         # 计算总 tokens 数量
         tokens = 170 * num_tiles + 85
 
-    logging.info(f"calculate_image_tokens: image size finish | file: {image_info}, width: {width}, height: {height}, detail:{detail}, tokens:{tokens}")
+    logging.info("calculate_image_tokens | width:%s, height:%s, detail:%s, tokens:%s",
+                 width, height, detail, tokens)
     return tokens
 
 def resize(width, height):
@@ -79,40 +85,43 @@ def get_image_size_cache_key(url_or_base64):
         value = url_or_base64
     return f"lanying-connector:image_size:{value}"
 
+def _probe_image_size(chunks, started):
+    parser = ImageFile.Parser()
+    received = 0
+    try:
+        for chunk in chunks:
+            if time.monotonic() - started > IMAGE_PROBE_SECONDS:
+                raise TimeoutError('image dimension probe timed out')
+            received += len(chunk)
+            if received > IMAGE_PROBE_MAX_BYTES:
+                raise ValueError('image dimension probe exceeded size limit')
+            parser.feed(chunk)
+            if parser.image is not None:
+                return parser.image.size
+        raise ValueError('image dimensions unavailable')
+    finally:
+        if parser.image is not None:
+            parser.image.close()
+
+
 def get_image_size(url_or_base64):
     try:
+        started = time.monotonic()
         if url_or_base64.startswith("data:image"):
-                _, base64_data = url_or_base64.split(',', 1)
-                # 解码Base64数据
-                image_data = base64.b64decode(base64_data)
-                
-                # 使用BytesIO将图像数据包装为二进制流
-                image_stream = BytesIO(image_data)
-                
-                # 使用PIL的Image.open()方法打开图像流
-                image = Image.open(image_stream)
-                
-                return image.size
+            # Decode only a bounded prefix; full pixel data isn't needed.
+            start = url_or_base64.index(',') + 1
+            encoded_limit = (IMAGE_PROBE_MAX_BYTES // 3) * 4
+            image_data = base64.b64decode(url_or_base64[start:start + encoded_limit])
+            return _probe_image_size([image_data], started)
         else:
-            response = requests.get(url_or_base64)
-            # 检查响应状态码
-            if response.status_code == 200:
-                # 从响应内容中读取图像数据
-                image_data = response.content
-                
-                # 使用BytesIO将图像数据包装为二进制流
-                image_stream = BytesIO(image_data)
-                
-                # 使用PIL的Image.open()方法打开图像流
-                image = Image.open(image_stream)
-                
-                return image.size
-            else:
-                logging.error(f"get_image_size from url: failed: {url_or_base64}")
-                return 768, 2048
+            with requests.get(url_or_base64, stream=True, timeout=IMAGE_PROBE_TIMEOUT) as response:
+                response.raise_for_status()
+                return _probe_image_size(response.iter_content(chunk_size=8192), started)
     except Exception as e:
-        logging.error(f"get_image_size: failed: {url_or_base64}")
-        logging.exception(e)
+        # Preserve the existing size estimate on failure. Signed URLs, image
+        # bodies and request exception text must not enter logs.
+        logging.warning("image dimension probe failed; using estimated size | error_type:%s",
+                        type(e).__name__)
         return 768, 2048
 
 def encode_image(image_path):

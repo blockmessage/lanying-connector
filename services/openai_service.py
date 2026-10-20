@@ -15,6 +15,7 @@ import itertools
 import threading
 from lanying_tasks import add_embedding_file, delete_doc_data, re_run_doc_to_embedding_by_doc_ids, prepare_site,continue_site_task
 import lanying_embedding
+import lanying_token_budget
 import re
 import lanying_command
 import lanying_url_loader
@@ -1740,6 +1741,10 @@ def resume_client_tool_request(request_info, execution_result):
             app_id, config, vendor, prepare_info, model_config, prompt,
             model_response, preset.get('ext', {}), {},
             check_res.get('api_key_type', ''), function_names, msg)
+        if tool_result.response.get('result') == 'error':
+            raise ValueError(tool_result.response.get('msg')
+                             or tool_result.response.get('message')
+                             or 'model continuation failed')
         if tool_result.response.get('deferred_client_tool'):
             lanying_agent_tools.record_resume_status(app_id, request_id, 'deferred_again')
             return
@@ -1959,6 +1964,20 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             '只能根据实际检索到的内容回答；需要未就绪资料时请用户查看会话资料处理状态。'})
     if material_scope and material_scope.get('doc_ids'):
         preset_embedding_infos.append(material_scope)
+    # Skill instructions and tools consume input space before retrieval/history,
+    # not only after those have already filled the context window.
+    messages, user_functions = lanying_agent_tools.apply_active_skills(
+        app_id, config, messages, user_functions)
+    system_functions = lanying_agent_tools.filter_supported_client_functions(
+        app_id, config, system_functions)
+    user_functions = lanying_agent_tools.filter_supported_client_functions(
+        app_id, config, user_functions)
+    for function_info in system_functions + user_functions:
+        name = function_info.get('name', '')
+        if name:
+            function_names[name] = function_info.get('short_name', name)
+    known_function_tokens = calc_functions_tokens_for_model(
+        app_id, system_functions + user_functions, model, vendor, model_config)
     ask_message_content = content
     ask_message_metadata = make_metadata_from_msg(msg)
     ask_message_content,_ = format_content_and_metadata(content, ask_message_metadata)
@@ -1997,7 +2016,12 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             embedding_message =  {"role": embedding_role, "content": embedding_content}
             history_msg_size_max = config.get('history_msg_size_max', 1024)
             history_reserved = min(512, history_msg_size_max)
-            embedding_token_limit = model_token_limit(model_config) - calcMessagesTokens(app_id, messages, model, vendor) - get_completion_budget_tokens(preset) - calcMessageTokens(app_id, ask_message, model, vendor) - calcMessageTokens(app_id, embedding_message, model, vendor) - history_reserved
+            embedding_token_limit = max(0, lanying_token_budget.input_budget(
+                model_token_limit(model_config), get_completion_budget_tokens(preset),
+                model_config.get('input_token_limit'))
+                - known_function_tokens - calcMessagesTokens(app_id, messages, model, vendor)
+                - calcMessageTokens(app_id, ask_message, model, vendor)
+                - calcMessageTokens(app_id, embedding_message, model, vendor) - history_reserved)
             logging.info(f"embedding_token_limit | model:{model}, embedding_token_limit:{embedding_token_limit}")
             search_result = multi_embedding_search(app_id, config, api_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit)
             for doc in search_result:
@@ -2086,10 +2110,14 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
                 add_debug_message(config, f"使用之前存储的embeddings:\n[embedding_min_distance={embedding_min_distance}]\n{context}", {'need_antispam_check': True})
             else:
                 add_debug_message(config, f"prompt信息如下:\n[embedding_min_distance={embedding_min_distance}]\n{context_with_distance}\n{functions_with_distance}\n", {'need_antispam_check': True})
+    # Retrieval may add plugin functions. Budget the final supported set, once.
+    user_functions = lanying_agent_tools.filter_supported_client_functions(
+        app_id, config, user_functions)
+    history_preset = dict(preset, functions=system_functions + user_functions)
     userHistoryList = []
     if msg_type == 'CHAT':
         if not openclaw_direct_command:
-            history_result = loadHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
+            history_result = loadHistory(config, app_id, redis, historyListKey, ask_message_content, messages, now, history_preset, presetExt, model_config, vendor)
             if history_result['result'] == 'error':
                 return history_result
             userHistoryList = history_result['data']
@@ -2101,19 +2129,13 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         if openclaw_direct_command:
             userHistoryList = []
         else:
-            history_result = loadGroupHistory(config, app_id, redis, historyListKey, content, messages, now, preset, presetExt, model_config, vendor)
+            history_result = loadGroupHistory(config, app_id, redis, historyListKey, ask_message_content, messages, now, history_preset, presetExt, model_config, vendor)
             if history_result['result'] == 'error':
                 return history_result
             userHistoryList = list(history_result['data'])
             for userHistory in userHistoryList:
                 logging.info(f'GroupHistory:{userHistory}')
                 messages.append(userHistory)
-    messages, user_functions = lanying_agent_tools.apply_active_skills(
-        app_id, config, messages, user_functions)
-    system_functions = lanying_agent_tools.filter_supported_client_functions(
-        app_id, config, system_functions)
-    user_functions = lanying_agent_tools.filter_supported_client_functions(
-        app_id, config, user_functions)
     for function_info in system_functions + user_functions:
         function_name = function_info.get('name', '')
         if function_name and function_name not in function_names:
@@ -2172,6 +2194,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     tool_result = run_chat_tools(
         app_id, config, vendor, prepare_info, model_config, prompt,
         model_response, presetExt, lcExt, api_key_type, function_names, msg)
+    if tool_result.response.get('result') == 'error':
+        return tool_result.response
     if tool_result.response.get('deferred_client_tool'):
         # The original turn is resumed only after the authenticated Console
         # client approves or rejects the server-owned request.  Do not persist
@@ -2799,48 +2823,31 @@ def append_message(app_id, preset, model_config, message):
     vendor = model_config['vendor']
     messages = preset.get('messages', [])
     completionTokens = get_completion_budget_tokens(preset)
-    token_limit = model_token_limit(model_config)
+    input_limit = lanying_token_budget.input_budget(
+        model_token_limit(model_config), completionTokens, model_config.get('input_token_limit'))
+    function_tokens = calc_functions_tokens_for_model(
+        app_id, lanying_openai_compat.get_tools_as_functions(preset), model, vendor, model_config)
     message_size = calcMessageTokens(app_id, message, model, vendor)
-    if message_size > (token_limit - completionTokens) / 2:
-        trunc_size = max(100, round(len(message['content']) * (token_limit - completionTokens) / 2 / message_size))
-        logging.info(f"trunc function message length | old: {len(message['content'])}, new: {trunc_size}, message:{message}")
+    result_budget = max(0, input_limit - function_tokens) // 2
+    if (message.get('role') in ('tool', 'function')
+            and isinstance(message.get('content'), str)
+            and message_size > result_budget and result_budget > 0):
+        # Callers retain this same message for history; shorten it in place so
+        # the next turn does not reload the original oversized tool result.
+        trunc_size = max(1, int(len(message['content']) * result_budget / message_size))
+        logging.info("truncate tool result | old_chars:%s, new_chars:%s",
+                     len(message['content']), trunc_size)
         message['content'] = message['content'][:trunc_size]
     messages.append(message)
-    token_cnt = 0
-    token_cnt += lanying_embedding.calc_functions_tokens(lanying_openai_compat.get_tools_as_functions(preset), model, vendor)
-    for msg in messages:
-        token_cnt += calcMessageTokens(app_id, msg, model, vendor)
-    while token_cnt + completionTokens > token_limit:
-        delete_list = []
-        for i in range(len(messages)):
-            if i > 0 and i < len(messages) - 4:
-                if messages[i]['role'] in ['system', 'developer']:
-                    delete_list.append(i)
-                    token_cnt -= calcMessageTokens(app_id, messages[i], model, vendor)
-                    break
-                elif messages[i]['role'] == 'user' and  messages[i+1]['role'] == 'assistant':
-                    token_cnt -= calcMessageTokens(app_id, messages[i], model, vendor)
-                    token_cnt -= calcMessageTokens(app_id, messages[i+1], model, vendor)
-                    delete_list.append(i)
-                    delete_list.append(i+1)
-                    break
-        if len(delete_list) == 1:
-            del messages[delete_list[0]]
-        elif len(delete_list) == 2:
-            del messages[delete_list[1]]
-            del messages[delete_list[0]]
-        elif len(delete_list) == 0:
-            logging.info(f"can not found message to delete in first stage | messages: {messages}, model_config:{model_config}")
-            if messages[0]['role'] in ['system', 'developer']:
-                token_cnt -= calcMessageTokens(app_id, messages[0], model, vendor)
-                del messages[0]
-            else:
-                logging.info(f"fail to limit message size: rest messages:{messages}")
-                raise Exception('fail to limit message size')
+    while function_tokens + calcMessagesTokens(app_id, messages, model, vendor) > input_limit:
+        if not lanying_token_budget.drop_oldest_turn(messages):
+            raise ValueError('message_too_long')
     preset['messages'] = messages
     return preset
 
 def multi_embedding_search(app_id, config, api_key_type, embedding_query_text, preset_embedding_infos, doc_id, is_fulldoc, embedding_token_limit):
+    if embedding_token_limit <= 0:
+        return []
     list = []
     max_tokens = 0
     max_blocks = 0
@@ -2945,10 +2952,14 @@ def loadHistory(config, app_id, redis, historyListKey, content, messages, now, p
     history_msg_size_max = presetExt.get('history_msg_size_max', history_msg_size_max)
     completionTokens = get_completion_budget_tokens(preset)
     model = preset['model']
-    token_limit = model_token_limit(model_config)
+    token_limit = (lanying_token_budget.input_budget(
+        model_token_limit(model_config), completionTokens,
+        model_config.get('input_token_limit')) + completionTokens)
     messagesSize = calcMessagesTokens(app_id, messages, model, vendor)
     askMessage = {"role": "user", "content": content}
-    nowSize = calcMessageTokens(app_id, askMessage, model, vendor) + messagesSize
+    nowSize = (calcMessageTokens(app_id, askMessage, model, vendor) + messagesSize
+               + calc_functions_tokens_for_model(
+                   app_id, lanying_openai_compat.get_tools_as_functions(preset), model, vendor, model_config))
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
         return {'result':'error', 'code': 'message_too_long', 'msg': lanying_config.get_message_too_long(app_id)}
@@ -3009,12 +3020,16 @@ def loadGroupHistory(config, app_id, redis, historyListKey, content, messages, n
     history_msg_size_max = config.get('history_msg_size_max', 4096)
     completionTokens = get_completion_budget_tokens(preset)
     model = preset['model']
-    token_limit = model_token_limit(model_config)
+    token_limit = (lanying_token_budget.input_budget(
+        model_token_limit(model_config), completionTokens,
+        model_config.get('input_token_limit')) + completionTokens)
     messagesSize = calcMessagesTokens(app_id, messages, model, vendor)
     ask_user_id = config['send_from']
     ai_user_id = config['reply_from']
     askMessage = {"role": "user", "content": content, "name": ask_user_id}
-    nowSize = calcMessageTokens(app_id, askMessage, model, vendor) + messagesSize
+    nowSize = (calcMessageTokens(app_id, askMessage, model, vendor) + messagesSize
+               + calc_functions_tokens_for_model(
+                   app_id, lanying_openai_compat.get_tools_as_functions(preset), model, vendor, model_config))
     if nowSize + completionTokens >= token_limit:
         logging.info(f'stop history without history for max tokens: app_id={app_id}, now prompt size:{nowSize}, completionTokens:{completionTokens},token_limit:{token_limit}')
         return {'result':'error', 'code': 'message_too_long', 'msg': lanying_config.get_message_too_long(app_id)}
@@ -3415,34 +3430,23 @@ def del_preset_name(redis, fromUserId, toUserId):
         key = preset_name_key(fromUserId,toUserId)
         redis.delete(key)
 
+def calc_functions_tokens_for_model(app_id, functions, model, vendor, model_config=None):
+    if not functions:
+        return 0
+    if model_config is None:
+        model_config = lanying_vendor.get_chat_model_config(app_id, vendor, model)
+    # Keep executor definitions intact (including forced local calls), but don't
+    # budget/bill schemas that the provider adapter will omit.
+    if (model_config or {}).get('function_call', True) is False:
+        return 0
+    return lanying_embedding.calc_functions_tokens(functions, model, vendor, app_id)
+
+
 def calcMessagesTokens(app_id, messages, model, vendor):
     try:
         encoding = lanying_vendor.encoding_for_model(app_id, vendor, model)
-        num_tokens = 0
-        for message in messages:
-            num_tokens += 4
-            for key, value in message.items():
-                if isinstance(value, dict):
-                    for k,v in value.items():
-                        num_tokens += len(encoding.encode(str(v), disallowed_special=()))
-                elif isinstance(value, list):
-                    for sub_msg in value:
-                        sub_msg_type = sub_msg.get('type', 'text')
-                        if sub_msg_type == 'text':
-                            sub_msg_text = sub_msg.get('text', '')
-                            num_tokens += len(encoding.encode(sub_msg_text, disallowed_special=())) + 4
-                        elif sub_msg_type == 'image_url':
-                            image_url = sub_msg.get('image_url', {}).get('url', '')
-                            detail = sub_msg.get('image_url', {}).get('detail', 'auto')
-                            num_tokens += lanying_image.calculate_tokens(image_url, detail)
-                        else:
-                            logging.info(f"calcMessagesTokens unknown sub msg: {sub_msg}")
-                else:
-                    num_tokens += len(encoding.encode(str(value), disallowed_special=()))
-                if key == "name":
-                    num_tokens += -1
-        num_tokens += 2
-        return num_tokens
+        return 2 + sum(lanying_token_budget.count_message(
+            message, encoding, lanying_image.calculate_tokens) for message in messages)
     except Exception as e:
         logging.exception(e)
         return MaxTotalTokens
@@ -3450,32 +3454,8 @@ def calcMessagesTokens(app_id, messages, model, vendor):
 def calcMessageTokens(app_id, message, model, vendor):
     try:
         encoding = lanying_vendor.encoding_for_model(app_id, vendor, model)
-        num_tokens = 0
-        num_tokens += 4
-        for key, value in message.items():
-            if isinstance(value, dict):
-                for k,v in value.items():
-                    num_tokens += len(encoding.encode(str(v), disallowed_special=()))
-            elif isinstance(value, list):
-                for sub_msg in value:
-                    if isinstance(sub_msg, dict):
-                        sub_msg_type = sub_msg.get('type', 'text')
-                        if sub_msg_type == 'text':
-                            sub_msg_text = sub_msg.get('text', '')
-                            num_tokens += len(encoding.encode(str(sub_msg_text), disallowed_special=())) + 4
-                        elif sub_msg_type == 'image_url':
-                            image_url = sub_msg.get('image_url', {}).get('url', '')
-                            detail = sub_msg.get('image_url', {}).get('detail', 'auto')
-                            num_tokens += lanying_image.calculate_tokens(image_url, detail)
-                        else:
-                            num_tokens += len(encoding.encode(str(sub_msg), disallowed_special=()))
-                    else:
-                        num_tokens += len(encoding.encode(str(sub_msg), disallowed_special=()))
-            else:
-                num_tokens += len(encoding.encode(str(value), disallowed_special=()))
-            if key == "name":
-                num_tokens += -1
-        return num_tokens
+        return lanying_token_budget.count_message(
+            message, encoding, lanying_image.calculate_tokens)
     except Exception as e:
         logging.exception(e)
         return MaxTotalTokens
@@ -3608,7 +3588,7 @@ def build_fallback_usage_for_stat(app_id, preset, response, model_config):
         vendor = model_config.get('vendor', '')
         model = preset.get('model', '')
         functions = lanying_openai_compat.get_tools_as_functions(preset)
-        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages', []), model, vendor) + lanying_embedding.calc_functions_tokens(functions, model, vendor)
+        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages', []), model, vendor) + calc_functions_tokens_for_model(app_id, functions, model, vendor, model_config)
         reply = ''
         if isinstance(response, dict):
             if 'reply' in response and isinstance(response.get('reply'), str):
@@ -3618,7 +3598,16 @@ def build_fallback_usage_for_stat(app_id, preset, response, model_config):
                     reply = str(response.get('choices', [{}])[0].get('message', {}).get('content', ''))
                 except Exception:
                     reply = ''
-        completion_tokens = calcMessageTokens(app_id, {'role': 'assistant', 'content': reply}, model, vendor)
+        completion_message = {'role': 'assistant', 'content': reply}
+        if isinstance(response, dict):
+            tool_message = response
+            if isinstance(response.get('choices'), list) and response['choices']:
+                tool_message = response['choices'][0].get('message', {})
+            if tool_message.get('tool_calls'):
+                completion_message['tool_calls'] = tool_message['tool_calls']
+            elif tool_message.get('function_call'):
+                completion_message['function_call'] = tool_message['function_call']
+        completion_tokens = calcMessageTokens(app_id, completion_message, model, vendor)
         total_tokens = prompt_tokens + completion_tokens
         return {
             'completion_tokens': completion_tokens,
@@ -4964,8 +4953,11 @@ def stream_lines_to_response(app_id, preset, reply, vendor, usage, stream_tool_c
     else:
         usage_source = 'local_estimate'
         functions = lanying_openai_compat.get_tools_as_functions(preset)
-        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages',[]), preset['model'], vendor) + lanying_embedding.calc_functions_tokens(functions, preset['model'], vendor)
-        completion_tokens = calcMessageTokens(app_id, {'role':'assistant', 'content':reply}, preset['model'], vendor)
+        prompt_tokens = calcMessagesTokens(app_id, preset.get('messages',[]), preset['model'], vendor) + calc_functions_tokens_for_model(app_id, functions, preset['model'], vendor)
+        completion_message = {'role': 'assistant', 'content': reply}
+        if stream_tool_calls:
+            completion_message['tool_calls'] = stream_tool_calls
+        completion_tokens = calcMessageTokens(app_id, completion_message, preset['model'], vendor)
         total_tokens = prompt_tokens + completion_tokens
         logging.info(f"stream_lines_to_response calc tokens self | vendor:{vendor}, model:{preset['model']}")
     response = {
@@ -7010,6 +7002,20 @@ def chat_or_force_function_call(app_id, config, vendor, prepare_info, preset):
                         'total_tokens' : 0
                     }
                 }
+    # Final guard also covers tool continuations and vision-preset transforms.
+    # Do not remove instructions, tool definitions or the current turn to fit.
+    model = preset['model']
+    model_config = lanying_vendor.get_chat_model_config(app_id, vendor, model)
+    input_tokens = (calcMessagesTokens(app_id, preset.get('messages', []), model, vendor)
+                    + calc_functions_tokens_for_model(app_id, functions, model, vendor, model_config))
+    input_limit = lanying_token_budget.input_budget(
+        model_token_limit(model_config), get_completion_budget_tokens(preset),
+        model_config.get('input_token_limit'))
+    if input_tokens > input_limit:
+        logging.warning("chat input exceeds context budget | app_id:%s, vendor:%s, model:%s, input_tokens:%s, input_limit:%s",
+                        app_id, vendor, model, input_tokens, input_limit)
+        return {'result': 'error', 'code': 'message_too_long',
+                'msg': lanying_config.get_message_too_long(app_id)}
     return lanying_openai_compat.normalize_vendor_response(lanying_vendor.chat(app_id, vendor, prepare_info, preset))
 
 def add_quota_used_statistic(app_id, quota):

@@ -5,6 +5,7 @@ import threading
 import time
 import types
 import unittest
+from contextlib import ExitStack
 from unittest import mock
 from pathlib import Path
 
@@ -260,7 +261,8 @@ def _install_fake_openai_service_local_modules_if_needed():
     sys.modules['lanying_utils'].safe_json_loads = safe_json_loads
     sys.modules['lanying_utils'].is_valid_public_url = lambda *args, **kwargs: False
 
-    sys.modules['lanying_openai_compat'].get_tools_as_functions = lambda preset: []
+    sys.modules['lanying_openai_compat'] = _load_real_openai_compat()
+    sys.modules['lanying_image'].calculate_tokens = lambda *_args: 85
     sys.modules['lanying_slack'].async_send_grafana_message_with_filter = lambda *args, **kwargs: None
     sys.modules['lanying_config'].get_message_daily_quota_limit_reached = lambda _app_id: 'daily quota limit reached'
     sys.modules['lanying_config'].get_lanying_connector = lambda _app_id: None
@@ -1182,7 +1184,7 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         self.assertNotIn('request_msg_id', out['openclaw'])
         self.assertEqual(out['ai']['ai_generate'], False)
 
-    def test_append_message_can_drop_developer_prompt_when_context_is_full(self):
+    def test_append_message_keeps_instructions_and_drops_complete_old_turn(self):
         try:
             m = importlib.import_module('openai_service')
         except ModuleNotFoundError as exc:
@@ -1197,16 +1199,412 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
                 {'role': 'user', 'content': 'u2'},
             ]
         }
-        model_config = {'model': 'gpt-5-mini', 'vendor': 'openai', 'token_limit': 100}
+        model_config = {'model': 'gpt-5-mini', 'vendor': 'openai', 'token_limit': 170}
         message = {'role': 'tool', 'content': 'tool reply'}
 
-        with mock.patch.object(m, 'model_token_limit', return_value=100), \
+        with mock.patch.object(m, 'calcMessagesTokens', side_effect=lambda _a, msgs, *_args: len(msgs) * 20 + 2), \
              mock.patch.object(m, 'calcMessageTokens', side_effect=lambda *args, **kwargs: 20), \
              mock.patch.object(m.lanying_embedding, 'calc_functions_tokens', return_value=0):
             out = m.append_message('app', preset, model_config, message)
 
-        self.assertEqual(out['messages'][0]['role'], 'user')
-        self.assertNotIn('developer', [item['role'] for item in out['messages']])
+        self.assertEqual([item['role'] for item in out['messages']],
+                         ['developer', 'user', 'tool'])
+        self.assertEqual(out['messages'][1]['content'], 'u2')
+
+    def test_large_tool_result_history_uses_same_truncated_content_as_request(self):
+        m = importlib.import_module('openai_service')
+        model_config = {'model': 'model', 'vendor': 'openai', 'token_limit': 1000}
+        preset = {'model': 'model', 'max_tokens': 100, 'messages': [
+            {'role': 'system', 'content': 'policy'},
+            {'role': 'user', 'content': 'query'},
+        ]}
+        tool_call = {'id': 'call-1', 'type': 'function',
+                     'function': {'name': 'query', 'arguments': '{}'}}
+        function_response = {'result': 'ok', 'data': 'x' * 10000}
+        function_messages = []
+        encoding = mock.Mock()
+        encoding.encode.side_effect = lambda text, **_kwargs: list(text)
+        with (
+            mock.patch.object(m.lanying_vendor, 'encoding_for_model',
+                              return_value=encoding, create=True),
+            mock.patch.object(m, 'maybe_transform_preset_to_vision_preset',
+                              side_effect=lambda _c, _a, _m, p: p),
+            mock.patch.object(m, 'chat_or_force_function_call',
+                              return_value={'result': 'ok', 'reply': 'answer'}) as chat,
+        ):
+            m._append_function_result_and_continue(
+                'app', {}, tool_call, 'call-1', preset, model_config,
+                'openai', {}, function_messages, function_response, True)
+            sent = chat.call_args.args[-1]['messages'][-1]
+            self.assertLess(len(sent['content']), 1000)
+            self.assertIs(sent, function_messages[-1])
+            self.assertEqual(sent['content'], function_messages[-1]['content'])
+            # Persist/reload as JSON, just like chat history, not by shared identity.
+            history = json.loads(json.dumps({
+                'user': 'query', 'assistant': 'answer',
+                'function_messages': function_messages,
+            }))
+            with mock.patch.object(m, 'reversed_history_generator',
+                                   return_value=iter([history])):
+                result = m.loadHistory(
+                    {'history_msg_size_max': 1024}, 'app', None, 'key',
+                    'follow up', [{'role': 'system', 'content': 'policy'}],
+                    1, {'model': 'model', 'max_tokens': 100}, {}, model_config, 'openai')
+            self.assertEqual('ok', result['result'])
+            loaded = list(result['data'])
+            self.assertEqual(['user', 'assistant', 'tool', 'assistant'],
+                             [message['role'] for message in loaded])
+            self.assertEqual(sent['content'], loaded[2]['content'])
+        # Only the model/history message is shortened, not the business result.
+        self.assertEqual('x' * 10000, function_response['data'])
+        self.assertEqual('{}', tool_call['function']['arguments'])
+
+    def test_batch_and_single_counters_include_tool_call_arguments(self):
+        m = importlib.import_module('openai_service')
+        encoding = mock.Mock()
+        encoding.encode.side_effect = lambda text, **_kwargs: list(text)
+        with mock.patch.object(m.lanying_vendor, 'encoding_for_model',
+                               return_value=encoding, create=True):
+            counts = []
+            for size in (10, 10000):
+                message = {'role': 'assistant', 'content': None, 'tool_calls': [
+                    {'id': 'call-1', 'type': 'function',
+                     'function': {'name': 'search', 'arguments': 'x' * size}}]}
+                single = m.calcMessageTokens('app', message, 'model', 'vendor')
+                batch = m.calcMessagesTokens('app', [message], 'model', 'vendor')
+                self.assertEqual(single + 2, batch)
+                counts.append(batch)
+            self.assertEqual(9990, counts[1] - counts[0])
+
+    def test_final_tools_reduce_chat_and_group_history_budget(self):
+        m = importlib.import_module('openai_service')
+        functions = [{'name': 'query', 'parameters': {'type': 'object'}}]
+        with (
+            mock.patch.object(m, 'calcMessagesTokens', return_value=20),
+            mock.patch.object(m, 'calcMessageTokens', return_value=100),
+            mock.patch.object(m.lanying_embedding, 'calc_functions_tokens',
+                              side_effect=lambda fs, *_args: 600 if fs else 0) as counter,
+            mock.patch.object(m, 'reversed_history_generator',
+                              side_effect=lambda _: iter([{'user': 'old', 'assistant': 'answer'}])),
+            mock.patch.object(m, 'reversed_group_history_generator',
+                              side_effect=lambda _: iter([{'from': '100', 'content': 'old'}])),
+        ):
+            for loader in (m.loadHistory, m.loadGroupHistory):
+                for fs, expected_history in (([], True), (functions, False)):
+                    result = loader(
+                        {'send_from': '100', 'reply_from': '101'}, 'app', None,
+                        'key', 'hello', [], 1, {'model': 'model', 'max_tokens': 100,
+                                              'functions': fs},
+                        {}, {'token_limit': 1000}, 'vendor')
+                    self.assertEqual('ok', result['result'])
+                    self.assertEqual(expected_history, bool(list(result['data'])))
+            self.assertEqual(counter.call_args.args, (functions, 'model', 'vendor', 'app'))
+
+    def test_skills_are_loaded_before_retrieval_and_final_tools_before_history(self):
+        m = importlib.import_module('openai_service')
+        system = {'name': 'system_tool', 'priority': 1}
+        skill = {'name': 'skill_tool', 'priority': 5}
+        plugin = types.SimpleNamespace(
+            function='{"name":"plugin_tool","parameters":{}}',
+            block_id='block', doc_id='doc', owner_app_id='app', vector_score=0)
+        events = []
+
+        def load_skills(_app, _config, messages, functions):
+            events.append('skills')
+            messages.append({'role': 'system', 'content': 'skill instructions'})
+            functions.append(skill)
+            return messages, functions
+
+        def retrieve(*args):
+            events.append('retrieval')
+            # (4000 - 100 - 64) / 1.05 - two tools - three messages - history reserve
+            self.assertEqual(2881 if supports_tools else 3081, args[-1])
+            return [plugin]
+
+        def history(*args):
+            events.append('history')
+            self.assertEqual('question with metadata', args[4])
+            self.assertIn('skill instructions', [msg['content'] for msg in args[5]])
+            self.assertEqual({'system_tool', 'skill_tool', 'plugin_tool'},
+                             {f['name'] for f in args[7]['functions']})
+            return {'result': 'error', 'code': 'test-stop'}
+
+        materials = types.ModuleType('lanying_seenical_materials')
+        materials.retrieval_scope = lambda *_args: None
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials}))
+            for name, replacement in {
+                'check_message_limit': lambda *_args: {'result': 'ok', 'api_key_type': 'share'},
+                'get_preset_auth_info': lambda *_args: {},
+                'get_system_functions': lambda *_args: [system],
+                'make_metadata_from_msg': lambda *_args: {},
+                'format_content_and_metadata': lambda *_args: ('question with metadata', {}),
+                'get_embedding_info': lambda *_args: {},
+                'set_embedding_info': lambda *_args: None,
+                'calc_embedding_query_text': lambda *_args: 'query',
+                'calcMessagesTokens': lambda *_args: 20,
+                'calcMessageTokens': lambda *_args: 20,
+                'multi_embedding_search': retrieve,
+                'add_debug_message': lambda *_args, **_kwargs: None,
+                'loadHistory': history,
+                'loadGroupHistory': history,
+            }.items():
+                stack.enter_context(mock.patch.object(m, name, side_effect=replacement))
+            for module, name, replacement in [
+                (m.lanying_vendor, 'prepare_chat', lambda *_args: {}),
+                (m.lanying_redis, 'get_redis_connection', lambda: mock.Mock()),
+                (m.lanying_embedding, 'get_preset_embedding_infos', lambda *_args: [{'embedding_name': 'kb'}]),
+                (m.lanying_embedding, 'parse_segment_id_int_value', lambda *_args: 0),
+                (m.lanying_embedding, 'calc_functions_tokens', lambda fs, *_args: len(fs) * 100),
+                (m.lanying_ai_plugin, 'get_preset_function_embeddings', lambda *_args: []),
+                (m.lanying_ai_plugin, 'remove_function_parameters_without_function_call_reference',
+                 lambda _app, function, _doc: function),
+                (m.lanying_agent_tools, 'apply_active_skills', load_skills),
+                (m.lanying_agent_tools, 'filter_supported_client_functions', lambda _app, _config, fs: fs),
+            ]:
+                stack.enter_context(mock.patch.object(module, name, side_effect=replacement, create=True))
+            for msg_type, supports_tools in (('CHAT', True), ('GROUPCHAT', True),
+                                             ('CHAT', False), ('GROUPCHAT', False)):
+                events.clear()
+                result = m.handle_chat_message_with_config(
+                    {'from_user_id': '1', 'to_user_id': '2'},
+                    {'token_limit': 4000, 'function_call': supports_tools}, 'openai',
+                    {'appId': 'app', 'content': 'question', 'type': msg_type},
+                    {'model': 'model', 'max_tokens': 100}, {}, {}, 'default', {}, 0)
+                self.assertEqual('test-stop', result['code'])
+                self.assertEqual(['skills', 'retrieval', 'history'], events)
+
+    def test_final_guard_checks_tools_but_does_not_send_margin_to_vendor(self):
+        m = importlib.import_module('openai_service')
+        with (
+            mock.patch.object(m.lanying_vendor, 'get_chat_model_config',
+                              return_value={'token_limit': 1000}, create=True),
+            mock.patch.object(m.lanying_vendor, 'chat',
+                              return_value={'result': 'ok', 'reply': 'ok'}, create=True) as chat,
+            mock.patch.object(m, 'calcMessagesTokens', return_value=100),
+            mock.patch.object(m.lanying_embedding, 'calc_functions_tokens', return_value=800) as tools,
+            mock.patch.object(m.lanying_config, 'get_message_too_long',
+                              return_value='too long', create=True),
+        ):
+            preset = {'model': 'model', 'max_tokens': 100, 'messages': [],
+                      'functions': [{'name': 'query'}]}
+            result = m.chat_or_force_function_call('app', {}, 'vendor', {}, preset)
+            self.assertEqual('message_too_long', result['code'])
+            chat.assert_not_called()
+            tools.return_value = 300
+            result = m.chat_or_force_function_call('app', {}, 'vendor', {}, preset)
+            self.assertEqual('ok', result['result'])
+            self.assertEqual(preset, chat.call_args.args[3])
+
+    def test_chat_and_group_return_tool_continuation_budget_error(self):
+        m = importlib.import_module('openai_service')
+        model_config = {'token_limit': 1000, 'vendor': 'openai'}
+        initial = {'result': 'ok', 'reply': '', 'tool_calls': [{
+            'id': 'call-1', 'type': 'function',
+            'function': {'name': 'query', 'arguments': '{}'}}]}
+        materials = types.ModuleType('lanying_seenical_materials')
+        materials.retrieval_scope = lambda *_args: None
+
+        def continue_tool(app_id, config, _call, preset, *_args, **_kwargs):
+            return m.chat_or_force_function_call(app_id, config, 'openai', {}, preset)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials}))
+            for name, replacement in {
+                'check_message_limit': lambda *_args: {'result': 'ok', 'api_key_type': 'share'},
+                'get_preset_auth_info': lambda *_args: {},
+                'get_system_functions': lambda *_args: [{'name': 'query'}],
+                'make_metadata_from_msg': lambda *_args: {},
+                'format_content_and_metadata': lambda *_args: ('question', {}),
+                'calcMessagesTokens': lambda *_args: 900,
+                'add_debug_message': lambda *_args, **_kwargs: None,
+                'add_message_statistic': lambda *_args: None,
+                'build_openclaw_reply_ext': lambda *_args: {},
+                'loadHistory': lambda *_args: {'result': 'ok', 'data': []},
+                'loadGroupHistory': lambda *_args: {'result': 'ok', 'data': []},
+                'invoke_chat_model': lambda *args: m.ModelResponse(dict(initial), args[-1].preset, None),
+                'handle_function_call': continue_tool,
+            }.items():
+                stack.enter_context(mock.patch.object(m, name, side_effect=replacement))
+            for module, name, replacement in [
+                (m.lanying_vendor, 'prepare_chat', lambda *_args: {}),
+                (m.lanying_vendor, 'get_chat_model_config', lambda *_args: model_config),
+                (m.lanying_config, 'get_message_too_long', lambda *_args: 'too long'),
+                (m.lanying_redis, 'get_redis_connection', lambda: mock.Mock()),
+                (m.lanying_embedding, 'get_preset_embedding_infos', lambda *_args: []),
+                (m.lanying_embedding, 'calc_functions_tokens', lambda *_args: 10),
+                (m.lanying_ai_plugin, 'get_preset_function_embeddings', lambda *_args: []),
+                (m.lanying_agent_tools, 'apply_active_skills', lambda _a, _c, ms, fs: (ms, fs)),
+                (m.lanying_agent_tools, 'filter_supported_client_functions', lambda _a, _c, fs: fs),
+            ]:
+                stack.enter_context(mock.patch.object(module, name, side_effect=replacement, create=True))
+            build_reply = stack.enter_context(mock.patch.object(m, 'build_reply_result'))
+            save_history = stack.enter_context(mock.patch.object(m, 'addHistory'))
+            save_group = stack.enter_context(mock.patch.object(m.group_history_repository, 'save_pending_reply'))
+            vendor_call = stack.enter_context(mock.patch.object(m.lanying_vendor, 'chat', create=True))
+            for msg_type in ('CHAT', 'GROUPCHAT'):
+                with self.subTest(msg_type=msg_type):
+                    result = m.handle_chat_message_with_config(
+                        {'from_user_id': '1', 'to_user_id': '2', 'send_from': '1'},
+                        model_config, 'openai',
+                        {'appId': 'app', 'content': 'question', 'type': msg_type},
+                        {'model': 'model', 'max_tokens': 100}, {}, {}, 'default', {}, 0)
+                    self.assertEqual({'result': 'error', 'code': 'message_too_long',
+                                      'msg': 'too long'}, result)
+            build_reply.assert_not_called()
+            save_history.assert_not_called()
+            save_group.assert_not_called()
+            vendor_call.assert_not_called()
+
+    def test_client_tool_resume_records_continuation_error_not_success(self):
+        m = importlib.import_module('openai_service')
+        error = {'result': 'error', 'code': 'message_too_long', 'msg': 'too long'}
+        request = {
+            'app_id': 'app', 'request_id': 'request-1', 'chatbot_id': 'bot',
+            'tool_call': {'id': 'call-1'},
+            'continuation': {
+                'config': {'reply_msg_type': 'CHAT'},
+                'preset': {'model': 'model', 'max_tokens': 100},
+            },
+        }
+        with ExitStack() as stack:
+            for name, value in {
+                'check_message_deduct_failed': {'result': 'ok'},
+                'check_message_limit': {'result': 'ok', 'api_key_type': 'share'},
+                'get_preset_auth_info': {},
+                'append_message': None,
+                'invoke_chat_model': m.ModelResponse({'result': 'ok', 'reply': ''}, {}, None),
+                'run_chat_tools': m.ToolRunResult(error, {'ai': {}}, 0, False, 0, [], []),
+            }.items():
+                stack.enter_context(mock.patch.object(m, name, return_value=value))
+            for module, name, value in [
+                (m.lanying_config, 'get_lanying_connector', {}),
+                (m.lanying_chatbot, 'get_chatbot', {}),
+                (m.lanying_vendor, 'get_chat_model_config', {'token_limit': 1000}),
+                (m.lanying_vendor, 'prepare_chat', {}),
+            ]:
+                stack.enter_context(mock.patch.object(module, name, return_value=value, create=True))
+            status = stack.enter_context(mock.patch.object(m.lanying_agent_tools, 'record_resume_status'))
+            build_reply = stack.enter_context(mock.patch.object(m, 'build_reply_result'))
+            send = stack.enter_context(mock.patch.object(m, 'replyMessageAsync'))
+            save_history = stack.enter_context(mock.patch.object(m, 'addHistory'))
+            m.resume_client_tool_request(request, {'result': 'ok'})
+            self.assertEqual([
+                mock.call('app', 'request-1', 'running'),
+                mock.call('app', 'request-1', 'failed', 'too long'),
+            ], status.call_args_list)
+            build_reply.assert_not_called()
+            save_history.assert_not_called()
+            send.assert_called_once()
+            self.assertEqual('error', send.call_args.args[2]['ai']['result'])
+            self.assertEqual('request-1', send.call_args.args[2]['seenical_tool_request']['request_id'])
+
+    def test_fallback_usage_does_not_include_context_headroom(self):
+        m = importlib.import_module('openai_service')
+        with (
+            mock.patch.object(m, 'calcMessagesTokens', return_value=100),
+            mock.patch.object(m, 'calcMessageTokens', return_value=20),
+            mock.patch.object(m.lanying_embedding, 'calc_functions_tokens', return_value=300),
+            mock.patch.object(m.lanying_token_budget, 'input_budget',
+                              side_effect=AssertionError('budget margin is not usage')),
+        ):
+            usage = m.build_fallback_usage_for_stat(
+                'app', {'model': 'model', 'functions': [{'name': 'query'}]}, {'reply': 'answer'},
+                {'type': 'chat', 'vendor': 'openai'})
+            self.assertEqual(400, usage['prompt_tokens'])
+            self.assertEqual(420, usage['total_tokens'])
+
+    def test_fallback_completion_includes_calls_but_real_usage_wins(self):
+        m = importlib.import_module('openai_service')
+        calls = [{'id': 'c1', 'type': 'function',
+                  'function': {'name': 'query', 'arguments': '{"text":"hello"}'}}]
+        with (
+            mock.patch.object(m, 'calcMessagesTokens', return_value=100),
+            mock.patch.object(m, 'calcMessageTokens',
+                              side_effect=lambda _app, msg, *_args: 200 if msg.get('tool_calls') else 10) as count,
+            mock.patch.object(m.lanying_embedding, 'calc_functions_tokens', return_value=300),
+            mock.patch.object(m.lanying_vendor, 'get_chat_model_config',
+                              return_value={'function_call': True}, create=True),
+        ):
+            preset = {'model': 'model', 'functions': [{'name': 'query'}]}
+            response = {'reply': '', 'tool_calls': calls}
+            usage = m.build_fallback_usage_for_stat(
+                'app', preset, response, {'type': 'chat', 'vendor': 'openai'})
+            self.assertEqual(600, usage['total_tokens'])
+            streamed = m.stream_lines_to_response('app', preset, '', 'openai', {}, calls)
+            self.assertEqual(usage, streamed['usage'])
+            count.reset_mock()
+            actual = {'prompt_tokens': 18, 'completion_tokens': 24, 'total_tokens': 42}
+            streamed = m.stream_lines_to_response('app', preset, '', 'openai', actual, calls)
+            self.assertEqual(actual, streamed['usage'])
+            count.assert_not_called()
+
+    def test_unsupported_tools_are_not_budgeted_or_estimated_as_usage(self):
+        m = importlib.import_module('openai_service')
+        cfg = {'token_limit': 100000, 'function_call': False,
+               'model': 'claude-2.0', 'type': 'chat', 'vendor': 'claude'}
+        preset = {'model': cfg['model'], 'max_tokens': 1024,
+                  'functions': [{'name': 'query'}],
+                  'messages': [{'role': 'user', 'content': 'current'}]}
+        with (
+            mock.patch.object(m.lanying_vendor, 'get_chat_model_config', return_value=cfg, create=True),
+            mock.patch.object(m.lanying_vendor, 'chat',
+                              return_value={'result': 'ok', 'reply': 'ok'}, create=True) as chat,
+            mock.patch.object(m, 'calcMessagesTokens', return_value=88000),
+            mock.patch.object(m, 'calcMessageTokens', return_value=20),
+            mock.patch.object(m.lanying_embedding, 'calc_functions_tokens',
+                              side_effect=AssertionError('unsupported schemas must not be counted')),
+        ):
+            result = m.chat_or_force_function_call('app', {}, 'claude', {}, preset)
+            self.assertEqual('ok', result['result'])
+            chat.assert_called_once()
+            m.append_message('app', preset, cfg, {'role': 'tool', 'content': 'ok'})
+            self.assertEqual([{'name': 'query'}], preset['functions'])
+            usage = m.build_fallback_usage_for_stat('app', preset, {'reply': 'ok'}, cfg)
+            self.assertEqual(88000, usage['prompt_tokens'])
+            streamed = m.stream_lines_to_response('app', preset, 'ok', 'claude', {})
+            self.assertEqual(usage, streamed['usage'])
+
+    def test_separate_input_limit_applies_to_history_append_and_final_guard(self):
+        m = importlib.import_module('openai_service')
+        cfg = {'token_limit': 128000, 'input_token_limit': 96000,
+               'model': 'model', 'vendor': 'vendor'}
+        preset = {'model': 'model', 'max_tokens': 8192,
+                  'messages': [{'role': 'user', 'content': 'current'}]}
+        with (
+            mock.patch.object(m, 'calcMessagesTokens', return_value=100000),
+            mock.patch.object(m, 'calcMessageTokens', return_value=20),
+            mock.patch.object(m.lanying_vendor, 'get_chat_model_config', return_value=cfg, create=True),
+            mock.patch.object(m.lanying_vendor, 'chat', create=True) as chat,
+            mock.patch.object(m.lanying_config, 'get_message_too_long',
+                              return_value='too long', create=True),
+        ):
+            for loader in (m.loadHistory, m.loadGroupHistory):
+                result = loader({'send_from': '1', 'reply_from': '2'}, 'app', None,
+                                'key', 'question', [], 0, preset, {}, cfg, 'vendor')
+                self.assertEqual('message_too_long', result['code'])
+            result = m.chat_or_force_function_call('app', {}, 'vendor', {}, preset)
+            self.assertEqual('message_too_long', result['code'])
+            chat.assert_not_called()
+            with self.assertRaisesRegex(ValueError, 'message_too_long'):
+                m.append_message('app', preset, cfg, {'role': 'tool', 'content': 'ok'})
+
+    def test_append_rejects_oversized_current_call_without_dropping_policy(self):
+        m = importlib.import_module('openai_service')
+        preset = {'model': 'model', 'max_tokens': 100, 'messages': [
+            {'role': 'system', 'content': 'policy'},
+            {'role': 'user', 'content': 'current'}]}
+        message = {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'c', 'function': {'name': 'query', 'arguments': 'x' * 10000}}]}
+        with (
+            mock.patch.object(m, 'calcMessageTokens', return_value=10000),
+            mock.patch.object(m, 'calcMessagesTokens', return_value=10100),
+            mock.patch.object(m.lanying_embedding, 'calc_functions_tokens', return_value=0),
+        ):
+            with self.assertRaisesRegex(ValueError, 'message_too_long'):
+                m.append_message('app', preset, {'model': 'model', 'vendor': 'v', 'token_limit': 1000}, message)
+            self.assertEqual('policy', preset['messages'][0]['content'])
+            self.assertEqual(message, preset['messages'][-1])
 
     def test_add_message_statistic_writes_quota_usage_to_mysql(self):
         try:
