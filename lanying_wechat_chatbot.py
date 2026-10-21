@@ -160,6 +160,10 @@ def change_wid_status(app_id, wid, status, reason):
     if wid_info:
         set_wid_info_field(app_id, wid, "status", status)
         set_wid_info_field(app_id, wid, "reason", reason)
+        if wid_info['status'] != status:
+            logging.info(
+                "wechat login status changed | app_id:%s, wechat_chatbot_id:%s, from_status:%s, status:%s, reason:%s",
+                app_id, wid_info['wechat_chatbot_id'], wid_info['status'], status, reason)
         if status == 'offline':
             wechat_chatbot_id = wid_info['wechat_chatbot_id']
             wechat_chatbot_info = get_wechat_chatbot(app_id, wechat_chatbot_id)
@@ -167,13 +171,14 @@ def change_wid_status(app_id, wid, status, reason):
                 if wechat_chatbot_info['w_id'] == wid and wechat_chatbot_info["status"] == 'online':
                     update_wechat_chatbot_field(app_id, wechat_chatbot_id, "status", "offline")
                     update_wechat_chatbot_field(app_id, wechat_chatbot_id, "reason", reason)
-                    logging.info(f"wechat chatbot change status to offline: app_id:{app_id}, wid:{wid}, wechat_chatbot_id:{wechat_chatbot_id}")
                     lanying_slack.async_send_message(f'微信机器人离线, app_id:{app_id}, wid:{wid}, reason:{reason}')
 
 def get_login_info(app_id, w_id):
     wid_info = get_wid_info(app_id, w_id)
     if wid_info is None:
         return {'result':'error', 'message': 'bad login info'}
+    if wid_info['status'] == 'offline':
+        return {'result':'error', 'message': 'expired'}
     if 'result' in wid_info:
         return {"result": "ok", "data":{"wc_id": wid_info['wc_id'], "w_account": wid_info['w_account']}}
     url = get_api_server() + "/getIPadLoginInfo"
@@ -224,6 +229,8 @@ def create_wechat_chatbot(app_id, w_id, bind_type, bind_id, msg_types, non_frien
         return {'result':'error', 'message': 'bad login info'}
     if wid_info["wechat_chatbot_id"] != "":
         return {'result':'error', 'message': 'bad login info'}
+    if wid_info['status'] == 'offline':
+        return {'result':'error', 'message': 'expired'}
     if wid_info["status"] != "wait":
         return {'result':'error', 'message': 'login info already bind'}
     if 'result' not in wid_info:
@@ -310,6 +317,8 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id
     if wid_info:
         if wid_info["wechat_chatbot_id"] != wechat_chatbot_id:
             return {'result':'error', 'message': 'bad login info'}
+        if wid_info['status'] == 'offline':
+            return {'result':'error', 'message': 'expired'}
         if wid_info["status"] != "wait":
             return {'result':'error', 'message': 'login info already bind'}
         if 'result' not in wid_info:
