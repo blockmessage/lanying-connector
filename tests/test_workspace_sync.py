@@ -4,10 +4,12 @@ import json
 import unittest
 from unittest import mock
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 
 import lanying_workspace_sync as sync
 from lanying_workspace_github import blob_sha, SyncError
+
+WORKSPACE_ID = '0123456789abcdef0123456789abcdef'
 
 
 class MemoryRepository:
@@ -39,21 +41,32 @@ class MemoryRepository:
 class WorkspaceTest(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine('sqlite://')
+        @event.listens_for(self.engine, 'before_cursor_execute', retval=True)
+        def sqlite_dates(conn, cursor, statement, parameters, context, executemany):
+            for seconds in (60, 300):
+                statement = statement.replace(
+                    f'DATE_ADD(CURRENT_TIMESTAMP,INTERVAL {seconds} SECOND)',
+                    f"datetime('now','+{seconds} seconds')")
+            return statement, parameters
         self.addCleanup(self.engine.dispose)
         with self.engine.begin() as conn:
             conn.execute(text("CREATE TABLE seenical_workspace (app_id TEXT PRIMARY KEY,workspace_id TEXT,"
                 "repository TEXT,repository_id TEXT,branch TEXT,directory TEXT,github_token TEXT,actor_json TEXT,"
                 "scopes_json TEXT,paused INTEGER DEFAULT 0,status TEXT DEFAULT 'pending',error_code TEXT DEFAULT '',"
-                "manifest_sha TEXT DEFAULT '',config_sha TEXT DEFAULT '',last_synced_at TEXT,warnings_json TEXT)"))
+                "manifest_sha TEXT DEFAULT '',config_sha TEXT DEFAULT '',last_synced_at TEXT,warnings_json TEXT,"
+                "next_check_at TEXT DEFAULT CURRENT_TIMESTAMP,requested_generation INTEGER DEFAULT 1,"
+                "completed_generation INTEGER DEFAULT 0)"))
             conn.execute(text("CREATE TABLE seenical_workspace_file (app_id TEXT,path_hash TEXT,path TEXT,"
                 "source_type TEXT,source_id TEXT,doc_id TEXT,base_sha TEXT DEFAULT '',source_fingerprint TEXT DEFAULT '',"
                 "server_sha TEXT DEFAULT '',remote_sha TEXT DEFAULT '',status TEXT DEFAULT 'pending',"
                 "error_code TEXT DEFAULT '',decision_json TEXT,removed INTEGER DEFAULT 0,"
                 "PRIMARY KEY(app_id,path_hash),UNIQUE(app_id,source_type,doc_id))"))
+            conn.execute(text('CREATE TABLE seenical_material_replacement '
+                '(app_id TEXT,doc_id TEXT,status TEXT,content_sha TEXT)'))
             conn.execute(text("INSERT INTO seenical_workspace (app_id,workspace_id,repository,repository_id,"
                 "branch,directory,github_token,actor_json,scopes_json) VALUES "
-                "('a','w','owner/repo','1','main','workspace','encrypted-secret','{}',:scopes)"),
-                {'scopes': json.dumps([{'seenical_session_id': 's', 'task_id': '', 'knowledge_base_ids': ['kb']}])})
+                "('a',:w,'owner/repo','1','main','workspace','encrypted-secret','{}',:scopes)"),
+                {'w': WORKSPACE_ID, 'scopes': json.dumps([{'seenical_session_id': 's', 'task_id': '', 'knowledge_base_ids': ['kb']}])})
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.repo = MemoryRepository()
@@ -106,7 +119,7 @@ class WorkspaceTest(unittest.TestCase):
         first = copy.deepcopy(self.repo.files)
         self.run_cycle()
         self.assertEqual(first, self.repo.files)
-        self.assertEqual(len(self.repo.writes), 1)
+        self.assertEqual(len(self.repo.writes), 2)  # Workflow installation, then materials.
         view = sync.public_view('a')
         self.assertNotIn('github_token', view)
         self.assertNotIn('actor_json', view)
@@ -349,6 +362,86 @@ class WorkspaceTest(unittest.TestCase):
         with mock.patch.object(sync, '_run') as run:
             sync.run('a', {}, 0)
         run.assert_not_called()
+
+    def test_idle_workspace_is_not_a_scheduled_candidate(self):
+        with self.engine.begin() as conn:
+            conn.execute(text('UPDATE seenical_workspace SET completed_generation=requested_generation'))
+        with mock.patch.object(sync.materials.storage, 'is_enabled', return_value=True):
+            self.assertEqual(sync.scheduled_candidates(), {'list': []})
+            sync.notify(WORKSPACE_ID)
+            self.assertEqual(sync.scheduled_candidates()['list'], [{'app_id': 'a'}])
+            self.assertEqual(sync.scheduled_candidates(), {'list': []})
+
+    def test_unknown_notify_does_not_create_workspace_or_disclose_existence(self):
+        before = sync.load('a')['requested_generation']
+        self.assertEqual(sync.notify('missing'), sync.notify(WORKSPACE_ID))
+        self.assertEqual(sync.load('a')['requested_generation'], before + 1)
+        self.assertIsNone(sync.load('missing'))
+
+    def test_new_event_during_sync_is_not_acknowledged(self):
+        with mock.patch.object(sync, '_run', side_effect=lambda *_: sync.request_check('a')):
+            sync.run('a', {}, sync.time.time())
+        row = sync.load('a')
+        self.assertEqual(row['completed_generation'], 1)
+        self.assertEqual(row['requested_generation'], 2)
+
+    def test_finished_sync_becomes_idle_but_pending_work_keeps_retrying(self):
+        with mock.patch.object(sync, '_run', return_value=True):
+            sync.run('a', {}, sync.time.time())
+        self.assertEqual(sync.load('a')['completed_generation'], 0)
+        with mock.patch.object(sync, '_run', return_value=False):
+            sync.run('a', {}, sync.time.time())
+        self.assertEqual(sync.load('a')['completed_generation'], 1)
+
+    def test_paused_workspace_retains_event_until_resume(self):
+        sync.update('a', paused=1)
+        sync.notify(WORKSPACE_ID)
+        with mock.patch.object(sync.materials.storage, 'is_enabled', return_value=True):
+            self.assertEqual(sync.scheduled_candidates()['list'], [])
+            sync.update('a', paused=0)
+            self.assertEqual(len(sync.scheduled_candidates()['list']), 1)
+
+    def test_file_conflict_does_not_keep_polling(self):
+        self.run_cycle()
+        self.data['d'] = b'server edit'
+        self.repo.files[self.remote_path(('conversation', 'd'))] = b'github edit'
+        self.assertFalse(sync._run('a', {}, sync.load('a')))
+        self.assertEqual(self.row('d')['status'], 'conflict')
+
+    def test_workflow_permission_failure_precedes_material_operations(self):
+        with mock.patch.object(self.repo, 'commit', side_effect=SyncError('github_access_denied')):
+            with self.assertRaisesRegex(SyncError, 'github_workflow_write_required'):
+                self.run_cycle()
+        self.start.assert_not_called()
+        self.import_new.assert_not_called()
+        self.remove.assert_not_called()
+        self.assertEqual(self.repo.files, {})
+
+    def test_cleanup_failure_remains_scheduled_then_recovers_without_reindexing(self):
+        self.run_cycle()
+        sha = self.row('d')['base_sha']
+        with self.engine.begin() as conn:
+            conn.execute(text("INSERT INTO seenical_material_replacement VALUES ('a','d','cleanup',:sha)"), {'sha': sha})
+        pending = {'status': 'cleanup', 'content_sha': sha}
+        with mock.patch('lanying_material_replacement.load', return_value=pending), \
+                mock.patch('lanying_material_replacement.resume', side_effect=RuntimeError('temporary storage failure')):
+            sync.run('a', {}, sync.time.time())
+        self.assertEqual(self.row('d')['status'], 'failed')
+        self.assertEqual(sync.load('a')['completed_generation'], 0)
+        with self.engine.begin() as conn:
+            conn.execute(text("UPDATE seenical_workspace SET next_check_at='2000-01-01'"))
+        with mock.patch.object(sync.materials.storage, 'is_enabled', return_value=True):
+            self.assertEqual(sync.scheduled_candidates()['list'], [{'app_id': 'a'}])
+        def finish(*_):
+            with self.engine.begin() as conn:
+                conn.execute(text("UPDATE seenical_material_replacement SET status='done'"))
+            return 'done'
+        with mock.patch('lanying_material_replacement.load', return_value=pending), \
+                mock.patch('lanying_material_replacement.resume', side_effect=finish):
+            sync.run('a', {}, sync.time.time())
+        self.assertEqual(self.row('d')['status'], 'synced')
+        self.assertEqual(sync.load('a')['completed_generation'], 1)
+        self.start.assert_not_called()
 
 
 if __name__ == '__main__':

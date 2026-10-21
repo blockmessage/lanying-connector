@@ -147,9 +147,33 @@ def configure(app_id, actor, data):
     return public_view(app_id)
 
 
-def enqueue(app_id, actor):
+def enqueue(app_id, actor, changed=True):
+    if changed:
+        request_check(app_id)
     from lanying_tasks import seenical_workspace_sync_task
     seenical_workspace_sync_task.apply_async(args=[str(app_id), actor, int(time.time())])
+
+
+def request_check(app_id):
+    """Persist a change signal, never an authorization or a file operation.
+
+    Two counters prevent a running sync from acknowledging a later event.
+    Paused workspaces retain changes until the user resumes them.
+    """
+    with materials._engine().begin() as conn:
+        conn.execute(text('UPDATE seenical_workspace SET requested_generation=requested_generation+1,'
+            "status=CASE WHEN status='synced' THEN 'pending' ELSE status END "
+            'WHERE app_id=:a'), {'a': str(app_id)})
+
+
+def notify(workspace_id):
+    # The public caller supplies only an opaque locator, not an App, repository,
+    # branch, actor, URL or contents. Butler reauthorizes the stored grant later.
+    with materials._engine().begin() as conn:
+        conn.execute(text('UPDATE seenical_workspace SET requested_generation=requested_generation+1,'
+            "status=CASE WHEN status='synced' THEN 'pending' ELSE status END "
+            'WHERE workspace_id=:w'), {'w': str(workspace_id)})
+    return {'accepted': True}  # Do not disclose whether a workspace exists.
 
 
 def scheduled_candidates(after=''):
@@ -157,13 +181,15 @@ def scheduled_candidates(after=''):
         return {'list': []}
     with materials._engine().begin() as conn:
         rows = conn.execute(text('SELECT app_id,actor_json FROM seenical_workspace '
-            'WHERE paused=0 AND next_check_at<=CURRENT_TIMESTAMP AND app_id>:after ORDER BY app_id LIMIT 100'),
+            'WHERE paused=0 AND requested_generation>completed_generation '
+            'AND next_check_at<=CURRENT_TIMESTAMP AND app_id>:after ORDER BY app_id LIMIT 100'),
             {'after': str(after)}).mappings().all()
         claimed = []
         for row in rows:
             changed = conn.execute(text('UPDATE seenical_workspace '
-                'SET next_check_at=DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 60 SECOND) '
-                'WHERE app_id=:a AND paused=0 AND next_check_at<=CURRENT_TIMESTAMP'), {'a': row['app_id']})
+                'SET next_check_at=DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 300 SECOND) '
+                'WHERE app_id=:a AND paused=0 AND requested_generation>completed_generation '
+                'AND next_check_at<=CURRENT_TIMESTAMP'), {'a': row['app_id']})
             if changed.rowcount == 1:
                 claimed.append({'app_id': row['app_id'], **json.loads(row['actor_json'])})
         return {'list': claimed}
@@ -349,7 +375,12 @@ def run(app_id, actor, authorized_at):
             if not workspace or workspace['paused']:
                 return
             update(app_id, status='syncing', error_code='')
-            _run(app_id, actor, workspace)
+            pending = _run(app_id, actor, workspace)
+            with materials._engine().begin() as conn:
+                conn.execute(text('UPDATE seenical_workspace SET completed_generation=:g,'
+                    'next_check_at=DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 60 SECOND) WHERE app_id=:a'),
+                    {'a': str(app_id), 'g': workspace['completed_generation'] if pending
+                     else workspace['requested_generation']})
     except (SyncError, materials.MaterialError) as exc:
         if str(exc) != 'workspace_busy':
             update(app_id, status='failed', error_code=str(exc))
@@ -377,6 +408,10 @@ def _run(app_id, actor, workspace):
         raise
     head, tree = repo.snapshot()
     root = prefix(workspace)
+    # Install before any paid processing. A missing Workflows permission must
+    # not leave imported/indexed materials behind a failed GitHub commit.
+    from lanying_workspace_workflow import ensure_workflow
+    head, tree = ensure_workflow(repo, workspace, head, tree)
     for name, key in [('seenical-workspace.json', 'config_sha'), ('materials/manifest.json', 'manifest_sha')]:
         actual = tree.get(root + name, {}).get('sha', '')
         if actual != workspace[key]:
@@ -404,6 +439,8 @@ def _run(app_id, actor, workspace):
                         if outcome == 'failed':
                             file_state(app_id, row, 'failed', 'material_update_failed')
                             continue
+                        if outcome == 'done':
+                            row['status'] = 'pending'  # Cleanup recovered; compare the final content again.
             if row['removed']:
                 continue  # Confirmed deletion is not resurrected from retained originals.
             if item and row['source_type'] == 'conversation' and not any(
@@ -607,9 +644,14 @@ def _run(app_id, actor, workspace):
     with materials._engine().begin() as conn:
         states = conn.execute(text('SELECT status FROM seenical_workspace_file WHERE app_id=:a AND removed=0'),
                               {'a': str(app_id)}).scalars().all()
+        unfinished_replacement = conn.execute(text('SELECT 1 FROM seenical_material_replacement '
+            "WHERE app_id=:a AND status NOT IN ('done','failed') LIMIT 1"),
+            {'a': str(app_id)}).first() is not None
         status = 'synced' if not warnings and all(s == 'synced' for s in states) else 'needs_attention'
         conn.execute(text('UPDATE seenical_workspace SET status=:s,error_code=\'\','
             'last_synced_at=CURRENT_TIMESTAMP WHERE app_id=:a'), {'a': str(app_id), 's': status})
+    return unfinished_replacement or any(s in {'pending', 'processing', 'waiting_runs'} for s in states) or any(
+        warning['reason'] == 'workspace_pending_file' for warning in warnings)
 
 
 def operation(app_id, actor, name, data):
@@ -621,6 +663,8 @@ def operation(app_id, actor, name, data):
         return resolve(app_id, actor, data)
     if name == 'check':
         enqueue(app_id, actor)
+    elif name == 'dispatch':
+        enqueue(app_id, actor, changed=False)
     elif name == 'pause':
         if not isinstance(data.get('paused'), bool):
             raise SyncError('invalid_workspace_pause')

@@ -367,6 +367,8 @@ def delete_embedding(app_id, embedding_name):
                 redis.lrem(get_embedding_names_key(app_id), 1, embedding_name)
                 redis.delete(get_embedding_uuid_key(embedding_uuid))
                 redis.delete(get_embedding_name_key(app_id, embedding_name))
+                from lanying_workspace_events import materials_changed
+                materials_changed(app_id)
                 return True
     return False
 
@@ -1454,12 +1456,19 @@ def update_app_embedding_admin_users(app_id, admin_user_ids):
 def bind_preset_name(app_id, preset_name, embedding_name):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_preset_name_key(app_id)
+    previous = lanying_redis.redis_hget(redis, key, embedding_name)
     redis.hset(key, embedding_name, preset_name)
+    if previous != preset_name:
+        from lanying_workspace_events import materials_changed
+        materials_changed(app_id)
 
 def unbind_preset_name(app_id, embedding_name):
     redis = lanying_redis.get_redis_stack_connection()
     key = get_preset_name_key(app_id)
-    redis.hdel(key, embedding_name)
+    changed = redis.hdel(key, embedding_name)
+    if changed:
+        from lanying_workspace_events import materials_changed
+        materials_changed(app_id)
 
 def is_app_embedding_admin_user(app_id, user_id):
     redis = lanying_redis.get_redis_stack_connection()
@@ -1656,11 +1665,30 @@ def update_doc_field(embedding_uuid, doc_id, field, value):
     redis = lanying_redis.get_redis_stack_connection()
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
     redis.hset(info_key, field, value)
+    if (field == 'status' and value in {'finish', 'error'}) or field in {'filename', 'object_name', 'file_size'}:
+        notify_workspace_material_change(embedding_uuid)
+
+
+def notify_workspace_material_change(embedding_uuid):
+    # Internal session/candidate indexes have their own post-commit events.
+    # Never make an ordinary knowledge-base operation fail because sync is down.
+    try:
+        redis = lanying_redis.get_redis_stack_connection()
+        key = get_embedding_uuid_key(embedding_uuid)
+        if lanying_redis.redis_hget(redis, key, 'type') == 'seenical_session':
+            return
+        app_id = lanying_redis.redis_hget(redis, key, 'app_id')
+        if app_id:
+            from lanying_workspace_events import materials_changed
+            materials_changed(app_id)
+    except Exception:
+        logging.warning('knowledge workspace notification failed | embedding_uuid:%s', embedding_uuid)
 
 def add_doc_to_embedding(embedding_uuid, doc_id):
     redis = lanying_redis.get_redis_stack_connection()
     list_key = get_embedding_doc_list_key(embedding_uuid)
     redis.rpush(list_key, doc_id)
+    notify_workspace_material_change(embedding_uuid)
 
 def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
     logging.info(f"delete_doc_from_embedding started | app_id:{app_id}, embedding_name:{embedding_name}, doc_id:{doc_id}")
@@ -1685,6 +1713,7 @@ def delete_doc_from_embedding(app_id, embedding_name, doc_id, task):
             increase_embedding_uuid_field(redis, embedding_uuid, "text_size", -int(doc_info.get("text_size", "0")))
             increase_embedding_uuid_field(redis, embedding_uuid, "token_cnt", -int(doc_info.get("token_cnt", "0")))
             increase_embedding_uuid_field(redis, embedding_uuid, "char_cnt", -int(doc_info.get("char_cnt", "0")))
+            notify_workspace_material_change(embedding_uuid)
             return True
     return False
 

@@ -149,6 +149,7 @@ def resume(app_id, doc_id, recover=True):
             conn.execute(text('UPDATE seenical_material_replacement SET status=:s '
                 'WHERE app_id=:a AND doc_id=:d'), {'a': str(app_id), 'd': doc_id, 's': status})
         materials.enqueue(app_id)
+        materials.materials_changed(app_id)
         return status
     return row['status']
 

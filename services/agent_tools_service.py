@@ -238,6 +238,8 @@ def writing_workspace(operation):
     try:
         if operation == 'candidates':
             result = workspace.scheduled_candidates(data.get('after', ''))
+        elif operation == 'notify':
+            result = workspace.notify(data.get('workspace_id', ''))
         else:
             result = workspace.operation(str(data.get('app_id', '')), _actor(data), operation, data)
         return _response({'result': 'ok', 'data': result})

@@ -20,6 +20,7 @@ from redis.exceptions import ResponseError
 from psycopg2.errors import UndefinedTable
 
 import lanying_agent_tools_storage as storage
+from lanying_workspace_events import materials_changed
 
 MAX_FILE_BYTES = 30 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
@@ -167,6 +168,8 @@ def set_references(app_id, owner_type, owner_id, values, require_ready=False, pe
             persist_owner()
     if owner_type != 'run' or not selected:
         enqueue(app_id)
+    if current != set(selected) and (owner_type != 'run' or not selected):
+        materials_changed(app_id)
     if ready_only:
         return selected
 
@@ -183,6 +186,7 @@ def remove_reference(app_id, session_id, doc_id):
             "WHERE app_id=:a AND owner_type='session' AND owner_id=:s AND doc_id=:d"),
             {'a': app_id, 's': session_id, 'd': doc_id})
     enqueue(app_id)
+    materials_changed(app_id)
 
 
 def enqueue(app_id):
@@ -302,6 +306,7 @@ def ingest_message(msg):
             {'a': app_id, 's': conversation['seenical_session_id'], 'd': doc_id})
     if not error:
         enqueue(app_id)
+    materials_changed(app_id)
     return True
 
 
@@ -407,6 +412,7 @@ def _store_source(app_id, space, doc):
                 'WHERE app_id=:a AND doc_id=:d'),
                 {'a': app_id, 'd': doc['doc_id'], 'o': object_name, 's': size})
         doc.update(object_name=object_name, file_size=size)
+    materials_changed(app_id)
 
 
 def stored_document_metadata(app_id, doc_id):
@@ -614,6 +620,7 @@ def process_pending(app_id, worker_id=''):
                 state = 'pending'
         if (state == 'ready' and orphan) or state == 'pending':
             enqueue(app_id)
+        materials_changed(app_id)
 
 
 def _index_document(app_id, space, doc, reserve_usage=None):
@@ -787,6 +794,7 @@ def material_api(app_id, actor, operation, data):
                     'WHERE app_id=:a AND owner_type=\'session\' AND owner_id=:o AND doc_id=:d'),
                     {'a': app_id, 'o': session_id, 'd': doc_id})
         enqueue(app_id)
+        materials_changed(app_id)
     else:
         raise MaterialError('material_operation_invalid')
     return {'success': True}
@@ -879,6 +887,7 @@ def release_chatbot_sessions(app_id, chatbot_id):
             'SELECT seenical_session_id FROM seenical_conversation_binding '
             'WHERE app_id=:a AND chatbot_id=:b)'), {'a': str(app_id), 'b': str(chatbot_id)})
     enqueue(app_id)
+    materials_changed(app_id)
 
 
 def reconcile_deleted_agents(app_id):

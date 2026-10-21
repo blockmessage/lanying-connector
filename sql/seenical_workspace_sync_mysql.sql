@@ -22,9 +22,12 @@ CREATE TABLE IF NOT EXISTS seenical_workspace (
   warnings_json text DEFAULT NULL,
   last_synced_at datetime DEFAULT NULL,
   next_check_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  requested_generation bigint NOT NULL DEFAULT 1,
+  completed_generation bigint NOT NULL DEFAULT 0,
   created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uq_workspace_location (location_hash)
+  UNIQUE KEY uq_workspace_location (location_hash),
+  UNIQUE KEY uq_workspace_id (workspace_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS seenical_workspace_file (

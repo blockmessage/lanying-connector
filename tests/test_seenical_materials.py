@@ -37,6 +37,7 @@ class MaterialReferencesTest(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(m.storage, 'get_engine', return_value=self.engine))
         self.stack.enter_context(mock.patch.object(m.storage, 'is_enabled', return_value=True))
         self.queue = self.stack.enter_context(mock.patch.object(m, 'enqueue'))
+        self.workspace_change = self.stack.enter_context(mock.patch.object(m, 'materials_changed'))
         self.real_clear_index = m._clear_index
         self.clear = self.stack.enter_context(mock.patch.object(m, '_clear_index'))
         self.index = self.stack.enter_context(mock.patch.object(m, '_index_document'))
@@ -83,12 +84,23 @@ class MaterialReferencesTest(unittest.TestCase):
     def test_failed_owner_write_rolls_back_reference_replacement_and_does_not_queue_cleanup(self):
         m.set_references('a', 'plan', 'p', ['1-1'])
         self.queue.reset_mock()
+        self.workspace_change.reset_mock()
         def fail():
             raise RuntimeError('Redis unavailable')
         with self.assertRaises(RuntimeError):
             m.set_references('a', 'plan', 'p', ['1-2'], persist_owner=fail)
         self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-1'])
         self.queue.assert_not_called()
+        self.workspace_change.assert_not_called()
+
+    def test_reference_events_only_follow_committed_changes(self):
+        m.set_references('a', 'plan', 'p', ['1-1'])
+        self.workspace_change.assert_called_once_with('a')
+        self.workspace_change.reset_mock()
+        m.set_references('a', 'plan', 'p', ['1-1'])
+        self.workspace_change.assert_not_called()
+        m.release_owner('a', 'plan', 'p')
+        self.workspace_change.assert_called_once_with('a')
 
     def test_successful_owner_write_commits_references_after_resource_is_persisted(self):
         with self.engine.begin() as conn:
