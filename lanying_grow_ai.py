@@ -1072,6 +1072,10 @@ def set_loop_conversation_binding(app_id, task_id, binding):
         redis.set(
             get_loop_conversation_binding_key(app_id, task_id),
             json.dumps(value, ensure_ascii=False))
+        # The binding is already committed. Complete its cache maintenance
+        # before material processing, whose failure must not leave stale routes.
+        import lanying_seenical_materials
+        lanying_seenical_materials.reference_ids(app_id, 'plan', task_id)
     return result
 
 

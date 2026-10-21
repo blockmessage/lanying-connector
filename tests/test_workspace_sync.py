@@ -12,6 +12,28 @@ from lanying_workspace_github import blob_sha, SyncError
 WORKSPACE_ID = '0123456789abcdef0123456789abcdef'
 
 
+class ScopeConsentTest(unittest.TestCase):
+    def test_conversation_grant_follows_files_but_not_new_knowledge_bindings(self):
+        with mock.patch.object(sync.exports, 'scope', return_value=('s', ['old'], [])):
+            scopes = sync.checked_scopes('a', {}, [{'seenical_session_id': 's'}])
+        self.assertNotIn('document_ids', scopes[0])
+        docs = [{'source_type': 'conversation', 'source_id': 's', 'doc_id': value}
+                for value in ['old', 'new']]
+        docs.append({'source_type': 'knowledge_base', 'source_id': 'new-kb', 'doc_id': 'private'})
+        with mock.patch.object(sync.exports, 'manifest', side_effect=lambda *args: {'documents': copy.deepcopy(docs)}):
+            current = sync.collect('a', {}, {'scopes_json': json.dumps(scopes)})
+            self.assertEqual(set(current), {('conversation', 'old'), ('conversation', 'new')})
+            self.assertEqual(current[('conversation', 'new')]['scope_keys'], ['s\n'])
+
+    def test_development_loop_grants_require_new_conversation_consent(self):
+        scope = {'seenical_session_id': 's', 'task_id': 'p'}
+        with self.assertRaisesRegex(SyncError, 'workspace_scope_confirmation_required'):
+            sync.checked_scopes('a', {}, [scope])
+        for extra in ({}, {'document_ids': ['old']}):
+            with self.assertRaisesRegex(SyncError, 'workspace_scope_confirmation_required'):
+                sync.collect('a', {}, {'scopes_json': json.dumps([dict(scope, **extra)])})
+
+
 class MemoryRepository:
     def __init__(self):
         self.files = {}

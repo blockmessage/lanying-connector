@@ -95,12 +95,59 @@ def validate_ids(values):
 def reference_ids(app_id, owner_type, owner_id, active=True):
     if not storage.is_enabled():
         return []
+    if owner_type == 'plan' and active:
+        # Also aligns plans created before automatic session following. Run
+        # references are independent snapshots and must never be rewritten.
+        changed = False
+        with _engine().begin() as conn:
+            if _space(conn, app_id, True):
+                changed = sync_session_plans(conn, app_id, task_id=str(owner_id))
+        if changed:
+            enqueue(app_id)
+            materials_changed(app_id)
     with _engine().connect() as conn:
         rows = conn.execute(text('SELECT doc_id FROM seenical_material_reference '
             'WHERE app_id=:a AND owner_type=:t AND owner_id=:o'
             + (' AND active=1' if active else '') + ' ORDER BY doc_id'),
             {'a': str(app_id), 't': owner_type, 'o': str(owner_id)}).all()
         return [r[0] for r in rows]
+
+
+def sync_session_plans(conn, app_id, session_id=None, task_id=None):
+    """Copy current session membership to bound plans under the space lock.
+
+    Call inside the same transaction as session changes. Only membership is
+    copied: no prompts, generation settings or already-created run inputs.
+    """
+    params = {'a': str(app_id)}
+    query = ("SELECT seenical_session_id,task_id FROM seenical_conversation_binding "
+             "WHERE app_id=:a AND status='ACTIVE' AND task_id IS NOT NULL AND task_id<>''")
+    if session_id is not None:
+        query += ' AND seenical_session_id=:s'
+        params['s'] = str(session_id)
+    if task_id is not None:
+        query += ' AND task_id=:p'
+        params['p'] = str(task_id)
+    changed = False
+    for session, plan in conn.execute(text(query), params).all():
+        refs = conn.execute(text('SELECT owner_type,doc_id FROM seenical_material_reference '
+            "WHERE app_id=:a AND active=1 AND ((owner_type='session' AND owner_id=:s) "
+            "OR (owner_type='plan' AND owner_id=:p))"),
+            {'a': str(app_id), 's': session, 'p': plan}).all()
+        desired = {doc for kind, doc in refs if kind == 'session'}
+        current = {doc for kind, doc in refs if kind == 'plan'}
+        if desired == current:
+            continue
+        changed = True
+        conn.execute(text("UPDATE seenical_material_reference SET active=0 "
+            "WHERE app_id=:a AND owner_type='plan' AND owner_id=:p"),
+            {'a': str(app_id), 'p': plan})
+        for doc_id in sorted(desired):
+            conn.execute(text('INSERT INTO seenical_material_reference '
+                '(app_id,owner_type,owner_id,doc_id,active) VALUES (:a,:t,:o,:d,1) '
+                'ON DUPLICATE KEY UPDATE active=1'),
+                {'a': str(app_id), 't': 'plan', 'o': plan, 'd': doc_id})
+    return changed
 
 
 def _document(conn, app_id, doc_id):
@@ -122,7 +169,7 @@ def _set_state(conn, app_id, doc_id, status, error=''):
 
 
 def set_references(app_id, owner_type, owner_id, values, require_ready=False, persist_owner=None,
-                   ready_only=False):
+                   ready_only=False, follow_session=True):
     """Roll back reference changes if persisting their owning resource fails.
 
     This does not make MySQL and Redis a distributed transaction; it prevents
@@ -144,6 +191,16 @@ def set_references(app_id, owner_type, owner_id, values, require_ready=False, pe
         current = {r[0] for r in conn.execute(text('SELECT doc_id FROM seenical_material_reference '
             'WHERE app_id=:a AND owner_type=:t AND owner_id=:o AND active=1'),
             {'a': str(app_id), 't': owner_type, 'o': str(owner_id)}).all()}
+        if owner_type == 'plan' and follow_session:
+            binding = conn.execute(text('SELECT seenical_session_id FROM seenical_conversation_binding '
+                "WHERE app_id=:a AND task_id=:p AND status='ACTIVE'"),
+                {'a': str(app_id), 'p': str(owner_id)}).first()
+            if binding:
+                # A stale client can still submit its old list while saving
+                # prompts. Bound plans use the current session, not that list.
+                values = [r[0] for r in conn.execute(text('SELECT doc_id FROM seenical_material_reference '
+                    "WHERE app_id=:a AND owner_type='session' AND owner_id=:s AND active=1 ORDER BY doc_id"),
+                    {'a': str(app_id), 's': binding[0]}).all()]
         selected = []
         for doc_id in values:
             doc = _document(conn, app_id, doc_id)
@@ -164,6 +221,8 @@ def set_references(app_id, owner_type, owner_id, values, require_ready=False, pe
             conn.execute(text('INSERT INTO seenical_material_reference '
                 '(app_id,owner_type,owner_id,doc_id,active) VALUES (:a,:t,:o,:d,1) '
                 'ON DUPLICATE KEY UPDATE active=1'), dict(params, d=doc_id))
+        if owner_type == 'session':
+            sync_session_plans(conn, app_id, session_id=owner_id)
         if persist_owner:
             persist_owner()
     if owner_type != 'run' or not selected:
@@ -175,7 +234,8 @@ def set_references(app_id, owner_type, owner_id, values, require_ready=False, pe
 
 
 def release_owner(app_id, owner_type, owner_id, persist_owner=None):
-    set_references(app_id, owner_type, owner_id, [], persist_owner=persist_owner)
+    set_references(app_id, owner_type, owner_id, [], persist_owner=persist_owner,
+                   follow_session=False)
 
 
 def remove_reference(app_id, session_id, doc_id):
@@ -185,6 +245,7 @@ def remove_reference(app_id, session_id, doc_id):
         conn.execute(text("UPDATE seenical_material_reference SET active=0 "
             "WHERE app_id=:a AND owner_type='session' AND owner_id=:s AND doc_id=:d"),
             {'a': app_id, 's': session_id, 'd': doc_id})
+        sync_session_plans(conn, app_id, session_id=session_id)
     enqueue(app_id)
     materials_changed(app_id)
 
@@ -304,6 +365,7 @@ def ingest_message(msg):
         conn.execute(text('INSERT INTO seenical_material_reference '
             '(app_id,owner_type,owner_id,doc_id,active) VALUES (:a,\'session\',:s,:d,1)'),
             {'a': app_id, 's': conversation['seenical_session_id'], 'd': doc_id})
+        sync_session_plans(conn, app_id, session_id=conversation['seenical_session_id'])
     if not error:
         enqueue(app_id)
     materials_changed(app_id)
@@ -793,6 +855,7 @@ def material_api(app_id, actor, operation, data):
                 conn.execute(text('UPDATE seenical_material_reference SET active=1 '
                     'WHERE app_id=:a AND owner_type=\'session\' AND owner_id=:o AND doc_id=:d'),
                     {'a': app_id, 'o': session_id, 'd': doc_id})
+                sync_session_plans(conn, app_id, session_id=session_id)
         enqueue(app_id)
         materials_changed(app_id)
     else:
@@ -876,7 +939,7 @@ def reconcile_plan_and_run_references(app_id):
 
 
 def release_chatbot_sessions(app_id, chatbot_id):
-    """Release conversation ownership only; saved LOOP/run inputs remain valid."""
+    """Release session/linked-plan ownership; existing run inputs remain valid."""
     if not storage.is_enabled():
         return
     with _engine().begin() as conn:
@@ -886,6 +949,7 @@ def release_chatbot_sessions(app_id, chatbot_id):
             "WHERE app_id=:a AND owner_type='session' AND owner_id IN ("
             'SELECT seenical_session_id FROM seenical_conversation_binding '
             'WHERE app_id=:a AND chatbot_id=:b)'), {'a': str(app_id), 'b': str(chatbot_id)})
+        sync_session_plans(conn, app_id)
     enqueue(app_id)
     materials_changed(app_id)
 

@@ -91,12 +91,15 @@ def checked_scopes(app_id, actor, scopes):
     for item in scopes:
         if not isinstance(item, dict) or not item.keys() <= {'seenical_session_id', 'task_id'}:
             raise SyncError('invalid_workspace_scope')
-        session, ids, knowledge = exports.scope(app_id, actor, item)
-        task = str(item.get('task_id') or '')
-        if (session, task) in seen:
+        if item.get('task_id'):
+            # A former development-only LOOP grant must not silently become
+            # permission to export future conversation uploads.
+            raise SyncError('workspace_scope_confirmation_required')
+        session, _, knowledge = exports.scope(app_id, actor, item)
+        if session in seen:
             continue
-        seen.add((session, task))
-        checked.append({'seenical_session_id': session, 'task_id': task,
+        seen.add(session)
+        checked.append({'seenical_session_id': session, 'task_id': '',
                         'knowledge_base_ids': sorted({str(k['embedding_uuid']) for k in knowledge})})
     return checked
 
@@ -250,6 +253,8 @@ def collect(app_id, actor, workspace):
         raise SyncError('workspace_not_configured')
     result = {}
     for scope in json.loads(workspace['scopes_json']):
+        if scope.get('task_id'):
+            raise SyncError('workspace_scope_confirmation_required')
         current = exports.manifest(app_id, actor, scope)
         for item in current['documents']:
             if item['source_type'] == 'knowledge_base' and item['source_id'] not in scope['knowledge_base_ids']:
@@ -360,6 +365,7 @@ def import_new(app_id, workspace, actor, session, path, content):
             conn.execute(text('INSERT INTO seenical_material_reference '
                 "(app_id,owner_type,owner_id,doc_id,active) VALUES (:a,'session',:s,:d,1)"),
                 {'a': str(app_id), 's': session, 'd': doc_id})
+            materials.sync_session_plans(conn, app_id, session_id=session)
     materials.enqueue(app_id)
     return doc_id
 
@@ -547,7 +553,7 @@ def _run(app_id, actor, workspace):
         except Exception:
             file_state(app_id, row, 'failed', 'workspace_file_failed')
 
-    # Only whole-session grants admit new files; LOOP-only scopes never do.
+    # Only explicitly authorized conversations admit new files.
     writable = {exports.component(s['seenical_session_id']): s['seenical_session_id']
                 for s in json.loads(workspace['scopes_json']) if not s.get('task_id')}
     known_paths = {r['path'] for r in rows}

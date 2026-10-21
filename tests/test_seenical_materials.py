@@ -23,7 +23,7 @@ class MaterialReferencesTest(unittest.TestCase):
             conn.execute(text('CREATE TABLE seenical_material_space (app_id TEXT PRIMARY KEY, embedding_name TEXT, embedding_uuid TEXT)'))
             conn.execute(text('CREATE TABLE seenical_material (app_id TEXT, doc_id TEXT, message_id TEXT, filename TEXT, source_url TEXT, object_name TEXT DEFAULT \'\', file_size INTEGER DEFAULT 0, status TEXT DEFAULT \'pending\', error_code TEXT DEFAULT \'\', worker_id TEXT DEFAULT \'\', updated_at TEXT, PRIMARY KEY(app_id,doc_id), UNIQUE(app_id,message_id))'))
             conn.execute(text('CREATE TABLE seenical_material_reference (app_id TEXT, owner_type TEXT, owner_id TEXT, doc_id TEXT, active INTEGER, PRIMARY KEY(app_id,owner_type,owner_id,doc_id))'))
-            conn.execute(text('CREATE TABLE seenical_conversation_binding (app_id TEXT, chatbot_id TEXT, seenical_session_id TEXT)'))
+            conn.execute(text("CREATE TABLE seenical_conversation_binding (app_id TEXT, chatbot_id TEXT, seenical_session_id TEXT, task_id TEXT, status TEXT DEFAULT 'ACTIVE')"))
             conn.execute(text("INSERT INTO seenical_material_space VALUES ('a','internal','1')"))
             for doc_id in ['1-1', '1-2']:
                 conn.execute(text("INSERT INTO seenical_material(app_id,doc_id,filename,message_id,source_url,status) VALUES ('a',:d,'a.txt',:d,'https://api.maximtop.com/file','ready')"), {'d': doc_id})
@@ -72,6 +72,55 @@ class MaterialReferencesTest(unittest.TestCase):
         self.assertEqual(self.state(), 'unindexed')
         with self.engine.connect() as conn:
             self.assertIsNotNone(m._document(conn, 'a', '1-1'))
+
+    def test_bound_loop_follows_session_but_not_existing_run(self):
+        m.set_references('a', 'session', 's', ['1-1'])
+        m.set_references('a', 'plan', 'p', ['1-2'])
+        with self.engine.begin() as conn:
+            conn.execute(text("INSERT INTO seenical_conversation_binding "
+                "(app_id,seenical_session_id,task_id) VALUES ('a','s','p')"))
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-1'])
+        m.set_references('a', 'run', 'r', ['1-1'])
+        m.set_references('a', 'session', 's', ['1-1', '1-2'])
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-1', '1-2'])
+        m.remove_reference('a', 's', '1-1')
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-2'])
+        self.assertEqual(m.reference_ids('a', 'run', 'r'), ['1-1'])
+        # A stale client saving the old list must not undo automatic following.
+        self.set_state('unindexed', '1-1')
+        m.set_references('a', 'plan', 'p', ['1-1'])
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-2'])
+        # Another conversation inheriting a document remains independent.
+        m.set_references('a', 'session', 'child', ['1-2'])
+        m.release_owner('a', 'session', 's')
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), [])
+        self.assertEqual(m.reference_ids('a', 'session', 'child'), ['1-2'])
+        self.assertEqual(m.reference_ids('a', 'run', 'r'), ['1-1'])
+
+    def test_plan_following_is_app_scoped_and_inactive_bindings_are_ignored(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("INSERT INTO seenical_conversation_binding "
+                "(app_id,seenical_session_id,task_id,status) VALUES "
+                "('other','s','p','ACTIVE'),('a','s','inactive','INACTIVE')"))
+        m.set_references('a', 'plan', 'p', ['1-1'])
+        m.set_references('a', 'plan', 'inactive', ['1-1'])
+        m.set_references('a', 'session', 's', ['1-2'])
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), ['1-1'])
+        self.assertEqual(m.reference_ids('a', 'plan', 'inactive'), ['1-1'])
+
+    def test_bound_removal_retains_index_until_existing_run_finishes(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("INSERT INTO seenical_conversation_binding "
+                "(app_id,seenical_session_id,task_id) VALUES ('a','s','p')"))
+        m.set_references('a', 'session', 's', ['1-1'])
+        m.set_references('a', 'run', 'running', ['1-1'])
+        m.remove_reference('a', 's', '1-1')
+        self.assertEqual(m.reference_ids('a', 'plan', 'p'), [])
+        m.process_pending('a', 'job')
+        self.assertEqual(self.state(), 'ready')
+        m.release_owner('a', 'run', 'running')
+        m.process_pending('a', 'job2')
+        self.assertEqual(self.state(), 'unindexed')
 
     def test_replace_and_clear_reference_sets(self):
         m.set_references('a', 'plan', 'p', ['1-1', '1-2', '1-1'])
@@ -628,7 +677,7 @@ class MaterialReferencesTest(unittest.TestCase):
     def test_delete_agent_releases_its_sessions_but_preserves_plan_and_other_agent(self):
         with self.engine.begin() as conn:
             for session, agent in [('primary:bot', 'bot'), ('child', 'bot'), ('other', 'other-bot')]:
-                conn.execute(text('INSERT INTO seenical_conversation_binding VALUES (:a,:b,:s)'),
+                conn.execute(text('INSERT INTO seenical_conversation_binding (app_id,chatbot_id,seenical_session_id) VALUES (:a,:b,:s)'),
                              {'a': 'a', 'b': agent, 's': session})
         for session in ['primary:bot', 'child', 'other']:
             m.set_references('a', 'session', session, ['1-1'])

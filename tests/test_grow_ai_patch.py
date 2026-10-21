@@ -446,5 +446,31 @@ class GrowAIPatchTest(unittest.TestCase):
         update_field.assert_any_call("app", "site-1", "previous_deploy_commit_sha", pending)
 
 
+class LoopBindingMaterialFailureTest(unittest.TestCase):
+    def test_material_failure_keeps_committed_binding_cache_consistent_on_retry(self):
+        grow = load_grow_ai()
+        old_key = grow.get_loop_conversation_binding_key('app', 'old')
+        new_key = grow.get_loop_conversation_binding_key('app', 'new')
+        cache = {old_key: 'old-binding'}
+        redis = mock.Mock()
+        redis.delete.side_effect = lambda key: cache.pop(key, None)
+        redis.set.side_effect = lambda key, value: cache.__setitem__(key, value)
+        materials = types.SimpleNamespace(reference_ids=mock.Mock(
+            side_effect=[RuntimeError('material read failed'), []]))
+        with mock.patch.object(grow.lanying_agent_tools_storage, 'save_seenical_conversation_binding',
+                create=True, side_effect=[
+                    {'result': 'ok', 'data': {'unbound_task_ids': ['old']}},
+                    {'result': 'ok', 'data': {'unbound_task_ids': []}}]), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials}):
+            with self.assertRaisesRegex(RuntimeError, 'material read failed'):
+                grow.set_loop_conversation_binding('app', 'new', {'conversation_id': 'group'})
+            self.assertNotIn(old_key, cache)
+            self.assertEqual(json.loads(cache[new_key])['conversation_id'], 'group')
+            self.assertEqual(grow.set_loop_conversation_binding(
+                'app', 'new', {'conversation_id': 'group'})['result'], 'ok')
+            self.assertNotIn(old_key, cache)
+
+
 if __name__ == "__main__":
     unittest.main()
