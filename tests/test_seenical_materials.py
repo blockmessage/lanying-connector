@@ -909,6 +909,38 @@ class VectorIndexHelpersTest(unittest.TestCase):
 
 
 class MissingIndexCleanupTest(unittest.TestCase):
+    def test_usage_read_does_not_require_document_metadata_or_hide_errors(self):
+        redis = mock.Mock()
+        embedding = types.SimpleNamespace(get_embedding_doc_info_key=lambda u, d: f'{u}:{d}')
+        redis_module = types.SimpleNamespace(get_redis_stack_connection=lambda: redis)
+        with mock.patch.dict('sys.modules', lanying_embedding=embedding, lanying_redis=redis_module):
+            for value, expected in [(None, 0), (b'0', 0), (b'123', 123), ('456', 456)]:
+                redis.hget.return_value = value
+                self.assertEqual(m.document_storage_usage('1', '1-1'), expected)
+                redis.hget.assert_called_with('1:1-1', 'storage_file_size')
+            redis.hget.return_value = b'invalid'
+            with self.assertRaises(ValueError):
+                m.document_storage_usage('1', '1-1')
+            redis.hget.side_effect = RuntimeError('Redis unavailable')
+            with self.assertRaisesRegex(RuntimeError, 'Redis unavailable'):
+                m.document_storage_usage('1', '1-1')
+
+    def test_missing_index_keeps_logical_capacity_without_filename(self):
+        for physical_id in ['1-1', '1-replacement']:
+            with self.subTest(physical_id=physical_id):
+                redis = types.SimpleNamespace(hget=lambda key, field: b'123' if key == '1-1' else None)
+                embedding = types.SimpleNamespace(
+                    get_embedding_doc_info_key=lambda u, d: d,
+                    get_embedding_uuid_info=lambda u: None,
+                    get_doc=lambda *_: None)
+                redis_module = types.SimpleNamespace(get_redis_stack_connection=lambda: redis)
+                with mock.patch.dict('sys.modules', lanying_embedding=embedding, lanying_redis=redis_module), \
+                        mock.patch.object(m, 'update_usage') as usage:
+                    with self.assertRaisesRegex(m.MaterialError, 'material_storage_unavailable'):
+                        m._clear_index('a', {'embedding_uuid': '1', 'embedding_name': 'internal'},
+                                       {'doc_id': '1-1', 'index_doc_id': physical_id})
+                    usage.assert_not_called()
+
     def test_only_missing_indexes_allow_cleanup_and_refund(self):
         from redis.exceptions import ResponseError, ConnectionError
         from psycopg2.errors import UndefinedTable

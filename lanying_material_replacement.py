@@ -37,7 +37,6 @@ def state(app_id, doc_id, status, **fields):
 
 
 def start(app_id, doc_id, content, content_sha):
-    import lanying_embedding as embedding
     import lanying_file_storage as files
     if len(content) > materials.MAX_FILE_BYTES:
         raise materials.MaterialError('material_file_too_large')
@@ -55,12 +54,12 @@ def start(app_id, doc_id, content, content_sha):
             return 'processing'
         if runs_using(conn, app_id, doc_id):
             return 'waiting_runs'
-        old = embedding.get_doc(space['embedding_uuid'], doc_id) or {}
+        old_usage = materials.document_storage_usage(space['embedding_uuid'], doc_id)
         rid = uuid.uuid4().hex
         row = dict(a=str(app_id), d=doc_id, r=rid, p=space['embedding_uuid'] + '-' + rid,
                    previous=materials.index_document_id(doc), filename=doc['filename'],
                    object='seenical/material-updates/' + str(app_id) + '/' + rid,
-                   size=len(content), old=int(old.get('storage_file_size', 0)), sha=content_sha)
+                   size=len(content), old=old_usage, sha=content_sha)
         conn.execute(text('DELETE FROM seenical_material_replacement WHERE app_id=:a AND doc_id=:d'), row)
         conn.execute(text('INSERT INTO seenical_material_replacement '
             '(app_id,doc_id,replacement_id,physical_id,previous_physical_id,object_name,'
@@ -79,7 +78,6 @@ def start(app_id, doc_id, content, content_sha):
 
 
 def resume(app_id, doc_id, recover=True):
-    import lanying_embedding as embedding
     import lanying_file_storage as files
     with materials._engine().connect() as conn:
         row = load(conn, app_id, doc_id)
@@ -126,11 +124,11 @@ def resume(app_id, doc_id, recover=True):
         cleared = materials._clear_vectors(app_id, space, physical)
         # Logical document owns the single capacity reservation; physical
         # candidate counters contain only indexing metrics, never capacity.
-        kept = (embedding.get_doc(space['embedding_uuid'], doc_id) or {}).get('storage_file_size', 0)
-        if cleared is False and int(kept):
+        kept = materials.document_storage_usage(space['embedding_uuid'], doc_id)
+        if cleared is False and kept:
             raise materials.MaterialError('material_storage_unavailable')
         materials.update_usage(app_id, space['embedding_uuid'], physical,
-                               int(kept) if physical == doc_id else 0, clear=True)
+                               kept if physical == doc_id else 0, clear=True)
         materials.update_usage(app_id, space['embedding_uuid'], doc_id,
                                row['new_usage'] if committed else row['old_usage'], release_only=True)
         if not committed:

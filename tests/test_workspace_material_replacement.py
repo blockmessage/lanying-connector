@@ -30,12 +30,17 @@ class ReplacementTest(unittest.TestCase):
         self.limit = 10
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        embedding = types.SimpleNamespace(get_doc=lambda _, d: {'storage_file_size': self.usage.get(d, 0)})
+        self.embedding = types.SimpleNamespace(
+            get_doc=lambda _, d: {'storage_file_size': self.usage.get(d, 0)},
+            get_embedding_doc_info_key=lambda u, d: d)
+        redis = types.SimpleNamespace(hget=lambda key, field: self.usage.get(key))
+        redis_module = types.SimpleNamespace(get_redis_stack_connection=lambda: redis)
         self.remove_object = mock.Mock()
         files = types.SimpleNamespace(put_object=mock.Mock(return_value={'result': 'ok'}),
                                       bucket_name='embedding-file',
                                       client=types.SimpleNamespace(remove_object=self.remove_object))
-        self.stack.enter_context(mock.patch.dict('sys.modules', lanying_embedding=embedding, lanying_file_storage=files))
+        self.stack.enter_context(mock.patch.dict('sys.modules', lanying_embedding=self.embedding,
+                                                lanying_file_storage=files, lanying_redis=redis_module))
         self.stack.enter_context(mock.patch.object(m, 'update_usage', side_effect=self.reserve))
         self.vectors = self.stack.enter_context(mock.patch.object(m, '_clear_vectors'))
         self.fixture.index.side_effect = self.build
@@ -75,6 +80,50 @@ class ReplacementTest(unittest.TestCase):
         self.assertEqual(self.document()['index_doc_id'], '')
         self.assertEqual(self.usage['1-1'], 10)
         self.assertNotEqual(self.vectors.call_args.args[-1], '1-1')
+
+    def test_failed_original_without_metadata_can_be_replaced_and_cleaned(self):
+        # Validation can fail before create_doc_info. A usage-only Redis hash
+        # still has no filename, so the production get_doc returns None.
+        self.embedding.get_doc = lambda *_: None
+        self.usage.clear()
+        self.new_size = 5
+        with self.engine.begin() as conn:
+            m._set_state(conn, 'a', '1-1', 'failed', 'material_unsupported_format')
+        self.assertEqual(replacement.start('a', '1-1', b'valid', '5' * 40), 'done')
+        self.assertEqual(self.usage['1-1'], 5)
+        self.assertEqual(self.document()['replacement_id'], '')
+        self.assertEqual(self.document()['status'], 'ready')
+        calls = len(self.usage_calls)
+        self.assertEqual(replacement.resume('a', '1-1'), 'done')
+        self.assertEqual(len(self.usage_calls), calls)
+
+        # Later replacements must also read the logical capacity hash without
+        # requiring metadata that now belongs to the physical document.
+        self.new_size = 11
+        self.assertEqual(replacement.start('a', '1-1', b'too large', '6' * 40), 'failed')
+        self.assertEqual(self.usage['1-1'], 5)
+        self.assertEqual(self.document()['replacement_id'], '')
+        self.assertEqual(self.document()['file_size'], 5)
+
+        # Removing all references can reclaim the successful physical index.
+        m.release_owner('a', 'session', 's')
+        self.fixture.clear.side_effect = self.fixture.real_clear_index
+        m.process_pending('a', 'cleanup-worker')
+        self.assertEqual(self.document()['status'], 'unindexed')
+        self.assertEqual(self.usage['1-1'], 0)
+
+    def test_missing_index_metadata_does_not_refund_usage_only_hash(self):
+        self.embedding.get_doc = lambda *_: None
+        self.new_size = 5
+        self.vectors.return_value = False
+        with self.assertRaisesRegex(m.MaterialError, 'material_storage_unavailable'):
+            replacement.start('a', '1-1', b'valid', '7' * 40)
+        self.assertEqual(self.usage['1-1'], 10)
+        self.assertTrue(self.document()['replacement_id'])
+        self.vectors.return_value = True
+        self.assertEqual(replacement.resume('a', '1-1'), 'done')
+        self.assertEqual(self.usage['1-1'], 5)
+        self.assertEqual(self.document()['replacement_id'], '')
 
     def test_smaller_releases_only_after_success(self):
         self.new_size = 5

@@ -421,6 +421,15 @@ def index_document_id(doc):
     return doc.get('index_doc_id') or doc['doc_id']
 
 
+def document_storage_usage(embedding_uuid, doc_id):
+    """Read capacity independently of optional filename/index metadata."""
+    import lanying_embedding as embedding
+    import lanying_redis
+    key = embedding.get_embedding_doc_info_key(embedding_uuid, doc_id)
+    value = lanying_redis.get_redis_stack_connection().hget(key, 'storage_file_size')
+    return 0 if value is None else int(value)
+
+
 def _clear_vectors(app_id, space, physical_id):
     import lanying_embedding as embedding
     import lanying_redis
@@ -428,8 +437,7 @@ def _clear_vectors(app_id, space, physical_id):
     if not info:
         # A source can be saved before the model/index has ever been available.
         # Never refund an existing reservation when index metadata is missing.
-        meta = embedding.get_doc(space['embedding_uuid'], physical_id) or {}
-        if int(meta.get('storage_file_size', 0)):
+        if document_storage_usage(space['embedding_uuid'], physical_id):
             raise MaterialError('material_storage_unavailable')
         return False
     try:
@@ -455,9 +463,7 @@ def _clear_index(app_id, space, doc):
     physical_id = index_document_id(doc)
     confirmed = _clear_vectors(app_id, space, physical_id)
     if confirmed is False and physical_id != doc['doc_id']:
-        import lanying_embedding as embedding
-        logical = embedding.get_doc(space['embedding_uuid'], doc['doc_id']) or {}
-        if int(logical.get('storage_file_size', 0)):
+        if document_storage_usage(space['embedding_uuid'], doc['doc_id']):
             raise MaterialError('material_storage_unavailable')
     if physical_id != doc['doc_id']:
         update_usage(app_id, space['embedding_uuid'], physical_id, 0, clear=True)
