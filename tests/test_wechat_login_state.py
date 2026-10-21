@@ -47,9 +47,9 @@ class WechatLoginStateTests(unittest.TestCase):
         self.assertNotIn('session-1', '\n'.join(captured.output))
         self.module.lanying_slack.async_send_message.assert_not_called()
 
-        self.assertEqual({'result': 'error', 'message': 'expired'},
+        self.assertEqual({'result': 'error', 'message': 'expired:login'},
                          self.module.get_login_info('app-1', 'session-1'))
-        self.assertEqual({'result': 'error', 'message': 'expired'}, self.create())
+        self.assertEqual({'result': 'error', 'message': 'expired:login'}, self.create())
         self.module.requests.post.assert_not_called()
         self.redis.hmset.assert_not_called()
         self.redis.rpush.assert_not_called()
@@ -59,7 +59,7 @@ class WechatLoginStateTests(unittest.TestCase):
     def test_fresh_session_can_bind_after_old_session_expires(self):
         self.sessions['session-2'] = self.login.copy()
         self.login['status'] = 'offline'
-        self.assertEqual('expired', self.create()['message'])
+        self.assertEqual('expired:login', self.create()['message'])
         result = self.create('session-2')
         self.assertEqual('ok', result['result'])
         self.assertEqual('binding-1', result['data']['wechat_chatbot_id'])
@@ -80,9 +80,19 @@ class WechatLoginStateTests(unittest.TestCase):
     def test_offline_login_without_cached_result_is_also_expired(self):
         self.login['status'] = 'offline'
         del self.login['result']
-        self.assertEqual({'result': 'error', 'message': 'expired'},
+        self.assertEqual({'result': 'error', 'message': 'expired:login'},
                          self.module.get_login_info('app-1', 'session-1'))
         self.module.requests.post.assert_not_called()
+
+    def test_upstream_qrcode_expiration_remains_distinct_from_offline_login(self):
+        del self.login['result']
+        self.module.get_api_server = mock.Mock(return_value='https://wechat.invalid')
+        self.module.get_headers = mock.Mock(return_value={})
+        self.module.requests.post.return_value.json.return_value = {
+            'code': '1001', 'message': '二维码已过期'}
+        self.assertEqual({'result': 'error', 'message': 'expired'},
+                         self.module.get_login_info('app-1', 'session-1'))
+        self.module.set_wid_info_field.assert_not_called()
 
     def test_missing_login_retains_existing_error(self):
         self.assertEqual('bad login info',
@@ -96,7 +106,7 @@ class WechatLoginStateTests(unittest.TestCase):
 
     def test_offline_relogin_cannot_configure_binding(self):
         self.login.update(status='offline', wechat_chatbot_id='binding-1')
-        self.assertEqual({'result': 'error', 'message': 'expired'}, self.configure())
+        self.assertEqual({'result': 'error', 'message': 'expired:login'}, self.configure())
         self.redis.hmset.assert_not_called()
         self.module.set_wid_info_field.assert_not_called()
 

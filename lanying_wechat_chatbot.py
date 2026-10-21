@@ -177,8 +177,9 @@ def get_login_info(app_id, w_id):
     wid_info = get_wid_info(app_id, w_id)
     if wid_info is None:
         return {'result':'error', 'message': 'bad login info'}
+    # Keep the expired prefix recognizable by older Console clients.
     if wid_info['status'] == 'offline':
-        return {'result':'error', 'message': 'expired'}
+        return {'result':'error', 'message': 'expired:login'}
     if 'result' in wid_info:
         return {"result": "ok", "data":{"wc_id": wid_info['wc_id'], "w_account": wid_info['w_account']}}
     url = get_api_server() + "/getIPadLoginInfo"
@@ -230,7 +231,7 @@ def create_wechat_chatbot(app_id, w_id, bind_type, bind_id, msg_types, non_frien
     if wid_info["wechat_chatbot_id"] != "":
         return {'result':'error', 'message': 'bad login info'}
     if wid_info['status'] == 'offline':
-        return {'result':'error', 'message': 'expired'}
+        return {'result':'error', 'message': 'expired:login'}
     if wid_info["status"] != "wait":
         return {'result':'error', 'message': 'login info already bind'}
     if 'result' not in wid_info:
@@ -318,7 +319,7 @@ def configure_wechat_chatbot(app_id, wechat_chatbot_id, w_id, bind_type, bind_id
         if wid_info["wechat_chatbot_id"] != wechat_chatbot_id:
             return {'result':'error', 'message': 'bad login info'}
         if wid_info['status'] == 'offline':
-            return {'result':'error', 'message': 'expired'}
+            return {'result':'error', 'message': 'expired:login'}
         if wid_info["status"] != "wait":
             return {'result':'error', 'message': 'login info already bind'}
         if 'result' not in wid_info:
