@@ -25,10 +25,51 @@ def filename(value, doc_id):
     return value[:180] or (component(doc_id) + '.bin')
 
 
+def export_knowledge(embeddings, app_id, preset_name):
+    """Enumerate owned bindings without retrieval's lazy model repairs."""
+    import lanying_embedding as embedding
+    import lanying_redis
+
+    app_id = str(app_id)
+    candidates = []
+    if embeddings is None:
+        redis = lanying_redis.get_redis_stack_connection()
+        bindings = lanying_redis.redis_hgetall(redis, embedding.get_preset_name_key(app_id))
+        for name, preset in bindings.items():
+            if preset == preset_name:
+                info = embedding.get_embedding_name_info(app_id, name)
+                if info:
+                    candidates.append((name, info['embedding_uuid'], info))
+    else:
+        for uuid in embeddings.get(preset_name, []):
+            owner = embedding.get_app_embedding_uuid_info(app_id, uuid)
+            if owner and owner.get('embedding_name'):
+                name = owner['embedding_name']
+                info = embedding.get_embedding_name_info(app_id, name)
+                if info:
+                    candidates.append((name, uuid, info))
+
+    knowledge = []
+    for name, uuid, info in candidates:
+        # Retrieval permission is not export permission. Check both metadata
+        # records, and reject stale name bindings that point at another UUID.
+        if (str(info.get('app_id') or '') != app_id
+                or str(info.get('embedding_uuid') or '') != str(uuid)):
+            continue
+        owner = embedding.get_app_embedding_uuid_info(app_id, uuid)
+        if not owner or str(owner.get('app_id') or '') != app_id:
+            continue
+        if (info.get('type') in (materials.INTERNAL_TYPE, 'function')
+                or owner.get('type') in (materials.INTERNAL_TYPE, 'function')
+                or name == materials.INTERNAL_NAME):
+            continue
+        knowledge.append(dict(info, embedding_name=name, embedding_uuid=uuid))
+    return knowledge
+
+
 def scope(app_id, actor, data):
     import lanying_chatbot
     import lanying_config
-    import lanying_embedding
     import lanying_grow_ai
 
     session_id = str(data.get('seenical_session_id', ''))
@@ -47,15 +88,8 @@ def scope(app_id, actor, data):
     else:
         ids = materials.reference_ids(app_id, 'session', session_id)
 
-    knowledge = []
     config = lanying_config.get_service_config(app_id, 'openai') or {}
-    for info in lanying_embedding.get_preset_embedding_infos(config.get('embeddings'), app_id, chatbot['name']):
-        # Do not expose internal session/function stores through an Agent binding.
-        if info.get('type') in (materials.INTERNAL_TYPE, 'function'):
-            continue
-        if info['embedding_name'] == materials.INTERNAL_NAME:
-            continue
-        knowledge.append(info)
+    knowledge = export_knowledge(config.get('embeddings'), app_id, chatbot['name'])
     return session_id, ids, knowledge
 
 
