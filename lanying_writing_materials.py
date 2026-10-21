@@ -1,14 +1,33 @@
-"""Read-only export for local writing. Scope always comes from server relations.
+"""Local writing identity and read-only exports. Scope comes from server relations.
 
 This module never indexes, removes references, or returns storage URLs/credentials.
 Download tickets are issued by Butler only after rechecking this scope.
 """
 import hashlib
 import re
+from sqlalchemy import text
 
 import lanying_seenical_materials as materials
 
 MAX_DOCUMENTS = 2000
+
+
+def _skill_id(conn, app_id, session_id):
+    value = conn.execute(text('SELECT id FROM seenical_writing_skill '
+                              'WHERE app_id=:a AND seenical_session_id=:s'),
+                         {'a': str(app_id), 's': str(session_id)}).scalar()
+    return 'writing-' + str(value) if value is not None else None
+
+
+def identity(app_id, actor, data):
+    """Allocate once, after normal source authorization, without exporting files."""
+    session_id, _, _ = scope(app_id, actor, data)
+    with materials._engine().begin() as conn:
+        conn.execute(text('INSERT INTO seenical_writing_skill (app_id,seenical_session_id) '
+                          'VALUES (:a,:s) ON DUPLICATE KEY UPDATE id=id'),
+                     {'a': str(app_id), 's': session_id})
+        return {'skill_id': _skill_id(conn, app_id, session_id), 'app_id': str(app_id),
+                'seenical_session_id': session_id, 'task_id': str(data.get('task_id') or '')}
 
 
 def component(value):
@@ -88,6 +107,13 @@ def scope(app_id, actor, data):
     else:
         ids = materials.reference_ids(app_id, 'session', session_id)
 
+    # Numeric IDs locate a local cache, never authorize access to another source.
+    if 'skill_id' in data:
+        with materials._engine().connect() as conn:
+            expected = _skill_id(conn, app_id, session_id)
+        if not expected or data['skill_id'] != expected:
+            raise materials.MaterialError('material_skill_mismatch')
+
     config = lanying_config.get_service_config(app_id, 'openai') or {}
     knowledge = export_knowledge(config.get('embeddings'), app_id, chatbot['name'])
     return session_id, ids, knowledge
@@ -131,11 +157,14 @@ def manifest(app_id, actor, data):
             if doc:
                 entries.append(item('knowledge_base', info['embedding_uuid'], doc_id,
                                     doc, info['embedding_name']))
-    return {
+    result = {
         'schema_version': 1, 'source': 'seenical', 'app_id': str(app_id),
         'seenical_session_id': session_id, 'task_id': str(data.get('task_id') or ''),
         'documents': entries,
     }
+    if 'skill_id' in data:
+        result['skill_id'] = data['skill_id']
+    return result
 
 
 def download(app_id, actor, data):

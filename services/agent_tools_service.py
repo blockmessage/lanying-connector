@@ -206,7 +206,8 @@ def writing_materials(operation):
     import lanying_writing_materials
     import lanying_seenical_materials as materials
     data = _body()
-    handler = {'manifest': lanying_writing_materials.manifest,
+    handler = {'identity': lanying_writing_materials.identity,
+               'manifest': lanying_writing_materials.manifest,
                'download': lanying_writing_materials.download}.get(operation)
     if handler is None:
         return _response({'result': 'error', 'message': 'material_operation_invalid'})

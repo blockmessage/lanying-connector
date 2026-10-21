@@ -1,6 +1,7 @@
 import contextlib
 import unittest
 from unittest import mock
+from sqlalchemy import create_engine, event, text
 
 import lanying_writing_materials as w
 
@@ -158,6 +159,17 @@ class WritingMaterialsTest(unittest.TestCase):
             w.download('app', {}, dict(self.data, source_type='conversation',
                                       source_id='session', doc_id='doc'))
 
+    def test_skill_id_is_not_an_authorization_bypass(self):
+        with mock.patch.object(w, '_skill_id', return_value='writing-12'):
+            for operation in (w.manifest, w.download):
+                with self.assertRaisesRegex(w.materials.MaterialError, 'material_skill_mismatch'):
+                    operation('app', {}, dict(self.data, skill_id='writing-99'))
+            result = w.manifest('app', {}, dict(self.data, skill_id='writing-12'))
+            self.assertEqual(result['skill_id'], 'writing-12')
+            self.conversation.side_effect = w.materials.MaterialError('membership lost')
+            with self.assertRaisesRegex(w.materials.MaterialError, 'membership lost'):
+                w.identity('app', {}, self.data)
+
     def test_unavailable_original_remains_visible(self):
         self.doc.return_value['object_name'] = ''
         result = w.manifest('app', {}, self.data)
@@ -176,6 +188,56 @@ class WritingMaterialsTest(unittest.TestCase):
         self.assertNotIn('/', w.component('../../x'))
         self.assertNotIn('\\', w.filename('..\\x.txt', 'd'))
         self.assertNotIn('\n', w.filename('x\n.txt', 'd'))
+
+
+class WritingSkillIdentityTest(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine('sqlite://')
+        self.addCleanup(self.engine.dispose)
+        # Exercise real uniqueness/persistence; translate only MySQL upsert syntax.
+        @event.listens_for(self.engine, 'before_cursor_execute', retval=True)
+        def sqlite_upsert(conn, cursor, statement, parameters, context, executemany):
+            return statement.replace('ON DUPLICATE KEY UPDATE id=id',
+                                     'ON CONFLICT(app_id,seenical_session_id) DO NOTHING'), parameters
+        with self.engine.begin() as conn:
+            conn.execute(text('CREATE TABLE seenical_writing_skill ('
+                              'id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL, '
+                              'seenical_session_id TEXT NOT NULL, '
+                              'created_at DATETIME DEFAULT CURRENT_TIMESTAMP, '
+                              'updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, '
+                              'UNIQUE(app_id,seenical_session_id))'))
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.object(w.materials, '_engine', return_value=self.engine))
+        self.scope = self.stack.enter_context(mock.patch.object(w, 'scope',
+            side_effect=lambda app, actor, data: (data['seenical_session_id'], [], [])))
+
+    def test_repeated_download_and_loop_change_keep_id(self):
+        original = w.identity('app', {}, {'seenical_session_id': 's'})
+        bound = w.identity('app', {}, {'seenical_session_id': 's', 'task_id': '191'})
+        self.assertEqual(original['skill_id'], bound['skill_id'])
+        self.assertEqual(bound['task_id'], '191')
+        self.assertRegex(original['skill_id'], r'^writing-[1-9][0-9]*$')
+        with self.engine.connect() as conn:
+            self.assertEqual(conn.execute(text('SELECT count(*) FROM seenical_writing_skill')).scalar(), 1)
+            row = conn.execute(text('SELECT created_at,updated_at FROM seenical_writing_skill')).first()
+            self.assertTrue(all(row))
+
+    def test_other_apps_and_sessions_get_distinct_ids_and_cannot_resolve_another(self):
+        first = w.identity('app', {}, {'seenical_session_id': 's'})
+        second = w.identity('other', {}, {'seenical_session_id': 's'})
+        third = w.identity('app', {}, {'seenical_session_id': 'other'})
+        self.assertEqual(len({x['skill_id'] for x in (first, second, third)}), 3)
+        with self.engine.connect() as conn:
+            self.assertIsNone(w._skill_id(conn, 'unknown', 's'))
+            self.assertEqual(w._skill_id(conn, 'other', 's'), second['skill_id'])
+
+    def test_authorization_failure_does_not_allocate(self):
+        self.scope.side_effect = w.materials.MaterialError('denied')
+        with self.assertRaises(w.materials.MaterialError):
+            w.identity('app', {}, {'seenical_session_id': 's'})
+        with self.engine.connect() as conn:
+            self.assertEqual(conn.execute(text('SELECT count(*) FROM seenical_writing_skill')).scalar(), 0)
 
 
 if __name__ == '__main__':
