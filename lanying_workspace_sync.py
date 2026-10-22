@@ -85,6 +85,16 @@ def configure(app_id, actor, data):
         old = load(app_id, workspace_id) if workspace_id else None
         if old and old['layout_version'] != 2:
             raise SyncError('workspace_layout_upgrade_required')
+        repository_type = data.get('repository_type') or (old or {}).get('repository_type', 'own')
+        if repository_type not in {'own', 'managed'}:
+            raise SyncError('invalid_workspace_hosting_fields')
+        if old and old.get('repository_type', 'own') != repository_type:
+            raise SyncError('workspace_hosting_type_fixed')
+        if repository_type == 'managed':
+            from lanying_workspace_hosting import configure as configure_managed
+            return configure_managed(app_id, actor, data, old)
+        if data.get('creation_key'):
+            raise SyncError('invalid_workspace_hosting_fields')
         repo_name = str(data.get('repository') or (old or {}).get('repository') or '').removeprefix('https://github.com/').removesuffix('.git')
         token = data.get('github_token')
         if not token and old:
@@ -133,6 +143,8 @@ def bind(app_id, actor, data):
     if data.get('confirmed') is not True:
         raise SyncError('workspace_confirmation_required')
     workspace = load(app_id, data.get('workspace_id'))
+    if not workspace['repository_id']:
+        raise SyncError('workspace_hosting_incomplete')
     if workspace['layout_version'] != 2:
         raise SyncError('workspace_layout_upgrade_required')
     identity = exports.identity(app_id, actor, {'seenical_session_id': data.get('seenical_session_id'),
@@ -199,7 +211,7 @@ def scheduled_candidates(after=''):
         return {'list': []}
     with materials._engine().begin() as conn:
         rows = conn.execute(text('SELECT app_id,workspace_id,actor_json FROM seenical_workspace '
-            'WHERE layout_version=2 AND paused=0 AND requested_generation>completed_generation '
+            "WHERE layout_version=2 AND repository_id<>'' AND paused=0 AND requested_generation>completed_generation "
             'AND next_check_at<=CURRENT_TIMESTAMP AND workspace_id>:after ORDER BY workspace_id LIMIT 100'),
             {'after': str(after)}).mappings().all()
         claimed = []
@@ -315,6 +327,9 @@ def read_source(info):
 
 
 def repository(workspace):
+    if workspace.get('repository_type') == 'managed':
+        from lanying_workspace_hosting import managed_repository
+        return managed_repository(workspace)
     try:
         token = _cipher().decrypt(workspace['github_token'].encode()).decode()
     except InvalidToken:
@@ -782,7 +797,8 @@ def run_workspace(app_id, actor, workspace):
 
 def operation(app_id, actor, name, data):
     if name == 'list':
-        return {'list': connections(app_id)}
+        from lanying_workspace_hosting import available
+        return {'list': connections(app_id), 'managed_available': available()}
     if name == 'configure':
         return configure(app_id, actor, data)
     if name == 'bind':
@@ -791,6 +807,12 @@ def operation(app_id, actor, name, data):
     skill = data.get('skill_id')
     if name == 'status':
         return public_view(app_id, workspace['workspace_id'], skill)
+    if not workspace['repository_id']:
+        raise SyncError('workspace_hosting_incomplete')
+    if name == 'invite':
+        from lanying_workspace_hosting import invite
+        with locked(workspace['workspace_id']):
+            return invite(app_id, workspace, data)
     if workspace['layout_version'] != 2:
         raise SyncError('workspace_layout_upgrade_required')
     partition = None

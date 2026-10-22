@@ -67,16 +67,19 @@ class Repository:
                         'Accept': 'application/vnd.github+json',
                         'X-GitHub-Api-Version': '2022-11-28'}
 
-    def call(self, method, path='', body=None, max_bytes=4 * 1024 * 1024):
+    def call(self, method, path='', body=None, max_bytes=4 * 1024 * 1024,
+             accepted=(200, 201)):
         # Error messages deliberately exclude GitHub response bodies and tokens.
         try:
             with requests.request(method, self.base + path, headers=self.headers, json=body,
                                   timeout=(10, 90), allow_redirects=False, stream=True) as response:
-                if response.status_code not in (200, 201):
+                if response.status_code not in accepted:
                     code = ('github_access_denied' if response.status_code in (401, 403, 404)
                             else 'github_changed' if response.status_code in (409, 422)
                             else 'github_unavailable')
                     raise SyncError(code)
+                if response.status_code in (204, 404):
+                    return {'http_status': response.status_code}
                 chunks, size = [], 0
                 for chunk in response.iter_content(65536):
                     size += len(chunk)

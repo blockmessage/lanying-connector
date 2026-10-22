@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS seenical_workspace (
   app_id varchar(100) NOT NULL,
   workspace_id varchar(64) NOT NULL PRIMARY KEY,
   layout_version int NOT NULL DEFAULT 2,
+  repository_type varchar(16) NOT NULL DEFAULT 'own',
+  creation_key varchar(32) DEFAULT NULL,
   repository varchar(255) NOT NULL,
   repository_id varchar(64) NOT NULL,
   branch varchar(128) NOT NULL,
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS seenical_workspace (
   created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_workspace_location (location_hash),
+  UNIQUE KEY uq_workspace_creation (app_id, creation_key),
   KEY idx_workspace_app (app_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

@@ -59,7 +59,7 @@ def file_rows(app_id, workspace):
 def connections(app_id):
     with materials._engine().connect() as conn:
         rows = [dict(r) for r in conn.execute(text('SELECT workspace_id,repository,branch,directory,'
-            'layout_version,paused,status,error_code FROM seenical_workspace WHERE app_id=:a ORDER BY created_at'),
+            'repository_type,layout_version,paused,status,error_code FROM seenical_workspace WHERE app_id=:a ORDER BY created_at'),
             {'a': str(app_id)}).mappings()]
         bindings = [dict(r) for r in conn.execute(text('SELECT workspace_id,skill_id,seenical_session_id,active,paused,status,error_code FROM '
             'seenical_workspace_partition WHERE app_id=:a'), {'a': str(app_id)}).mappings()]
@@ -71,8 +71,8 @@ def connections(app_id):
 def public_view(app_id, workspace_id, skill_id=None):
     row = load(app_id, workspace_id)
     result = {k: row[k] for k in ['workspace_id', 'repository', 'branch', 'directory', 'layout_version',
-        'paused', 'status', 'error_code', 'last_synced_at']}
-    result.update(configured=True, files=[], warnings=json.loads(row.get('warnings_json') or '[]'))
+        'repository_type', 'paused', 'status', 'error_code', 'last_synced_at']}
+    result.update(configured=bool(row['repository_id']), files=[], warnings=json.loads(row.get('warnings_json') or '[]'))
     bindings = partitions(app_id, row)
     result['partitions'] = [{k: p[k] for k in ('skill_id', 'seenical_session_id', 'active', 'paused', 'status', 'error_code')}
                             for p in bindings]

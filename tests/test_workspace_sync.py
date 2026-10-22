@@ -77,11 +77,12 @@ class WorkspaceTest(unittest.TestCase):
         self.addCleanup(self.engine.dispose)
         with self.engine.begin() as conn:
             conn.execute(text("CREATE TABLE seenical_workspace (app_id TEXT,workspace_id TEXT PRIMARY KEY,layout_version INTEGER DEFAULT 2,created_at TEXT,"
+                "repository_type TEXT DEFAULT 'own',creation_key TEXT,"
                 "repository TEXT,repository_id TEXT,branch TEXT,directory TEXT,location_hash TEXT,github_token TEXT,actor_json TEXT,"
                 "scopes_json TEXT,paused INTEGER DEFAULT 0,status TEXT DEFAULT 'pending',error_code TEXT DEFAULT '',"
                 "manifest_sha TEXT DEFAULT '',config_sha TEXT DEFAULT '',last_synced_at TEXT,warnings_json TEXT,"
                 "next_check_at TEXT DEFAULT CURRENT_TIMESTAMP,requested_generation INTEGER DEFAULT 1,"
-                "completed_generation INTEGER DEFAULT 0)"))
+                "completed_generation INTEGER DEFAULT 0,UNIQUE(app_id,creation_key))"))
             conn.execute(text("CREATE TABLE seenical_workspace_file (app_id TEXT,workspace_id TEXT,skill_id TEXT,path_hash TEXT,path TEXT,"
                 "source_type TEXT,source_id TEXT,doc_id TEXT,base_sha TEXT DEFAULT '',source_fingerprint TEXT DEFAULT '',"
                 "server_sha TEXT DEFAULT '',remote_sha TEXT DEFAULT '',status TEXT DEFAULT 'pending',"
@@ -289,8 +290,8 @@ class WorkspaceTest(unittest.TestCase):
     def test_binding_another_workspace_requires_disconnect(self):
         other = 'f' * 32
         with self.engine.begin() as conn:
-            conn.execute(text("INSERT INTO seenical_workspace(app_id,workspace_id,repository,directory,actor_json) "
-                "VALUES ('a',:w,'owner/second','','{}')"), {'w': other})
+            conn.execute(text("INSERT INTO seenical_workspace(app_id,workspace_id,repository,repository_id,directory,actor_json) "
+                "VALUES ('a',:w,'owner/second','2','','{}')"), {'w': other})
         with mock.patch.object(sync.exports, 'identity', return_value={'skill_id': 'writing-1', 'seenical_session_id': 's'}), \
                 mock.patch.object(sync, 'checked_scopes', return_value=[{'knowledge_base_ids': []}]):
             with self.assertRaisesRegex(SyncError, 'workspace_skill_already_bound'):
