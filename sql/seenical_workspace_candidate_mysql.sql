@@ -1,0 +1,26 @@
+-- Connector Seenical MySQL. Independent of legacy per-document replacements.
+CREATE TABLE IF NOT EXISTS seenical_workspace_candidate (
+  app_id varchar(100) NOT NULL,
+  workspace_id varchar(64) NOT NULL,
+  skill_id varchar(64) NOT NULL,
+  path_hash char(64) NOT NULL,
+  doc_id varchar(100) NOT NULL,
+  session_id varchar(128) NOT NULL,
+  replacement_id varchar(64) NOT NULL,
+  copy_on_write tinyint NOT NULL,
+  physical_id varchar(100) NOT NULL,
+  previous_physical_id varchar(100) NOT NULL,
+  source_object varchar(512) NOT NULL,
+  object_name varchar(512) NOT NULL,
+  filename varchar(255) NOT NULL,
+  file_size bigint NOT NULL,
+  old_usage bigint NOT NULL,
+  new_usage bigint NOT NULL DEFAULT 0,
+  content_sha varchar(40) NOT NULL,
+  status varchar(32) NOT NULL DEFAULT 'pending',
+  error_code varchar(64) NOT NULL DEFAULT '',
+  created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (workspace_id,skill_id,path_hash),
+  UNIQUE KEY uq_workspace_candidate (replacement_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

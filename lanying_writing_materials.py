@@ -124,9 +124,8 @@ def item(kind, owner_id, doc_id, doc, source_name):
     return {
         'source_type': kind, 'source_id': str(owner_id), 'source_name': source_name,
         'doc_id': str(doc_id), 'filename': name,
-        'path': 'materials/{}/{}/{}/{}'.format(
-            'conversations' if kind == 'conversation' else 'knowledge-bases',
-            component(owner_id), component(doc_id), name),
+        'path': ('conversation/{}/{}'.format(component(doc_id), name) if kind == 'conversation'
+                 else 'knowledge-bases/{}/{}/{}'.format(component(owner_id), component(doc_id), name)),
         'read_only': kind == 'knowledge_base',
         'file_size': int(doc.get('file_size') or doc.get('size') or 0),
         'status': str(doc.get('status') or 'unknown'),
@@ -158,7 +157,7 @@ def manifest(app_id, actor, data):
                 entries.append(item('knowledge_base', info['embedding_uuid'], doc_id,
                                     doc, info['embedding_name']))
     result = {
-        'schema_version': 1, 'source': 'seenical', 'app_id': str(app_id),
+        'schema_version': 2, 'source': 'seenical', 'app_id': str(app_id),
         'seenical_session_id': session_id, 'task_id': str(data.get('task_id') or ''),
         'documents': entries,
     }

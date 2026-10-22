@@ -160,9 +160,9 @@ def seenical_materials_task(self, app_id):
 
 
 @slow_queue.task(acks_late=True, reject_on_worker_lost=True)
-def seenical_workspace_sync_task(app_id, actor, authorized_at):
+def seenical_workspace_sync_task(app_id, actor, authorized_at, workspace_id):
     import lanying_workspace_sync
-    lanying_workspace_sync.run(app_id, actor, authorized_at)
+    lanying_workspace_sync.run(app_id, actor, authorized_at, workspace_id)
 
 
 @normal_queue.task(acks_late=True)

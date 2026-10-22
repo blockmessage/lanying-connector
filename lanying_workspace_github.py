@@ -100,6 +100,7 @@ class Repository:
             raise SyncError('github_write_required')
         if repository_id and str(info.get('id')) != str(repository_id):
             raise SyncError('github_repository_changed')
+        self.default_branch = info.get('default_branch') or 'main'
         return str(info['id'])
 
     def snapshot(self):

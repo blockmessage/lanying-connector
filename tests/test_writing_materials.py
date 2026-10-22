@@ -52,7 +52,7 @@ class WritingMaterialsTest(unittest.TestCase):
     def test_manifest_contains_only_safe_metadata_and_bound_knowledge(self):
         result = w.manifest('app', {'im_user_id': 'user'}, self.data)
         self.assertEqual(len(result['documents']), 2)
-        self.assertEqual(result['documents'][0]['path'], 'materials/conversations/session/doc/note.txt')
+        self.assertEqual(result['documents'][0]['path'], 'conversation/doc/note.txt')
         self.assertFalse(result['documents'][0]['read_only'])
         self.assertTrue(result['documents'][1]['read_only'])
         self.assertNotIn('object_name', str(result))

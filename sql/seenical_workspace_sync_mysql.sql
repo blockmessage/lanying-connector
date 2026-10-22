@@ -4,8 +4,9 @@
 -- Fresh installations use seenical_materials_mysql.sql (already includes its columns).
 
 CREATE TABLE IF NOT EXISTS seenical_workspace (
-  app_id varchar(100) NOT NULL PRIMARY KEY,
-  workspace_id varchar(64) NOT NULL,
+  app_id varchar(100) NOT NULL,
+  workspace_id varchar(64) NOT NULL PRIMARY KEY,
+  layout_version int NOT NULL DEFAULT 2,
   repository varchar(255) NOT NULL,
   repository_id varchar(64) NOT NULL,
   branch varchar(128) NOT NULL,
@@ -27,11 +28,13 @@ CREATE TABLE IF NOT EXISTS seenical_workspace (
   created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_workspace_location (location_hash),
-  UNIQUE KEY uq_workspace_id (workspace_id)
+  KEY idx_workspace_app (app_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS seenical_workspace_file (
   app_id varchar(100) NOT NULL,
+  workspace_id varchar(64) NOT NULL,
+  skill_id varchar(64) NOT NULL,
   path_hash char(64) NOT NULL,
   path varchar(768) NOT NULL,
   source_type varchar(32) NOT NULL,
@@ -47,8 +50,26 @@ CREATE TABLE IF NOT EXISTS seenical_workspace_file (
   removed tinyint NOT NULL DEFAULT 0,
   created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (app_id, path_hash),
-  UNIQUE KEY uq_workspace_document (app_id, source_type, doc_id)
+  PRIMARY KEY (workspace_id, skill_id, path_hash),
+  UNIQUE KEY uq_workspace_document (workspace_id, skill_id, source_type, doc_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS seenical_workspace_partition (
+  app_id varchar(100) NOT NULL,
+  skill_id varchar(64) NOT NULL,
+  workspace_id varchar(64) NOT NULL,
+  seenical_session_id varchar(128) NOT NULL,
+  knowledge_base_ids mediumtext NOT NULL,
+  warnings_json text DEFAULT NULL,
+  active tinyint NOT NULL DEFAULT 1,
+  paused tinyint NOT NULL DEFAULT 0,
+  manifest_sha varchar(40) NOT NULL DEFAULT '',
+  status varchar(32) NOT NULL DEFAULT 'pending',
+  error_code varchar(64) NOT NULL DEFAULT '',
+  created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (workspace_id, skill_id),
+  KEY idx_partition_skill (app_id, skill_id, active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- One recoverable candidate per document, not a user-facing version history.
