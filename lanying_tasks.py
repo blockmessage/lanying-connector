@@ -185,6 +185,31 @@ def resume_agent_tool_request_task(app_id, request_id):
 
 @normal_queue.task
 def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename, openai_secret_key, type='file', limit=-1, opts = {}):
+    task_id = opts.get('submission_task_id')
+    embedding_uuid = opts.get('submission_embedding_uuid')
+    # Only documents whose indexing has not been dispatched are marked failed
+    # if preparation stops. Already queued documents continue normally.
+    pending_docs = []
+    try:
+        if task_id:
+            if not lanying_embedding.get_task(embedding_uuid, task_id):
+                return  # The queued submission was cancelled through the existing task API.
+            lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'processing')
+        return prepare_embedding_file(trace_id, app_id, embedding_name, url, headers,
+                                      origin_filename, openai_secret_key, type, limit, opts, pending_docs)
+    except Exception:
+        if task_id:
+            for doc_id in pending_docs:
+                lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'reason', 'preparation_failed')
+                lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'status', 'error')
+            if lanying_embedding.get_task(embedding_uuid, task_id):
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'preparation_failed')
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
+        raise
+
+
+def prepare_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_filename,
+                           openai_secret_key, type, limit, opts, pending_docs):
     storage_limit = lanying_embedding.get_app_config_int(app_id, "lanying_connector.storage_limit")
     storage_payg = lanying_embedding.get_app_config_int(app_id, "lanying_connector.storage_payg")
     logging.info(f"limit info:storage_limit:{storage_limit}, storage_payg:{storage_payg}")
@@ -192,6 +217,9 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
     lanying_embedding.clear_trace_doc_id(trace_id)
     ext = lanying_embedding.parse_file_ext(origin_filename)
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
+    if opts.get('submission_task_id') and (not embedding_info or
+            embedding_info['embedding_uuid'] != opts.get('submission_embedding_uuid')):
+        raise ValueError('embedding changed before upload processing')
     if embedding_info is None:
         logging.info(f"embedding_name not exist: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}")
         lanying_embedding.update_trace_field(trace_id, "status", "error")
@@ -199,28 +227,56 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
         return
     embedding_uuid = embedding_info["embedding_uuid"]
     tasks = []
+    task_id = opts.get('submission_task_id')
+    registered_docs = []
+
+    def cancelled():
+        if not task_id or lanying_embedding.get_task(embedding_uuid, task_id):
+            return False
+        # Raw files may already have been stored, but no indexing or quota
+        # allocation should start after cancellation. Do not recreate the receipt.
+        for doc_id in pending_docs:
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'reason', 'submission_cancelled')
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'status', 'error')
+        return True
+
+    def create_doc(filename, object_name, doc_id, file_size, doc_ext):
+        lanying_embedding.create_doc_info(app_id, embedding_uuid, filename, object_name,
+                                          doc_id, file_size, doc_ext, type, url, vendor, opts)
+        registered_docs.append(doc_id)
+        pending_docs.append(doc_id)
+        if task_id:
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'task_id', task_id)
+
     embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
     vendor = embedding_uuid_info.get('vendor', 'openai')
     lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", openai_secret_key)
     if type not in  ['site', 'task']:
         temp_filename = os.path.join(f"{download_dir}/{app_id}-{embedding_uuid}-{uuid.uuid4()}{ext}")
         download_result = lanying_file_storage.download_url(url, {} if type == 'url' else headers, temp_filename)
+        if cancelled():
+            return
         if download_result["result"] == "error":
             lanying_embedding.update_trace_field(trace_id, "status", "error")
             lanying_embedding.update_trace_field(trace_id, "message", "download embedding file error")
             doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
-            lanying_embedding.create_doc_info(app_id, embedding_uuid, url if type == 'url' else origin_filename, '', doc_id, 0, ext, type, url, vendor,opts)
+            create_doc(url if type == 'url' else origin_filename, '', doc_id, 0, ext)
             lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "download_failed")
             logging.error(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, url={url}, message:{download_result['message']}")
             lanying_embedding.trace_finish(trace_id, app_id, "error", "download failed", doc_id, embedding_name)
+            if task_id:
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'download_failed')
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
             return
         if ext in [".zip"]:
             with zipfile.ZipFile(temp_filename, 'r') as zip_ref:
                 sub_filenames = zip_ref.namelist()
                 logging.info(f"add_embedding_file | got zip filenames: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, sub_filenames:{sub_filenames}")
                 for sub_filename in sub_filenames:
+                    if cancelled():
+                        return
                     sub_ext = lanying_embedding.parse_file_ext(sub_filename)
                     try:
                         right_filename = sub_filename.encode('cp437').decode('utf-8')
@@ -239,7 +295,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                         sub_file_size = sub_file_info.file_size
                         doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
                         object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{sub_ext}")
-                        lanying_embedding.create_doc_info(app_id, embedding_uuid, right_filename, object_name, doc_id, sub_file_size, sub_ext, type, url, vendor,opts)
+                        create_doc(right_filename, object_name, doc_id, sub_file_size, sub_ext)
                         lanying_embedding.add_trace_doc_id(trace_id, doc_id)
                         with zip_ref.open(sub_filename) as sub_file_ref:
                             upload_result = lanying_file_storage.put_object(object_name, sub_file_ref, sub_file_size)
@@ -247,7 +303,7 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                                 lanying_embedding.update_trace_field(trace_id, "status", "error")
                                 lanying_embedding.update_trace_field(trace_id, "message", "upload embedding sub file error")
                                 task_error(f"fail to upload sub file : app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid},object_name:{object_name}")
-                            tasks.append((object_name, origin_filename, doc_id))
+                            tasks.append((object_name, right_filename, doc_id))
                     else:
                         sub_file_info = zip_ref.getinfo(sub_filename)
                         if sub_file_info.is_dir():
@@ -256,16 +312,17 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                             sub_file_size = sub_file_info.file_size
                             logging.info(f"add_embedding_file | skip process sub file: sub_filename:{sub_filename}, right_filename:{right_filename}")
                             doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
-                            lanying_embedding.create_doc_info(app_id, embedding_uuid, right_filename, '', doc_id, sub_file_size, sub_ext, type, url, vendor,opts)
+                            create_doc(right_filename, '', doc_id, sub_file_size, sub_ext)
                             lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
                             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "error")
                             lanying_embedding.update_doc_field(embedding_uuid, doc_id, "reason", "bad_ext")
+                            pending_docs.remove(doc_id)
         elif ext in lanying_embedding.allow_exts():
             file_stat = os.stat(temp_filename)
             file_size = file_stat.st_size
             doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
             object_name = os.path.join(f"{embedding_doc_dir}/{app_id}/{embedding_uuid}/{doc_id}{ext}")
-            lanying_embedding.create_doc_info(app_id, embedding_uuid, url if type == 'url' else origin_filename, object_name, doc_id, file_size, ext, type, url, vendor,opts)
+            create_doc(url if type == 'url' else origin_filename, object_name, doc_id, file_size, ext)
             lanying_embedding.add_trace_doc_id(trace_id, doc_id)
             if 'metadata' in opts:
                 lanying_embedding.set_doc_metadata(app_id, embedding_name, doc_id, opts['metadata'])
@@ -276,9 +333,32 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
                 lanying_embedding.trace_finish(trace_id, app_id, "error", "upload embedding file error", doc_id, embedding_name)
                 task_error(f"fail to upload embedding: app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, url={url}, message:{upload_result['message']}")
             tasks.append((object_name, origin_filename, doc_id))
+        else:
+            doc_id = lanying_embedding.generate_doc_id(embedding_uuid)
+            create_doc(origin_filename, '', doc_id, os.stat(temp_filename).st_size, ext)
+            lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'reason', 'bad_ext')
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'status', 'error')
+            pending_docs.remove(doc_id)
+    if cancelled():
+        return
+    if task_id:
+        lanying_embedding.update_task_field(embedding_uuid, task_id, 'processing_total_num', len(registered_docs))
+        lanying_embedding.update_task_field(embedding_uuid, task_id, 'processing_fail_num', len(registered_docs) - len(tasks))
+        if not registered_docs:
+            lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'empty_archive')
+            lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
+            return
+        lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'adding')
     for now_object_name, now_origin_filename, now_doc_id in tasks:
+        if cancelled():
+            return
         lanying_embedding.add_doc_to_embedding(embedding_uuid, now_doc_id)
-        process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, now_object_name, now_origin_filename, now_doc_id, False])
+        process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, now_object_name, now_origin_filename, now_doc_id, False],
+                                          kwargs={'submission_task_id': task_id} if task_id else {})
+        pending_docs.remove(now_doc_id)
+    if task_id:
+        maybe_task_finish(embedding_uuid, task_id)
 
 @slow_queue.task
 def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, doc_cnt, limit):
@@ -434,14 +514,14 @@ def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls
         lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "finish")
 
 @normal_queue.task
-def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False):
-    process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate)
+def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False, submission_task_id=None):
+    process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate, submission_task_id)
 
 @slow_queue.task
 def process_embedding_file_slow(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False):
     process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate)
 
-def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False):
+def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False, submission_task_id=None):
     embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
     if embedding_uuid_info is None:
         logging.info(f"process_embedding_file skip for not_found embedding_uuid_info | embedding_uuid:{embedding_uuid}")
@@ -449,6 +529,11 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
     embedding_name = embedding_uuid_info['embedding_name']
     doc_info = lanying_embedding.get_doc(embedding_uuid, doc_id)
     if doc_info is None:
+        # The metadata (including its parent task ID) disappears when a queued
+        # document is deleted. Carry the submission ID in the queue message too.
+        if not is_regenerate and submission_task_id and lanying_embedding.get_task(embedding_uuid, submission_task_id):
+            lanying_embedding.increase_task_field(embedding_uuid, submission_task_id, 'processing_skip_num', 1)
+            maybe_task_finish(embedding_uuid, submission_task_id)
         return
     is_storage_size_increased = False
     doc_task_id = None
@@ -560,8 +645,9 @@ def maybe_task_finish(embedding_uuid, task_id):
         if task_info["status"] == "adding":
             processing_success_num = int(task_info.get("processing_success_num", "0"))
             processing_fail_num = int(task_info.get("processing_fail_num", "0"))
+            processing_skip_num = int(task_info.get("processing_skip_num", "0"))
             processing_total_num = int(task_info.get("processing_total_num","0"))
-            if processing_fail_num + processing_success_num == processing_total_num:
+            if processing_fail_num + processing_success_num + processing_skip_num == processing_total_num:
                 lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "add_finish")
 
 @normal_queue.task

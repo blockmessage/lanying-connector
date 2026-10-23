@@ -4629,7 +4629,20 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
             lanying_embedding.update_task_field(embedding_uuid, task_id, "tags", json.dumps(tags, ensure_ascii=False))
             prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, urls, 0, limit, task_id, max_depth, filters, opts])
         else:
-            result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit, opts])
+            # Persist the receipt before publishing: queueing/downloading may take
+            # time, but a successful submission must already be visible.
+            embedding_uuid = embedding_info['embedding_uuid']
+            task_id = lanying_embedding.create_task(embedding_uuid, type, [dname if type == 'file' else url])
+            lanying_embedding.update_task_field(embedding_uuid, task_id, 'file_name', dname if type == 'file' else url)
+            lanying_embedding.update_task_field(embedding_uuid, task_id, 'submission', '1')
+            opts['submission_task_id'] = task_id
+            opts['submission_embedding_uuid'] = embedding_uuid
+            try:
+                result = add_embedding_file.apply_async(args = [trace_id, app_id, embedding_name, url, headers, dname, config['access_token'], type, limit, opts])
+            except Exception:
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'queue_failed')
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
+                raise
             logging.info(f"add_doc_to_embedding | result={result}")
 
 def continue_embedding_task(app_id, embedding_name, task_id):
