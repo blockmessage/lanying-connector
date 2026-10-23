@@ -254,6 +254,57 @@ class WorkspaceTest(unittest.TestCase):
         repeated = sync.mapped_files('a', {('conversation', 'd'): original}, self.partition())
         self.assertEqual(sorted(repeated, key=lambda r: r['path']), sorted(rows, key=lambda r: r['path']))
 
+    def test_github_artifacts_exclude_app_identity_and_internal_fields(self):
+        self.entries[('conversation', 'd')]['future_internal_field'] = 'private-value'
+        self.run_cycle()
+        for path, content in self.repo.files.items():
+            if path.endswith(('.json', '.md', '.yml')):
+                self.assertNotIn(b'app_id', content, path)
+                self.assertNotIn(b'scope_keys', content, path)
+                self.assertNotIn(b'private-value', content, path)
+        manifest = json.loads(self.repo.files['workspace/materials/writing-1/manifest.json'])
+        self.assertEqual(manifest['workspace_id'], WORKSPACE_ID)
+        self.assertEqual(manifest['skill_id'], 'writing-1')
+        self.assertEqual({d['doc_id'] for d in manifest['documents']}, {'d', 'k'})
+
+    def test_normal_sync_removes_legacy_app_fields_without_changing_materials(self):
+        self.run_cycle()
+        root_path = 'workspace/seenical-workspace.json'
+        manifest_path = 'workspace/materials/writing-1/manifest.json'
+        config = json.loads(self.repo.files[root_path])
+        config['app_id'] = 'a'
+        config['modules']['sites'] = {'path': 'sites', 'note': 'keep'}
+        self.repo.files[root_path] = json.dumps(config).encode()
+        manifest = json.loads(self.repo.files[manifest_path])
+        manifest['app_id'] = 'a'
+        for doc in manifest['documents']:
+            doc.update(app_id='a', scope_keys=['s\n'])
+        self.repo.files[manifest_path] = json.dumps(manifest).encode()
+        with self.engine.begin() as conn:
+            conn.execute(text('UPDATE seenical_workspace_partition SET manifest_sha=:sha'),
+                         {'sha': blob_sha(self.repo.files[manifest_path])})
+        original_files = {p: c for p, c in self.repo.files.items() if not p.endswith('.json')}
+        self.run_cycle()
+        self.assertNotIn(b'app_id', self.repo.files[root_path])
+        self.assertNotIn(b'app_id', self.repo.files[manifest_path])
+        self.assertNotIn(b'scope_keys', self.repo.files[manifest_path])
+        self.assertEqual(json.loads(self.repo.files[root_path])['modules']['sites'], config['modules']['sites'])
+        self.assertEqual(original_files, {p: c for p, c in self.repo.files.items() if not p.endswith('.json')})
+        self.import_new.assert_not_called()
+        self.start.assert_not_called()
+        self.run_cycle()  # Repeat safely against the cleaned metadata.
+
+    def test_workspace_identity_still_rejects_foreign_workspace_and_legacy_app(self):
+        self.run_cycle()
+        path = 'workspace/seenical-workspace.json'
+        config = json.loads(self.repo.files[path])
+        for change in ({'workspace_id': 'other'}, {'app_id': 'other'}):
+            self.repo.files[path] = json.dumps(dict(config, **change)).encode()
+            with self.assertRaisesRegex(SyncError, 'metadata_changed'):
+                self.run_cycle()
+        with self.assertRaisesRegex(SyncError, 'workspace_not_configured'):
+            sync.operation('other', {}, 'status', {'workspace_id': WORKSPACE_ID})
+
     def test_metadata_preserves_other_modules_readme_and_workflows(self):
         self.repo.files['workspace/README.md'] = b'user readme'
         self.repo.files['.github/workflows/build.yml'] = b'user workflow'

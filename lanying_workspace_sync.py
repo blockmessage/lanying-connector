@@ -656,8 +656,12 @@ def _run(app_id, actor, workspace):
         path = root + row['path']
         present = ((path in changes and changes[path] is not None)
                    or (path in tree and path not in changes))
-        included.append(dict(item, path=row['path'], local_status='ready' if present else 'unavailable'))
-    manifest = {'schema_version': 2, 'source': 'github', 'app_id': str(app_id),
+        # Export only file metadata; App identity and scope bookkeeping stay server-side.
+        exported = {key: item[key] for key in (
+            'source_type', 'source_id', 'source_name', 'doc_id', 'filename', 'read_only',
+            'file_size', 'status', 'error_code', 'available') if key in item}
+        included.append(dict(exported, path=row['path'], local_status='ready' if present else 'unavailable'))
+    manifest = {'schema_version': 2, 'source': 'github',
                 'workspace_id': workspace['workspace_id'], 'skill_id': workspace['skill_id'],
                 'seenical_session_id': workspace['seenical_session_id'], 'documents': included}
     payloads = {'manifest.json': _json(manifest).encode()}
@@ -708,10 +712,11 @@ def workspace_config(app_id, workspace, repo, tree, repair=False):
             raise SyncError('workspace_metadata_changed')
         modules['materials'] = {'path': 'materials', 'partitions': {
             p['skill_id']: p['skill_id'] + '/manifest.json' for p in partitions(app_id, workspace)}}
-        config.update(schema_version=2, workspace_id=workspace['workspace_id'], app_id=str(app_id), modules=modules)
+        config.update(schema_version=2, workspace_id=workspace['workspace_id'], modules=modules)
+        config.pop('app_id', None)
     if entry:
         if (config.get('schema_version') != 2 or config.get('workspace_id') != workspace['workspace_id']
-                or config.get('app_id') != str(app_id)):
+                or ('app_id' in config and config['app_id'] != str(app_id))):
             raise SyncError('workspace_metadata_changed')
         modules = config.get('modules')
         if not isinstance(modules, dict):
@@ -732,8 +737,9 @@ def workspace_config(app_id, workspace, repo, tree, repair=False):
     elif workspace['config_sha'] and not repair:
         raise SyncError('workspace_metadata_changed')
     elif not repair:
-        config = {'schema_version': 2, 'workspace_id': workspace['workspace_id'],
-                  'app_id': str(app_id), 'modules': {}}
+        config = {'schema_version': 2, 'workspace_id': workspace['workspace_id'], 'modules': {}}
+    # Accept matching legacy metadata, but remove App IDs on the next normal sync.
+    config.pop('app_id', None)
     return config
 
 
