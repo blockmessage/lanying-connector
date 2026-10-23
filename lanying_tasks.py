@@ -202,9 +202,16 @@ def add_embedding_file(trace_id, app_id, embedding_name, url, headers, origin_fi
             for doc_id in pending_docs:
                 lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'reason', 'preparation_failed')
                 lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'status', 'error')
-            if lanying_embedding.get_task(embedding_uuid, task_id):
-                lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'preparation_failed')
-                lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
+            task = lanying_embedding.get_task(embedding_uuid, task_id)
+            if task:
+                if task.get('status') == 'adding' and str(task.get('result_in_documents')) == '1':
+                    # Every result is already in the file list. Previously queued
+                    # files continue; undispatched files are terminal failures.
+                    lanying_embedding.increase_task_field(embedding_uuid, task_id, 'processing_fail_num', len(pending_docs))
+                    maybe_task_finish(embedding_uuid, task_id)
+                else:
+                    lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'preparation_failed')
+                    lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
         raise
 
 
@@ -267,6 +274,7 @@ def prepare_embedding_file(trace_id, app_id, embedding_name, url, headers, origi
             logging.error(f"fail to download embedding: trace_id={trace_id}, app_id={app_id}, embedding_name={embedding_name}, embedding_uuid={embedding_uuid}, url={url}, message:{download_result['message']}")
             lanying_embedding.trace_finish(trace_id, app_id, "error", "download failed", doc_id, embedding_name)
             if task_id:
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'result_in_documents', '1')
                 lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'download_failed')
                 lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
             return
@@ -349,11 +357,18 @@ def prepare_embedding_file(trace_id, app_id, embedding_name, url, headers, origi
             lanying_embedding.update_task_field(embedding_uuid, task_id, 'reason', 'empty_archive')
             lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
             return
+    # Publish all prepared files before dispatch. An enqueue failure can then be
+    # shown on each affected file without retaining a duplicate upload row.
+    for _, _, now_doc_id in tasks:
+        if cancelled():
+            return
+        lanying_embedding.add_doc_to_embedding(embedding_uuid, now_doc_id)
+    if task_id:
+        lanying_embedding.update_task_field(embedding_uuid, task_id, 'result_in_documents', '1')
         lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'adding')
     for now_object_name, now_origin_filename, now_doc_id in tasks:
         if cancelled():
             return
-        lanying_embedding.add_doc_to_embedding(embedding_uuid, now_doc_id)
         process_embedding_file.apply_async(args = [trace_id, app_id, embedding_uuid, now_object_name, now_origin_filename, now_doc_id, False],
                                           kwargs={'submission_task_id': task_id} if task_id else {})
         pending_docs.remove(now_doc_id)

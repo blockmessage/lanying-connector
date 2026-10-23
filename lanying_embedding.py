@@ -1531,6 +1531,15 @@ def get_task_list(embedding_uuid):
     for task_id in redis_lrange(redis, task_list_key, 0, -1):
         task_info = get_task(embedding_uuid, task_id)
         if task_info:
+            # Ordinary uploads need no permanent task history once their results
+            # are represented by document rows. Never clean active submissions
+            # or website crawl tasks here; deleting these could cancel indexing.
+            if str(task_info.get('submission')) == '1' and (
+                    task_info.get('status') == 'add_finish' or
+                    (task_info.get('status') == 'error' and
+                     str(task_info.get('result_in_documents')) == '1')):
+                delete_task(embedding_uuid, task_id)
+                continue
             if 'site_task_id' in task_info:
                 site_task_id = task_info['site_task_id']
                 site_task_info = lanying_url_loader.info_task(site_task_id)
@@ -1936,6 +1945,61 @@ def generate_doc_id(embedding_uuid):
     redis = lanying_redis.get_redis_stack_connection()
     doc_id_seq = redis.hincrby(key, "doc_id_seq", 1)
     return f"{embedding_uuid}-{doc_id_seq}"
+
+def get_embedding_file_list(app_id, embedding_name, page=1, page_size=20):
+    """One paginated view of upload receipts and documents; old APIs stay unchanged."""
+    if type(page) is not int or type(page_size) is not int or page < 1 or not 1 <= page_size <= 100:
+        raise ValueError('invalid pagination')
+    if embedding_name == '__seenical_session_materials__':
+        raise ValueError('session materials require conversation scope')
+    info = get_embedding_name_info(app_id, embedding_name)
+    if not info:
+        return {'list': [], 'total': 0, 'page': 1, 'page_size': page_size,
+                'tasks': [], 'has_pending': False}
+    embedding_uuid = info['embedding_uuid']
+    # Read receipts before documents: completion must not hide the receipt and
+    # then return an older empty document list with no work left to refresh.
+    tasks = get_task_list(embedding_uuid)
+    uploads = []
+    for task in reversed(tasks):
+        if str(task.get('submission')) != '1' or task.get('status') in ('adding', 'add_finish'):
+            continue
+        uploads.append({
+            'record_id': 'upload:' + task['task_id'], 'record_type': 'upload',
+            'upload_task_id': task['task_id'],
+            'filename': task.get('file_name') or task.get('url', ''),
+            'status': 'preparing' if task.get('status') == 'processing' else task.get('status'),
+            'reason': task.get('reason'), 'type': task.get('type'),
+            'url': task.get('url', '') if task.get('type') == 'url' else '',
+            'time': task.get('time'), 'create_time': task.get('time'), 'tags': {},
+            'downloadable': False, 'can_delete': task.get('status') == 'error',
+            'can_edit': False, 'can_regenerate': False,
+        })
+    redis = lanying_redis.get_redis_stack_connection()
+    list_key = get_embedding_doc_list_key(embedding_uuid)
+    total = len(uploads) + redis.llen(list_key)
+    page = min(page, max(1, (total + page_size - 1) // page_size))
+    offset = (page - 1) * page_size
+    rows = uploads[offset:offset + page_size]
+    doc_offset = max(0, offset - len(uploads))
+    doc_count = page_size - len(rows)
+    # Fetch only this page's document IDs, never the full library or a count-probe row.
+    doc_ids = redis_lrange(redis, list_key, -(doc_offset + doc_count), -doc_offset - 1)[::-1] if doc_count else []
+    for doc_id in doc_ids:
+        doc = get_doc(embedding_uuid, doc_id)
+        if doc:
+            doc = dict(doc, doc_id=doc_id, record_id='document:' + doc_id, record_type='document')
+            doc['can_delete'] = doc.get('status') in ('finish', 'error')
+            doc['can_edit'] = True
+            doc['can_regenerate'] = doc['can_delete']
+            doc['create_time'] = doc.get('time')
+            doc['updated_at'] = doc.get('update_time') or doc.get('time')
+            rows.append(doc)
+    return {'list': rows, 'total': total, 'page': page, 'page_size': page_size,
+            'tasks': [task for task in reversed(tasks) if str(task.get('submission')) != '1'],
+            'has_pending': any(task.get('status') in ('wait', 'processing', 'adding') for task in tasks) or
+                           any(doc.get('status') in ('wait', 'processing', 'preparing') for doc in rows)}
+
 
 def get_embedding_doc_info_list(app_id, embedding_name, start, end):
     embedding_name_info = get_embedding_name_info(app_id, embedding_name)

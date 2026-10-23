@@ -652,6 +652,21 @@ def list_embedding_docs(service):
     resp = app.make_response({'code':401, 'message':'bad authorization'})
     return resp
 
+@app.route("/service/<string:service>/list_embedding_files", methods=["POST"])
+def list_embedding_files(service):
+    if not accessToken or request.headers.get('access-token', '') != accessToken:
+        return app.make_response({'code': 401, 'message': 'bad authorization'}), 401
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or not isinstance(data.get('app_id'), str) or not data['app_id'] or \
+            not isinstance(data.get('embedding_name'), str) or not data['embedding_name']:
+        return app.make_response({'code': 400, 'message': 'missing library scope'}), 400
+    try:
+        result = get_service_module(service).list_embedding_files(
+            data['app_id'], data['embedding_name'], data.get('page', 1), data.get('page_size', 20))
+    except ValueError:
+        return app.make_response({'code': 400, 'message': 'invalid library or pagination'}), 400
+    return app.make_response({'code': 200, 'data': result})
+
 @app.route("/service/<string:service>/download_embedding_doc", methods=["POST"])
 def download_embedding_doc(service):
     headerToken = request.headers.get('access-token', "")
@@ -749,7 +764,10 @@ def delete_embedding_task(service):
         task_id = data['task_id']
         logging.info(f"delete_embedding_task | data:{data}")
         service_module = get_service_module(service)
-        service_module.delete_embedding_task(app_id, embedding_name, task_id)
+        try:
+            service_module.delete_embedding_task(app_id, embedding_name, task_id)
+        except ValueError:
+            return app.make_response({'code': 400, 'message': 'upload is still processing'}), 400
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})

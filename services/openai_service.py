@@ -4298,6 +4298,13 @@ def get_embedding_doc_info_list(app_id, embedding_name, start, end):
     return total, docs
 
 
+def list_embedding_files(app_id, embedding_name, page=1, page_size=20):
+    result = lanying_embedding.get_embedding_file_list(app_id, embedding_name, page, page_size)
+    for item in result['list']:
+        item['downloadable'] = item['record_type'] == 'document' and is_downloadable_embedding_doc(item)
+    return result
+
+
 def is_downloadable_embedding_doc(doc):
     if not doc or not doc.get('object_name'):
         return False
@@ -4667,6 +4674,9 @@ def delete_embedding_task(app_id, embedding_name, task_id):
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
     if embedding_info:
         embedding_uuid = embedding_info['embedding_uuid']
+        task = lanying_embedding.get_task(embedding_uuid, task_id)
+        if task and str(task.get('submission')) == '1' and task.get('status') != 'error':
+            raise ValueError('upload is still processing')
         lanying_embedding.delete_task(embedding_uuid, task_id)
 
 def re_run_doc_to_embedding(app_id, embedding_name, doc_id):

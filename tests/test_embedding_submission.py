@@ -145,6 +145,7 @@ class SubmissionTest(unittest.TestCase):
         task = self.run_upload()
         self.assertEqual(task['status'], 'error')
         self.assertEqual(task['reason'], 'download_failed')
+        self.assertEqual(task['result_in_documents'], '1')
         self.assertEqual(self.docs[self.visible[0]]['status'], 'error')
         self.indexer.apply_async.assert_not_called()
 
@@ -179,8 +180,29 @@ class SubmissionTest(unittest.TestCase):
         self.indexer.apply_async.side_effect = RuntimeError('queue unavailable')
         with self.assertRaises(RuntimeError):
             self.run_upload()
-        self.assertEqual(self.tasks['task-1']['status'], 'error')
+        self.assertEqual(self.tasks['task-1']['status'], 'add_finish')
+        self.assertEqual(self.tasks['task-1']['result_in_documents'], '1')
+        self.assertEqual(self.tasks['task-1']['processing_fail_num'], 1)
         self.assertEqual(self.docs[self.visible[0]]['status'], 'error')
+
+    def test_zip_dispatch_failure_keeps_all_files_visible_and_waits_for_queued_files(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archive:
+            for name in ['first.txt', 'second.txt', 'third.txt']:
+                archive.writestr(name, name)
+        self.content = buffer.getvalue()
+        self.indexer.apply_async.side_effect = [None, RuntimeError('queue unavailable')]
+        with self.assertRaises(RuntimeError):
+            self.run_upload('files.zip')
+        task = self.tasks['task-1']
+        self.assertEqual(len(self.visible), 3)
+        self.assertEqual(len(set(self.visible)), 3)
+        self.assertEqual(task['status'], 'adding')
+        self.assertEqual(task['processing_fail_num'], 2)
+        self.assertEqual([self.docs[doc]['status'] for doc in self.visible], ['wait', 'error', 'error'])
+        self.increase('kb', 'task-1', 'processing_success_num', 1)
+        self.ns['maybe_task_finish']('kb', 'task-1')
+        self.assertEqual(task['status'], 'add_finish')
 
     def test_old_queued_jobs_without_receipt_still_index(self):
         self.ns['add_embedding_file']('trace', 'app', 'knowledge', 'https://file', {}, 'test.txt', 'key')
@@ -256,6 +278,52 @@ class SubmissionTest(unittest.TestCase):
             self.ns['add_embedding_file'](*args)
         self.assertEqual(self.tasks['task-1']['status'], 'error')
         self.storage.download_url.assert_not_called()
+
+
+class ReceiptCleanupTest(unittest.TestCase):
+    def test_only_completed_upload_metadata_is_removed(self):
+        records = {
+            'done': {'submission': '1', 'status': 'add_finish'},
+            'indexed_error': {'submission': '1', 'status': 'add_finish', 'processing_fail_num': '1'},
+            'download_error': {'submission': '1', 'status': 'error', 'result_in_documents': '1'},
+            'failed': {'submission': '1', 'status': 'error'},
+            'queued': {'submission': '1', 'status': 'wait'},
+            'preparing': {'submission': '1', 'status': 'processing'},
+            'indexing': {'submission': '1', 'status': 'adding'},
+            'website': {'status': 'add_finish', 'site_task_id': 'crawl'},
+        }
+        deleted = []
+        def remove(kb, task):
+            self.assertEqual(kb, 'kb')
+            deleted.append(task)
+            records.pop(task)
+        ns = {'lanying_redis': mock.Mock(),
+              'get_embedding_task_list_key': lambda kb: kb,
+              'redis_lrange': lambda *args: list(records),
+              'get_task': lambda kb, task: records[task].copy(),
+              'delete_task': remove, 'lanying_url_loader': mock.Mock()}
+        ns['lanying_url_loader'].info_task.return_value = {'visited': 1, 'to_visit': 0, 'found': 1}
+        load_functions('lanying_embedding.py', {'get_task_list'}, ns)
+        remaining = ns['get_task_list']('kb')
+        self.assertEqual(deleted, ['done', 'indexed_error', 'download_error'])
+        self.assertEqual({row['task_id'] for row in remaining}, set(records))
+        ns['get_task_list']('kb')
+        self.assertEqual(len(deleted), 3, 'Repeated reads do not delete unfinished uploads or website tasks')
+
+    def test_delete_receipt_touches_only_task_keys(self):
+        redis = mock.Mock()
+        provider = mock.Mock()
+        provider.get_redis_stack_connection.return_value = redis
+        ns = {'lanying_redis': provider, 'get_task': lambda *args: {'submission': '1'},
+              'get_embedding_task_info_key': lambda *args: 'task-info',
+              'get_embedding_task_list_key': lambda *args: 'task-list',
+              'get_embedding_task_detail_key': lambda *args: 'task-details',
+              'lanying_url_loader': mock.Mock()}
+        load_functions('lanying_embedding.py', {'delete_task'}, ns)
+        ns['delete_task']('kb', 'upload')
+        redis.delete.assert_called_once_with('task-info', 'task-details')
+        redis.lrem.assert_called_once_with('task-list', 2, 'upload')
+        ns['lanying_url_loader'].clean_task.assert_not_called()
 
 
 if __name__ == '__main__':
