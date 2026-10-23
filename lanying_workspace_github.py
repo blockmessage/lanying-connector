@@ -40,7 +40,7 @@ def decision(base, server, remote, read_only=False):
             return 'upload'
         return 'readonly_changed' if read_only else 'conflict'
     if server is None:
-        return 'confirm_delete_remote'
+        return 'delete_remote' if remote == base else 'confirm_delete_remote'
     if remote is None:
         return 'readonly_changed' if read_only else 'confirm_delete_server'
     if remote == base:

@@ -2,7 +2,7 @@
 
 Butler authorizes each scheduled cycle. A DB advisory lock serializes workspace
 administration and workers across nodes, without an expiring lease or Redis Lua.
-Individual file decisions remain inspectable; no remote deletion is automatic.
+Individual file decisions remain inspectable; only unchanged remote copies are removed automatically.
 """
 import base64
 import contextlib
@@ -487,10 +487,15 @@ def _run(app_id, actor, workspace):
         item = entries.get((row['source_type'], row['doc_id']))
         remote = tree.get(root + row['path'])
         try:
+            if row['removed']:
+                if row['status'] != 'source_removed' or not item:
+                    continue  # Explicit exclusions are not restored by retained originals.
+                # A Console removal follows the live reference: restoring that
+                # reference restores export, but never overwrites a new remote file.
+                file_state(app_id, row, 'pending', removed=0, base_sha='', decision_json=None)
+                row.update(status='pending', error_code='', removed=0, base_sha='', decision_json=None)
             if remote and (remote['type'], remote['mode']) != ('blob', '100644'):
                 raise SyncError('github_regular_file_required')
-            if row['removed']:
-                continue  # Confirmed deletion is not resurrected from retained originals.
             if item and row['source_type'] == 'conversation' and not any(
                     k.split('\n')[0] == row['source_id'] for k in item.get('scope_keys', [])):
                 raise SyncError('workspace_scope_changed')
@@ -523,7 +528,7 @@ def _run(app_id, actor, workspace):
             if choice and (choice.get('server'), choice.get('remote')) != (server_sha, remote_sha):
                 file_state(app_id, row, 'conflict', 'workspace_preview_changed', decision_json=None)
                 continue
-            if row['status'] == 'failed' and not choice:
+            if item and row['status'] == 'failed' and not choice:
                 continue  # Paid processing is only retried explicitly.
             action = decision(row['base_sha'] or None, server_sha, remote_sha,
                               row['source_type'] == 'knowledge_base')
@@ -534,6 +539,9 @@ def _run(app_id, actor, workspace):
             elif choice.get('choice') == 'delete' and action in {'confirm_delete_remote', 'confirm_delete_server'}:
                 action = 'delete_remote' if server_sha is None else 'delete_server'
             if action == 'synced':
+                if server_sha is None:
+                    file_state(app_id, row, 'source_removed', removed=1, base_sha='', decision_json=None)
+                    continue
                 status = 'synced'
                 error = ''
                 if item and item['source_type'] == 'conversation' and item['status'] != 'ready':
@@ -560,7 +568,8 @@ def _run(app_id, actor, workspace):
                 changes[root + row['path']] = outgoing
                 successes.append((row, server_sha, False))
             elif action == 'delete_remote':
-                changes[root + row['path']] = None
+                if remote:
+                    changes[root + row['path']] = None
                 successes.append((row, '', True))
             elif action == 'delete_server':
                 # Reuse session removal; other sessions/LOOPs/runs keep their references.
@@ -646,32 +655,32 @@ def _run(app_id, actor, workspace):
         file_state(app_id, new_row, 'processing', base_sha=entry['sha'], server_sha=entry['sha'])
         entries[('conversation', doc_id)] = item
 
-    # Regenerate only server-owned metadata. No prompts, API tokens or Skill code.
-    latest_rows = mapped_files(app_id, entries, workspace)
-    included = []
-    for row in latest_rows:
-        item = entries.get((row['source_type'], row['doc_id']))
-        if not item or row['removed']:
-            continue
-        path = root + row['path']
-        present = ((path in changes and changes[path] is not None)
-                   or (path in tree and path not in changes))
-        # Export only file metadata; App identity and scope bookkeeping stay server-side.
-        exported = {key: item[key] for key in (
-            'source_type', 'source_id', 'source_name', 'doc_id', 'filename', 'read_only',
-            'file_size', 'status', 'error_code', 'available') if key in item}
-        included.append(dict(exported, path=row['path'], local_status='ready' if present else 'unavailable'))
-    manifest = {'schema_version': 2, 'source': 'github',
+    # File mappings/status stay in MySQL. The repository describes directories,
+    # not a second list of files that must change with every upload or edit.
+    knowledge_paths = sorted({'/'.join(item['path'].split('/')[:2])
+                              for item in entries.values() if item['source_type'] == 'knowledge_base'})
+    directories = [{'path': 'conversation', 'read_only': False}]
+    directories.extend({'path': path, 'read_only': True} for path in knowledge_paths)
+    manifest = {'schema_version': 3, 'source': 'github',
                 'workspace_id': workspace['workspace_id'], 'skill_id': workspace['skill_id'],
-                'seenical_session_id': workspace['seenical_session_id'], 'documents': included}
+                'seenical_session_id': workspace['seenical_session_id'], 'directories': directories}
     payloads = {'manifest.json': _json(manifest).encode()}
     if tree.get(root + 'manifest.json', {}).get('sha') != blob_sha(payloads['manifest.json']):
         changes[root + 'manifest.json'] = payloads['manifest.json']
-    if root + 'README.md' not in tree:
+    legacy_readme = (
+        '# Reference materials\n\nConversation edits update only this conversation; shared documents are copied '
+        'on write and may require additional knowledge storage. Knowledge-base copies are read-only. '
+        'Removal and conflicts require Console confirmation. Only manifest entries are writing references.\n'
+        '会话文件修改仅用于当前会话；共享资料修改时独立复制并检查容量。关联企业知识库只读。\n').encode()
+    readme_entry = tree.get(root + 'README.md')
+    # Refresh only our exact old generated text, never a user's edited README.
+    if not readme_entry or readme_entry.get('sha') == blob_sha(legacy_readme):
         changes[root + 'README.md'] = (
             '# Reference materials\n\nConversation edits update only this conversation; shared documents are copied '
             'on write and may require additional knowledge storage. Knowledge-base copies are read-only. '
-            'Removal and conflicts require Console confirmation. Only manifest entries are writing references.\n'
+            'manifest.json declares reference directories, not individual files. Read regular material files '
+            'only inside those directories. Unchanged copies removed in Console are deleted automatically; '
+            'conflicting edits require confirmation. Server indexing does not gate local reading.\n'
             '会话文件修改仅用于当前会话；共享资料修改时独立复制并检查容量。关联企业知识库只读。\n').encode()
     if changes:
         repo.verify_private(workspace['repository_id'])
@@ -685,7 +694,7 @@ def _run(app_id, actor, workspace):
         if item and item['source_type'] == 'conversation' and item['status'] != 'ready':
             status = 'failed' if item['status'] in {'failed', 'cleanup_failed'} else 'processing'
             error = item.get('error_code', '') if status == 'failed' else ''
-        file_state(app_id, row, 'removed' if removed else status, error, base_sha=sha, removed=int(removed),
+        file_state(app_id, row, 'source_removed' if removed else status, error, base_sha=sha, removed=int(removed),
                    decision_json=None)
     states = [r['status'] for r in file_rows(app_id, workspace) if not r['removed']]
     status = 'synced' if not warnings and all(s == 'synced' for s in states) else 'needs_attention'
@@ -787,7 +796,7 @@ def run_workspace(app_id, actor, workspace):
         changes[prefix(workspace) + 'README.md'] = (
             '# Seenical workspace\n\nSee seenical-workspace.json for material partitions. '
             'Skills and websites may coexist outside materials; they are not synchronized by material sync. '
-            'Do not commit credentials. Each partition contains its own README and manifest.\n').encode()
+            'Do not commit credentials. Each partition contains its own README and directory configuration.\n').encode()
     if changes:
         repo.verify_private(workspace['repository_id'])
         repo.commit(head, changes)

@@ -165,6 +165,31 @@ class WorkspaceTest(unittest.TestCase):
         self.assertNotIn('github_token', view)
         self.assertNotIn('actor_json', view)
 
+    def test_file_content_and_index_status_changes_do_not_rewrite_directory_metadata(self):
+        self.run_cycle()
+        metadata = {p: c for p, c in self.repo.files.items() if p.endswith('.json')}
+        self.data['d'] = b'updated facts'
+        self.entries[('conversation', 'd')]['status'] = 'failed'
+        self.run_cycle()
+        self.assertEqual(self.repo.files[self.remote_path(('conversation', 'd'))], b'updated facts')
+        self.assertEqual(self.row('d')['status'], 'failed')
+        self.assertEqual(metadata, {p: c for p, c in self.repo.files.items() if p.endswith('.json')})
+
+    def test_partition_readme_only_updates_exact_legacy_generated_text(self):
+        self.run_cycle()
+        path = 'workspace/materials/writing-1/README.md'
+        current = self.repo.files[path]
+        self.repo.files[path] = (
+            '# Reference materials\n\nConversation edits update only this conversation; shared documents are copied '
+            'on write and may require additional knowledge storage. Knowledge-base copies are read-only. '
+            'Removal and conflicts require Console confirmation. Only manifest entries are writing references.\n'
+            '会话文件修改仅用于当前会话；共享资料修改时独立复制并检查容量。关联企业知识库只读。\n').encode()
+        self.run_cycle()
+        self.assertEqual(self.repo.files[path], current)
+        self.repo.files[path] = b'custom readme'
+        self.run_cycle()
+        self.assertEqual(self.repo.files[path], b'custom readme')
+
     def test_multiple_skill_partitions_keep_mapping_and_pause_independent(self):
         with self.engine.begin() as conn:
             conn.execute(text("INSERT INTO seenical_workspace_partition "
@@ -231,8 +256,8 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(self.repo.files['workspace/materials/writing-1/' + retained_path], b'edited')
         self.assertEqual(self.repo.files['workspace/materials/writing-1/' + restored_path], b'original')
         manifest = json.loads(self.repo.files['workspace/materials/writing-1/manifest.json'])
-        self.assertEqual({d['doc_id']: d['path'] for d in manifest['documents'] if d['source_type'] == 'conversation'},
-                         {'copy': retained_path, 'd': restored_path})
+        self.assertNotIn('documents', manifest)
+        self.assertIn({'path': 'conversation', 'read_only': False}, manifest['directories'])
         snapshot = copy.deepcopy(self.repo.files)
         self.run_cycle()
         self.assertEqual(self.repo.files, snapshot)
@@ -265,7 +290,11 @@ class WorkspaceTest(unittest.TestCase):
         manifest = json.loads(self.repo.files['workspace/materials/writing-1/manifest.json'])
         self.assertEqual(manifest['workspace_id'], WORKSPACE_ID)
         self.assertEqual(manifest['skill_id'], 'writing-1')
-        self.assertEqual({d['doc_id'] for d in manifest['documents']}, {'d', 'k'})
+        self.assertEqual(manifest['schema_version'], 3)
+        self.assertEqual(manifest['directories'], [
+            {'path': 'conversation', 'read_only': False},
+            {'path': 'knowledge-bases/kb', 'read_only': True}])
+        self.assertNotIn('documents', manifest)
 
     def test_normal_sync_removes_legacy_app_fields_without_changing_materials(self):
         self.run_cycle()
@@ -277,8 +306,8 @@ class WorkspaceTest(unittest.TestCase):
         self.repo.files[root_path] = json.dumps(config).encode()
         manifest = json.loads(self.repo.files[manifest_path])
         manifest['app_id'] = 'a'
-        for doc in manifest['documents']:
-            doc.update(app_id='a', scope_keys=['s\n'])
+        manifest.update(schema_version=2, documents=[dict(self.entries[('conversation', 'd')])])
+        manifest.pop('directories')
         self.repo.files[manifest_path] = json.dumps(manifest).encode()
         with self.engine.begin() as conn:
             conn.execute(text('UPDATE seenical_workspace_partition SET manifest_sha=:sha'),
@@ -392,15 +421,15 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(self.row('d')['status'], 'failed')
         self.assertEqual(self.row('d')['error_code'], 'material_update_failed')
 
-    def test_bounded_initial_export_keeps_pending_files_in_manifest(self):
+    def test_bounded_export_keeps_status_in_database_and_directory_config_stable(self):
         with mock.patch.object(sync, 'MAX_CYCLE_FILES', 1):
             self.run_cycle()
         manifest = json.loads(self.repo.files['workspace/materials/writing-1/manifest.json'])
-        self.assertEqual(len(manifest['documents']), 2)
-        self.assertEqual(sum(d['local_status'] == 'unavailable' for d in manifest['documents']), 1)
+        self.assertNotIn('documents', manifest)
+        self.assertEqual(self.row('k')['status'], 'pending')
         self.run_cycle()
-        manifest = json.loads(self.repo.files['workspace/materials/writing-1/manifest.json'])
-        self.assertTrue(all(d['local_status'] == 'ready' for d in manifest['documents']))
+        self.assertEqual(manifest, json.loads(self.repo.files['workspace/materials/writing-1/manifest.json']))
+        self.assertEqual(self.row('k')['status'], 'synced')
 
     def test_invalid_new_file_does_not_block_other_exports(self):
         self.run_cycle()
@@ -507,9 +536,90 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(self.row('d')['removed'], 1)
         self.assertEqual(self.data['d'], b'original')
 
-    def test_server_removal_never_automatically_deletes_git_file(self):
+    def test_server_removal_automatically_deletes_unchanged_git_file(self):
         self.run_cycle()
         path = self.remote_path(('conversation', 'd'))
+        other_path = self.remote_path(('knowledge_base', 'k'))
+        manifest = self.repo.files['workspace/materials/writing-1/manifest.json']
+        del self.entries[('conversation', 'd')]
+        self.run_cycle()
+        self.assertNotIn(path, self.repo.files)
+        self.assertIn(other_path, self.repo.files)
+        self.assertEqual(self.row('d')['removed'], 1)
+        self.assertEqual(self.repo.files['workspace/materials/writing-1/manifest.json'], manifest)
+        self.run_cycle()
+        self.assertNotIn(path, self.repo.files)
+        self.import_new.assert_not_called()
+
+    def test_prior_processing_failure_does_not_block_explicit_server_removal(self):
+        self.run_cycle()
+        path = self.remote_path(('conversation', 'd'))
+        sync.file_state('a', self.row('d'), 'failed', 'material_update_failed')
+        del self.entries[('conversation', 'd')]
+        self.run_cycle()
+        self.assertNotIn(path, self.repo.files)
+        self.assertEqual(self.row('d')['removed'], 1)
+        self.start.assert_not_called()
+
+    def test_restoring_console_reference_automatically_restores_same_github_path(self):
+        self.run_cycle()
+        key = ('conversation', 'd')
+        path = self.remote_path(key)
+        entry = self.entries.pop(key)
+        self.run_cycle()
+        self.assertEqual(self.row('d')['status'], 'source_removed')
+        self.assertNotIn(path, self.repo.files)
+        self.entries[key] = entry
+        self.run_cycle()
+        self.assertEqual(self.repo.files[path], b'original')
+        self.assertEqual(self.row('d')['removed'], 0)
+        self.assertEqual(self.row('d')['status'], 'synced')
+        writes = len(self.repo.writes)
+        self.run_cycle()
+        self.assertEqual(len(self.repo.writes), writes)
+        self.import_new.assert_not_called()
+
+    def test_restoring_console_reference_preserves_recreated_remote_edits(self):
+        self.run_cycle()
+        key = ('conversation', 'd')
+        path = self.remote_path(key)
+        entry = self.entries.pop(key)
+        self.run_cycle()
+        self.repo.files[path] = b'new collaborator file'
+        self.entries[key] = entry
+        self.run_cycle()
+        self.assertEqual(self.repo.files[path], b'new collaborator file')
+        self.assertEqual(self.row('d')['status'], 'conflict')
+        self.assertEqual(self.row('d')['removed'], 0)
+        self.start.assert_not_called()
+        self.import_new.assert_not_called()
+
+    def test_explicit_exclusion_does_not_auto_restore_after_reference_returns(self):
+        path = self.remove_remote_and_confirm()
+        entry = self.entries.pop(('conversation', 'd'))
+        self.run_cycle()
+        self.entries[('conversation', 'd')] = entry
+        self.run_cycle()
+        self.assertEqual(self.row('d')['status'], 'removed')
+        self.assertEqual(self.row('d')['removed'], 1)
+        self.assertNotIn(path, self.repo.files)
+
+    def test_restore_after_both_sides_removed_exports_again(self):
+        self.run_cycle()
+        key = ('conversation', 'd')
+        path = self.remote_path(key)
+        entry = self.entries.pop(key)
+        del self.repo.files[path]
+        self.run_cycle()
+        self.entries[key] = entry
+        self.run_cycle()
+        self.assertEqual(self.repo.files[path], b'original')
+        self.assertEqual(self.row('d')['status'], 'synced')
+
+    def test_server_removal_preserves_changed_git_file_until_confirmation(self):
+        self.run_cycle()
+        path = self.remote_path(('conversation', 'd'))
+        self.repo.files[path] = b'collaborator edits'
         del self.entries[('conversation', 'd')]
         self.run_cycle()
         self.assertEqual(self.row('d')['status'], 'confirm_delete_remote')
@@ -517,6 +627,28 @@ class WorkspaceTest(unittest.TestCase):
         sync.resolve('a', {}, {'path_hash': self.row('d')['path_hash'], 'choice': 'delete'}, self.partition())
         self.run_cycle()
         self.assertNotIn(path, self.repo.files)
+
+    def test_failed_delete_commit_keeps_mapping_and_rechecks_remote_before_retry(self):
+        self.run_cycle()
+        path = self.remote_path(('conversation', 'd'))
+        del self.entries[('conversation', 'd')]
+        with mock.patch.object(self.repo, 'commit', side_effect=SyncError('github_unavailable')):
+            self.run_cycle()
+        self.assertIn(path, self.repo.files)
+        self.assertEqual(self.row('d')['removed'], 0)
+        self.repo.files[path] = b'edited before retry'
+        self.run_cycle()
+        self.assertEqual(self.row('d')['status'], 'confirm_delete_remote')
+        self.assertEqual(self.repo.files[path], b'edited before retry')
+
+    def test_removal_on_both_sides_finishes_without_reimport(self):
+        self.run_cycle()
+        path = self.remote_path(('conversation', 'd'))
+        del self.entries[('conversation', 'd')]
+        del self.repo.files[path]
+        self.run_cycle()
+        self.assertEqual(self.row('d')['removed'], 1)
+        self.import_new.assert_not_called()
 
     def remove_remote_and_confirm(self):
         self.run_cycle()

@@ -14,11 +14,12 @@ class GithubTest(unittest.TestCase):
             with self.assertRaises(SyncError):
                 relative_path(path)
 
-    def test_decisions_never_auto_delete_or_write_public_library(self):
+    def test_decisions_only_auto_delete_unchanged_remote_copies(self):
         for server, remote in [('old', 'new'), ('new', 'other'), ('old', None)]:
             self.assertEqual(decision('old', server, remote, True), 'readonly_changed')
         self.assertEqual(decision('old', 'old', None), 'confirm_delete_server')
-        self.assertEqual(decision('old', None, 'old'), 'confirm_delete_remote')
+        self.assertEqual(decision('old', None, 'old'), 'delete_remote')
+        self.assertEqual(decision('old', None, 'edited'), 'confirm_delete_remote')
         self.assertEqual(decision('old', 'new', 'other'), 'conflict')
         self.assertEqual(decision('old', 'old', 'new'), 'download')
         self.assertEqual(decision('old', 'new', 'old'), 'upload')
