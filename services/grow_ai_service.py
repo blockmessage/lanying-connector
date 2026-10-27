@@ -12,6 +12,7 @@ bp = Blueprint(service, __name__)
 
 GROW_AI_DOWNLOAD_ALLOWED_ORIGINS = {
     'https://console.seenical.ai',
+    'https://console.seenical.cn',
     'https://localhost:1024',
     'http://localhost:1024'
 }
