@@ -317,6 +317,64 @@ class PreviewDeletionRegressionTest(unittest.TestCase):
         self.assertEqual(self.grow.requests.post.call_count, 1)
         self.assertEqual(self.preview['clear_status'], 'pending')
 
+    def test_site_clear_blocks_new_preview_even_after_detaching_old_preview(self):
+        self.grow.preview_discard('a', 'preview')
+        self.site.update(site_id='site', github_hosting='on', active_preview_id='', pending_preview_id='')
+        self.run['zip_file'] = 'result.zip'
+        self.grow.get_task = lambda *args: {'task_id': 'plan'}
+        self.grow.get_task_site_list = lambda task: [self.site]
+        queued = mock.Mock()
+        with mock.patch.dict('sys.modules', {'lanying_tasks': types.SimpleNamespace(grow_ai_preview_task=queued)}):
+            result = self.grow.task_run_preview('a', 'run')
+            self.assertEqual(result['message'], 'preview clear in progress')
+            queued.apply_async.assert_not_called()
+            self.redis.hmset.assert_not_called()
+            self.preview['clear_started_at'] = 0
+            self.assertEqual(self.grow.task_run_preview('a', 'run')['message'], 'preview clear result unknown')
+            self.grow.consume_preview_callback = lambda code: {
+                'type': 'clear', 'app_id': 'a', 'preview_id': 'preview', 'attempt': self.preview['clear_attempt']}
+            self.assertEqual(self.grow.preview_clear_finish('callback', 'ok')['result'], 'ok')
+            self.assertEqual(self.site['clearing_preview_id'], '')
+            self.assertEqual(self.grow.task_run_preview('a', 'run')['result'], 'ok')
+            queued.apply_async.assert_called_once()
+
+    def test_site_clear_blocks_retry_and_already_queued_deployment(self):
+        self.grow.preview_discard('a', 'preview')
+        new = dict(self.preview, preview_id='new-preview', status='error', retryable=True,
+                   clear_status='', preview_commit_sha='new-commit')
+        self.grow.get_preview = lambda app, pid: dict(self.preview if pid == 'preview' else new)
+        self.site.update(active_preview_id='', pending_preview_id='new-preview')
+        self.assertEqual(self.grow.preview_retry('a', 'new-preview')['message'], 'preview clear in progress')
+        self.grow.consume_preview_callback = lambda code: {
+            'type': 'deploy_check', 'app_id': 'a', 'preview_id': 'new-preview'}
+        self.assertEqual(self.grow.check_preview_deploy('callback', 10)['message'], 'preview clear in progress')
+        self.assertEqual(new['status'], 'error')
+        self.assertEqual(self.grow.requests.post.call_count, 1)
+
+    def test_site_clear_prevents_second_clear_dispatch(self):
+        self.grow.preview_discard('a', 'preview')
+        other = dict(self.preview, preview_id='other-preview', clear_status='', status='ready')
+        self.grow.get_preview = lambda app, pid: dict(self.preview if pid == 'preview' else other)
+        self.assertEqual(self.grow.dispatch_clear_preview(other)['message'], 'preview clear in progress')
+        self.assertEqual(self.grow.requests.post.call_count, 1)
+        self.assertEqual(self.site['clearing_preview_id'], 'preview')
+
+    def test_confirmed_failure_and_manual_recovery_release_site_gate(self):
+        self.grow.preview_discard('a', 'preview')
+        self.site.update(active_preview_id='', pending_preview_id='')
+        self.grow.preview_clear_finish('callback', 'failed')
+        self.assertEqual(self.grow.preview_clear_error('a', self.site), '')
+        self.grow.preview_discard('a', 'preview')
+        self.preview['clear_started_at'] = 0
+        self.grow.preview_discard('a', 'preview')
+        self.assertEqual(self.grow.preview_clear_error('a', self.site), 'preview clear result unknown')
+        self.grow.recover_preview_clear('a', 'preview', self.preview['clear_attempt'], 'failed', workflow_stopped=True)
+        self.assertEqual(self.grow.preview_clear_error('a', self.site), '')
+
+    def test_clear_on_other_site_does_not_block_preview(self):
+        self.grow.preview_discard('a', 'preview')
+        self.assertEqual(self.grow.preview_clear_error('a', {'site_id': 'other'}), '')
+
     def test_pending_clear_keeps_nonactive_preview_until_callback(self):
         self.grow.preview_discard('a', 'preview')
         self.site['active_preview_id'] = ''

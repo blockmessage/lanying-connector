@@ -2604,6 +2604,26 @@ def get_site_github_context(app_id, site_id):
     }
 
 
+def preview_clear_error(app_id, site):
+    """Called under the site lock. A dispatched clear outlives site UI pointers."""
+    if not site:
+        return ''
+    clearing_id = site.get('clearing_preview_id', '')
+    for preview_id in {clearing_id, site.get('active_preview_id', ''), site.get('pending_preview_id', '')} - {''}:
+        preview = get_preview(app_id, preview_id)
+        if preview is None:
+            if preview_id == clearing_id:
+                return 'preview clear result unknown'
+            continue
+        if preview.get('clear_status') == 'unknown':
+            return 'preview clear result unknown'
+        if preview.get('clear_status') == 'pending':
+            if int(time.time()) - int(preview.get('clear_started_at', 0)) >= PREVIEW_CALLBACK_TTL:
+                return 'preview clear result unknown'
+            return 'preview clear in progress'
+    return ''
+
+
 @conversation_deletion.guarded('run')
 def task_run_preview(app_id, task_run_id):
     logging.info(f'task_run_preview start | app_id:{app_id}, task_run_id:{task_run_id}')
@@ -2627,6 +2647,9 @@ def task_run_preview(app_id, task_run_id):
     lock_key = f'lanying-connector-grow-ai-preview-site-lock:{app_id}:{site_id}'
     with redis.lock(lock_key, timeout=120):
         locked_site = get_site(app_id, site_id)
+        clear_error = preview_clear_error(app_id, locked_site)
+        if clear_error:
+            return {'result': 'error', 'message': clear_error}
         old_pending_id = locked_site.get('pending_preview_id', '') if locked_site else ''
         redis.hmset(preview_key(app_id, preview_id), {
             'preview_id': preview_id,
@@ -2740,6 +2763,9 @@ def preview_retry(app_id, preview_id):
         site = get_site(app_id, preview['site_id'])
         if site is None:
             return {'result': 'error', 'message': 'site not found'}
+        clear_error = preview_clear_error(app_id, site)
+        if clear_error:
+            return {'result': 'error', 'message': clear_error}
         if site.get('pending_preview_id', '') not in ['', preview_id]:
             return {'result': 'error', 'message': 'another preview is building'}
         update_site_field(app_id, preview['site_id'], 'pending_preview_id', preview_id)
@@ -2767,6 +2793,9 @@ def check_preview_deploy(code, release_size):
     lock_key = f"lanying-connector-grow-ai-preview-site-lock:{preview['app_id']}:{preview['site_id']}"
     with redis.lock(lock_key, timeout=120):
         site = get_site(preview['app_id'], preview['site_id'])
+        clear_error = preview_clear_error(preview['app_id'], site)
+        if clear_error:
+            return {'result': 'error', 'message': clear_error}
         current_preview = get_preview(preview['app_id'], preview['preview_id'])
         if site is None or current_preview is None or current_preview.get('status') == 'clearing' or site.get('pending_preview_id', '') != preview['preview_id']:
             return {'result': 'error', 'message': 'preview superseded'}
@@ -2995,6 +3024,9 @@ def dispatch_clear_preview(preview):
     if context['result'] == 'error':
         return context
     site = context['site']
+    clear_error = preview_clear_error(preview['app_id'], site)
+    if clear_error:
+        return {'result': 'error', 'message': clear_error}
     if preview.get('clear_status') == 'failed' and any(
             site.get(field, '') not in ('', preview['preview_id'])
             for field in ('active_preview_id', 'pending_preview_id')):
@@ -3009,6 +3041,7 @@ def dispatch_clear_preview(preview):
     # Persist before sending: a network timeout is an unknown dispatch outcome,
     # not permission to send another destructive workflow.
     redis = lanying_redis.get_redis_connection()
+    update_site_field(preview['app_id'], preview['site_id'], 'clearing_preview_id', preview['preview_id'])
     redis.hset(preview_key(preview['app_id'], preview['preview_id']), mapping={
         'clear_status': 'pending', 'clear_started_at': int(time.time()),
         'clear_attempt': attempt, 'status': 'clearing'})
@@ -3130,6 +3163,8 @@ def cleanup_preview_without_site(app_id, preview_id):
     redis = lanying_redis.get_redis_connection()
     site = get_site(app_id, preview['site_id'])
     if site:
+        if site.get('clearing_preview_id', '') == preview_id:
+            update_site_field(app_id, preview['site_id'], 'clearing_preview_id', '')
         if site.get('active_preview_id', '') == preview_id:
             update_site_field(app_id, preview['site_id'], 'active_preview_id', '')
         if site.get('pending_preview_id', '') == preview_id:
