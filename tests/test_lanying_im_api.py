@@ -111,6 +111,26 @@ class LanyingImApiTests(unittest.TestCase):
             timeout=(3.0, 5.0),
         )
 
+    def test_destroy_seenical_group_uses_query_parameter_and_checks_result(self):
+        for code, success in ((200, True), (20001, True), (10002, False)):
+            with self.subTest(code=code):
+                response = mock.Mock()
+                response.json.return_value = {"code": code}
+                with mock.patch.object(lanying_im_api.requests, "post", return_value=response) as post:
+                    self.assertEqual(lanying_im_api.destroy_seenical_group("app-id", "9"), success)
+                post.assert_called_once_with(
+                    "https://api.example.com/group/destroy",
+                    headers={"app_id": "app-id", "group_id": "9", "access-token": "admin-token"},
+                    params={"group_id": 9},
+                    timeout=(3.0, 10.0),
+                )
+
+    def test_destroy_seenical_group_does_not_request_without_admin_token(self):
+        with mock.patch.object(lanying_im_api.lanying_config, "get_lanying_connector", return_value={}), \
+             mock.patch.object(lanying_im_api.requests, "post") as post:
+            self.assertFalse(lanying_im_api.destroy_seenical_group("app-id", "9"))
+        post.assert_not_called()
+
     def test_filter_group_member_ids_returns_only_ratel_matches(self):
         fake_response = mock.Mock(status_code=200)
         fake_response.json.return_value = {"code": 200, "data": [102, 103]}

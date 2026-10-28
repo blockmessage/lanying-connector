@@ -390,7 +390,7 @@ def destroy_seenical_group(app_id, group_id):
     response = requests.post(
         lanying_config.get_lanying_api_endpoint(app_id) + '/group/destroy',
         headers={'app_id': app_id, 'group_id': str(group_id), 'access-token': token},
-        json={'group_id': int(group_id)}, timeout=(3.0, 10.0))
+        params={'group_id': int(group_id)}, timeout=(3.0, 10.0))
     code = response.json().get('code')
     if code not in (200, 20001):
         logging.warning('Seenical group cleanup rejected | app_id:%s group_id:%s code:%s', app_id, group_id, code)
