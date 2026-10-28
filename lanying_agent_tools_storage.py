@@ -400,6 +400,12 @@ def save_seenical_conversation_binding(binding):
               AND conversation_id=:conversation_id
             FOR UPDATE
         """), params).mappings().first()
+        if session_row and session_row['status'] in ('DELETING', 'DELETED'):
+            return {'result': 'error', 'message': 'conversation_deleting'}
+        if params['task_id'] and conn.execute(text(
+                'SELECT 1 FROM seenical_conversation_binding '
+                'WHERE app_id=:app_id AND deletion_task_id=:task_id FOR UPDATE'), params).first():
+            return {'result': 'error', 'message': 'conversation_deleting'}
         if target_row and str(target_row['seenical_session_id']) != params['seenical_session_id']:
             return {'result': 'error', 'message': 'conversation is already registered'}
         if session_row and (
@@ -423,11 +429,13 @@ def save_seenical_conversation_binding(binding):
                     and str(session_row['task_id']) != params['task_id']):
                 unbound_task_ids.append(str(session_row['task_id']))
             task_row = conn.execute(text("""
-                SELECT seenical_session_id
+                SELECT seenical_session_id, status
                 FROM seenical_conversation_binding
                 WHERE app_id=:app_id AND task_id=:task_id
                 FOR UPDATE
             """), params).mappings().first()
+            if task_row and task_row.get('status') in ('DELETING', 'DELETED'):
+                return {'result': 'error', 'message': 'conversation_deleting'}
             if task_row and str(task_row['seenical_session_id']) != params['seenical_session_id']:
                 conn.execute(text("""
                     UPDATE seenical_conversation_binding
@@ -497,6 +505,7 @@ def deactivate_seenical_conversation_binding(app_id, seenical_session_id,
               AND conversation_id=:conversation_id
               AND bound_im_user_id=:bound_im_user_id
               AND task_id IS NULL
+              AND status NOT IN ('DELETING', 'DELETED')
         """), {
             'app_id': str(app_id),
             'seenical_session_id': str(seenical_session_id),

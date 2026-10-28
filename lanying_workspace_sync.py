@@ -405,6 +405,7 @@ def import_new(app_id, workspace, actor, session, path, content):
             raise SyncError('material_upload_failed')
         with materials._engine().begin() as conn:
             materials._space(conn, app_id, True)
+            materials.check_session_not_deleted(conn, app_id, session)
             conn.execute(text('INSERT INTO seenical_material '
                 '(app_id,doc_id,message_id,filename,source_url,object_name,file_size) '
                 "VALUES (:a,:d,:m,:f,'',:o,:z)"), {'a': str(app_id), 'd': doc_id, 'm': identity,

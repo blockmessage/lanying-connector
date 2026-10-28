@@ -381,6 +381,23 @@ def get_group_info(app_id, group_id):
         logging.info(f"get_group_info, app_id={app_id} group_id={group_id}, result:{result}")
         return result
 
+def destroy_seenical_group(app_id, group_id):
+    """Only called for a persisted, verified Seenical deletion binding."""
+    config = lanying_config.get_lanying_connector(app_id) or {}
+    token = config.get('lanying_admin_token', '')
+    if not token:
+        return False
+    response = requests.post(
+        lanying_config.get_lanying_api_endpoint(app_id) + '/group/destroy',
+        headers={'app_id': app_id, 'group_id': str(group_id), 'access-token': token},
+        json={'group_id': int(group_id)}, timeout=(3.0, 10.0))
+    code = response.json().get('code')
+    if code not in (200, 20001):
+        logging.warning('Seenical group cleanup rejected | app_id:%s group_id:%s code:%s', app_id, group_id, code)
+    # GROUP_NOT_EXIST is safe on retries after a lost successful response.
+    return code in (200, 20001)
+
+
 def filter_group_member_ids(app_id, group_id, user_id_list):
     config = lanying_config.get_lanying_connector(app_id)
     if not config or not user_id_list:

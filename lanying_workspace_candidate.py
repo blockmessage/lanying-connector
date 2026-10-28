@@ -33,6 +33,10 @@ def state(app_id, workspace, file, status, **fields):
 
 
 def current_scope(conn, app_id, workspace, file, doc_id):
+    try:
+        materials.check_session_not_deleted(conn, app_id, file['source_id'])
+    except materials.MaterialError:
+        return False
     return conn.execute(text('SELECT 1 FROM seenical_workspace_partition p '
         'JOIN seenical_workspace_file f ON f.workspace_id=p.workspace_id AND f.skill_id=p.skill_id '
         'JOIN seenical_material_reference r ON r.app_id=p.app_id AND r.owner_id=p.seenical_session_id '

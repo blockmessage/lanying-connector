@@ -30,6 +30,14 @@ INTERNAL_NAME = '__seenical_session_materials__'
 BUSY = {'indexing', 'cleaning'}
 
 
+def check_session_not_deleted(conn, app_id, session_id):
+    row = conn.execute(text('SELECT status FROM seenical_conversation_binding '
+        'WHERE app_id=:a AND seenical_session_id=:s FOR UPDATE'),
+        {'a': str(app_id), 's': str(session_id)}).first()
+    if row and row[0] in ('DELETING', 'DELETED'):
+        raise MaterialError('material_conversation_unavailable')
+
+
 def message_ext(msg):
     raw = msg.get('ext', {})
     if isinstance(raw, dict):
@@ -182,6 +190,8 @@ def set_references(app_id, owner_type, owner_id, values, require_ready=False, pe
         return [] if ready_only else None
     with _engine().begin() as conn:
         space = _space(conn, app_id, True)
+        if owner_type == 'session' and values:
+            check_session_not_deleted(conn, app_id, owner_id)
         if not space and not values:
             if persist_owner:
                 persist_owner()
@@ -353,6 +363,7 @@ def ingest_message(msg):
     space = ensure_space(app_id)
     with _engine().begin() as conn:
         _space(conn, app_id, True)
+        check_session_not_deleted(conn, app_id, conversation['seenical_session_id'])
         existing = conn.execute(text('SELECT doc_id FROM seenical_material '
             'WHERE app_id=:a AND message_id=:m'), {'a': app_id, 'm': message_id}).first()
         if existing:
@@ -833,6 +844,7 @@ def material_api(app_id, actor, operation, data):
     elif operation in {'restore', 'retry'}:
         with _engine().begin() as conn:
             _space(conn, app_id, True)
+            check_session_not_deleted(conn, app_id, session_id)
             doc = _document(conn, app_id, doc_id)
             if doc.get('replacement_id'):
                 raise MaterialError('material_processing')
@@ -934,7 +946,7 @@ def reconcile_plan_and_run_references(app_id):
             owner = lanying_grow_ai.get_task(app_id, owner_id)
         else:
             owner = lanying_grow_ai.get_task_run(app_id, owner_id)
-        if owner is None or (owner_type == 'run' and owner.get('status') in {'success', 'error'}):
+        if owner is None or (owner_type == 'run' and owner.get('status') in {'success', 'error', 'cancelled'}):
             release_owner(app_id, owner_type, owner_id)
 
 

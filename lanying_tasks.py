@@ -41,6 +41,10 @@ slow_queue = Celery('slow_queue',
              broker=lanying_redis.get_slow_task_redis_server())
 slow_queue.conf.timezone = 'Asia/Shanghai'
 slow_queue.conf.beat_schedule = {
+    'seenical_conversation_cleanup_sweep': {
+        'task': 'lanying_tasks.seenical_conversation_cleanup_sweep',
+        'schedule': crontab(minute='*')
+    },
     'gift_quota_settlement_retry': {
         'task': 'lanying_tasks.gift_quota_settlement_retry',
         'schedule': crontab(minute='*')
@@ -817,3 +821,15 @@ def site_google_index_task(self, schedules, min_delay, max_delay, index):
     except Exception as e:
         retry_delay_time = 60
         raise self.retry(exc=e, countdown=retry_delay_time)
+
+
+@slow_queue.task
+def seenical_conversation_cleanup(app_id, session_id):
+    import lanying_seenical_deletion
+    lanying_seenical_deletion.cleanup(app_id, session_id)
+
+
+@slow_queue.task
+def seenical_conversation_cleanup_sweep():
+    import lanying_seenical_deletion
+    lanying_seenical_deletion.sweep()

@@ -137,6 +137,17 @@ def register_seenical_conversation():
         str(data.get('app_id', '')), _actor(data), data))
 
 
+@bp.route('/service/agent_tools/seenical/conversations/delete', methods=['POST'])
+def delete_seenical_conversation():
+    denied = _require_auth()
+    if denied:
+        return denied
+    import lanying_seenical_deletion
+    data = _body()
+    return _response(lanying_seenical_deletion.request(
+        str(data.get('app_id', '')), _actor(data), data))
+
+
 @bp.route('/service/agent_tools/seenical/conversations/unregister', methods=['POST'])
 def unregister_seenical_conversation():
     denied = _require_auth()

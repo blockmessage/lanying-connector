@@ -71,6 +71,19 @@ class CandidateTest(unittest.TestCase):
         self.assertEqual(m.reference_ids('a', 'session', 's'), ['1-1'])
         self.assertEqual(sum(self.base.usage.values()), 10)
 
+    def test_deletion_during_indexing_does_not_reactivate_session_reference(self):
+        original_index = self.base.fixture.index.side_effect
+        def deleted(*args, **kwargs):
+            result = original_index(*args, **kwargs)
+            with self.engine.begin() as conn:
+                conn.execute(text("UPDATE seenical_conversation_binding SET status='DELETING' WHERE seenical_session_id='s'"))
+            m.release_owner('a', 'session', 's')
+            return result
+        self.base.fixture.index.side_effect = deleted
+        self.start()
+        self.assertEqual(m.reference_ids('a', 'session', 's'), [])
+        self.assertEqual(self.base.document()['object_name'], 'old-object')
+
     def test_two_partitions_copy_the_same_original_independently(self):
         m.set_references('a', 'session', 'other', ['1-1'])
         m.set_references('a', 'plan', 'independent', ['1-1'])

@@ -29,11 +29,12 @@ import lanying_cdn
 import lanying_cert
 import lanying_slack
 import lanying_google_analytics
-from urllib.parse import urlparse,urlunparse
+from urllib.parse import urlparse,urlunparse,quote
 import lanying_baidu
 import lanying_google
 import lanying_oss
 import lanying_agent_tools_storage
+import lanying_seenical_deletion as conversation_deletion
 from github import Github
 
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
@@ -391,6 +392,11 @@ def create_task(task_setting: TaskSetting, run_immediately=True):
     }
 
 def configure_task(task_id, task_setting: TaskSetting):
+    return _configure_task_guarded(task_setting.app_id, task_id, task_setting)
+
+
+@conversation_deletion.guarded('task')
+def _configure_task_guarded(app_id, task_id, task_setting):
     now = int(time.time())
     app_id = task_setting.app_id
     set_admin_token(app_id)
@@ -629,6 +635,7 @@ def _save_task_revision(app_id, task_id, revision, snapshot, request_id):
         return {'result': 'error'}
 
 
+@conversation_deletion.guarded('task')
 def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
                operational_changes=None):
     """Patch a task without changing omitted fields or enabling its schedule.
@@ -937,7 +944,10 @@ def get_task_list(app_id):
     redis = lanying_redis.get_redis_connection()
     task_ids = reversed(lanying_redis.redis_lrange(redis, get_task_list_key(app_id), 0, -1))
     task_list = []
+    deleting = conversation_deletion.deleting_task_ids(app_id)
     for task_id in task_ids:
+        if str(task_id) in deleting:
+            continue
         task_info = get_task(app_id, task_id)
         if task_info:
             if len(task_info['site_id_list']) > 0:
@@ -1242,6 +1252,8 @@ def _loop_notification_text(event, task_run):
 def send_task_run_notification(app_id, task_run_id, event):
     try:
         task_run = get_task_run(app_id, task_run_id)
+        if task_run and str(task_run['task_id']) in conversation_deletion.deleting_task_ids(app_id):
+            return
         if not task_run:
             return 0
         attempt = int(task_run.get('notification_attempt', 1) or 1)
@@ -1375,6 +1387,7 @@ def record_run_material_availability(app_id, task_run_id, run, requested_count, 
     })
 
 
+@conversation_deletion.guarded('task')
 def run_task(app_id, task_id, countdown=0):
     logging.info(f"run task start | app_id:{app_id}, task_id:{task_id}")
     task_info = get_task(app_id, task_id)
@@ -1477,6 +1490,7 @@ def delete_task_run(app_id, task_run_id):
                 pipe.incrby(key, -int(current.get('file_size', 0)))
             pipe.lrem(task_run_list_key, 1, task_run_id)
             pipe.delete(task_run_key)
+            pipe.delete(get_task_run_result_key(app_id, task_run_id))
             pipe.execute()
     try:
         lanying_seenical_materials.release_owner(app_id, 'run', task_run_id, persist_owner=persist_delete)
@@ -1485,6 +1499,7 @@ def delete_task_run(app_id, task_run_id):
         raise
     return {'result': 'ok', 'data':{'success': True}}
 
+@conversation_deletion.guarded('run')
 def do_run_task(app_id, task_run_id, has_retry_times, dispatch_id=None):
     try:
         update_task_run_field(app_id, task_run_id, "status", "running")
@@ -1515,6 +1530,8 @@ def do_run_task(app_id, task_run_id, has_retry_times, dispatch_id=None):
             update_task_run_field(app_id, task_run_id, "error_message", '')
             send_task_run_notification(app_id, task_run_id, 'success')
         return result
+    except conversation_deletion.Cancelled:
+        raise
     except Exception as e:
         increase_task_run_field(app_id, task_run_id, "fail_times", 1)
         error_msg = 'internal error'
@@ -1755,6 +1772,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     max_article_generate_num = 5
     start_from = task_run['start_from']
     for i in range(start_from, article_count):
+        conversation_deletion.check_run(app_id, task_run_id)
         logging.info(f"do_run_task_internal for article | app_id:{app_id}, task_id:{task_id}, task_run_id:{task_run_id}, i:{i}")
         article_id = f'{task_run_id}_{i+1}'
         if redis.hexists(run_result_key, article_id):
@@ -1784,6 +1802,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
                     set_task_schedule(app_id, task_id, "off", result['message'])
             make_task_run_result_zip_file(app_id, task_run_id)
             return result
+        conversation_deletion.check_run(app_id, task_run_id)
         article_info = result['article_info']
         redis.hset(run_result_key, article_id, json.dumps(article_info, ensure_ascii=False))
         increase_task_run_field(app_id, task_run_id, "article_success_count", 1)
@@ -1798,6 +1817,7 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     if result['result'] == 'error':
         return result
     logging.info(f"do_run_task finish | app_id:{app_id}, task_run_id:{task_run_id}")
+    conversation_deletion.check_run(app_id, task_run_id)
     site_list = get_auto_deploy_site_list(app_id, task_id)
     if site_list:
         from lanying_tasks import grow_ai_deply_task_run
@@ -1959,6 +1979,7 @@ def get_task_result_list(app_id, task_id, limit=50, cursor=''):
         'data': {'list': results, 'has_more': False, 'next': ''}
     }
 
+@conversation_deletion.guarded('run')
 def deploy_task_run(app_id, task_run_id):
     task_run = get_task_run(app_id, task_run_id)
     if task_run is None:
@@ -2034,6 +2055,7 @@ def discard_site_previews_for_direct_publish(app_id, site):
     logging.info(f"direct publish discarded previews | app_id:{app_id}, site_id:{site['site_id']}, preview_ids:{preview_ids}")
     return {'result': 'ok', 'data': {'success': True}}
 
+@conversation_deletion.guarded('run')
 def do_deploy_task_run(app_id, task_run_id, has_retry_times):
     try:
         update_task_run_field(app_id, task_run_id, "deploy_status", "running")
@@ -2057,6 +2079,8 @@ def do_deploy_task_run(app_id, task_run_id, has_retry_times):
             update_task_run_field(app_id, task_run_id, "deploy_status", "success")
             update_task_run_field(app_id, task_run_id, "deploy_error_message", '')
         return result
+    except conversation_deletion.Cancelled:
+        raise
     except Exception as e:
         increase_task_run_field(app_id, task_run_id, "deploy_fail_times", 1)
         error_msg = 'internal error'
@@ -2384,6 +2408,8 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
         data = {
             "sha": new_commit_sha
         }
+        conversation_deletion.check_run(app_id, task_run_id)
+        redis.set(f'lanying_connector:grow_ai:commit_task:{app_id}:{new_commit_sha}', task_id)
         response = requests.patch(f"{github_api_url}/git/refs/heads/{new_branch}", headers=headers, json=data)
         if response.status_code != 200:
             logging.info(f"github response | {response.content}")
@@ -2398,11 +2424,14 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
                 "head": new_branch,
                 "base": base_branch
             }
+            conversation_deletion.check_run(app_id, task_run_id)
             response = requests.post(f"{github_api_url}/pulls", headers=headers, json=pr_data)
             if response.status_code != 201:
                 logging.info(f"github response | {response.content}")
                 return {'result': 'error', 'message': 'github fail to commit PR'}
-            pr_url = response.json().get("html_url")
+            pr = response.json()
+            redis.set(pull_request_task_key(app_id, f'{github_owner}/{github_repo}', pr['number']), task_id)
+            pr_url = pr.get("html_url")
             update_task_run_field(app_id, task_run_id, "pr_url", pr_url)
         else:
             pr_url = ''
@@ -2434,6 +2463,58 @@ def preview_pr_set_key():
 
 def preview_publish_commit_key(repository, commit_sha):
     return f'lanying_connector:grow_ai:preview_publish_commit:{repository}:{commit_sha}'
+
+
+def pull_request_task_key(app_id, repository, number):
+    return f'lanying_connector:grow_ai:pr_task:{app_id}:{repository.lower()}:{number}'
+
+
+def resolve_release_task(app_id, repository, commit_sha, site):
+    """Resolve ordinary and preview PR merges even after their run was deleted."""
+    redis = lanying_redis.get_redis_connection()
+    key = f'lanying_connector:grow_ai:commit_task:{app_id}:{commit_sha}'
+    task_id = lanying_redis.redis_get(redis, key)
+    if task_id:
+        return {'result': 'ok', 'task_id': task_id}
+    token = site.get('github_token', '')
+    if site.get('github_hosting') == 'on' and repository.split('/')[0] == get_github_org():
+        token = get_github_token()
+    headers = {'Accept': 'application/vnd.github+json'}
+    if token:
+        headers['Authorization'] = f'token {token}'
+    response = requests.get(
+        f'https://api.github.com/repos/{repository}/commits/{commit_sha}/pulls',
+        headers=headers, params={'per_page': 100}, timeout=(10, 30))
+    if response.status_code != 200 or response.links.get('next'):
+        return {'result': 'error', 'message': 'release task lookup failed'}
+    task_ids = set()
+    for pr in response.json():
+        if not pr.get('merged_at') or pr.get('merge_commit_sha') != commit_sha:
+            continue
+        task_id = lanying_redis.redis_get(redis, pull_request_task_key(app_id, repository, pr['number']))
+        if not task_id:
+            # Also covers an interrupted PR creation before its response was saved.
+            task_id = lanying_redis.redis_get(redis,
+                f"lanying_connector:grow_ai:commit_task:{app_id}:{pr['head']['sha']}")
+        if task_id:
+            task_ids.add(task_id)
+    if len(task_ids) > 1:
+        return {'result': 'error', 'message': 'release task lookup ambiguous'}
+    task_id = next(iter(task_ids), '')
+    if task_id:
+        redis.set(key, task_id)
+    return {'result': 'ok', 'task_id': task_id}
+
+
+def remember_preview_commit_task(preview, commit_sha):
+    """Keep cancellation routing after the preview and its run are removed."""
+    if not commit_sha:
+        return
+    run = get_task_run(preview['app_id'], preview['task_run_id'])
+    if run:
+        lanying_redis.get_redis_connection().set(
+            f"lanying_connector:grow_ai:commit_task:{preview['app_id']}:{commit_sha}",
+            run['task_id'])
 
 
 def generate_preview_id():
@@ -2523,6 +2604,7 @@ def get_site_github_context(app_id, site_id):
     }
 
 
+@conversation_deletion.guarded('run')
 def task_run_preview(app_id, task_run_id):
     logging.info(f'task_run_preview start | app_id:{app_id}, task_run_id:{task_run_id}')
     task_run = get_task_run(app_id, task_run_id)
@@ -2566,6 +2648,7 @@ def task_run_preview(app_id, task_run_id):
     return {'result': 'ok', 'data': {'preview_id': preview_id}}
 
 
+@conversation_deletion.guarded('preview')
 def do_preview_task(app_id, preview_id):
     logging.info(f'do_preview_task start | app_id:{app_id}, preview_id:{preview_id}')
     preview = get_preview(app_id, preview_id)
@@ -2586,6 +2669,7 @@ def do_preview_task(app_id, preview_id):
     if preview is None or preview.get('status') == 'clearing':
         cleanup_preview_without_site(app_id, preview_id)
         return {'result': 'ok', 'data': {'cancelled': True}}
+    conversation_deletion.check_run(app_id, preview['task_run_id'])
     dispatch_result = dispatch_preview_workflow(preview)
     if dispatch_result['result'] == 'error':
         update_preview_field(app_id, preview_id, 'status', 'error')
@@ -2645,6 +2729,7 @@ def dispatch_preview_workflow(preview):
     return {'result': 'error', 'message': 'preview workflow dispatch failed'}
 
 
+@conversation_deletion.guarded('preview')
 def preview_retry(app_id, preview_id):
     preview = get_preview(app_id, preview_id)
     if preview is None or not preview.get('retryable') or not preview.get('preview_commit_sha'):
@@ -2674,6 +2759,10 @@ def check_preview_deploy(code, release_size):
     preview = get_preview(callback['app_id'], callback['preview_id'])
     if preview is None:
         return {'result': 'error', 'message': 'preview not found'}
+    try:
+        conversation_deletion.check_run(preview['app_id'], preview['task_run_id'])
+    except conversation_deletion.Cancelled:
+        return {'result': 'error', 'message': 'conversation_deleting'}
     redis = lanying_redis.get_redis_connection()
     lock_key = f"lanying-connector-grow-ai-preview-site-lock:{preview['app_id']}:{preview['site_id']}"
     with redis.lock(lock_key, timeout=120):
@@ -2696,42 +2785,47 @@ def preview_deploy_finish(code, status):
     preview = get_preview(app_id, preview_id)
     if preview is None:
         return {'result': 'error', 'message': 'preview not found'}
-    if status != 'ok':
-        if preview.get('status') == 'clearing':
-            cleanup_preview_without_site(app_id, preview_id)
+    redis = lanying_redis.get_redis_connection()
+    lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
+    with redis.lock(lock_key, timeout=120):
+        preview = get_preview(app_id, preview_id)
+        if preview is None:
             return {'result': 'ok', 'data': {'success': True}}
-        redis = lanying_redis.get_redis_connection()
-        lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
-        with redis.lock(lock_key, timeout=120):
+        # Deployment completion does not confirm that the separate clear
+        # workflow has finished. Keep its recovery state, including failures.
+        if preview.get('clear_status') and preview['clear_status'] != 'complete':
+            return {'result': 'ok', 'data': {'success': True}}
+        if preview.get('status') == 'clearing' or preview.get('clear_status') == 'complete':
+            cleaned = cleanup_preview_without_site(app_id, preview_id)
+            return {'result': 'ok' if cleaned else 'error',
+                    'message': '' if cleaned else 'preview branch cleanup failed',
+                    'data': {'success': cleaned}}
+        if status != 'ok':
             update_preview_field(app_id, preview_id, 'status', 'error')
             update_preview_field(app_id, preview_id, 'error', 'preview deploy failed')
             site = get_site(app_id, preview['site_id'])
             if site and site.get('pending_preview_id', '') == preview_id:
                 update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
+        else:
+            site = get_site(app_id, preview['site_id'])
+            if site is None or site.get('pending_preview_id', '') != preview_id:
+                update_preview_field(app_id, preview_id, 'status', 'error')
+                update_preview_field(app_id, preview_id, 'error', 'preview superseded')
+                return {'result': 'error', 'message': 'preview superseded'}
+            old_preview_id = site.get('active_preview_id', '')
+            update_site_field(app_id, preview['site_id'], 'active_preview_id', preview_id)
+            update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
+            restored_status = preview.get('restore_status', '')
+            update_preview_field(app_id, preview_id, 'status', restored_status or 'ready')
+            if restored_status:
+                redis.hdel(preview_key(app_id, preview_id), 'restore_status')
+            if old_preview_id and old_preview_id != preview_id:
+                old_preview = get_preview(app_id, old_preview_id)
+                if old_preview and old_preview.get('status') not in ['publishing', 'pr_open']:
+                    cleanup_preview_without_site(app_id, old_preview_id)
+    if status != 'ok':
         restore_active_preview(preview)
         return {'result': 'ok', 'data': {'success': False}}
-    if preview.get('status') == 'clearing':
-        cleanup_preview_without_site(app_id, preview_id)
-        return {'result': 'ok', 'data': {'success': True}}
-    redis = lanying_redis.get_redis_connection()
-    lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
-    with redis.lock(lock_key, timeout=120):
-        site = get_site(app_id, preview['site_id'])
-        if site is None or site.get('pending_preview_id', '') != preview_id:
-            update_preview_field(app_id, preview_id, 'status', 'error')
-            update_preview_field(app_id, preview_id, 'error', 'preview superseded')
-            return {'result': 'error', 'message': 'preview superseded'}
-        old_preview_id = site.get('active_preview_id', '')
-        update_site_field(app_id, preview['site_id'], 'active_preview_id', preview_id)
-        update_site_field(app_id, preview['site_id'], 'pending_preview_id', '')
-        restored_status = preview.get('restore_status', '')
-        update_preview_field(app_id, preview_id, 'status', restored_status or 'ready')
-        if restored_status:
-            redis.hdel(preview_key(app_id, preview_id), 'restore_status')
-        if old_preview_id and old_preview_id != preview_id:
-            old_preview = get_preview(app_id, old_preview_id)
-            if old_preview and old_preview.get('status') not in ['publishing', 'pr_open']:
-                cleanup_preview_without_site(app_id, old_preview_id)
     return {'result': 'ok', 'data': {'success': True}}
 
 
@@ -2757,6 +2851,7 @@ def restore_active_preview(failed_preview):
         logging.error(f"restore active preview failed | app_id:{failed_preview['app_id']}, preview_id:{active_preview_id}, result:{result}")
 
 
+@conversation_deletion.guarded('preview')
 def preview_publish(app_id, preview_id):
     logging.info(f'preview_publish start | app_id:{app_id}, preview_id:{preview_id}')
     preview = get_preview(app_id, preview_id)
@@ -2780,6 +2875,7 @@ def preview_publish(app_id, preview_id):
             return {'result': 'error', 'message': 'base branch changed'}
         if branch_response.json()['object']['sha'] != preview.get('preview_commit_sha'):
             return {'result': 'error', 'message': 'preview branch changed'}
+        conversation_deletion.check_run(app_id, preview['task_run_id'])
         if site.get('commit_type', 'branch') == 'pull_request':
             payload = {
                 'title': f"Grow AI preview: {preview['task_run_id']}",
@@ -2787,10 +2883,13 @@ def preview_publish(app_id, preview_id):
                 'head': preview['branch_name'],
                 'base': base_branch
             }
+            conversation_deletion.check_run(app_id, preview['task_run_id'])
             response = requests.post(f"{context['api_url']}/pulls", headers=context['headers'], json=payload)
             if response.status_code != 201:
                 return {'result': 'error', 'message': 'github fail to commit PR'}
             pr = response.json()
+            run = get_task_run(app_id, preview['task_run_id'])
+            redis.set(pull_request_task_key(app_id, context['repository'], pr['number']), run['task_id'])
             update_preview_field(app_id, preview_id, 'status', 'pr_open')
             update_preview_field(app_id, preview_id, 'pr_url', pr.get('html_url', ''))
             update_preview_field(app_id, preview_id, 'pr_number', pr['number'])
@@ -2804,6 +2903,7 @@ def preview_publish(app_id, preview_id):
                           base_response.json()['object']['sha'])
         update_site_field(app_id, preview['site_id'], 'pending_deploy_commit_sha',
                           preview['preview_commit_sha'])
+        conversation_deletion.check_run(app_id, preview['task_run_id'])
         response = requests.patch(
             f"{context['api_url']}/git/refs/heads/{base_branch}", headers=context['headers'],
             json={'sha': preview['preview_commit_sha'], 'force': False})
@@ -2828,6 +2928,30 @@ def preview_discard(app_id, preview_id):
     redis = lanying_redis.get_redis_connection()
     lock_key = f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}"
     with redis.lock(lock_key, timeout=120):
+        # A previous discard/callback may have changed the preview while we waited.
+        preview = get_preview(app_id, preview_id)
+        if preview is None:
+            return {'result': 'ok', 'data': {'success': True}}
+        if preview.get('clear_status') == 'pending':
+            if int(time.time()) - int(preview.get('clear_started_at', 0)) >= PREVIEW_CALLBACK_TTL:
+                update_preview_field(app_id, preview_id, 'clear_status', 'unknown')
+                update_preview_field(app_id, preview_id, 'status', 'error')
+                update_preview_field(app_id, preview_id, 'error', 'preview clear result unknown')
+                logging.warning('preview clear requires recovery | app_id:%s preview_id:%s attempt:%s',
+                                app_id, preview_id, preview.get('clear_attempt', ''))
+                return {'result': 'error', 'message': 'preview clear result unknown'}
+            return {'result': 'ok', 'data': {'success': True}}
+        if preview.get('clear_status') == 'unknown':
+            return {'result': 'error', 'message': 'preview clear result unknown'}
+        if preview.get('clear_status') == 'complete':
+            cleaned = cleanup_preview_without_site(app_id, preview_id)
+            return {'result': 'ok' if cleaned else 'error',
+                    'message': '' if cleaned else 'preview branch cleanup failed',
+                    'data': {'success': cleaned}}
+        if preview.get('clear_status') == 'failed':
+            # A failed clear still needs to run even after the preview has been
+            # detached from the site. Dispatch validates that no new preview owns it.
+            return dispatch_clear_preview(preview)
         site = get_site(app_id, preview['site_id'])
         is_active = site is not None and site.get('active_preview_id', '') == preview_id
         pending_preview_id = site.get('pending_preview_id', '') if site else ''
@@ -2837,6 +2961,9 @@ def preview_discard(app_id, preview_id):
             close_response = requests.patch(f"{context['api_url']}/pulls/{preview['pr_number']}", headers=context['headers'], json={'state': 'closed'})
             if close_response.status_code != 200:
                 return {'result': 'error', 'message': 'github fail to close PR'}
+            closed_pr = close_response.json()
+            if closed_pr.get('merged'):
+                remember_preview_commit_task(preview, closed_pr.get('merge_commit_sha', ''))
             redis.srem(preview_pr_set_key(), f'{app_id}:{preview_id}')
         if is_active:
             return dispatch_clear_preview(preview)
@@ -2848,20 +2975,43 @@ def preview_discard(app_id, preview_id):
                 if active_preview:
                     restore_active_preview(preview)
                 else:
-                    dispatch_clear_preview(preview)
+                    return dispatch_clear_preview(preview)
             return {'result': 'ok', 'data': {'success': True}}
-    cleanup_preview_without_site(app_id, preview_id)
-    return {'result': 'ok', 'data': {'success': True}}
+    cleaned = cleanup_preview_without_site(app_id, preview_id)
+    return {'result': 'ok' if cleaned else 'error',
+            'message': '' if cleaned else 'preview branch cleanup failed',
+            'data': {'success': cleaned}}
 
 
 def dispatch_clear_preview(preview):
+    # Deployment callbacks can also request a clear; do not let a stale snapshot
+    # bypass the deletion worker's pending/unknown state.
+    preview = get_preview(preview['app_id'], preview['preview_id'])
+    if preview is None or preview.get('clear_status') in {'pending', 'complete'}:
+        return {'result': 'ok', 'data': {'success': True}}
+    if preview.get('clear_status') == 'unknown':
+        return {'result': 'error', 'message': 'preview clear result unknown'}
     context = get_preview_github_context(preview)
     if context['result'] == 'error':
         return context
     site = context['site']
+    if preview.get('clear_status') == 'failed' and any(
+            site.get(field, '') not in ('', preview['preview_id'])
+            for field in ('active_preview_id', 'pending_preview_id')):
+        # Clearing affects the site's preview directory, not an individual run.
+        # Do not erase a replacement preview to finish an old deletion.
+        return {'result': 'error', 'message': 'preview superseded'}
     maybe_add_site_url(site)
     code = uuid.uuid4().hex
-    set_preview_callback(code, {'type': 'clear', 'app_id': preview['app_id'], 'preview_id': preview['preview_id']})
+    attempt = uuid.uuid4().hex
+    set_preview_callback(code, {'type': 'clear', 'app_id': preview['app_id'],
+                               'preview_id': preview['preview_id'], 'attempt': attempt})
+    # Persist before sending: a network timeout is an unknown dispatch outcome,
+    # not permission to send another destructive workflow.
+    redis = lanying_redis.get_redis_connection()
+    redis.hset(preview_key(preview['app_id'], preview['preview_id']), mapping={
+        'clear_status': 'pending', 'clear_started_at': int(time.time()),
+        'clear_attempt': attempt, 'status': 'clearing'})
     connector_server = lanying_utils.get_internet_connector_server()
     workflow_url = f'https://api.github.com/repos/maxim-top/im.gitbook/actions/workflows/{PREVIEW_CLEAR_WORKFLOW}/dispatches'
     response = requests.post(workflow_url, headers=get_grow_ai_workflow_headers(), json={
@@ -2873,8 +3023,8 @@ def dispatch_clear_preview(preview):
     })
     if response.status_code != 204:
         delete_preview_callback(code)
+        update_preview_field(preview['app_id'], preview['preview_id'], 'clear_status', 'failed')
         return {'result': 'error', 'message': 'preview clear workflow dispatch failed'}
-    update_preview_field(preview['app_id'], preview['preview_id'], 'status', 'clearing')
     return {'result': 'ok', 'data': {'success': True}}
 
 
@@ -2883,24 +3033,84 @@ def preview_clear_finish(code, status):
     callback = consume_preview_callback(code)
     if callback is None or callback.get('type') != 'clear':
         return {'result': 'error', 'message': 'code not found'}
-    if status != 'ok':
-        update_preview_field(callback['app_id'], callback['preview_id'], 'status', 'error')
-        update_preview_field(callback['app_id'], callback['preview_id'], 'error', 'preview clear failed')
+    app_id, preview_id = callback['app_id'], callback['preview_id']
+    preview = get_preview(app_id, preview_id)
+    if preview is None:
+        return {'result': 'ok', 'data': {'success': True}}
+    redis = lanying_redis.get_redis_connection()
+    with redis.lock(f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}", timeout=120):
+        preview = get_preview(app_id, preview_id)
+        if preview is None or preview.get('clear_attempt', '') != callback.get('attempt', ''):
+            return {'result': 'ok', 'data': {'success': True}}
+        return finish_preview_clear(preview, status == 'ok')
+
+
+def finish_preview_clear(preview, success):
+    app_id, preview_id = preview['app_id'], preview['preview_id']
+    if not success:
+        update_preview_field(app_id, preview_id, 'clear_status', 'failed')
+        update_preview_field(app_id, preview_id, 'status', 'error')
+        update_preview_field(app_id, preview_id, 'error', 'preview clear failed')
         return {'result': 'ok', 'data': {'success': False}}
-    if not cleanup_preview_without_site(callback['app_id'], callback['preview_id']):
+    update_preview_field(app_id, preview_id, 'clear_status', 'complete')
+    if not cleanup_preview_without_site(app_id, preview_id):
         return {'result': 'error', 'message': 'preview branch cleanup failed'}
     return {'result': 'ok', 'data': {'success': True}}
+
+
+def recover_preview_clear(app_id, preview_id, expected_attempt, outcome, *, workflow_stopped=False):
+    """Operator-only recovery; no HTTP endpoint and no workflow is sent here.
+
+    Inspect get_preview(app_id, preview_id) for clear_attempt/clear_started_at.
+    In maxim-top/im.gitbook, confirm the corresponding clear workflow has ended
+    (cancel it and wait if necessary). Only then set workflow_stopped=True.
+    outcome='complete': clearing succeeded; retry remaining metadata cleanup.
+    outcome='failed': clearing failed/cancelled; permit the existing cleanup retry.
+    If a replacement preview owns the site, automatic clear retry is blocked.
+    Preserve that preview and verify/clean only obsolete data before 'complete'.
+    The expected attempt prevents an old recovery command affecting a new attempt.
+    """
+    if workflow_stopped is not True or outcome not in {'complete', 'failed'} or not expected_attempt:
+        return {'result': 'error', 'message': 'confirm stopped workflow and recovery outcome'}
+    preview = get_preview(app_id, preview_id)
+    if preview is None:
+        return {'result': 'ok', 'data': {'success': True}}
+    redis = lanying_redis.get_redis_connection()
+    with redis.lock(f"lanying-connector-grow-ai-preview-site-lock:{app_id}:{preview['site_id']}", timeout=120):
+        preview = get_preview(app_id, preview_id)
+        if preview is None:
+            return {'result': 'ok', 'data': {'success': True}}
+        if preview.get('clear_attempt') != expected_attempt or preview.get('clear_status') not in {'pending', 'unknown', 'failed'}:
+            return {'result': 'error', 'message': 'preview clear attempt changed'}
+        # Fence any delayed callback from this attempt after manual recovery.
+        update_preview_field(app_id, preview_id, 'clear_attempt', uuid.uuid4().hex)
+        logging.info('preview clear recovered | app_id:%s preview_id:%s attempt:%s outcome:%s',
+                     app_id, preview_id, expected_attempt, outcome)
+        return finish_preview_clear(preview, outcome == 'complete')
 
 
 def cleanup_preview_without_site(app_id, preview_id):
     preview = get_preview(app_id, preview_id)
     if preview is None:
         return True
+    if preview.get('clear_status') and preview['clear_status'] != 'complete':
+        # All cleanup callers must preserve a dispatched clear's recovery record.
+        return False
     context = get_preview_github_context(preview)
     if context['result'] == 'error' and preview.get('branch_name'):
         update_preview_field(app_id, preview_id, 'status', 'error')
         update_preview_field(app_id, preview_id, 'error', context['message'])
         return False
+    # A PR can merge before the reconcile job observes it. Preserve its actual
+    # merge SHA before deleting the only preview/PR metadata that can identify it.
+    if context['result'] == 'ok' and preview.get('pr_number'):
+        response = requests.get(f"{context['api_url']}/pulls/{preview['pr_number']}", headers=context['headers'])
+        if response.status_code != 200:
+            return False
+        pr = response.json()
+        if pr.get('merged'):
+            remember_preview_commit_task(preview, pr.get('merge_commit_sha', ''))
+    remember_preview_commit_task(preview, preview.get('publish_commit_sha', ''))
     if context['result'] == 'ok' and preview.get('branch_name'):
         response = requests.get(f"{context['api_url']}/git/refs/heads/{preview['branch_name']}", headers=context['headers'])
         if response.status_code == 200:
@@ -2963,6 +3173,7 @@ def reconcile_preview_pull_requests():
         pr = response.json()
         if pr.get('merged'):
             commit_sha = pr.get('merge_commit_sha', '')
+            remember_preview_commit_task(preview, commit_sha)
             merge_tree_sha = get_github_commit_tree_sha(context, commit_sha)
             preview_tree_sha = get_github_commit_tree_sha(context, preview.get('preview_commit_sha', ''))
             if not merge_tree_sha or merge_tree_sha != preview_tree_sha:
@@ -3047,6 +3258,7 @@ def rollback_site_deployment(app_id, site_id):
     }}
 
 
+@conversation_deletion.guarded('run')
 def task_run_retry(app_id, task_run_id):
     logging.info(f"task_run_retry start | app_id:{app_id}, task_run_id:{task_run_id}")
     now = int(time.time())
@@ -3187,7 +3399,9 @@ def generate_article(app_id, task_id, task_run_id, keyword, from_user_id, chatbo
         if (get_task_run(app_id, task_run_id) or {}).get('material_input_snapshot'):
             prompt_ext['seenical_task_run_id'] = task_run_id
         logging.info(f"generate_article start | i={i}, app_id:{app_id}, task_run_id:{task_run_id}")
+        conversation_deletion.check_run(app_id, task_run_id)
         text_result = request_to_ai(app_id, from_user_id, chatbot_user_id, text_prompt, prompt_ext)
+        conversation_deletion.check_run(app_id, task_run_id)
         if text_result['result'] == 'error':
             return text_result
         article_text_message_quota_usage = text_result['data']['message_quota_usage']
@@ -3379,7 +3593,9 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id,
                     "history_msg_size_max": 4096
                 }
             }
+            conversation_deletion.check_run(app_id, task_run_id)
             image_result = request_to_ai(app_id, from_user_id, chatbot_user_id, image_prompt, image_prompt_ext)
+        conversation_deletion.check_run(app_id, task_run_id)
         if image_result['result'] == 'error':
             return handle_ai_response_error(
                 image_result, 'failed to generate image', app_id, task_id,
@@ -3450,7 +3666,8 @@ def request_to_ai(app_id, from_user_id, to_user_id, content, ext = {}):
                                             'content': content,
                                             'attachment': '',
                                             'config': '',
-                                            'ext': json.dumps(ext, ensure_ascii=False)})
+                                            'ext': json.dumps(ext, ensure_ascii=False)},
+                                        timeout=(10, 900))
             logging.info(f"request_ai finish | response_text: {sendResponse.text}")
             result = sendResponse.json()
             if result['code'] == 200:
@@ -3478,7 +3695,7 @@ def format_ai_message_result(result):
 def update_task_run_field(app_id, task_run_id, field, value):
     redis = lanying_redis.get_redis_connection()
     redis.hset(get_task_run_key(app_id, task_run_id), field, value)
-    if field == 'status' and value in ['success', 'error']:
+    if field == 'status' and value in ['success', 'error', 'cancelled']:
         import lanying_seenical_materials
         try:
             lanying_seenical_materials.release_owner(app_id, 'run', task_run_id)
@@ -3631,17 +3848,28 @@ def release_finish(repository, release):
     if owner_site_id is not None:
         preview_id = ''
         commit_sha = resolve_release_commit(repository, release)
+        if not commit_sha:
+            return {'result': 'error', 'message': 'release commit unavailable'}
+        redis = lanying_redis.get_redis_connection()
+        resolved = resolve_release_task(owner_app_id, repository, commit_sha, get_site(owner_app_id, owner_site_id))
+        if resolved['result'] != 'ok':
+            return resolved
+        task_id = resolved['task_id']
+        if task_id and str(task_id) in conversation_deletion.deleting_task_ids(owner_app_id):
+            return {'result': 'error', 'message': 'conversation_deleting'}
         if commit_sha:
-            redis = lanying_redis.get_redis_connection()
             mapping = lanying_redis.redis_get(redis, preview_publish_commit_key(repository, commit_sha))
             if not mapping:
                 reconcile_preview_pull_requests()
                 mapping = lanying_redis.redis_get(redis, preview_publish_commit_key(repository, commit_sha))
+                # Reconciliation may just have discovered a merged PR's task.
+                task_id = lanying_redis.redis_get(redis,
+                    f'lanying_connector:grow_ai:commit_task:{owner_app_id}:{commit_sha}') or task_id
             if mapping:
                 mapped_app_id, preview_id = mapping.split(':', 1)
                 if mapped_app_id != owner_app_id:
                     preview_id = ''
-        return start_deploy_github_action(owner_app_id, '', owner_site_id, github_owner, github_repo, release, preview_id)
+        return start_deploy_github_action(owner_app_id, task_id, owner_site_id, github_owner, github_repo, release, preview_id)
     return {'result': 'error', 'message': 'deploy not found'}
 
 def resolve_release_commit(repository, release):
@@ -3649,19 +3877,34 @@ def resolve_release_commit(repository, release):
         'Authorization': f'token {get_github_token()}',
         'Accept': 'application/vnd.github.v3+json'
     }
-    response = requests.get(f'https://api.github.com/repos/{repository}/releases/tags/{release}', headers=headers)
+    response = requests.get(f'https://api.github.com/repos/{repository}/releases/tags/{quote(release, safe="")}',
+                            headers=headers, timeout=(10, 30))
     if response.status_code != 200:
         logging.info(f'resolve release commit failed | repository:{repository}, release:{release}, code:{response.status_code}')
         return ''
-    target = response.json().get('target_commitish', '')
-    if re.fullmatch(r'[0-9a-fA-F]{40}', target):
-        return target
-    response = requests.get(f'https://api.github.com/repos/{repository}/commits/{target}', headers=headers)
+    tag = response.json().get('tag_name', '')
+    if not tag:
+        return ''
+    # target_commitish may name a moving branch (or be ignored for an existing
+    # tag). Resolve the tag explicitly; the commits API also peels annotated tags.
+    ref = quote(f'tags/{tag}', safe='')
+    response = requests.get(f'https://api.github.com/repos/{repository}/commits/{ref}',
+                            headers=headers, timeout=(10, 30))
     return response.json().get('sha', '') if response.status_code == 200 else ''
 
 
 def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release, preview_id=''):
     logging.info(f"start_deploy_github_action start | app_id:{app_id}, task_id:{task_id}, site_id:{site_id}, github_owner:{github_owner}, github_repo:{github_repo}, release:{release}")
+    try:
+        if task_id:
+            conversation_deletion.check_task(app_id, task_id)
+        if preview_id:
+            preview = get_preview(app_id, preview_id)
+            if not preview:
+                return {'result': 'error', 'message': 'preview not found'}
+            conversation_deletion.check_run(app_id, preview['task_run_id'])
+    except conversation_deletion.Cancelled:
+        return {'result': 'error', 'message': 'conversation_deleting'}
     deploy_repo_owner = 'maxim-top'
     deploy_repo_name = 'im.gitbook'
     deploy_workflow_id = 'deploy_sub_site.yml'
@@ -3736,6 +3979,8 @@ def check_deploy(deploy_code, release_size):
     if code_info is None:
         return {'result': 'error', 'message': 'code not found'}
     app_id = code_info['app_id']
+    if str(code_info.get('task_id', '')) in conversation_deletion.deleting_task_ids(app_id):
+        return {'result': 'error', 'message': 'conversation_deleting'}
     site_id = code_info['site_id']
     site = get_site(app_id, site_id)
     if site is None:

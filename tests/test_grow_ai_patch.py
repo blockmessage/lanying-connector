@@ -54,6 +54,10 @@ def load_grow_ai():
     sys.modules.pop(module_name, None)
     empty = types.SimpleNamespace()
     stubs = {
+        # These tests isolate patching/material logic; deletion lifecycle has its own suite.
+        "lanying_seenical_deletion": types.SimpleNamespace(
+            guarded=lambda kind: lambda fn: fn, Cancelled=type('Cancelled', (Exception,), {}),
+            check_run=lambda *args: None, deleting_task_ids=lambda app: set()),
         "lanying_redis": types.SimpleNamespace(get_redis_connection=lambda: None),
         "lanying_chatbot": empty,
         "lanying_config": empty,

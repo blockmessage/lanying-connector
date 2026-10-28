@@ -2805,8 +2805,10 @@ def list_seenical_conversations(app_id, actor):
         logging.exception(
             'failed to list Seenical conversations | app_id:%s', app_id)
         return {'result': 'error', 'message': 'Seenical conversation storage unavailable'}
+    import lanying_seenical_deletion as deletion
     return {'result': 'ok', 'data': {'list': [value for value in values
-        if str(value.get('bound_im_user_id', '')) == bound_im_user_id]}}
+        if str(value.get('bound_im_user_id', '')) == bound_im_user_id],
+        'deleted': deletion.tombstones(app_id, bound_im_user_id)}}
 
 
 def register_seenical_conversation(app_id, actor, data):
