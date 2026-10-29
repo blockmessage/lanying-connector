@@ -14,7 +14,8 @@ from types import SimpleNamespace
 source = Path(__file__).resolve().parents[1] / 'lanying_grow_ai.py'
 tree = ast.parse(source.read_text())
 node = next(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == 'check_deploy')
-namespace = {'logging': logging}
+namespace = {'logging': logging,
+             'conversation_deletion': SimpleNamespace(deleting_task_ids=lambda app_id: set())}
 for name in ('get_deploy_code', 'get_site', 'get_service_status', 'get_app_total_website_storage',
              'update_site_field', 'update_site_storage'):
     namespace[name] = Mock()

@@ -217,7 +217,8 @@ def open_service(app_id, product_id, price, website_storage_limit, website_traff
         'product_id': product_id,
         'price': price,
         'website_storage_limit': website_storage_limit,
-        'website_traffic_limit': website_traffic_limit
+        'website_traffic_limit': website_traffic_limit,
+        'billing_writer': 'LEGACY'
     })
     return {
         'result': 'ok',
@@ -234,7 +235,8 @@ def close_service(app_id, product_id):
     redis.hmset(service_status_key,{
         'status': 'stopped',
         'article_num': article_num,
-        'storage_size': storage_size
+        'storage_size': storage_size,
+        'billing_writer': 'LEGACY'
         })
     return {
         'result': 'ok',

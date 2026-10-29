@@ -78,6 +78,22 @@ def open_service():
         resp = make_response({'code':200, 'data':result["data"]})
     return resp
 
+@bp.route("/service/grow_ai/billing_service_status", methods=["POST"])
+def billing_service_status():
+    # Dedicated internal route: an old node returns 404 instead of silently
+    # ignoring fixed-period fields and running legacy open_service.
+    if not check_access_token_valid():
+        return make_response({'code': 401, 'message': 'bad authorization'}, 401)
+    import lanying_billing_hosting
+    try:
+        result = lanying_billing_hosting.provision(request.get_json(silent=True))
+    except lanying_billing_hosting.ProvisionConflict:
+        return make_response({'code': 409, 'message': 'hosting state conflict'}, 409)
+    except (ValueError, TypeError, KeyError, ArithmeticError):
+        return make_response({'code': 400, 'message': 'invalid hosting terms'}, 400)
+    return make_response({'code': 200, 'data': result})
+
+
 @bp.route("/service/grow_ai/close_service", methods=["POST"])
 def close_service():
     if not check_access_token_valid():
