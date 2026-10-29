@@ -331,8 +331,10 @@ def get_service_statistic_key_list(app_id, field):
             f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}'
         ]
     else:
-        return [
-            f'lanying-connector:grow_ai:staistic:{field}:pay_start_date:{app_id}:{product_id}:{pay_start_date_str}',
+        cycle_key = f'lanying-connector:grow_ai:staistic:{field}:pay_start_date:{app_id}:{product_id}:{pay_start_date_str}'
+        if service_status and service_status.get('billing_order_id') and product_id not in (9851, '9851'):
+            cycle_key = f"lanying-connector:grow_ai:staistic:{field}:billing_order:{app_id}:{service_status['billing_order_id']}"
+        return [cycle_key,
             f'lanying-connector:grow_ai:staistic:{field}:month_start_date:{app_id}:{product_id}:{month_start_date_str}',
             f'lanying-connector:grow_ai:staistic:{field}:everyday:{app_id}:{product_id}:{now_date_str}',
             f'lanying-connector:grow_ai:staistic:{field}:app:{app_id}'
@@ -5249,7 +5251,7 @@ def check_domain_num(app_id, site_id, max_domain_num):
             'result': 'ok'
         }
 
-def domain_num_limit_changed(app_id, max_domain_num, tenement_id):
+def domain_num_limit_changed(app_id, max_domain_num, tenement_id, strict=False):
     site_list = get_site_list(app_id)['data']['list']
     domain_count = 0
     for site in site_list:
@@ -5257,6 +5259,8 @@ def domain_num_limit_changed(app_id, max_domain_num, tenement_id):
         domain_id = site.get('domain_id', '')
         if domain_id != '':
             domain_info = get_custom_domain_info(app_id, site_id, domain_id)
+            if strict and not domain_info:
+                raise ValueError('domain information unavailable')
             if domain_info:
                 cdn_status = domain_info.get('cdn_status', 'online')
                 if cdn_status == 'online':
@@ -5269,6 +5273,8 @@ def domain_num_limit_changed(app_id, max_domain_num, tenement_id):
                             logging.info(f"domain_num_limit_changed stop cdn success| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
                             lanying_slack.async_send_message(f'GrowAI 停止CDN成功。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
                         except Exception as e:
+                            if strict:
+                                raise
                             logging.exception(e)
                             logging.info(f"domain_num_limit_changed stop cdn failed| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
                             lanying_slack.async_send_message(f'GrowAI 停止CDN失败。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
@@ -5282,6 +5288,8 @@ def domain_num_limit_changed(app_id, max_domain_num, tenement_id):
                             logging.info(f"domain_num_limit_changed start cdn success| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
                             lanying_slack.async_send_message(f'GrowAI 启动CDN成功。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')
                         except Exception as e:
+                            if strict:
+                                raise
                             logging.exception(e)
                             logging.info(f"domain_num_limit_changed start cdn failed| app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}")
                             lanying_slack.async_send_message(f'GrowAI 启动CDN失败。租户ID: {tenement_id}, app_id:{app_id}, max_domain_num:{max_domain_num}, site_id:{site_id}, domain_id:{domain_id}, domain_name:{domain_name}')

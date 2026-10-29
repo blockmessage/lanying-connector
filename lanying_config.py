@@ -46,7 +46,13 @@ def get_config(appId, key, default):
 def save_config(appId, key, value):
     global etcd
     if etcd:
-        etcd.put(prefix + appId + '.'+key, value)
+        if key == 'lanying_connector':
+            from lanying_billing_message_config import save
+            save(etcd, prefix + appId + '.' + key, value)
+        else:
+            etcd.put(prefix + appId + '.'+key, value)
+    elif key == 'lanying_connector' and isinstance(value, str) and '"billing_order_id"' in value:
+        raise RuntimeError('billing configuration requires etcd')
 
 def get_config_field(appId, key, field, default):
     value = configs.get(prefix + appId + '.'+key)

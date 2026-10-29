@@ -94,6 +94,20 @@ def billing_service_status():
     return make_response({'code': 200, 'data': result})
 
 
+@bp.route("/service/grow_ai/billing_plan_quotas", methods=["POST"])
+def billing_plan_quotas():
+    if not check_access_token_valid():
+        return make_response({'code': 401, 'message': 'bad authorization'}, 401)
+    import lanying_billing_plan_quotas
+    try:
+        result = lanying_billing_plan_quotas.apply(request.get_json(silent=True))
+    except lanying_billing_plan_quotas.QuotaConflict:
+        return make_response({'code': 409, 'message': 'plan quota conflict'}, 409)
+    except (ValueError, TypeError, KeyError, ArithmeticError):
+        return make_response({'code': 400, 'message': 'invalid plan quotas'}, 400)
+    return make_response({'code': 200, 'data': result})
+
+
 @bp.route("/service/grow_ai/close_service", methods=["POST"])
 def close_service():
     if not check_access_token_valid():
@@ -843,6 +857,36 @@ def check_domain_cname():
     else:
         resp = make_response({'code':200, 'data':result.get("data",{})})
     return resp
+
+@bp.route("/service/grow_ai/billing_domains", methods=["POST"])
+def billing_domains():
+    import lanying_redis
+    if not check_access_token_valid():
+        return make_response({'code': 401}, 401)
+    import re
+    import lanying_billing_hosting
+    data = request.get_json(silent=True)
+    fields = {'app_id', 'order_id', 'order_sequence', 'environment', 'max_domain_num', 'tenement_id'}
+    if (not isinstance(data, dict) or set(data) != fields
+            or not isinstance(data['app_id'], str) or not re.fullmatch(r'[a-z0-9]{1,64}', data['app_id'])
+            or not isinstance(data['order_id'], str) or not re.fullmatch(r'[0-9a-f]{32}', data['order_id'])
+            or type(data['order_sequence']) is not int or data['order_sequence'] <= 0
+            or type(data['max_domain_num']) is not int or not 0 <= data['max_domain_num'] <= 10000
+            or type(data['tenement_id']) is not int or data['tenement_id'] <= 0
+            or data['environment'] not in ('TEST', 'LIVE')):
+        return make_response({'code': 400}, 400)
+    redis = lanying_redis.get_redis_connection()
+    actual = lanying_redis.redis_hgetall(redis, 'lanying-connector:grow_ai:service_status:' + data['app_id'])
+    if (actual.get('billing_order_id') != data['order_id']
+            or actual.get('billing_order_sequence') != str(data['order_sequence'])
+            or actual.get('billing_environment') != data['environment']
+            or actual.get('billing_writer') != 'ORDER'
+            or actual.get('billing_state_hash') != lanying_billing_hosting._state_hash(actual)):
+        return make_response({'code': 409}, 409)
+    # Preserve the established domain-selection order. Unlike the legacy caller,
+    # paid delivery cannot treat a partially failed CDN operation as success.
+    lanying_grow_ai.domain_num_limit_changed(data['app_id'], data['max_domain_num'], data['tenement_id'], strict=True)
+    return make_response({'code': 200, 'data': dict(data, status='applied')})
 
 @bp.route("/service/grow_ai/domain_num_limit_changed", methods=["POST"])
 def domain_num_limit_changed():

@@ -332,8 +332,15 @@ def syncConfig(server, appId, key, value, accessToken):
     }
     logging.info(f"sync config to server start: server:{server}, app_id:{appId}, key:{key}")
     url = server + "/config"
-    response = requests.post(url, headers=headers, json=body)
-    logging.info(f"sync config to server finish: server:{server}, app_id:{appId}, key:{key}, response:{response.text}")
+    billing = key == 'lanying_connector' and isinstance(value, str) and '"billing_order_id"' in value
+    if billing:
+        response = requests.post(url, headers=headers, json=body, timeout=(5, 10), allow_redirects=False)
+        if response.status_code != 200 or response.text.strip() != 'success':
+            raise RuntimeError('billing configuration mirror was not confirmed')
+        logging.info(f"sync billing config confirmed: app_id:{appId}")
+    else:
+        response = requests.post(url, headers=headers, json=body)
+        logging.info(f"sync config to server finish: server:{server}, app_id:{appId}, key:{key}, response:{response.text}")
 
 @app.route("/list_models", methods=["POST"])
 def list_models():

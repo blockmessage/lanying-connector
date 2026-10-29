@@ -3875,7 +3875,7 @@ def _record_quota_statistics(redis, app_id, config, quota, api_key_type, counter
     purchase_due = (lanying_gift_quota.purchases_enabled()
                     and total > allowance and lanying_message_credits.remaining(app_id) <= 0
                     and lanying_message_credits.auto_recharge(app_id, config))
-    if legacy_due or purchase_due:
+    if (legacy_due or purchase_due) and not config.get('billing_order_id'):
         notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
     return True
 
@@ -3895,10 +3895,16 @@ def _gift_allowance(app_id, key, gross, redis):
 def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
     # A positive balance permits this call even if its actual cost is larger.
     # Credits never become negative; uncovered usage stays in the normal ledger.
+    if config.get('billing_order_id') and config.get('product_id') != 7001 and time.time() >= config['billing_period_end_epoch']:
+        return False
     purchased = redis.hincrby(key, 'message_count_quota_buy', 0)
     allowance = config.get('message_per_month', 0) + purchased
     if gift_remaining > 0 or used < allowance:
         return True
+    # New billing-owned services cannot call the legacy CNY auto-debit path.
+    # Their automatic purchase adapter must explicitly fund the next allowance.
+    if config.get('billing_order_id'):
+        return False
     # Preserve the existing paid-package PAYG buffer. An explicit disabled
     # extra-price setting must not make that buffer available.
     app_id = config.get('_quota_app_id', '')
@@ -4196,6 +4202,12 @@ def calc_used_text_size(preset, response, model_config):
     return text_size
 
 def get_message_quota_period(config):
+    if config.get('billing_order_id'):
+        if config.get('product_id') != 7001:
+            return {'start': config['start_date'], 'end': config['billing_period_end'],
+                    'expires_epoch': config['billing_period_end_epoch']}
+        # Free base allowance still belongs to the original shared tenant pool.
+        config = dict(config, start_date=config['billing_free_start_date'])
     now = datetime.now()
     month_start_date = datetime(now.year, now.month, 1)
     if 'start_date' in config:
@@ -4217,6 +4229,8 @@ def get_message_statistic_keys(config, app_id):
     month_start_date = datetime(now.year, now.month, 1)
     pay_start_date = datetime.strptime(get_message_quota_period(config)['start'], '%Y-%m-%d')
     pay_start_key = f"lanying:connector:statistics:message:pay_start_date:{app_id}:{pay_start_date.strftime('%Y-%m-%d')}"
+    if config.get('billing_order_id') and config.get('product_id') != 7001:
+        pay_start_key = f"lanying:connector:statistics:message:billing_order:{app_id}:{config['billing_order_id']}"
     month_start_key = f"lanying:connector:statistics:message:month_start_date:{app_id}:{month_start_date.strftime('%Y-%m-%d')}"
     everyday_key = f"lanying:connector:statistics:message:everyday:{app_id}:{now.strftime('%Y-%m-%d')}"
     product_id = config.get('product_id', 0)
