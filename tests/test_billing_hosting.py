@@ -23,12 +23,17 @@ def terms(**overrides):
                  period_end=(date.today() + timedelta(days=30)).isoformat(),
                  preserve_usage_period=False)
     value.update(overrides)
+    for side in ('start', 'end'):
+        try:
+            value.setdefault('period_' + side + '_epoch', int(datetime.fromisoformat(value['period_' + side]).timestamp()))
+        except ValueError:
+            value['period_' + side + '_epoch'] = 1
     return value
 
 
 class HostingContractTest(unittest.TestCase):
     def test_strict_terms(self):
-        for changes in ({'order_sequence': True}, {'storage_mb': -1}, {'product_id': 7001},
+        for changes in ({'period_start_epoch': True}, {'period_end_epoch': -1}, {'order_sequence': True}, {'storage_mb': -1}, {'product_id': 7001},
                         {'app_id': '../x'}, {'order_id': 'bad'}, {'traffic_gb': float('nan')},
                         {'traffic_gb': '-1'}, {'traffic_gb': '1e10'}, {'environment': 'prod'},
                         {'preserve_usage_period': 'true'}, {'period_start': '2026-02-30'},
@@ -36,6 +41,7 @@ class HostingContractTest(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 hosting._terms(terms(**changes))
         self.assertEqual('0.5', hosting._terms(terms(traffic_gb='0.500'))['traffic_gb'])
+        self.assertEqual('0.0009765625', hosting._terms(terms(traffic_gb='0.0009765625'))['traffic_gb'])
 
     def test_http_auth_validation_and_conflict(self):
         # Import only this route; the full module initializes unrelated browser/storage services.
@@ -79,6 +85,10 @@ class HostingRedisTest(unittest.TestCase):
 
     def test_replay_does_not_reset_or_write(self):
         first = self.provision()
+        self.assertEqual(self.data['app_id'], first['app_id'])
+        self.assertEqual(50, first['storage_mb'])
+        self.assertEqual('0.5', first['traffic_gb'])
+        self.assertEqual(0, first['legacy_price_cny'])
         self.redis.hset(self.key, 'article_num', 42)
         before = self.redis.hgetall(self.key)
         self.assertEqual(first, self.provision())
@@ -200,8 +210,18 @@ class HostingRedisTest(unittest.TestCase):
             start = date.today() + timedelta(days=days)
             with self.assertRaises(hosting.ProvisionConflict):
                 self.provision(dict(self.data, period_start=start.isoformat(),
-                                    period_end=(start + timedelta(days=30)).isoformat()))
+                                    period_end=(start + timedelta(days=30)).isoformat(),
+                                    period_start_epoch=int(datetime.combine(start, datetime.min.time()).timestamp()),
+                                    period_end_epoch=int(datetime.combine(start + timedelta(days=30), datetime.min.time()).timestamp())))
         self.assertFalse(self.redis.exists(self.key))
+
+    def test_activation_uses_epoch_not_connector_local_calendar(self):
+        # A date ahead of this node's date can already be active in the billing timezone.
+        future = date.today() + timedelta(days=1)
+        data = dict(self.data, period_start=future.isoformat(),
+                    period_end=(future + timedelta(days=30)).isoformat())
+        with patch.object(hosting.time, 'time', return_value=data['period_start_epoch'] + 1):
+            self.assertEqual('recorded', self.provision(data)['status'])
 
     def test_failed_watch_preserves_competing_state(self):
         with self.redis.pipeline() as pipe:

@@ -27,7 +27,7 @@ def _integer(value, minimum, maximum):
 def _terms(data):
     fields = {'app_id', 'order_id', 'order_sequence', 'environment', 'product_id',
               'legacy_price_cny', 'storage_mb', 'traffic_gb', 'period_start',
-              'period_end', 'preserve_usage_period'}
+              'period_end', 'period_start_epoch', 'period_end_epoch', 'preserve_usage_period'}
     if not isinstance(data, dict) or set(data) != fields:
         raise ValueError('invalid hosting fields')
     if not isinstance(data['app_id'], str) or not re.fullmatch(r'[a-z0-9]{1,64}', data['app_id']):
@@ -42,7 +42,7 @@ def _terms(data):
     _integer(value['legacy_price_cny'], 0, 2**31 - 1)
     _integer(value['storage_mb'], 0, 2**31 - 1)
     # Exact decimal text avoids float/NaN input changing the replay identity.
-    if not isinstance(value['traffic_gb'], str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]{1,6})?', value['traffic_gb']):
+    if not isinstance(value['traffic_gb'], str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]{1,10})?', value['traffic_gb']):
         raise ValueError('invalid traffic')
     try:
         traffic = Decimal(value['traffic_gb'])
@@ -57,6 +57,10 @@ def _terms(data):
     start, end = date.fromisoformat(value['period_start']), date.fromisoformat(value['period_end'])
     if not 0 < (end - start).days <= 366:
         raise ValueError('invalid billing period')
+    _integer(value['period_start_epoch'], 1, 253402300799)
+    _integer(value['period_end_epoch'], 1, 253402300799)
+    if not 0 < value['period_end_epoch'] - value['period_start_epoch'] <= 367 * 86400:
+        raise ValueError('invalid billing period timestamps')
     return value
 
 
@@ -84,7 +88,7 @@ def provision(data, redis=None):
                                and old.get('price') == '0')
                 if not (verified_test or legacy_free):
                     raise ProvisionConflict('test order cannot replace unverified or live hosting')
-            if not date.fromisoformat(terms['period_start']) <= date.today() < date.fromisoformat(terms['period_end']):
+            if not terms['period_start_epoch'] <= time.time() < terms['period_end_epoch']:
                 raise ProvisionConflict('hosting period is not active')
             start = terms['period_start']
             if terms['preserve_usage_period']:
@@ -103,6 +107,7 @@ def provision(data, redis=None):
                 'billing_environment': terms['environment'], 'billing_terms_hash': digest,
                 'billing_period_start': terms['period_start'], 'billing_period_end': terms['period_end'],
                 'billing_usage_period_start': start,
+                'billing_period_start_epoch': terms['period_start_epoch'], 'billing_period_end_epoch': terms['period_end_epoch'],
             }
             next_state['billing_state_hash'] = _state_hash(next_state)
             pipe.multi()
@@ -120,7 +125,7 @@ def _state_hash(state):
     fields = ('app_id', 'create_time', 'status', 'pay_start_date', 'product_id', 'price',
               'website_storage_limit', 'website_traffic_limit', 'billing_order_id', 'billing_writer',
               'billing_order_sequence', 'billing_environment', 'billing_period_start',
-              'billing_period_end', 'billing_usage_period_start')
+              'billing_period_end', 'billing_usage_period_start', 'billing_period_start_epoch', 'billing_period_end_epoch')
     values = {key: str(state.get(key, '')) for key in fields}
     return hashlib.sha256(json.dumps(values, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -133,7 +138,8 @@ def _verify_applied(state, terms):
                 'website_storage_limit': str(terms['storage_mb']),
                 'billing_order_sequence': str(terms['order_sequence']),
                 'billing_environment': terms['environment'],
-                'billing_period_start': terms['period_start'], 'billing_period_end': terms['period_end']}
+                'billing_period_start': terms['period_start'], 'billing_period_end': terms['period_end'],
+                'billing_period_start_epoch': str(terms['period_start_epoch']), 'billing_period_end_epoch': str(terms['period_end_epoch'])}
     if (state.get('billing_writer') != 'ORDER'
             or state.get('billing_state_hash') != _state_hash(state)
             or any(state.get(key) != value for key, value in expected.items())
@@ -144,7 +150,10 @@ def _verify_applied(state, terms):
 
 
 def _receipt(state):
-    return {'order_id': state['billing_order_id'], 'order_sequence': int(state['billing_order_sequence']),
+    return {'app_id': state['app_id'], 'storage_mb': int(state['website_storage_limit']),
+            'traffic_gb': str(state['website_traffic_limit']), 'legacy_price_cny': int(state['price']),
+            'order_id': state['billing_order_id'], 'order_sequence': int(state['billing_order_sequence']),
             'environment': state['billing_environment'], 'product_id': int(state['product_id']),
+            'period_start_epoch': int(state['billing_period_start_epoch']), 'period_end_epoch': int(state['billing_period_end_epoch']),
             'period_start': state['billing_period_start'], 'period_end': state['billing_period_end'],
             'usage_period_start': state['pay_start_date'], 'status': 'recorded'}
