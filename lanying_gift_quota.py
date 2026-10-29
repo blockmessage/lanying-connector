@@ -26,6 +26,7 @@ grants = Table('message_quota_gift', metadata,
     Column('granted_epoch', BigInteger, nullable=False),
     Column('expires_epoch', BigInteger, nullable=False))
 grants.append_column(Column('credit_source', String(16), nullable=False, default='invitation'))
+grants.append_column(Column('payment_environment', String(8), nullable=False, server_default='LIVE'))
 usage = Table('message_quota_gift_usage', metadata,
     Column('usage_id', String(64), primary_key=True),
     Column('app_id', String(64), nullable=False),
@@ -94,14 +95,36 @@ def grant(business_id, app_id, points, now=None):
 class PurchaseExpired(ValueError):
     pass
 
-def grant_purchase(business_id, app_id, points, expires_epoch, source, now=None):
-    """Butler freezes the expiry and identity; retries cannot move a purchase."""
+def _purchase_identity(business_id, app_id, payment_environment):
     import re
+    if (not re.fullmatch(r'seenical-message-credit:[0-9a-f]{32}', str(business_id))
+            or not isinstance(app_id, str) or not app_id or len(app_id) > 64
+            or payment_environment not in ('LIVE', 'TEST')):
+        raise ValueError('invalid purchase identity')
+
+
+def purchase_receipt(business_id, app_id, payment_environment):
+    """Read a durable delivery receipt even after expiry or feature shutdown."""
+    _purchase_identity(business_id, app_id, payment_environment)
+    with engine().connect() as conn:
+        row = conn.execute(select(grants).where(grants.c.business_id == business_id)).mappings().first()
+    if row is None:
+        return dict(business_id=business_id, granted=False)
+    if (row['app_id'] != app_id or row['payment_environment'] != payment_environment
+            or row['credit_source'] not in ('manual', 'auto')):
+        raise ValueError('purchase identity mismatch')
+    return dict(business_id=business_id, granted=True, app_id=row['app_id'],
+                points=int(row['points']), expires_epoch=row['expires_epoch'],
+                source=row['credit_source'], payment_environment=row['payment_environment'])
+
+
+def grant_purchase(business_id, app_id, points, expires_epoch, source, now=None, payment_environment='LIVE'):
+    """Butler freezes the expiry and identity; retries cannot move a purchase."""
     if not purchases_enabled():
         raise ValueError('purchased credits disabled')
+    _purchase_identity(business_id, app_id, payment_environment)
     points = amount(points)
-    if (not re.fullmatch(r'seenical-message-credit:[0-9a-f]{32}', str(business_id))
-            or not app_id or source not in ('manual', 'auto') or points <= 0
+    if (source not in ('manual', 'auto') or points <= 0
             or points != int(points) or isinstance(expires_epoch, bool)):
         raise ValueError('invalid purchase grant')
     expires_epoch = int(expires_epoch)
@@ -114,10 +137,12 @@ def grant_purchase(business_id, app_id, points, expires_epoch, source, now=None)
             if expires_epoch > now + 32*86400:
                 raise ValueError('invalid purchase expiry')
             _ignore(conn, grants, dict(business_id=business_id, app_id=app_id, points=points,
-                remaining=points, granted_epoch=now, expires_epoch=expires_epoch, credit_source=source))
+                remaining=points, granted_epoch=now, expires_epoch=expires_epoch, credit_source=source,
+                payment_environment=payment_environment))
             row = conn.execute(select(grants).where(grants.c.business_id == business_id).with_for_update()).mappings().one()
         if (row['app_id'] != app_id or row['points'] != points
-                or row['expires_epoch'] != expires_epoch or row['credit_source'] != source):
+                or row['expires_epoch'] != expires_epoch or row['credit_source'] != source
+                or row['payment_environment'] != payment_environment):
             raise ValueError('purchase identity mismatch')
         return dict(business_id=business_id, expires_epoch=row['expires_epoch'], granted=True)
 

@@ -182,7 +182,7 @@ class MessageCreditTest(unittest.TestCase):
         with self.db.connect() as conn:
             self.assertEqual(1,len(conn.execute(select(credits.usage)).all()))
 
-    def test_internal_grant_auth_and_expiry_envelope(self):
+    def credit_client(self):
         tree=ast.parse(Path('lanying_connector.py').read_text())
         node=next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name=='message_credits')
         node.decorator_list=[]
@@ -190,13 +190,87 @@ class MessageCreditTest(unittest.TestCase):
         exec(compile(ast.Module(body=[node],type_ignores=[]),'message_credits_route','exec'),namespace)
         app=Flask(__name__)
         app.add_url_rule('/credits/<operation>',view_func=namespace['message_credits'],methods=['POST'])
-        client=app.test_client()
+        return app.test_client()
+
+    def test_internal_grant_auth_and_expiry_envelope(self):
+        client=self.credit_client()
         body={'app_id':'a', 'business_id':'seenical-message-credit:'+'c'*32,
               'points':1000, 'expires_epoch':1, 'source':'manual'}
         self.assertEqual(401,client.post('/credits/grant',json=body).status_code)
         response=client.post('/credits/grant',json=body,headers={'access-token':'service-secret'})
         self.assertEqual(200,response.status_code)
         self.assertEqual('MESSAGE_CREDIT_EXPIRED',response.json['error_code'])
+
+    def test_purchase_environment_is_immutable_and_legacy_is_live(self):
+        business_id='seenical-message-credit:'+'a'*32
+        self.grant()
+        receipt=credits.purchase_receipt(business_id,'a','LIVE')
+        self.assertEqual(1000,receipt['points'])
+        self.assertEqual('LIVE',receipt['payment_environment'])
+        for environment in ('TEST', 'invalid', None):
+            with self.assertRaises(ValueError):
+                credits.grant_purchase(business_id,'a',1000,200,'manual',100,
+                                       payment_environment=environment)
+            with self.assertRaises(ValueError):
+                credits.purchase_receipt(business_id,'a',environment)
+        with self.assertRaises(ValueError):
+            credits.purchase_receipt(business_id,'another-app','LIVE')
+
+    def test_test_purchase_retry_preserves_usage_expiry_and_receipt(self):
+        business_id='seenical-message-credit:'+'a'*32
+        credits.grant_purchase(business_id,'a',1000,200,'manual',100,payment_environment='TEST')
+        self.use(points=30)
+        credits.grant_purchase(business_id,'a',1000,200,'manual',300,payment_environment='TEST')
+        with mock.patch.object(credits,'purchases_enabled',return_value=False):
+            receipt=credits.purchase_receipt(business_id,'a','TEST')
+        self.assertEqual(dict(business_id=business_id,granted=True,app_id='a',points=1000,
+                              expires_epoch=200,source='manual',payment_environment='TEST'),receipt)
+        with self.db.connect() as conn:
+            row=conn.execute(select(credits.grants)).mappings().one()
+            self.assertEqual(970,row['remaining'])
+            self.assertEqual(100,row['granted_epoch'])
+        # Switching Stripe mode does not extend or reissue already granted test entitlements.
+        with self.assertRaises(ValueError): self.grant()
+        self.assertEqual(0,credits.status('a',now=200,purchased=True)['remaining'])
+        self.assertEqual(0,credits.billable_used('a-period',30))
+
+    def test_absent_receipt_is_read_only(self):
+        business_id='seenical-message-credit:'+'a'*32
+        self.assertEqual(dict(business_id=business_id,granted=False),
+                         credits.purchase_receipt(business_id,'a','TEST'))
+        with self.db.connect() as conn:
+            self.assertEqual([],conn.execute(select(credits.grants)).all())
+
+    def test_migration_preserves_legacy_grants_and_database_default(self):
+        legacy=create_engine('sqlite://')
+        self.addCleanup(legacy.dispose)
+        with legacy.begin() as conn:
+            conn.exec_driver_sql('CREATE TABLE message_quota_gift (business_id TEXT PRIMARY KEY, remaining INTEGER)')
+            conn.exec_driver_sql("INSERT INTO message_quota_gift VALUES ('old', 71)")
+            sql=Path('sql/20261029_message_credit_environment.sql').read_text()
+            conn.exec_driver_sql(sql)
+            conn.exec_driver_sql("INSERT INTO message_quota_gift (business_id, remaining) VALUES ('legacy-node', 53)")
+            self.assertEqual([('old',71,'LIVE'),('legacy-node',53,'LIVE')],
+                conn.exec_driver_sql('SELECT business_id, remaining, payment_environment FROM message_quota_gift ORDER BY rowid').all())
+
+    def test_internal_receipt_and_environment_require_service_auth(self):
+        client=self.credit_client()
+        headers={'access-token':'service-secret'}
+        body={'app_id':'a','business_id':'seenical-message-credit:'+'c'*32,
+              'points':1000,'expires_epoch':200,'source':'manual','payment_environment':'TEST'}
+        with mock.patch.object(credits.time,'time',return_value=100):
+            self.assertEqual(401,client.post('/credits/grant',json=body).status_code)
+            self.assertEqual(200,client.post('/credits/grant',json=body,headers=headers).json['code'])
+            self.assertEqual(200,client.post('/credits/grant',json=body,headers=headers).json['code'])
+        query={k:body[k] for k in ('app_id','business_id','payment_environment')}
+        self.assertEqual(401,client.post('/credits/receipt',json=query).status_code)
+        self.assertTrue(client.post('/credits/receipt',json=query,headers=headers).json['data']['granted'])
+        for change in ({'app_id':'b'},{'payment_environment':'LIVE'}, {'points':1000}):
+            response=client.post('/credits/receipt',json=dict(query,**change),headers=headers)
+            self.assertEqual(400,response.status_code)
+        for change in ({'payment_environment':None},{'payment_environment':'live'},{'tenant_id':1}):
+            response=client.post('/credits/grant',json=dict(body,**change),headers=headers)
+            self.assertEqual(400,response.status_code)
 
 
 if __name__ == '__main__': unittest.main()

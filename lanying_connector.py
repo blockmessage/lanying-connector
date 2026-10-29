@@ -419,9 +419,13 @@ def message_credits(operation):
             result = module.get_message_limit_state(app_id)
             result['auto_recharge'] = lanying_message_credits.auto_recharge(app_id, config)
             result['purchase_enabled'] = lanying_gift_quota.purchases_enabled()
-        elif operation == 'grant' and set(data) == {'app_id', 'business_id', 'points', 'expires_epoch', 'source'}:
+        elif operation == 'grant' and set(data) in (
+                {'app_id', 'business_id', 'points', 'expires_epoch', 'source'},
+                {'app_id', 'business_id', 'points', 'expires_epoch', 'source', 'payment_environment'}):
             result = lanying_gift_quota.grant_purchase(data['business_id'], app_id, data['points'],
-                                                   data['expires_epoch'], data['source'])
+                data['expires_epoch'], data['source'], payment_environment=data.get('payment_environment', 'LIVE'))
+        elif operation == 'receipt' and set(data) == {'app_id', 'business_id', 'payment_environment'}:
+            result = lanying_gift_quota.purchase_receipt(data['business_id'], app_id, data['payment_environment'])
         else:
             return {'code': 400, 'message': 'invalid request'}, 400
         return {'code': 200, 'data': result}

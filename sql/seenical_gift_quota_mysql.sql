@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS message_quota_gift (
   granted_epoch BIGINT NOT NULL,
   expires_epoch BIGINT NOT NULL,
   credit_source VARCHAR(16) NOT NULL DEFAULT 'invitation',
+  payment_environment VARCHAR(8) NOT NULL DEFAULT 'LIVE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY app_active (app_id, expires_epoch)
