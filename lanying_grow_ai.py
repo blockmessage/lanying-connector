@@ -1985,6 +1985,8 @@ def get_task_result_list(app_id, task_id, limit=50, cursor=''):
 
 @conversation_deletion.guarded('run')
 def deploy_task_run(app_id, task_run_id):
+    from lanying_billing_site_access import require_active
+    require_active(app_id)
     task_run = get_task_run(app_id, task_run_id)
     if task_run is None:
         return {'result': 'error', 'message': 'task_run not exist'}
@@ -2886,6 +2888,8 @@ def restore_active_preview(failed_preview):
 
 @conversation_deletion.guarded('preview')
 def preview_publish(app_id, preview_id):
+    from lanying_billing_site_access import require_active
+    require_active(app_id)
     logging.info(f'preview_publish start | app_id:{app_id}, preview_id:{preview_id}')
     preview = get_preview(app_id, preview_id)
     if preview is None or preview.get('status') != 'ready':
@@ -4018,6 +4022,9 @@ def check_deploy(deploy_code, release_size):
     if code_info is None:
         return {'result': 'error', 'message': 'code not found'}
     app_id = code_info['app_id']
+    from lanying_billing_site_access import app_active
+    if not app_active(app_id):
+        return {'result': 'error', 'message': 'plan_payment_required'}
     if str(code_info.get('task_id', '')) in conversation_deletion.deleting_task_ids(app_id):
         return {'result': 'error', 'message': 'conversation_deleting'}
     site_id = code_info['site_id']

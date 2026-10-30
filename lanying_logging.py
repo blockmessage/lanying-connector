@@ -200,7 +200,9 @@ def register_http_logging(app):
         g.connector_http_request_id = uuid.uuid4().hex[:16]
         g.connector_http_started_at = time.monotonic()
         g.connector_http_quiet_health_check = _is_root_health_check(request)
-        if g.connector_http_quiet_health_check:
+        g.connector_http_site_access = (request.path == '/grow_ai/site-access'
+                                       and request.method in ('GET', 'HEAD'))
+        if g.connector_http_quiet_health_check or g.connector_http_site_access:
             return
         try:
             _write_http_request_log(request, g.connector_http_request_id)
@@ -215,6 +217,13 @@ def register_http_logging(app):
                        if started_at is not None else -1)
         quiet_health_check = getattr(
             g, 'connector_http_quiet_health_check', False)
+        if getattr(g, 'connector_http_site_access', False):
+            # Edge checks occur for every static resource. Log only operational
+            # failures, not normal allow/deny decisions or client query strings.
+            if response.status_code >= 500:
+                logging.warning('site access unavailable | request_id:%s | status:%s | duration_ms:%.1f',
+                                request_id, response.status_code, duration_ms)
+            return response
         if quiet_health_check and response.status_code < 400:
             return response
         if quiet_health_check:

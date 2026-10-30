@@ -1898,6 +1898,8 @@ def check_storage_size(app_id):
     return {'result':'ok'}
 
 def add_storage_size(app_id, embedding_uuid, doc_id, file_size):
+    from lanying_billing_site_access import require_active
+    require_active(app_id)
     redis = lanying_redis.get_redis_stack_connection()
     storage_limit = get_app_config_int(app_id, "lanying_connector.storage_limit")
     storage_payg = get_app_config_int(app_id, "lanying_connector.storage_payg")

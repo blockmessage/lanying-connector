@@ -9,6 +9,24 @@ import lanying_utils
 
 
 class LoggingRedactionTests(unittest.TestCase):
+    def test_site_access_does_not_log_every_static_resource(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.get('/grow_ai/site-access')
+        def access():
+            from flask import request
+            return '', int(request.args.get('status', '200'))
+
+        with mock.patch.object(logging, 'info') as info, mock.patch.object(logging, 'warning') as warning:
+            for status in (200, 403):
+                self.assertEqual(status, app.test_client().get('/grow_ai/site-access?status=' + str(status)).status_code)
+            info.assert_not_called()
+            warning.assert_not_called()
+            self.assertEqual(503, app.test_client().get('/grow_ai/site-access?status=503&token=never-log-this').status_code)
+            warning.assert_called_once()
+            self.assertNotIn('never-log-this', str(warning.call_args))
+
     def test_inherited_history_bodies_are_not_logged(self):
         app = Flask(__name__)
         lanying_logging.register_http_logging(app)

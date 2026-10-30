@@ -360,6 +360,7 @@ def ingest_message(msg):
     if not message_id:
         raise MaterialError('material_message_invalid')
     app_id = str(msg['appId'])
+    _require_material_service(app_id)
     space = ensure_space(app_id)
     with _engine().begin() as conn:
         _space(conn, app_id, True)
@@ -468,6 +469,12 @@ def _download_source(app_id, url, filename):
     return size
 
 
+def _require_material_service(app_id):
+    from lanying_billing_site_access import app_active
+    if not app_active(app_id):
+        raise MaterialError('plan_payment_required')
+
+
 def _store_source(app_id, space, doc):
     """Retain a verified original independently of indexing and its quota."""
     import lanying_file_storage as files
@@ -555,6 +562,8 @@ def update_usage(app_id, embedding_uuid, doc_id, size, clear=False, release_only
     import lanying_embedding as embedding
     import lanying_redis
     from redis.exceptions import WatchError
+    if not clear and not release_only:
+        _require_material_service(app_id)
     redis = lanying_redis.get_redis_stack_connection()
     doc_key = embedding.get_embedding_doc_info_key(embedding_uuid, doc_id)
     app_key = embedding.get_app_embedding_app_info_key(app_id)
@@ -666,6 +675,7 @@ def process_pending(app_id, worker_id=''):
                 _store_source(app_id, space, doc)
                 state = 'unindexed'
             else:
+                _require_material_service(app_id)
                 if recovering:
                     _clear_index(app_id, space, doc)
                 _store_source(app_id, space, doc)

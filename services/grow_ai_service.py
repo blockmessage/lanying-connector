@@ -10,6 +10,29 @@ from datetime import timedelta as datetime_timedelta
 service = 'grow_ai'
 bp = Blueprint(service, __name__)
 
+
+@bp.route('/grow_ai/site-access', methods=['GET', 'HEAD'])
+def billing_site_access():
+    """CDN billing gate, not a replacement for the site's existing URL signing.
+
+    Public and read-only: a direct request receives only a decision. It cannot
+    change a site or grant access through the CDN. Configure the edge to replace
+    X-Seenical-Site-Host with its actual original host, never forward user input.
+    """
+    import lanying_billing_site_access as access
+    from redis.exceptions import RedisError
+    code = 503
+    if os.getenv('SEENICAL_SITE_ACCESS_ENABLED', '').lower() in ('true', 'on', '1'):
+        try:
+            code = 200 if access.allowed(request.headers.get('X-Seenical-Site-Host', '')) else 403
+        except (access.SiteAccessUnavailable, RedisError):
+            # Do not log every edge request during a Redis outage. The 503 and
+            # ingress metrics identify this operational failure without secrets.
+            code = 503
+    response = make_response('', code)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
 GROW_AI_DOWNLOAD_ALLOWED_ORIGINS = {
     'https://console.seenical.ai',
     'https://console.seenical.cn',
