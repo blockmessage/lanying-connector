@@ -210,6 +210,9 @@ def get_lanying_connector_share_auth_info(vendor):
 
 def get_service_config(app_id, service):
     if mode == 'etcd':
+        # Only new billing writes this flag. Legacy apps retain their existing behavior.
+        if service == 'wechat_official_account' and get_config(app_id, 'lanying_connector.billing.wechat_ai_cs_enabled', None) is False:
+            return None
         config = get_config(app_id, f"lanying_connector.service.{service}", None)
         if service == 'openai' and config is None:
             config = get_config(app_id, 'lanying_connector', None)

@@ -299,7 +299,7 @@ def saveConfig():
         key = data.get('key', 'lanying_connector')
         value = data['value']
         require_app_config = data.get('require_app_config') is True
-        if require_app_config and (key != 'lanying_connector.function_num'
+        if require_app_config and (key not in ('lanying_connector.function_num', 'lanying_connector.billing.wechat_ai_cs_enabled')
                                    or lanying_config.mode != 'etcd' or lanying_config.etcd is None):
             return app.make_response(('app_config_unavailable', 409))
         if key.startswith('lanying_connector'):
