@@ -16,6 +16,11 @@ class DummyLock:
 
 
 class GrowAIPreviewTest(unittest.TestCase):
+    def setUp(self):
+        meter = patch("lanying_billing_storage.finish")
+        meter.start()
+        self.addCleanup(meter.stop)
+
     def create_grow_ai_app(self):
         app = Flask(__name__)
         app.register_blueprint(grow_ai_service.bp)

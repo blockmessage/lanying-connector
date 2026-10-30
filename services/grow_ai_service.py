@@ -1001,3 +1001,16 @@ def ensure_value_on_off(value):
         return 'on'
     else:
         return 'off'
+
+
+@bp.route('/service/grow_ai/billing_storage_close', methods=['POST'])
+def billing_storage_close():
+    if not check_access_token_valid():
+        return make_response({'code': 401, 'message': 'bad authorization'}, 401)
+    from lanying_billing_storage import close
+    from redis.exceptions import WatchError
+    try:
+        result = close(request.get_json(silent=True))
+    except (ValueError, WatchError):
+        return make_response({'code': 409, 'message': 'storage receipt unavailable'}, 409)
+    return make_response({'code': 200, 'data': result})

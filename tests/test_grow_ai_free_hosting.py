@@ -32,7 +32,7 @@ class FreeHostingTest(unittest.TestCase):
                 'get_site': Mock(return_value={'website_storage': old_mb * mb}),
                 'get_service_status': Mock(return_value={'website_storage_limit': 50 if product_id == 9851 else 100, 'product_id': product_id}),
                 'get_app_total_website_storage': Mock(return_value=total_mb * mb),
-                'update_site_field': Mock(), 'update_site_storage': update}):
+                'update_site_field': Mock(), 'update_site_storage': update}), patch('lanying_billing_storage.stage'), patch('lanying_billing_site_access.app_active', return_value=True):
             result = grow.check_deploy('test', release_mb * mb)
             if result['result'] == 'error':
                 update.assert_not_called()

@@ -4038,27 +4038,29 @@ def check_deploy(deploy_code, release_size):
         update_site_field(app_id, site_id, "deploy_result", "failed")
         update_site_field(app_id, site_id, "deploy_failed_reason", "service status not found")
         return {'result': 'error', 'message': 'service status not found'}
-    website_storage_limit = service_status['website_storage_limit']
+    if type(release_size) is not int or not 0 <= release_size <= 2**63 - 1:
+        return {'result': 'error', 'message': 'invalid release size'}
     product_id = service_status['product_id']
-    if product_id == 9805:
-        update_site_storage(app_id, site_id, release_size)
-        return {'result': 'ok', 'data': {'success': True}}
-    old_website_storage = site['website_storage']
-    total_website_storage = get_app_total_website_storage(app_id)
-    new_website_storage = total_website_storage - old_website_storage + release_size
-    new_website_storage_mb = new_website_storage / 1024 / 1024
-    logging.info(f"check_deploy calc website_storage | old_website_storage:{old_website_storage}, total_website_storage:{total_website_storage}, new_website_storage_mb:{new_website_storage_mb}")
-    # Free hosting permits reaching the quota exactly and reducing existing usage.
-    # Never force a customer to delete their site just to publish a smaller release.
-    free_release_fits = product_id == 9851 and (
-        new_website_storage_mb <= website_storage_limit or new_website_storage <= total_website_storage)
-    if new_website_storage_mb >= website_storage_limit and not free_release_fits:
-        update_site_field(app_id, site_id, "deploy_result", "failed")
-        update_site_field(app_id, site_id, "deploy_failed_reason", "website storage limit reached")
-        return {'result': 'error', 'message': f'website storage limit reached : {new_website_storage_mb}/{website_storage_limit}'}
-    else:
-        update_site_storage(app_id, site_id, release_size)
-        return {'result': 'ok', 'data': {'success': True}}
+    if product_id != 9805:
+        website_storage_limit = service_status['website_storage_limit']
+        total_website_storage = get_app_total_website_storage(app_id)
+        new_website_storage = total_website_storage - site['website_storage'] + release_size
+        free_release_fits = product_id == 9851 and (
+            new_website_storage <= website_storage_limit * 1024 * 1024 or new_website_storage <= total_website_storage)
+        if new_website_storage >= website_storage_limit * 1024 * 1024 and not free_release_fits:
+            update_site_field(app_id, site_id, 'deploy_result', 'failed')
+            update_site_field(app_id, site_id, 'deploy_failed_reason', 'website storage limit reached')
+            return {'result': 'error', 'message': 'website storage limit reached'}
+    from lanying_billing_storage import stage
+    from redis.exceptions import WatchError as StorageWatchError
+    try:
+        stage(app_id, site_id, deploy_code, release_size)
+    except (ValueError, StorageWatchError):
+        return {'result': 'error', 'message': 'deployment storage check pending'}
+    # Keep the existing capacity reservation/display behavior. Billing reads
+    # only the separate size confirmed by a successful deployment callback.
+    update_site_storage(app_id, site_id, release_size)
+    return {'result': 'ok', 'data': {'success': True}}
 
 def update_site_storage(app_id, site_id, website_storage):
     update_site_field(app_id, site_id, 'website_storage', website_storage)
@@ -4083,6 +4085,12 @@ def deploy_finish(deploy_code, deploy_result):
     site = get_site(app_id, site_id)
     if site is None:
         return {'result': 'error', 'message': 'site not found'}
+    from lanying_billing_storage import finish
+    from redis.exceptions import WatchError as StorageWatchError
+    try:
+        finish(app_id, site_id, deploy_code, deploy_result == 'ok')
+    except (ValueError, StorageWatchError):
+        return {'result': 'error', 'message': 'deployment storage confirmation pending'}
     if deploy_result != 'ok':
         update_site_field(app_id, site_id, "deploy_result", "failed")
         update_site_field(app_id, site_id, "deploy_failed_reason", "deploy workflow failed")
@@ -4169,6 +4177,8 @@ def create_site(site_setting: SiteSetting):
     fields['create_time'] = now
     fields['site_id'] = site_id
     fields['agent_tools_revision'] = 0
+    fields['billing_storage_bytes'] = 0
+    fields['billing_storage_verified'] = '1'
     logging.info(f"create site start | app_id:{app_id}, site_info:{fields}")
     redis.hmset(get_site_key(app_id, site_id), fields)
     redis.rpush(get_site_list_key(app_id), site_id)
