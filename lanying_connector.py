@@ -298,12 +298,16 @@ def saveConfig():
         appId = data['app_id']
         key = data.get('key', 'lanying_connector')
         value = data['value']
+        require_app_config = data.get('require_app_config') is True
+        if require_app_config and (key != 'lanying_connector.function_num'
+                                   or lanying_config.mode != 'etcd' or lanying_config.etcd is None):
+            return app.make_response(('app_config_unavailable', 409))
         if key.startswith('lanying_connector'):
             logging.info(f"update config:appId:{appId}, key:{key}")
             lanying_config.save_config(appId, key, value)
             lanying_embedding.save_app_config(appId, key, value)
-            maybeSyncConfig(appId, key, value, accessToken, data.get('sync_all', False))
-            resp = app.make_response('success')
+            maybeSyncConfig(appId, key, value, accessToken, data.get('sync_all', False), require_app_config)
+            resp = app.make_response('success:app-config' if require_app_config else 'success')
             return resp
         else:
             resp = app.make_response('not_allowed')
@@ -311,7 +315,7 @@ def saveConfig():
     resp = app.make_response('fail')
     return resp
 
-def maybeSyncConfig(appId, key, value, accessToken, syncAll):
+def maybeSyncConfig(appId, key, value, accessToken, syncAll, require_app_config=False):
     server = os.getenv("SYNC_ETCD_CONFIG_TO_SERVER", '')
     if len(server) > 0:
         if syncAll:
@@ -319,9 +323,9 @@ def maybeSyncConfig(appId, key, value, accessToken, syncAll):
                 now_app_id,now_key = lanying_config.parse_key(k)
                 now_value = json.dumps(v, ensure_ascii=False)
                 syncConfig(server, now_app_id, now_key, now_value, accessToken)
-        syncConfig(server, appId, key, value, accessToken)
+        syncConfig(server, appId, key, value, accessToken, require_app_config)
 
-def syncConfig(server, appId, key, value, accessToken):
+def syncConfig(server, appId, key, value, accessToken, require_app_config=False):
     headers = {
         'access-token': accessToken
     }
@@ -333,9 +337,12 @@ def syncConfig(server, appId, key, value, accessToken):
     logging.info(f"sync config to server start: server:{server}, app_id:{appId}, key:{key}")
     url = server + "/config"
     billing = key == 'lanying_connector' and isinstance(value, str) and '"billing_order_id"' in value
-    if billing:
+    if require_app_config:
+        body['require_app_config'] = True
+    if billing or require_app_config:
         response = requests.post(url, headers=headers, json=body, timeout=(5, 10), allow_redirects=False)
-        if response.status_code != 200 or response.text.strip() != 'success':
+        expected = 'success:app-config' if require_app_config else 'success'
+        if response.status_code != 200 or response.text.strip() != expected:
             raise RuntimeError('billing configuration mirror was not confirmed')
         logging.info(f"sync billing config confirmed: app_id:{appId}")
     else:

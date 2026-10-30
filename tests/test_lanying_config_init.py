@@ -40,6 +40,15 @@ class LanyingConfigInitTests(unittest.TestCase):
         lanying_config.configs.clear()
         lanying_config.configs.update(self.old_configs)
 
+    def test_explicit_zero_plugin_quota_does_not_inherit_global_allowance(self):
+        lanying_config.mode = 'etcd'
+        lanying_config.configs['/apps/global.lanying_connector.function_num'] = 20
+        lanying_config.configs['/apps/app-1.lanying_connector.function_num'] = 0
+        self.assertEqual(0, lanying_config.get_lanying_connector_function_num_limit('app-1'))
+        self.assertEqual(20, lanying_config.get_lanying_connector_function_num_limit('other'))
+        lanying_config.configs['/apps/app-1.lanying_connector.function_num'] = 120
+        self.assertEqual(120, lanying_config.get_lanying_connector_function_num_limit('app-1'))
+
     def test_init_loads_config_and_registers_watch(self):
         client = _EtcdClient()
         with mock.patch.dict('os.environ', {
