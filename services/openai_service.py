@@ -3875,7 +3875,7 @@ def _record_quota_statistics(redis, app_id, config, quota, api_key_type, counter
     purchase_due = (lanying_gift_quota.purchases_enabled()
                     and total > allowance and lanying_message_credits.remaining(app_id) <= 0
                     and lanying_message_credits.auto_recharge(app_id, config))
-    if (legacy_due or purchase_due) and not config.get('billing_order_id'):
+    if purchase_due or (legacy_due and not config.get('billing_order_id')):
         notify_butler(app_id, 'message_count_quota_reached', get_message_limit_state(app_id))
     return True
 
@@ -3901,16 +3901,12 @@ def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
     allowance = config.get('message_per_month', 0) + purchased
     if gift_remaining > 0 or used < allowance:
         return True
-    # New billing-owned services cannot call the legacy CNY auto-debit path.
-    # Their automatic purchase adapter must explicitly fund the next allowance.
-    if config.get('billing_order_id'):
-        return False
     # Preserve the existing paid-package PAYG buffer. An explicit disabled
     # extra-price setting must not make that buffer available.
     app_id = config.get('_quota_app_id', '')
     if not lanying_message_credits.auto_recharge(app_id, config):
         return False
-    if lanying_gift_quota.purchases_enabled() and lanying_message_credits.has_preference(app_id):
+    if lanying_gift_quota.purchases_enabled() and (config.get('billing_order_id') or lanying_message_credits.has_preference(app_id)):
         # Exhausted credits are replenished before the next provider call.
         # This also allows recovery after adding balance without generating
         # further unpaid content or permanently disabling the App.
@@ -3918,7 +3914,7 @@ def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
             return False
         return (lanying_message_credits.remaining(app_id) > 0
                 or used < config.get('message_per_month', 0) + redis.hincrby(key, 'message_count_quota_buy', 0))
-    return config.get('product_id', 0) > 7001 and used < allowance + 300
+    return not config.get('billing_order_id') and config.get('product_id', 0) > 7001 and used < allowance + 300
 
 def check_deduct_message_quota(app_id, config, quota):
     # Invalid usage must not reach admission's automatic purchase callback.
@@ -4145,6 +4141,10 @@ def get_message_limit_state(app_id):
                 ret['purchased_credit_remaining'] = purchased['remaining'] or 0
                 ret['purchased_credit_expires_epoch'] = purchased['expires_epoch']
                 ret['message_count_quota_buy'] = ret.get('message_count_quota_buy', 0) + int(purchased['remaining'] or 0)
+            ret['automatic_purchase_needed'] = (
+                ret.get('message_count_quota', 0) >= config.get('message_per_month', 0) + ret.get('message_count_quota_buy', 0)
+                and ret.get('gift_quota_remaining', 0) <= 0
+                and ret.get('purchased_credit_remaining', 0) <= 0)
             ret['quota_period'] = get_message_quota_period(config)
             return ret
     return {}
