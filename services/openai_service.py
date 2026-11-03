@@ -3912,6 +3912,9 @@ def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
             return False
         return (lanying_message_credits.remaining(app_id) > 0
                 or used < config.get('message_per_month', 0) + redis.hincrby(key, 'message_count_quota_buy', 0))
+    import lanying_stripe_credits
+    if config.get('stripe_billing') or lanying_stripe_credits.preference(app_id) is not None:
+        return False
     return config.get('product_id', 0) > 7001 and used < allowance + 300
 
 def check_deduct_message_quota(app_id, config, quota):

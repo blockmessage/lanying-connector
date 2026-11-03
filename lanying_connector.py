@@ -426,6 +426,41 @@ def stripe_entitlements():
         return {'code': 503, 'message': 'entitlement temporarily unavailable'}, 503
 
 
+@app.route('/service/openai/stripe_credits/<operation>', methods=['POST'])
+def stripe_credits(operation):
+    import lanying_gift_quota
+    if not accessToken or request.headers.get('access-token', '') != accessToken:
+        return {'code': 401, 'message': 'bad authorization'}, 401
+    import lanying_stripe_credits
+    import lanying_stripe_entitlements
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('app_id'), str) or not data['app_id']:
+        return {'code': 400, 'message': 'invalid request'}, 400
+    try:
+        app_id = data['app_id']
+        if operation == 'settings' and set(data) == {'app_id', 'environment', 'revision', 'auto_recharge'}:
+            result = lanying_stripe_credits.set_preference(app_id, data['environment'], data['revision'], data['auto_recharge'])
+        elif operation == 'grant' and set(data) == {'app_id', 'business_id', 'points', 'source'}:
+            result = lanying_stripe_credits.grant(data['business_id'], app_id, data['points'], data['source'])
+        elif operation == 'state' and set(data) == {'app_id'}:
+            config = lanying_config.get_lanying_connector(app_id) or {}
+            result = get_service_module('openai').get_message_limit_state(app_id)
+            purchased = result.get('purchased_credit_remaining') or 0
+            result['available'] = (max(0, config.get('message_per_month', 0)
+                + result.get('message_count_quota_buy', 0) - int(purchased)
+                - result.get('message_count_quota', 0)) + (result.get('gift_quota_remaining') or 0) + purchased)
+            result['purchase_enabled'] = (lanying_gift_quota.purchases_enabled() and bool(config.get('product_id'))
+                and config.get('enabled', True) and not lanying_stripe_entitlements.paused(config))
+        else:
+            return {'code': 400, 'message': 'invalid request'}, 400
+        return {'code': 200, 'data': result}
+    except (ValueError, TypeError):
+        return {'code': 400, 'message': 'invalid Stripe credits'}, 400
+    except Exception:
+        logging.warning('Stripe credits unavailable | operation=%s app=%s', operation, data['app_id'])
+        return {'code': 503, 'message': 'Stripe credits temporarily unavailable'}, 503
+
+
 @app.route('/service/openai/message_credits/<operation>', methods=['POST'])
 def message_credits(operation):
     import lanying_gift_quota

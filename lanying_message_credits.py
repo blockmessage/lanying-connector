@@ -27,12 +27,16 @@ def preference(app_id):
     return raw if raw in ('true', 'false') else None
 
 def has_preference(app_id):
-    return preference(app_id) is not None
+    import lanying_stripe_credits
+    return lanying_stripe_credits.preference(app_id) is not None or preference(app_id) is not None
 
 def auto_recharge(app_id, config):
+    import lanying_stripe_credits
+    stripe = lanying_stripe_credits.preference(app_id)
+    if stripe is not None:
+        return bool(stripe['auto_recharge'])
     if config.get('stripe_billing'):
-        # Stripe consent is independent of the legacy wallet preference.
-        return bool(config['stripe_billing'].get('auto_recharge', False))
+        return False
     raw = preference(app_id)
     if raw in ('true', 'false'):
         return raw == 'true'
