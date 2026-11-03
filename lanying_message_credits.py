@@ -30,6 +30,9 @@ def has_preference(app_id):
     return preference(app_id) is not None
 
 def auto_recharge(app_id, config):
+    if config.get('stripe_billing'):
+        # Stripe consent is independent of the legacy wallet preference.
+        return bool(config['stripe_billing'].get('auto_recharge', False))
     raw = preference(app_id)
     if raw in ('true', 'false'):
         return raw == 'true'

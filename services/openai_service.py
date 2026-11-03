@@ -3915,6 +3915,9 @@ def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
     return config.get('product_id', 0) > 7001 and used < allowance + 300
 
 def check_deduct_message_quota(app_id, config, quota):
+    import lanying_stripe_entitlements
+    if lanying_stripe_entitlements.paused(config):
+        return {'result': 'error', 'code': 'service_is_expired', 'msg': 'Subscription payment is incomplete.'}
     # Invalid usage must not reach admission's automatic purchase callback.
     lanying_gift_quota.amount(quota)
     config = dict(config, _quota_app_id=app_id)
@@ -3950,6 +3953,9 @@ def deduct_message_quota(app_id, config, quota, api_key_type, origin):
         logging.error(f"deduct_message_quota skip | app_id={app_id}, quota={quota}, api_key_type={api_key_type}, origin:{origin}")
 
 def check_message_limit(app_id, config, model_config, is_chat):
+    import lanying_stripe_entitlements
+    if lanying_stripe_entitlements.paused(config):
+        return {'result': 'error', 'code': 'service_is_expired', 'msg': 'Subscription payment is incomplete.'}
     config = dict(config, _quota_app_id=app_id)
     product_id = config.get('product_id', 0)
     if product_id == 0:
@@ -4196,6 +4202,9 @@ def calc_used_text_size(preset, response, model_config):
     return text_size
 
 def get_message_quota_period(config):
+    if config.get('stripe_billing', {}).get('status') != 'free' and config.get('stripe_billing'):
+        import lanying_stripe_entitlements
+        return lanying_stripe_entitlements.quota_period(config['stripe_billing'])
     now = datetime.now()
     month_start_date = datetime(now.year, now.month, 1)
     if 'start_date' in config:
@@ -4213,6 +4222,12 @@ def get_message_quota_period(config):
             'expires_epoch': int(end_date.timestamp())}
 
 def get_message_statistic_keys(config, app_id):
+    stripe = config.get('stripe_billing')
+    if stripe and stripe['status'] != 'free':
+        now = datetime.now()
+        return [f"lanying:connector:statistics:message:stripe:{app_id}:{stripe['subscription_id']}:{stripe['period_start']}",
+                f"lanying:connector:statistics:message:month_start_date:{app_id}:{now.strftime('%Y-%m-01')}",
+                f"lanying:connector:statistics:message:everyday:{app_id}:{now.strftime('%Y-%m-%d')}"]
     now = datetime.now()
     month_start_date = datetime(now.year, now.month, 1)
     pay_start_date = datetime.strptime(get_message_quota_period(config)['start'], '%Y-%m-%d')

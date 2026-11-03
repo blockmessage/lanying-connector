@@ -244,6 +244,7 @@ def close_service(app_id, product_id):
     }
 
 def get_service_status(app_id):
+    import lanying_stripe_entitlements
     service_status_key = get_service_status_key(app_id)
     redis = lanying_redis.get_redis_connection()
     info = lanying_redis.redis_hgetall(redis, service_status_key)
@@ -260,8 +261,8 @@ def get_service_status(app_id):
                 dto['website_storage_limit'] = 0
             if 'website_traffic_limit' not in dto:
                 dto['website_traffic_limit'] = 0
-        return dto
-    return None
+        return lanying_stripe_entitlements.hosting(app_id, dto)
+    return lanying_stripe_entitlements.hosting(app_id, None)
 
 def get_service_status_key(app_id):
     return f"lanying-connector:grow_ai:service_status:{app_id}"
@@ -308,6 +309,14 @@ def get_service_statistic_key_list(app_id, field):
     now = datetime.now()
     service_status = get_service_status(app_id)
     month_start_date = datetime(now.year, now.month, 1)
+    stripe_period = (service_status or {}).get('stripe_billing')
+    if stripe_period and field != 'website_storage':
+        # The first key is the billing-cycle total, stable through upgrades and retries.
+        prefix = f"lanying-connector:grow_ai:staistic:{field}"
+        return [f"{prefix}:stripe:{app_id}:{stripe_period['subscription_id']}:{stripe_period['period_start']}",
+                f"{prefix}:month_start_date:{app_id}:{stripe_period['hosting_product_id']}:{month_start_date:%Y-%m-%d}",
+                f"{prefix}:everyday:{app_id}:{stripe_period['hosting_product_id']}:{now:%Y-%m-%d}",
+                f"{prefix}:app:{app_id}"]
     if service_status:
         pay_start_date = datetime.strptime(service_status['pay_start_date'], '%Y-%m-%d')
         product_id = service_status['product_id']
@@ -4027,6 +4036,8 @@ def check_deploy(deploy_code, release_size):
         update_site_field(app_id, site_id, "deploy_result", "failed")
         update_site_field(app_id, site_id, "deploy_failed_reason", "service status not found")
         return {'result': 'error', 'message': 'service status not found'}
+    if service_status.get('status') == 'stopped':
+        return {'result': 'error', 'message': 'service_is_expired'}
     website_storage_limit = service_status['website_storage_limit']
     product_id = service_status['product_id']
     if product_id == 9805:
@@ -5292,6 +5303,12 @@ def domain_num_limit_changed(app_id, max_domain_num, tenement_id):
     }
 
 def create_custum_domain(app_id, site_id, domain_name, scope, tenement_id, check_verify_owner, max_domain_num):
+    import lanying_stripe_entitlements
+    entitlement = lanying_stripe_entitlements.state(app_id)
+    if entitlement:
+        if lanying_stripe_entitlements.paused({'stripe_billing': entitlement}):
+            return {'result': 'error', 'message': 'service_is_expired'}
+        max_domain_num = entitlement['max_domain_num']
     site = get_site(app_id, site_id)
     if site is None:
         return {

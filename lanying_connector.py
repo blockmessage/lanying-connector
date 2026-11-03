@@ -398,6 +398,20 @@ def gift_quota(operation):
         logging.warning('gift quota request unavailable | operation=%s', operation)
         return {'code': 503, 'message': 'gift quota temporarily unavailable'}, 503
 
+@app.route('/service/openai/stripe_entitlements', methods=['POST'])
+def stripe_entitlements():
+    if not accessToken or request.headers.get('access-token', '') != accessToken:
+        return {'code': 401, 'message': 'bad authorization'}, 401
+    import lanying_stripe_entitlements
+    try:
+        return {'code': 200, 'data': lanying_stripe_entitlements.apply(request.get_json(silent=True))}
+    except (ValueError, TypeError):
+        return {'code': 400, 'message': 'invalid entitlement'}, 400
+    except Exception:
+        logging.warning('stripe entitlement projection unavailable')
+        return {'code': 503, 'message': 'entitlement temporarily unavailable'}, 503
+
+
 @app.route('/service/openai/message_credits/<operation>', methods=['POST'])
 def message_credits(operation):
     import lanying_gift_quota

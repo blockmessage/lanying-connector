@@ -1898,6 +1898,9 @@ def check_storage_size(app_id):
     return {'result':'ok'}
 
 def add_storage_size(app_id, embedding_uuid, doc_id, file_size):
+    import lanying_stripe_entitlements
+    if lanying_stripe_entitlements.paused({'stripe_billing': lanying_stripe_entitlements.state(app_id)}):
+        return {'result': 'error', 'message': 'service_is_expired'}
     redis = lanying_redis.get_redis_stack_connection()
     storage_limit = get_app_config_int(app_id, "lanying_connector.storage_limit")
     storage_payg = get_app_config_int(app_id, "lanying_connector.storage_payg")
@@ -2083,6 +2086,10 @@ def save_app_config(app_id, key, value):
         redis.hset(name, key, value)
 
 def get_app_config_int(app_id, key):
+    import lanying_stripe_entitlements
+    stripe_limit = lanying_stripe_entitlements.config_limit(app_id, key)
+    if stripe_limit is not None:
+        return stripe_limit
     redis = lanying_redis.get_redis_stack_connection()
     name = get_app_config_key(app_id)
     return redis.hincrby(name, key, 0)

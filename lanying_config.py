@@ -171,7 +171,8 @@ def get_lanying_connector_daily_quota_fuse_percent(appId):
 
 def get_lanying_connector(appId):
     if mode == 'etcd':
-        return get_config(appId, 'lanying_connector', None)
+        import lanying_stripe_entitlements
+        return lanying_stripe_entitlements.overlay(appId, get_config(appId, 'lanying_connector', None))
     service = get_lanying_connector_service(appId)
     if service == 'openai':
         with open(f"configs/{service}.json", "r") as f:
@@ -208,6 +209,9 @@ def get_service_config(app_id, service):
         if service == 'openai' and config is None:
             config = get_config(app_id, 'lanying_connector', None)
         if config and 'enable' in config and config['enable'] == True:
+            if service == 'openai':
+                import lanying_stripe_entitlements
+                return lanying_stripe_entitlements.overlay(app_id, config)
             return config
         return None
     with open(f"configs/{service}.json", "r") as f:
@@ -233,6 +237,10 @@ def get_embedding_auth_secret():
     return os.getenv('EMBEDDING_AUTH_SECRET')
 
 def get_app_config_int_from_redis(app_id, key):
+    import lanying_stripe_entitlements
+    stripe_limit = lanying_stripe_entitlements.config_limit(app_id, key)
+    if stripe_limit is not None:
+        return stripe_limit
     redis = lanying_redis.get_redis_stack_connection()
     name = get_redis_app_config_key(app_id)
     return redis.hincrby(name, key, 0)
