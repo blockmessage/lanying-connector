@@ -398,6 +398,20 @@ def gift_quota(operation):
         logging.warning('gift quota request unavailable | operation=%s', operation)
         return {'code': 503, 'message': 'gift quota temporarily unavailable'}, 503
 
+@app.route('/service/grow_ai/site_access', methods=['POST'])
+def stripe_site_access():
+    if not accessToken or request.headers.get('access-token', '') != accessToken:
+        return {'code': 401, 'message': 'bad authorization'}, 401
+    import lanying_stripe_entitlements
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) != {'site_id', 'hostname'}:
+        return {'code': 400, 'message': 'invalid site'}, 400
+    try:
+        return {'code': 200, 'data': lanying_stripe_entitlements.site_access(data['site_id'], data['hostname'])}
+    except ValueError:
+        return {'code': 400, 'message': 'invalid site'}, 400
+
+
 @app.route('/service/openai/stripe_entitlements', methods=['POST'])
 def stripe_entitlements():
     if not accessToken or request.headers.get('access-token', '') != accessToken:

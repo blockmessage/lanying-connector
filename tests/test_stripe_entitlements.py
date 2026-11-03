@@ -83,6 +83,16 @@ class StripeEntitlementTest(unittest.TestCase):
         other = copy.deepcopy(config); other['stripe_billing']['period_start'] += 1
         self.assertNotEqual(keys[0], extract('get_message_statistic_keys')(other, 'app')[0])
 
+    def test_usage_returns_actual_prorated_allowance(self):
+        import types
+        fn=extract('get_message_limit_state')
+        fn.__globals__.update(lanying_config=types.SimpleNamespace(get_lanying_connector=lambda app: {'stripe_billing':self.value,'message_per_month':6500.1234}),
+            lanying_redis=types.SimpleNamespace(get_redis_connection=lambda: self.redis),
+            get_message_statistic_keys=lambda *args:['usage'],get_message_quota_period=lambda config:{},
+            lanying_gift_quota=types.SimpleNamespace(enabled=lambda:False))
+        self.redis.hgetall=lambda key:{}
+        self.assertEqual(6500.1234,fn('app')['message_count_allowance'])
+
     def test_pause_and_exact_expiry_block_ai_not_other_apps(self):
         config = {'stripe_billing':self.value}
         self.assertFalse(stripe.paused(config, self.value['period_end']-1))
@@ -102,6 +112,30 @@ class StripeEntitlementTest(unittest.TestCase):
         self.assertIn('sub_test',key)
         self.assertTrue(key.endswith(str(self.value['period_start'])))
         self.assertEqual(4,len(scope['get_service_statistic_key_list']('app','article_count')))
+
+    def test_site_access_pause_and_infrastructure_failure_policy(self):
+        stripe.apply(dict(self.value, status='paused'))
+        self.redis.hget = lambda key, site: 'app'
+        self.assertFalse(stripe.site_access('site', 'example.site.chatai101.com')['allowed'])
+        with mock.patch.object(stripe, 'state', side_effect=RuntimeError('offline')):
+            self.assertEqual('check_unavailable', stripe.site_access('site', 'example.site.chatai101.com')['reason'])
+        self.redis.hget = lambda key, site: None
+        self.assertFalse(stripe.site_access('missing', 'example.test')['allowed'])
+        with self.assertRaises(ValueError): stripe.site_access('site', 'invalid/path')
+
+    def test_downgrade_limits_custom_domains_without_deleting_sites(self):
+        import types
+        stripe.apply(self.value)
+        self.redis.hget = lambda key, site: 'app'
+        sites=[{'site_id':'first','domain_id':'domain1'},{'site_id':'second','domain_id':'domain2'}]
+        grow=types.SimpleNamespace(get_site=lambda app, site: sites[0] if site=='first' else sites[1],
+            get_custom_domain_info=lambda *args: {'domain_name':'custom.test'},
+            get_site_list=lambda app: {'data':{'list':sites}})
+        with mock.patch.dict('sys.modules', {'lanying_grow_ai':grow}), mock.patch.object(stripe,'paused',return_value=False):
+            self.assertTrue(stripe.site_access('first','custom.test')['allowed'])
+            self.assertFalse(stripe.site_access('second','custom.test')['allowed'])
+            self.assertTrue(stripe.site_access('second','second.site.chatai101.com')['allowed'])
+        self.assertEqual(2,len(sites))
 
     def test_cached_failure_recovers_from_mysql_without_regrant(self):
         with mock.patch.object(stripe, '_cache', side_effect=RuntimeError('redis offline')):

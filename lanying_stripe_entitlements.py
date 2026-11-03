@@ -154,3 +154,39 @@ def hosting(app_id, legacy):
                   stripe_billing=current,
                   status='stopped' if paused({'stripe_billing': current}) else 'normal')
     return result
+
+
+def site_access(site_id, hostname):
+    """Billing-only decision for an authenticated edge; never grants private-site authorization."""
+    if (not isinstance(site_id, str) or not site_id or len(site_id) > 128
+            or not isinstance(hostname, str) or not hostname or len(hostname) > 253
+            or any(c in hostname for c in '/:@\\\n\r')):
+        raise ValueError('invalid site')
+    try:
+        redis = lanying_redis.get_redis_connection()
+        app_id = redis.hget('lanying_connector:grow_ai:all_site_list', site_id)
+        if isinstance(app_id, bytes):
+            app_id = app_id.decode('utf-8')
+        if not app_id:
+            return {'allowed': False, 'reason': 'unknown_site'}
+        current = state(app_id)
+        blocked = paused({'stripe_billing': current})
+        if blocked:
+            return {'allowed': False, 'reason': 'subscription_paused'}
+        if current:
+            import lanying_grow_ai
+            site = lanying_grow_ai.get_site(app_id, site_id)
+            if not site:
+                return {'allowed': False, 'reason': 'unknown_site'}
+            domain_id = site.get('domain_id')
+            domain = lanying_grow_ai.get_custom_domain_info(app_id, site_id, domain_id) if domain_id else {}
+            if domain and hostname.lower() == domain.get('domain_name', '').lower():
+                # Preserve the existing domain-limit ordering; directories are not access boundaries.
+                domains = [item for item in lanying_grow_ai.get_site_list(app_id)['data']['list'] if item.get('domain_id')]
+                allowed = site_id in [str(item['site_id']) for item in domains[:current['max_domain_num']]]
+                return {'allowed': allowed, 'reason': 'allowed' if allowed else 'domain_limit'}
+        return {'allowed': True, 'reason': 'allowed'}
+    except Exception:
+        import logging
+        logging.warning('Site billing access check unavailable | site_id=%s', site_id)
+        return {'allowed': True, 'reason': 'check_unavailable'}

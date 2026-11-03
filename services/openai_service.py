@@ -4145,6 +4145,8 @@ def get_message_limit_state(app_id):
                 ret['purchased_credit_remaining'] = purchased['remaining'] or 0
                 ret['purchased_credit_expires_epoch'] = purchased['expires_epoch']
                 ret['message_count_quota_buy'] = ret.get('message_count_quota_buy', 0) + int(purchased['remaining'] or 0)
+            if config.get('stripe_billing'):
+                ret['message_count_allowance'] = config.get('message_per_month', 0)
             ret['quota_period'] = get_message_quota_period(config)
             return ret
     return {}
