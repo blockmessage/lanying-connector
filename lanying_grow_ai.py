@@ -310,7 +310,7 @@ def get_service_statistic_key_list(app_id, field):
     service_status = get_service_status(app_id)
     month_start_date = datetime(now.year, now.month, 1)
     stripe_period = (service_status or {}).get('stripe_billing')
-    if stripe_period and field != 'website_storage':
+    if stripe_period and stripe_period.get('status') != 'free' and field != 'website_storage':
         # The first key is the billing-cycle total, stable through upgrades and retries.
         prefix = f"lanying-connector:grow_ai:staistic:{field}"
         return [f"{prefix}:stripe:{app_id}:{stripe_period['subscription_id']}:{stripe_period['period_start']}",

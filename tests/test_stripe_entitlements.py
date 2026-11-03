@@ -142,3 +142,37 @@ class StripeEntitlementTest(unittest.TestCase):
             with self.assertRaises(RuntimeError): stripe.apply(self.value)
         self.assertTrue(stripe.apply(self.value)['applied'])
         self.assertEqual(self.value, stripe.state('app'))
+
+    def test_canceled_hosting_uses_free_monthly_keys_and_preserves_storage_totals(self):
+        from dateutil.relativedelta import relativedelta
+        class Clock(datetime):
+            instant = datetime(2026, 11, 15)
+            @classmethod
+            def now(cls): return cls.instant
+        free = dict(self.value, status='free', hosting_product_id=9851)
+        stripe.apply(free)
+        status = stripe.hosting('app', None)
+        tree = ast.parse(Path('lanying_grow_ai.py').read_text())
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'get_service_statistic_key_list')
+        scope = {'datetime': Clock, 'relativedelta': relativedelta, 'get_service_status': lambda app: status}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), 'lanying_grow_ai.py', 'exec'), scope)
+        keys = scope['get_service_statistic_key_list']
+        november = keys('app', 'website_traffic')
+        stored = {field: keys('app', field)[0] for field in ('storage_size', 'website_storage')}
+        # Free projection must select exactly the existing free-service statistic scheme.
+        del status['stripe_billing']
+        self.assertEqual(november, keys('app', 'website_traffic'))
+        status['stripe_billing'] = free
+        Clock.instant = datetime(2026, 12, 15)
+        december = keys('app', 'website_traffic')
+        self.assertNotEqual(november[0], december[0])
+        self.assertEqual(november[-1], december[-1])  # Lifetime total is intentionally retained.
+        for field, value in stored.items(): self.assertEqual(value, keys('app', field)[0])
+        # Paid subscriptions, including paused ones, continue using the fixed subscription cycle.
+        for state in ('active', 'paused'):
+            status['stripe_billing'] = dict(self.value, status=state)
+            Clock.instant = datetime(2026, 11, 15)
+            paid = keys('app', 'website_traffic')[0]
+            Clock.instant = datetime(2026, 12, 15)
+            self.assertEqual(paid, keys('app', 'website_traffic')[0])
+            self.assertIn(':stripe:app:sub_test:', paid)
