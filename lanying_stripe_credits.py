@@ -57,3 +57,17 @@ def grant(business_id, app_id, points, source, now=None):
         if row['app_id'] != app_id or row['points'] != points or row['credit_source'] != source:
             raise ValueError('Stripe grant identity mismatch')
         return {'granted': True, 'granted_epoch': row['granted_epoch'], 'expires_epoch': row['expires_epoch']}
+
+
+def inspect(business_id, app_id):
+    if not re.fullmatch(r'seenical-stripe-credit:[0-9a-f]{32}', str(business_id)):
+        raise ValueError('invalid credit identity')
+    with quota.engine().connect() as conn:
+        row=conn.execute(select(quota.grants).where(quota.grants.c.business_id==business_id)).mappings().first()
+    if row is None:
+        return {'granted':False}
+    if row['app_id']!=app_id:
+        raise ValueError('credit identity mismatch')
+    return {'granted':True,'points':float(row['points']),'remaining':float(row['remaining']),
+            'consumed':float(row['points']-row['remaining']),'granted_epoch':row['granted_epoch'],
+            'expires_epoch':row['expires_epoch']}

@@ -442,6 +442,8 @@ def stripe_credits(operation):
             result = lanying_stripe_credits.set_preference(app_id, data['environment'], data['revision'], data['auto_recharge'])
         elif operation == 'grant' and set(data) == {'app_id', 'business_id', 'points', 'source'}:
             result = lanying_stripe_credits.grant(data['business_id'], app_id, data['points'], data['source'])
+        elif operation == 'inspect' and set(data) == {'app_id', 'business_id'}:
+            result = lanying_stripe_credits.inspect(data['business_id'], app_id)
         elif operation == 'state' and set(data) == {'app_id'}:
             config = lanying_config.get_lanying_connector(app_id) or {}
             result = get_service_module('openai').get_message_limit_state(app_id)

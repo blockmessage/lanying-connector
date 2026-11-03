@@ -77,3 +77,13 @@ class StripeCreditTest(unittest.TestCase):
         with mock.patch.object(quota,'purchases_enabled',return_value=False):
             result=app.test_client().post('/credits/state',json={'app_id':'app'},headers={'access-token':'test'})
         self.assertEqual(200,result.status_code);self.assertFalse(result.json['data']['purchase_enabled'])
+
+    def test_operator_inspection_is_app_scoped_and_never_restores_consumed_points(self):
+        identity='seenical-stripe-credit:'+'d'*32
+        stripe.grant(identity,'app',1000,'manual')
+        with self.db.begin() as conn:
+            conn.execute(quota.grants.update().where(quota.grants.c.business_id==identity).values(remaining=700))
+        self.assertEqual(300,stripe.inspect(identity,'app')['consumed'])
+        self.assertEqual(700,stripe.inspect(identity,'app')['remaining'])
+        with self.assertRaises(ValueError):stripe.inspect(identity,'other')
+        with self.assertRaises(ValueError):stripe.inspect('seenical-invitation:1','app')
