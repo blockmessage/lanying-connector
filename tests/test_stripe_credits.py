@@ -52,7 +52,8 @@ class StripeCreditTest(unittest.TestCase):
     def test_admission_uses_stripe_consent_and_never_legacy_payg_buffer(self):
         tree=ast.parse(Path('services/openai_service.py').read_text())
         node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_has_message_quota_remaining')
-        notify=mock.Mock(return_value=True)
+        notify=mock.Mock(return_value='processing')
+        patch=mock.patch.object(stripe,'notify_purchase',notify);patch.start();self.addCleanup(patch.stop)
         ns={'lanying_gift_quota':quota,'lanying_message_credits':messages,'notify_butler':notify}
         exec(compile(ast.Module(body=[node],type_ignores=[]),'quota_admission','exec'),ns)
         stripe.set_preference('app','test',1,True)
@@ -87,3 +88,94 @@ class StripeCreditTest(unittest.TestCase):
         self.assertEqual(700,stripe.inspect(identity,'app')['remaining'])
         with self.assertRaises(ValueError):stripe.inspect(identity,'other')
         with self.assertRaises(ValueError):stripe.inspect('seenical-invitation:1','app')
+
+
+class StripeNotificationTest(unittest.TestCase):
+    def setUp(self):
+        self.values = {}
+        self.redis = mock.Mock()
+        def set_value(key, value, nx=False, ex=None):
+            self.assertEqual(30, ex)
+            if nx and key in self.values:
+                return False
+            self.values[key] = value
+            return True
+        self.redis.set.side_effect = set_value
+        self.redis.get.side_effect = lambda key: self.values.get(key)
+        self.response = mock.Mock(ok=True)
+        self.response.json.return_value = {'code': 200, 'data': {'credit_purchase_status': 'payment_required'}}
+        for patch in (mock.patch.object(stripe.lanying_redis, 'get_redis_connection', return_value=self.redis),
+                      mock.patch.object(stripe.requests, 'post', return_value=self.response)):
+            patch.start(); self.addCleanup(patch.stop)
+
+    def test_repeated_and_inflight_notifications_share_app_cooldown(self):
+        def post(*args, **kwargs):
+            self.assertEqual('processing', stripe.notify_purchase('app'))
+            return self.response
+        stripe.requests.post.side_effect = post
+        for _ in range(10):
+            self.assertEqual('payment_required', stripe.notify_purchase('app'))
+        self.assertEqual(1, stripe.requests.post.call_count)
+        self.values.clear()  # Redis TTL elapsed; the original order can be checked again.
+        self.assertEqual('payment_required', stripe.notify_purchase('app'))
+        self.assertEqual(2, stripe.requests.post.call_count)
+
+    def test_timeout_is_unknown_and_not_reposted_during_cooldown(self):
+        stripe.requests.post.side_effect = TimeoutError()
+        for _ in range(10):
+            self.assertEqual('unknown', stripe.notify_purchase('app'))
+        self.assertEqual(1, stripe.requests.post.call_count)
+        self.assertEqual('credit_payment_unconfirmed', stripe.purchase_error('unknown')['code'])
+        self.assertNotEqual(stripe.purchase_error('unknown'), stripe.purchase_error('payment_required'))
+
+    def test_old_response_and_redis_failure_do_not_claim_payment_success(self):
+        self.response.json.return_value = {'code': 200, 'data': True}
+        self.assertEqual('unknown', stripe.notify_purchase('app'))
+        self.redis.set.side_effect = RuntimeError('offline')
+        self.assertEqual('unknown', stripe.notify_purchase('other'))
+        self.assertEqual(1, stripe.requests.post.call_count)
+
+    def test_different_apps_do_not_share_cooldown(self):
+        stripe.notify_purchase('one'); stripe.notify_purchase('two')
+        self.assertEqual(2, stripe.requests.post.call_count)
+
+    def test_timeout_but_delivered_credits_admits_without_waiting_for_cache(self):
+        tree = ast.parse(Path('services/openai_service.py').read_text())
+        node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_has_message_quota_remaining')
+        local_messages = mock.Mock()
+        local_messages.auto_recharge.return_value = True
+        local_messages.has_preference.return_value = True
+        local_messages.remaining.return_value = 1000
+        flags = mock.Mock(); flags.purchases_enabled.return_value = True
+        ns = {'lanying_message_credits': local_messages, 'lanying_gift_quota': flags}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), 'admission', 'exec'), ns)
+        config = {'_quota_app_id': 'app', 'message_per_month': 30}
+        with mock.patch.object(stripe, 'preference', return_value={'auto_recharge': True}), \
+             mock.patch.object(stripe, 'notify_purchase', return_value='unknown'):
+            self.assertTrue(ns['_has_message_quota_remaining'](FakeRedis(), 'key', config, 30, 0))
+            local_messages.remaining.return_value = 0
+            self.assertFalse(ns['_has_message_quota_remaining'](FakeRedis(), 'key', config, 30, 0))
+            self.assertEqual('credit_payment_unconfirmed', config['_credit_purchase_error']['code'])
+
+    def test_chat_api_and_tool_admission_return_payment_status_not_generic_quota(self):
+        import lanying_stripe_entitlements
+        tree = ast.parse(Path('services/openai_service.py').read_text())
+        names = {'check_message_limit', 'check_deduct_message_quota'}
+        nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+        ns = {'lanying_redis': mock.Mock(), 'lanying_gift_quota': mock.Mock(),
+              'get_message_statistic_keys': lambda *_: ['period'],
+              '_gift_allowance': lambda *_: (30, 0),
+              'check_daily_quota_fuse_limit': lambda *_: {'result': 'ok'}}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), 'admission_errors', 'exec'), ns)
+        config = {'product_id': 7001, 'message_per_month': 30}
+        with mock.patch.object(lanying_stripe_entitlements, 'paused', return_value=False):
+            for status in ('processing', 'unknown', 'payment_required'):
+                expected = stripe.purchase_error(status)
+                def exhausted(redis, key, call_config, *args):
+                    call_config['_credit_purchase_error'] = expected
+                    return False
+                ns['_has_message_quota_remaining'] = exhausted
+                for chat in (True, False):
+                    self.assertEqual(expected, ns['check_message_limit']('app', config, {'api_key_type': 'share'}, chat))
+                self.assertEqual(expected, ns['check_deduct_message_quota']('app', config, 1))
+                self.assertNotIn('_credit_purchase_error', config)

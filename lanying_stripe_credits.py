@@ -1,5 +1,9 @@
 """Stripe credit consent and grants; no prices, card calls, or renewal scheduler."""
 import calendar
+import logging
+import os
+import requests
+import lanying_redis
 import re
 import time
 from datetime import datetime, timezone
@@ -71,3 +75,56 @@ def inspect(business_id, app_id):
     return {'granted':True,'points':float(row['points']),'remaining':float(row['remaining']),
             'consumed':float(row['points']-row['remaining']),'granted_epoch':row['granted_epoch'],
             'expires_epoch':row['expires_epoch']}
+
+
+# Shared across Connector workers; this is notification coalescing, not a payment lock.
+# The durable Butler operation remains the authority for payment and recovery.
+def notify_purchase(app_id):
+    key = 'seenical:stripe:credit-notify:' + str(app_id)
+    try:
+        redis = lanying_redis.get_redis_connection()
+        if not redis.set(key, 'processing', nx=True, ex=30):
+            cached = redis.get(key)
+            return cached.decode() if isinstance(cached, bytes) else (cached or 'processing')
+    except Exception:
+        logging.warning('Stripe credit notification unavailable | app_id=%s', app_id)
+        return 'unknown'
+    status = 'unknown'
+    try:
+        endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
+        response = requests.post(endpoint + '/app/lanying_connector_event',
+            headers={'app_id': app_id},
+            json={'app_id': app_id, 'event': 'message_count_quota_reached', 'data': {}},
+            timeout=10)
+        body = response.json() if response.ok else {}
+        data = body.get('data')
+        if body.get('code') == 200 and isinstance(data, dict):
+            received = data.get('credit_purchase_status')
+            if received in {'processing', 'payment_required', 'complete', 'disabled', 'unknown'}:
+                status = received
+    except Exception:
+        # Timeout is not evidence of a declined card or a missing order.
+        logging.warning('Stripe credit notification result unknown | app_id=%s', app_id)
+    try:
+        redis.set(key, status, ex=30)
+    except Exception:
+        logging.warning('Stripe credit notification status unavailable | app_id=%s', app_id)
+    return status
+
+
+def purchase_error(status):
+    if status == 'disabled':
+        return None
+    if status == 'payment_required':
+        code = 'credit_payment_required'
+        zh = '智能消息点数付款未完成，请管理员在订阅页面查看原购买记录并按页面提示处理后重试。'
+        en = 'Credit payment is incomplete. Ask an administrator to open the existing purchase on the subscription page and follow the instructions before retrying.'
+    elif status == 'unknown':
+        code = 'credit_payment_unconfirmed'
+        zh = '暂时无法确认智能消息点数的付款或到账结果，请稍后重试，或由管理员查看原购买记录；请勿重复购买。'
+        en = 'Credit payment or delivery could not be confirmed. Retry later or ask an administrator to check the existing purchase; do not buy again.'
+    else:
+        code = 'credit_purchase_processing'
+        zh = '智能消息点数正在补充，请稍后重试；若持续未到账，请管理员查看原购买记录。'
+        en = 'AI message credits are being replenished. Retry shortly; if delivery remains pending, ask an administrator to check the existing purchase.'
+    return {'result': 'error', 'code': code, 'msg': zh, 'message': en}

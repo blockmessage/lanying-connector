@@ -3908,7 +3908,13 @@ def _has_message_quota_remaining(redis, key, config, used, gift_remaining):
         # Exhausted credits are replenished before the next provider call.
         # This also allows recovery after adding balance without generating
         # further unpaid content or permanently disabling the App.
-        if not notify_butler(app_id, 'message_count_quota_reached', {}):
+        import lanying_stripe_credits
+        if lanying_stripe_credits.preference(app_id) is not None:
+            status = lanying_stripe_credits.notify_purchase(app_id)
+            config['_credit_purchase_error'] = lanying_stripe_credits.purchase_error(status)
+            # A timed-out notification may nevertheless have delivered credits.
+            # Admission depends on actual local credit availability, not HTTP success.
+        elif not notify_butler(app_id, 'message_count_quota_reached', {}):
             return False
         return (lanying_message_credits.remaining(app_id) > 0
                 or used < config.get('message_per_month', 0) + redis.hincrby(key, 'message_count_quota_buy', 0))
@@ -3941,6 +3947,8 @@ def check_deduct_message_quota(app_id, config, quota):
         if _has_message_quota_remaining(redis, key, config, message_count_quota, gift_remaining):
             return {'result':'ok', 'api_key_type':'share'}
         else:
+            if config.get('_credit_purchase_error'):
+                return config['_credit_purchase_error']
             return {'result':'error', 'code':'LanyingQuotaNotEnough', 'message': 'Lanying quota not enough'}
     else:
         return {'result':'error', 'code':'LanyingInternalError','message': 'Lanying internal error'}
@@ -3982,6 +3990,8 @@ def check_message_limit(app_id, config, model_config, is_chat):
         if _has_message_quota_remaining(redis, key, config, message_count_quota, gift_remaining):
             return {'result':'ok', 'api_key_type': api_key_type}
         else:
+            if config.get('_credit_purchase_error'):
+                return config['_credit_purchase_error']
             if is_chat:
                 msgs = []
                 error_msg = lanying_config.get_message_no_quota(app_id)
@@ -4248,6 +4258,12 @@ def get_message_statistic_keys(config, app_id):
         return [pay_start_key, month_start_key, everyday_key]
 
 def notify_butler(app_id, event, data):
+    import lanying_stripe_credits
+    stripe = lanying_stripe_credits.preference(app_id)
+    if event == 'message_count_quota_reached' and stripe is not None:
+        if stripe['auto_recharge']:
+            lanying_stripe_credits.notify_purchase(app_id)
+        return True
     logging.info(f"notify butler: app_id={app_id}, event={event}, data={json.dumps(data)}")
     endpoint = os.getenv('LANYING_BUTLER_ENDPOINT', 'https://butler.lanyingim.com')
     try:
