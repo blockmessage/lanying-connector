@@ -118,7 +118,7 @@ class ConfigurationTest(unittest.TestCase):
 
     def test_invalid_legacy_template_can_be_corrected_without_persisting_it(self):
         for value in [{'prompt': 'legacy', 'wordMin': 3000, 'wordMax': 2400},
-                      {'prompt': ''}, {'prompt': 'legacy', 'sessionPrompt': 'x' * 5001}]:
+                      {'prompt': None}, {'prompt': 'legacy', 'sessionPrompt': 'x' * 5001}]:
             request = {'seenical_session_id': 'primary:a', 'create_only': True, 'configuration': value}
             result = configuration.handle('app', self.actor, request, True)
             self.assertEqual('ok', result['result'])
@@ -152,10 +152,20 @@ class ConfigurationTest(unittest.TestCase):
         self.save()
         for value in [{'prompt': 'p', 'token': 'bad'}, {'prompt': 'p', 'wordMin': False},
                       {'prompt': 'p', 'sessionPrompt': None}, {'prompt': 'p', 'wordMin': 3000, 'wordMax': 1000},
-                      {'prompt': 'p', 'contentLanguage': 'auto'}, {'prompt': ''}]:
+                      {'prompt': 'p', 'contentLanguage': 'auto'}, {'prompt': 12}]:
             self.assertEqual('error', self.save(value=value)['result'])
         saved = configuration.handle('app', self.actor, {})['data']['list'][0]['configuration']
         self.assertEqual('产品介绍', saved['prompt'])
+
+    def test_create_and_clear_empty_topic_without_losing_legacy_titles(self):
+        first = self.save(value={'prompt': '', 'sessionPrompt': 'Writing instructions'})
+        self.assertEqual('', first['data']['configuration']['prompt'])
+        self.save(value={'prompt': 'Previously supplied topic', 'keywords': 'Legacy title'})
+        cleared = self.save(value={'prompt': ''})['data']['configuration']
+        self.assertEqual('', cleared['prompt'])
+        self.assertEqual('Legacy title', cleared['keywords'])
+        result = configuration.handle('app', self.actor, {})
+        self.assertEqual(cleared, result['data']['list'][0]['configuration'])
 
     def test_upgrade_and_bootstrap_match(self):
         directory = Path(__file__).resolve().parents[1] / 'sql'

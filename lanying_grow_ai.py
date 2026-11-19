@@ -38,6 +38,7 @@ import lanying_seenical_deletion as conversation_deletion
 from github import Github
 
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
+MAX_FILE_TITLE_LENGTH = 999
 
 
 class TaskSetting:
@@ -718,7 +719,9 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
 
     new_task_info = get_task(app_id, task_id)
     title_inputs = {'prompt', 'article_prompt', 'article_language', 'keywords', 'file_list'}
-    if title_inputs.intersection(normalized.keys()) and new_task_info.get('title_reuse') == 'off':
+    titles_changed = any(new_task_info.get(field) != task_info.get(field)
+                         for field in title_inputs.intersection(normalized))
+    if titles_changed and new_task_info.get('title_reuse') == 'off':
         language = resolve_article_language(new_task_info)
         update_task_field(
             app_id, task_id,
@@ -726,7 +729,9 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
             0
         )
 
-    if {'cycle_type', 'cycle_interval'}.intersection(normalized.keys()):
+    cadence_changed = any(new_task_info.get(field) != task_info.get(field)
+                          for field in {'cycle_type', 'cycle_interval'}.intersection(normalized))
+    if cadence_changed:
         schedule_id = new_task_info.get('schedule_id', '')
         if new_task_info['cycle_type'] != 'cycle':
             if schedule_id:
@@ -917,6 +922,9 @@ def handle_task_file_list(app_id, task_id, file_list):
                 if result['result'] == 'error':
                     return {'result':'error', 'message': 'fail to download url'}
                 else:
+                    for number, title in iter_file_title_lines(filename):
+                        if len(title) > MAX_FILE_TITLE_LENGTH:
+                            return {'result': 'error', 'message': f'Title file line {number} exceeds {MAX_FILE_TITLE_LENGTH} characters'}
                     object_name = generate_task_file_object_name(app_id, task_id)
                     result = lanying_file_storage.upload(object_name, filename)
                     if result['result'] == 'error':
@@ -1647,13 +1655,19 @@ def is_article_title_used(app_id, task_id, title, article_language='',
                           article_language_scoped='off',
                           article_title_legacy_language=''):
     redis = lanying_redis.get_redis_connection()
+
+    def was_used(language=''):
+        key = article_title_used_key(app_id, task_id, language)
+        # Old title files stored the line terminator as part of the title key.
+        return redis.hexists(key, title) or redis.hexists(key, title + '\n')
+
     if article_language_scoped != 'on':
-        return redis.hexists(article_title_used_key(app_id, task_id), title)
-    if redis.hexists(article_title_used_key(app_id, task_id, article_language), title):
+        return was_used()
+    if was_used(article_language):
         return True
     # Preserve the deduplication history written before language selection.
     if article_language == article_title_legacy_language:
-        return redis.hexists(article_title_used_key(app_id, task_id), title)
+        return was_used()
     return False
 
 def get_article_used(app_id, task_id, article_language=''):
@@ -1709,14 +1723,18 @@ def parse_file_keywords(app_id, task_id, file_list):
                     filename = lanying_utils.get_temp_filename(app_id, ".txt")
                     result = lanying_file_storage.download(object_name, filename)
                     if result['result'] == 'ok':
-                        lines = readlines_auto(filename)
-                        for line in lines:
-                            if len(line) > 0 and len(line) < 1000 and not line.isspace():
-                                keywords.append(line)
+                        keywords.extend(title for _, title in iter_file_title_lines(filename)
+                                        if len(title) <= MAX_FILE_TITLE_LENGTH)
             except Exception as e:
                 logging.exception(e)
     logging.info(f"parse_file_keywords finish | app_id:{app_id}, task_id:{task_id}, file_list:{file_list}, keyword count:{len(keywords)}")
     return keywords
+
+def iter_file_title_lines(path):
+    for number, line in enumerate(readlines_auto(path), 1):
+        title = line.rstrip('\r\n')
+        if title.strip():
+            yield number, title
 
 def readlines_auto(path):
     encodings = (
@@ -1731,7 +1749,7 @@ def readlines_auto(path):
         try:
             with open(path, "r", encoding=enc) as f:
                 return f.readlines()
-        except UnicodeDecodeError:
+        except UnicodeError:
             continue
 
     # 最后兜底：强行读（不推荐，但保证不炸）
@@ -1767,6 +1785,8 @@ def do_run_task_internal(app_id, task_run_id, has_retry_times):
     keywords = parse_keywords(task['keywords'])
     file_keywords = parse_file_keywords(app_id, task_id, task['file_list'])
     keywords.extend(file_keywords)
+    if task.get('title_reuse', 'off') == 'off':
+        keywords = list(dict.fromkeys(keywords))
     cycle_type = task_run.get('cycle_type', 'none')
     if len(keywords) == 0:
         if cycle_type == 'cycle':

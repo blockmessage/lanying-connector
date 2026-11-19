@@ -13,8 +13,6 @@ def validate_configuration(value):
     numbers = {'articleCount': (1, 1000), 'wordMin': (1, 1000000), 'wordMax': (1, 1000000)}
     if not isinstance(value, dict) or set(value) - (strings.keys() | numbers.keys()):
         raise ValueError('Invalid conversation configuration fields')
-    if not isinstance(value.get('prompt'), str) or not value['prompt'].strip():
-        raise ValueError('Content topic is required')
     for key, item in value.items():
         if key in strings and (not isinstance(item, str) or len(item) > strings[key]):
             raise ValueError('Invalid conversation configuration text')

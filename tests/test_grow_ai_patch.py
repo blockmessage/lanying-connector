@@ -2,6 +2,7 @@ import importlib.util
 import json
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -303,6 +304,80 @@ class GrowAIPatchTest(unittest.TestCase):
         self.assertNotIn("schedule", written)
         self.assertEqual("off", result["data"]["task"]["schedule"])
         update_field.assert_not_called()
+
+    def test_run_counts_matching_typed_and_file_titles_once_when_reuse_is_off(self):
+        run = {'task_id': 'task', 'article_count': 1, 'cycle_type': 'none', 'start_from': 0}
+        redis = mock.Mock()
+        redis.hexists.return_value = False
+        for reuse, expected in [('off', ['Same', 'Another']), ('on', ['Same', 'Same', 'Another'])]:
+            with self.subTest(title_reuse=reuse), \
+                    mock.patch.object(self.module, 'get_task_run', return_value=run), \
+                    mock.patch.object(self.module, 'get_task', return_value=dict(task(), title_reuse=reuse, keywords='Same')), \
+                    mock.patch.object(self.module.lanying_chatbot, 'get_chatbot', return_value={'user_id': '9'}, create=True), \
+                    mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis), \
+                    mock.patch.object(self.module, 'parse_file_keywords', return_value=['Same', 'Another']), \
+                    mock.patch.object(self.module, 'update_task_run_field') as update, \
+                    mock.patch.object(self.module, 'find_title', return_value={'result': 'error', 'message': 'stop'}) as find, \
+                    mock.patch.object(self.module, 'make_task_run_result_zip_file'):
+                self.module.do_run_task_internal('app', 'run', False)
+            self.assertEqual(expected, find.call_args.args[3])
+            update.assert_called_once_with('app', 'run', 'article_count', len(expected))
+
+    def test_title_edit_keeps_recurring_schedule_and_its_next_run_time(self):
+        current = dict(task(), cycle_type='cycle', cycle_interval=3600, schedule_id='timer', keywords='Old title')
+        updated = dict(current, keywords='New title', revision=5)
+        redis = FakeRedis(4)
+        schedule = mock.Mock()
+        with mock.patch.object(self.module, 'get_task', side_effect=[current, updated, updated]), \
+                mock.patch.object(self.module, 'validate_task_chatbot', return_value={'result': 'ok'}), \
+                mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(self.module, 'lanying_schedule', schedule):
+            result = self.module.patch_task('app', 'task', {
+                'keywords': 'New title', 'file_list': [], 'cycle_type': 'cycle', 'cycle_interval': 3600
+            })
+
+        self.assertEqual('off', result['data']['task']['schedule'])
+        self.assertNotIn('schedule', redis.hmset_calls[0][1])
+        self.assertEqual([], schedule.mock_calls)
+
+    def test_legacy_title_file_history_blocks_matching_title_in_original_language(self):
+        redis = mock.Mock()
+        legacy_key = self.module.article_title_used_key('app', 'task')
+        redis.hexists.side_effect = lambda key, title: key == legacy_key and title == 'Same\n'
+        with mock.patch.object(self.module.lanying_redis, 'get_redis_connection', return_value=redis):
+            self.assertTrue(self.module.is_article_title_used('app', 'task', 'Same'))
+            self.assertTrue(self.module.is_article_title_used('app', 'task', 'Same', 'en', 'on', 'en'))
+            self.assertFalse(self.module.is_article_title_used('app', 'task', 'Same', 'zh-hans', 'on', 'en'))
+
+    def test_file_titles_remove_line_endings_before_counting_characters(self):
+        boundary = '中' * 999
+        files = [{'url': 'https://file.example.test/titles'}]
+        with mock.patch.object(self.module, 'get_task_file_info', return_value={'object_name': 'titles'}), \
+                mock.patch.object(self.module.lanying_utils, 'get_temp_filename', return_value='titles.txt', create=True), \
+                mock.patch.object(self.module.lanying_file_storage, 'download', return_value={'result': 'ok'}, create=True), \
+                mock.patch.object(self.module, 'readlines_auto', return_value=['Title\r\n', boundary + '\n', '\n']):
+            self.assertEqual(['Title', boundary], self.module.parse_file_keywords('app', 'task', files))
+
+    def test_title_file_without_utf16_bom_can_use_gb18030(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filename = pathlib.Path(directory) / 'titles.txt'
+            filename.write_bytes('文章标题\r\n'.encode('gb18030'))
+            self.assertEqual([(1, '文章标题')], list(self.module.iter_file_title_lines(filename)))
+
+    def test_new_file_with_overlong_title_reports_the_line_before_it_is_saved(self):
+        files = [{'url': 'https://file.example.test/titles'}]
+        with mock.patch.object(self.module, 'get_task_file_info', return_value=None), \
+                mock.patch.object(self.module.lanying_utils, 'get_temp_filename', return_value='titles.txt', create=True), \
+                mock.patch.object(self.module, 'get_dummy_lanying_connector', return_value={}), \
+                mock.patch.object(self.module.lanying_chatbot, 'get_default_user_id', return_value='1', create=True), \
+                mock.patch.object(self.module.lanying_im_api, 'download_url', return_value={'result': 'ok'}, create=True), \
+                mock.patch.object(self.module, 'readlines_auto', return_value=['Valid\n', '\n', 'x' * 1000 + '\n']), \
+                mock.patch.object(self.module.lanying_file_storage, 'upload', create=True) as upload, \
+                mock.patch.object(self.module, 'set_task_file_info') as save:
+            result = self.module.handle_task_file_list('app', 'task', files)
+        self.assertEqual({'result': 'error', 'message': 'Title file line 3 exceeds 999 characters'}, result)
+        upload.assert_not_called()
+        save.assert_not_called()
 
     def test_stale_revision_does_not_block_last_write_wins_update(self):
         current = task(revision=7)
