@@ -235,13 +235,13 @@ class ChatbotAccessTests(unittest.TestCase):
         m.set_name_chatbot_id("app-id", "bot-name", chatbot_id)
         return chatbot_id
 
-    def configure_chatbot(self, chatbot_id, access_type="public", user_id=1001, history_msg_count_max=20, access_list="", show_in_support=None):
+    def configure_chatbot(self, chatbot_id, access_type="public", user_id=1001, history_msg_count_max=20, access_list="", show_in_support=None, content_security="on", account_status="1", account_type="enterprise", verification_level="advanced"):
         m = self.module
         return m.configure_chatbot(
             "app-id",
-            "1",
-            "enterprise",
-            "advanced",
+            account_status,
+            account_type,
+            verification_level,
             chatbot_id,
             "bot-name",
             "Bot Name",
@@ -263,11 +263,33 @@ class ChatbotAccessTests(unittest.TestCase):
             "off",
             "whisper-1",
             self.module.get_default_link_profile(),
-            "on",
+            content_security,
             access_type=access_type,
             access_list=access_list,
             show_in_support=show_in_support,
         )
+
+    def test_disable_content_security_does_not_require_a_custom_domain(self):
+        chatbot_id = self.seed_chatbot()
+        # Simulate a bound default site that the old rule would reject.
+        grow = types.SimpleNamespace(get_force_content_security_chatbot_ids=mock.Mock(return_value={chatbot_id}))
+        with mock.patch.dict(sys.modules, {"lanying_grow_ai": grow}):
+            result = self.configure_chatbot(chatbot_id, content_security="off")
+        self.assertEqual(result["result"], "ok")
+        self.assertEqual(self.module.get_chatbot("app-id", chatbot_id)["content_security"], "off")
+        grow.get_force_content_security_chatbot_ids.assert_not_called()
+
+    def test_disable_content_security_still_requires_verification(self):
+        for status, account_type, level, message in [
+            ("0", "enterprise", "advanced", "content_security closed need account verify"),
+            ("1", "personal", "basic", "content_security closed need account advanced verify"),
+        ]:
+            with self.subTest(status=status, account_type=account_type):
+                chatbot_id = self.seed_chatbot()
+                result = self.configure_chatbot(chatbot_id, content_security="off",
+                    account_status=status, account_type=account_type, verification_level=level)
+                self.assertEqual(result, {"result": "error", "message": message})
+                self.assertEqual(self.module.get_chatbot("app-id", chatbot_id)["content_security"], "on")
 
     def test_init_chatbot_im_user_setting_public_syncs_im_setting(self):
         m = self.module

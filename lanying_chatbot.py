@@ -417,10 +417,6 @@ def configure_chatbot(app_id, account_status, account_type, verification_level, 
             return {'result':'error', 'message': 'content_security closed need account verify'}
         if account_type == 'personal' and verification_level != 'advanced':
             return {'result':'error', 'message': 'content_security closed need account advanced verify'}
-        from lanying_grow_ai import get_force_content_security_chatbot_ids
-        force_content_security_chatbot_ids = get_force_content_security_chatbot_ids(app_id)
-        if chatbot_id in force_content_security_chatbot_ids:
-            return {'result':'error', 'message': 'content_security closed need custom site'}
     current_revision = int(chatbot_info.get('agent_tools_revision', 0) or 0)
     if lanying_agent_tools_storage.should_save_config_revision(
             app_id, chatbot_id):

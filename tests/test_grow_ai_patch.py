@@ -120,6 +120,22 @@ class GrowAIPatchTest(unittest.TestCase):
     def setUp(self):
         self.module = load_grow_ai()
 
+    def test_task_binding_allows_disabled_security_with_any_site_configuration(self):
+        for site_ids in [[], ["default-site"], ["custom-domain-site"], ["default-site", "custom-domain-site"]]:
+            with self.subTest(site_ids=site_ids), mock.patch.object(
+                    self.module.lanying_chatbot, "get_chatbot", create=True,
+                    return_value={"content_security": "off"}), mock.patch.object(
+                    self.module, "get_site_list") as sites:
+                result = self.module.validate_task_chatbot("app", types.SimpleNamespace(
+                    chatbot_id="bot", site_id_list=site_ids))
+                self.assertEqual(result, {"result": "ok"})
+                sites.assert_not_called()
+
+    def test_task_binding_still_rejects_missing_chatbot(self):
+        with mock.patch.object(self.module.lanying_chatbot, "get_chatbot", create=True, return_value=None):
+            result = self.module.validate_task_chatbot("app", types.SimpleNamespace(chatbot_id="missing"))
+        self.assertEqual(result, {"result": "error", "message": "chatbot id not exist"})
+
     def test_plan_delete_checks_preview_before_deleting_any_run(self):
         runs = [{'task_run_id': 'first', 'status': 'success'},
                 {'task_run_id': 'second', 'status': 'success', 'preview_id': 'preview'}]
@@ -198,7 +214,7 @@ class GrowAIPatchTest(unittest.TestCase):
             side_effect=lambda *args, **kwargs: kwargs['persist_owner']()))
         with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials}), \
                 mock.patch.object(self.module, 'get_task', return_value=current), \
-                mock.patch.object(self.module, 'check_task_content_security', return_value={'result': 'ok'}), \
+                mock.patch.object(self.module, 'validate_task_chatbot', return_value={'result': 'ok'}), \
                 mock.patch.object(self.module, 'update_task_field'):
             for changes in [{'name': 'Renamed'}, {'reference_document_ids': []}, {'reference_document_ids': ['1-1']}]:
                 redis = FakeRedis(4)
@@ -273,7 +289,7 @@ class GrowAIPatchTest(unittest.TestCase):
         updated = dict(current, article_prompt="New article prompt", revision=5)
         redis = FakeRedis(4)
         with mock.patch.object(self.module, "get_task", side_effect=[current, updated, updated]), mock.patch.object(
-                self.module, "check_task_content_security", return_value={"result": "ok"}), mock.patch.object(
+                self.module, "validate_task_chatbot", return_value={"result": "ok"}), mock.patch.object(
                 self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
                 self.module, "update_task_field") as update_field:
             result = self.module.patch_task(
@@ -293,7 +309,7 @@ class GrowAIPatchTest(unittest.TestCase):
         updated = dict(current, article_language="en", revision=8)
         redis = FakeRedis(7)
         with mock.patch.object(self.module, "get_task", side_effect=[current, updated, updated]), mock.patch.object(
-                self.module, "check_task_content_security", return_value={"result": "ok"}), mock.patch.object(
+                self.module, "validate_task_chatbot", return_value={"result": "ok"}), mock.patch.object(
                 self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
                 self.module, "update_task_field"):
             result = self.module.patch_task(
@@ -305,7 +321,7 @@ class GrowAIPatchTest(unittest.TestCase):
         current = task()
         redis = FakeRedis(4)
         with mock.patch.object(self.module, "get_task", return_value=current), mock.patch.object(
-                self.module, "check_task_content_security", return_value={"result": "ok"}), mock.patch.object(
+                self.module, "validate_task_chatbot", return_value={"result": "ok"}), mock.patch.object(
                 self.module.lanying_redis, "get_redis_connection", return_value=redis), mock.patch.object(
                 self.module.lanying_agent_tools_storage, "save_seenical_config_revision",
                 return_value={"result": "error"}):

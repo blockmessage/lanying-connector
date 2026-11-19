@@ -260,7 +260,7 @@ class MaterialReferencesTest(unittest.TestCase):
         redis = mock.MagicMock()
         pipe = redis.pipeline.return_value.__enter__.return_value
         pipe.execute.side_effect = RuntimeError('Redis unavailable')
-        with mock.patch.object(grow, 'check_task_content_security', return_value={'result': 'ok'}), \
+        with mock.patch.object(grow, 'validate_task_chatbot', return_value={'result': 'ok'}), \
                 mock.patch.object(grow, 'set_admin_token'), \
                 mock.patch.object(grow, 'generate_task_id', return_value='new-plan'), \
                 mock.patch.object(grow, 'handle_task_file_list', return_value={'result': 'ok'}), \
@@ -280,7 +280,7 @@ class MaterialReferencesTest(unittest.TestCase):
         redis = mock.Mock()
         redis.hmset.side_effect = RuntimeError('Redis unavailable')
         with mock.patch.object(grow, 'get_task', return_value=task()), \
-                mock.patch.object(grow, 'check_task_content_security', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'validate_task_chatbot', return_value={'result': 'ok'}), \
                 mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis):
             with self.assertRaises(RuntimeError):
                 grow.patch_task('a', 'p', {'reference_document_ids': ['1-2']})
