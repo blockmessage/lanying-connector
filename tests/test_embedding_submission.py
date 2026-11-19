@@ -10,6 +10,8 @@ from unittest import mock
 import uuid
 import zipfile
 
+from redis.exceptions import WatchError
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -311,18 +313,21 @@ class ReceiptCleanupTest(unittest.TestCase):
         self.assertEqual(len(deleted), 3, 'Repeated reads do not delete unfinished uploads or website tasks')
 
     def test_delete_receipt_touches_only_task_keys(self):
-        redis = mock.Mock()
+        redis = mock.MagicMock()
+        pipe = redis.pipeline.return_value.__enter__.return_value
+        pipe.hgetall.return_value = {b'submission': b'1'}
         provider = mock.Mock()
         provider.get_redis_stack_connection.return_value = redis
-        ns = {'lanying_redis': provider, 'get_task': lambda *args: {'submission': '1'},
+        ns = {'lanying_redis': provider, 'WatchError': WatchError,
               'get_embedding_task_info_key': lambda *args: 'task-info',
               'get_embedding_task_list_key': lambda *args: 'task-list',
               'get_embedding_task_detail_key': lambda *args: 'task-details',
               'lanying_url_loader': mock.Mock()}
-        load_functions('lanying_embedding.py', {'delete_task'}, ns)
+        load_functions('lanying_embedding.py', {'delete_task', 'redis_hgetall'}, ns)
         ns['delete_task']('kb', 'upload')
-        redis.delete.assert_called_once_with('task-info', 'task-details')
-        redis.lrem.assert_called_once_with('task-list', 2, 'upload')
+        pipe.delete.assert_called_once_with('task-info', 'task-details')
+        pipe.lrem.assert_called_once_with('task-list', 2, 'upload')
+        pipe.execute.assert_called_once_with()
         ns['lanying_url_loader'].clean_task.assert_not_called()
 
 

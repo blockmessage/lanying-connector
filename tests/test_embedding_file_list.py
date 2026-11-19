@@ -113,15 +113,15 @@ class FileListTest(unittest.TestCase):
         rows = ns['list_embedding_files']('app', 'knowledge', 1, 6)['list']
         self.assertEqual([row['downloadable'] for row in rows], [False, True, False])
         embedding.get_embedding_name_info.return_value = {'embedding_uuid': 'kb'}
-        for status in ('wait', 'processing', 'adding'):
-            embedding.get_task.return_value = {'submission': '1', 'status': status}
-            with self.assertRaises(ValueError):
-                ns['delete_embedding_task']('app', 'knowledge', 'upload')
-        embedding.delete_task.assert_not_called()
-        for task in ({'submission': '1', 'status': 'error'}, {'type': 'site', 'status': 'processing'}):
-            embedding.get_task.return_value = task
-            ns['delete_embedding_task']('app', 'knowledge', 'task')
-        self.assertEqual(embedding.delete_task.call_count, 2)
+        delete_task = ns['delete_embedding_task']
+        embedding.delete_task.return_value = 'upload_is_processing'
+        with self.assertRaises(ValueError):
+            delete_task('app', 'knowledge', 'upload')
+        embedding.delete_task.assert_called_once_with('kb', 'upload', protect_active=True)
+        embedding.delete_task.return_value = 'task_is_processing'
+        self.assertEqual(delete_task('app', 'knowledge', 'site')['result'], 'error')
+        embedding.delete_task.return_value = None
+        self.assertEqual(delete_task('app', 'knowledge', 'site')['result'], 'ok')
 
     def test_http_route_requires_service_auth_and_valid_scope(self):
         request = mock.Mock(headers={})

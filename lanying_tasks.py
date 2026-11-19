@@ -28,6 +28,7 @@ import lanying_schedule
 import lanying_utils
 import lanying_agent_tools
 from celery.schedules import crontab
+from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError, WatchError
 
 download_dir = os.getenv("EMBEDDING_DOWNLOAD_DIR", "/data/download")
 embedding_doc_dir = os.getenv("EMBEDDING_DOC_DIR", "embedding-doc")
@@ -420,26 +421,64 @@ def load_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, url, do
         else:
             lanying_url_loader.clean_task(site_task_id)
 
-@slow_queue.task
-def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
+def queue_next_site_batch(job, args, embedding_uuid, task_id, batch_id, failure_reason):
+    # A pre-deployment job can still run on either worker version during rollout.
+    if batch_id is None:
+        job.apply_async(args=args)
+        return
+    next_batch_id = str(uuid.uuid4())
+    if not lanying_embedding.update_site_batch(embedding_uuid, task_id, batch_id, {
+            'site_batch_id': next_batch_id, 'site_batch_owner': ''}):
+        return
+    try:
+        job.apply_async(args=args, task_id=next_batch_id)
+    except Exception:
+        failed = lanying_embedding.update_site_batch(embedding_uuid, task_id, next_batch_id, {
+            'status': 'error', 'reason': failure_reason}, only_unclaimed=True)
+        if failed:
+            raise
+
+
+@slow_queue.task(bind=True, max_retries=3)
+def continue_site_task(self, trace_id, app_id, embedding_uuid, task_id):
     ext = '.html'
     type = 'site'
-    embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
-    if embedding_uuid_info:
+    batch_id = self.request.id
+    owner = str(uuid.uuid4())
+    try:
+        embedding_uuid_info = lanying_embedding.get_embedding_uuid_info(embedding_uuid)
+        task_info = lanying_embedding.get_task(embedding_uuid, task_id) if embedding_uuid_info else None
+        if not task_info or task_info.get('status') != 'adding':
+            return
+        if task_info.get('site_batch_id'):
+            admitted = lanying_embedding.take_site_batch(embedding_uuid, task_id, batch_id, owner, ('adding',))
+        else:
+            batch_id = None
+            admitted = True
+    except (RedisConnectionError, RedisTimeoutError, WatchError) as error:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=error, countdown=5)
+        fields = {'status': 'finish', 'processing_total_num': 0} if batch_id == trace_id else {
+            'status': 'error', 'reason': 'site_queue_failed'}
+        lanying_embedding.update_site_batch(embedding_uuid, task_id, batch_id, fields, only_unclaimed=True)
+        raise
+    if admitted:
         vendor = embedding_uuid_info.get('vendor', 'openai')
-        task_info = lanying_embedding.get_task(embedding_uuid, task_id)
         if task_info:
             task_url = task_info['url']
             urls = []
             ttl = 20
             is_finish = True
             generate_lanying_links = task_info.get('generate_lanying_links', 'False') == 'True'
-            tags = task_info['tags']
+            tags = {key: value for key, value in task_info['tags'].items() if key != '_seenical_onboarding_crawl'}
             opts = {
                 'generate_lanying_links': generate_lanying_links,
                 'tags': tags
             }
             for url,_ in lanying_embedding.get_task_details_iterator(embedding_uuid, task_id):
+                if ttl <= 0:
+                    is_finish = False
+                    break
                 ttl -= 1
                 urls.append(url)
                 logging.info(f"continue_site_task | processing url:{url}, trace_id:{trace_id}, app_id:{app_id}, embedding_uuid:{embedding_uuid}, task_id:{task_id}")
@@ -468,34 +507,51 @@ def continue_site_task(trace_id, app_id, embedding_uuid, task_id):
                 if upload_result["result"] == "error":
                     lanying_embedding.update_trace_field(trace_id, "status", "error")
                     lanying_embedding.update_trace_field(trace_id, "message", "upload embedding file error")
+                    lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
+                    lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'reason', 'upload_failed')
+                    lanying_embedding.update_doc_field(embedding_uuid, doc_id, 'status', 'error')
                     lanying_embedding.increase_task_field(embedding_uuid, task_id, "processing_fail_num", 1)
                     logging.error(f"fail to upload embedding: app_id={app_id}, embedding_uuid={embedding_uuid}, url={url}, task_id:{task_id}, message:{upload_result['message']}")
                     continue
                 lanying_embedding.add_doc_to_embedding(embedding_uuid, doc_id)
-                process_embedding_file_slow.apply_async(args = [trace_id, app_id, embedding_uuid, object_name, url, doc_id, False])
-                if ttl <= 0:
-                    is_finish = False
-                    break
+                try:
+                    process_embedding_file_slow.apply_async(args=[trace_id, app_id, embedding_uuid, object_name, url, doc_id, False])
+                except Exception:
+                    logging.exception('Could not queue site page: app_id=%s task_id=%s doc_id=%s', app_id, task_id, doc_id)
+                    lanying_embedding.take_pending_site_doc(embedding_uuid, doc_id, failed_task_id=task_id)
             lanying_embedding.delete_task_details_by_fields(embedding_uuid, task_id, urls)
+            maybe_task_finish(embedding_uuid, task_id)
             if not is_finish:
                 logging.info(f"continue_site_task | schedule continue,  trace_id:{trace_id}, app_id:{app_id}, embedding_uuid:{embedding_uuid}, task_id:{task_id}")
-                continue_site_task.apply_async(args = [trace_id, app_id, embedding_uuid, task_id])
+                queue_next_site_batch(continue_site_task, [trace_id, app_id, embedding_uuid, task_id],
+                                      embedding_uuid, task_id, batch_id, 'site_queue_failed')
             else:
                 logging.info(f"continue_site_task | finish, trace_id:{trace_id}, app_id:{app_id}, embedding_uuid:{embedding_uuid}, task_id:{task_id}")
 
 
-@slow_queue.task
-def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters, opts={}):
-    task_info = lanying_embedding.get_task(embedding_uuid, task_id)
-    if task_info is None:
-        lanying_url_loader.clean_task(site_task_id)
-        return
-    if task_info["status"] == "wait":
-        lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "processing")
-    elif task_info["status"] == "processing":
-        pass
-    else:
-        logging.info(f"prepare_site | bad task_status: {task_info['status']}, app_id={app_id}, embedding_uuid={embedding_uuid}, site_task_id:{site_task_id}, task_id:{site_task_id}")
+@slow_queue.task(bind=True, max_retries=3)
+def prepare_site(self, trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters, opts={}):
+    batch_id = self.request.id
+    owner = str(uuid.uuid4())
+    try:
+        task_info = lanying_embedding.get_task(embedding_uuid, task_id)
+        if not task_info:
+            lanying_url_loader.clean_task(site_task_id)
+            return
+        if task_info.get('site_batch_id'):
+            admitted = lanying_embedding.take_site_batch(embedding_uuid, task_id, batch_id, owner, ('wait', 'processing'))
+        else:
+            batch_id = None
+            admitted = task_info.get('status') in ('wait', 'processing')
+            if task_info.get('status') == 'wait':
+                lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'processing')
+    except (RedisConnectionError, RedisTimeoutError, WatchError) as error:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=error, countdown=5)
+        lanying_embedding.update_site_batch(embedding_uuid, task_id, batch_id, {
+            'status': 'error', 'reason': 'queue_failed'}, only_unclaimed=True)
+        raise
+    if not admitted:
         return
     ttl = 50
     is_finish = True
@@ -511,7 +567,7 @@ def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls
                 logging.info(f"prepare_site found url: app_id={app_id}, embedding_uuid={embedding_uuid},url:{source}, len:{len(page_bytes)}, site_task_id:{site_task_id}, task_id:{site_task_id}")
                 block_num = lanying_embedding.estimate_html(embedding_uuid, page_bytes.decode("utf-8"))
                 file_size = len(page_bytes)
-                if lanying_embedding.get_task_detail_field(embedding_uuid, task_id, source) is None:
+                if block_num > 0 and lanying_embedding.get_task_detail_field(embedding_uuid, task_id, source) is None:
                     field_value = {'file_size':file_size, 'block_num': block_num}
                     lanying_embedding.set_task_detail_field(embedding_uuid,task_id, source, json.dumps(field_value, ensure_ascii=False))
                     lanying_embedding.increase_task_field(embedding_uuid, task_id, "block_num", block_num)
@@ -528,9 +584,14 @@ def prepare_site(trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls
         if ttl < 0:
             break
     if not is_finish:
-        prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, ext, type, site_task_id, urls, doc_cnt, limit, task_id, max_depth, filters, opts])
+        queue_next_site_batch(prepare_site, [trace_id, app_id, embedding_uuid, ext, type, site_task_id,
+                              urls, doc_cnt, limit, task_id, max_depth, filters, opts],
+                              embedding_uuid, task_id, batch_id, 'queue_failed')
+    elif batch_id is None:
+        lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'finish')
     else:
-        lanying_embedding.update_task_field(embedding_uuid, task_id, "status", "finish")
+        lanying_embedding.update_site_batch(embedding_uuid, task_id, batch_id, {
+            'status': 'finish', 'site_batch_id': '', 'site_batch_owner': ''})
 
 @normal_queue.task
 def process_embedding_file(trace_id, app_id, embedding_uuid, object_name, origin_filename, doc_id, is_regenerate = False, submission_task_id=None):
@@ -556,6 +617,9 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
         return
     is_storage_size_increased = False
     doc_task_id = None
+    site_page = not is_regenerate and doc_info.get('type') == 'site' and 'task_id' in doc_info
+    if site_page and not lanying_embedding.take_pending_site_doc(embedding_uuid, doc_id):
+        return
     if not is_regenerate:
         if 'task_id' in doc_info:
             task_id = doc_info['task_id']
@@ -564,7 +628,8 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
                 doc_task_id = task_id
     try:
         storage_file_size = int(doc_info.get('storage_file_size', "0"))
-        lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "processing")
+        if not site_page:
+            lanying_embedding.update_doc_field(embedding_uuid, doc_id, "status", "processing")
         lanying_embedding.update_doc_field(embedding_uuid, doc_id, "max_block_size", embedding_uuid_info['max_block_size'])
         if 'ext' in doc_info:
             ext = doc_info['ext']
@@ -641,7 +706,7 @@ def process_embedding_file_internal(trace_id, app_id, embedding_uuid, object_nam
         reason = "exception"
         try:
             exception_str = str(e)
-            if exception_str in ["bad_authorization","no_quota", "deduct_failed"]:
+            if exception_str in ["bad_authorization","no_quota", "deduct_failed", "empty_page"]:
                 reason = exception_str
             else:
                 logging.error("error:", e)

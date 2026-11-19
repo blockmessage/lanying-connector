@@ -811,7 +811,10 @@ def continue_embedding_task(service):
         task_id = data['task_id']
         logging.info(f"continue_embedding_task | data:{data}")
         service_module = get_service_module(service)
-        service_module.continue_embedding_task(app_id, embedding_name, task_id)
+        result = service_module.continue_embedding_task(app_id, embedding_name, task_id)
+        if result['result'] == 'error':
+            code = 503 if result['message'] == 'index_queue_failed' else 409
+            return app.make_response({'code': code, 'message': result['message']})
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})
@@ -830,9 +833,11 @@ def delete_embedding_task(service):
         logging.info(f"delete_embedding_task | data:{data}")
         service_module = get_service_module(service)
         try:
-            service_module.delete_embedding_task(app_id, embedding_name, task_id)
+            result = service_module.delete_embedding_task(app_id, embedding_name, task_id)
         except ValueError:
             return app.make_response({'code': 400, 'message': 'upload is still processing'}), 400
+        if result['result'] == 'error':
+            return app.make_response({'code': 409, 'message': result['message']})
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})

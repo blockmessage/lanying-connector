@@ -10,6 +10,7 @@ import os
 import random
 import numpy as np
 from redis.commands.search.query import Query
+from redis.exceptions import WatchError
 import pandas as pd
 from pdfminer.high_level import extract_text
 import hashlib
@@ -767,7 +768,9 @@ def process_embedding_file(trace_id, app_id, embedding_uuid, filename, origin_fi
                                        _seenical_progress_offset=int(meta.get('progress_total', 0)))
         try:
             if ext in [".html", ".htm"]:
-                process_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+                blocks = process_html(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
+                if not blocks and (get_doc(embedding_uuid, doc_id) or {}).get('type') == 'site':
+                    raise ValueError('empty_page')
             elif ext in [".csv"]:
                 process_csv(embedding_uuid_info, app_id, embedding_uuid, filename, origin_filename, doc_id)
             elif ext in [".txt"]:
@@ -855,13 +858,14 @@ def estimate_html(embedding_uuid, html):
 def process_html(config, app_id, embedding_uuid, filename, origin_filename, doc_id):
     with open(filename, "r") as f:
         html = f.read()
-        process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, md(html))
+        return process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, md(html))
 
 def process_markdown_content(config, app_id, embedding_uuid, origin_filename, doc_id, markdown):
     blocks = markdown_to_blocks(config, markdown)
     redis = lanying_redis.get_redis_stack_connection()
     update_progress_total(redis, get_embedding_doc_info_key(embedding_uuid, doc_id), len(blocks), config)
     insert_embeddings(config, app_id, embedding_uuid, origin_filename, doc_id, blocks, redis)
+    return len(blocks)
 
 def markdown_to_blocks(config, markdown):
     markdown = remove_space_line(markdown)
@@ -1546,21 +1550,112 @@ def get_task_list(embedding_uuid):
                 task_info['visited_num'] = site_task_info['visited']
                 task_info['to_visit_num'] = site_task_info['to_visit']
                 task_info['found_num'] = site_task_info['found']
+            task_info.pop('site_batch_id', None)
+            task_info.pop('site_batch_owner', None)
             task_info["task_id"] = task_id
             task_list.append(task_info)
     return task_list
 
-def delete_task(embedding_uuid, task_id):
-    task_info = get_task(embedding_uuid, task_id)
-    if task_info:
-        redis = lanying_redis.get_redis_stack_connection()
-        info_key = get_embedding_task_info_key(embedding_uuid, task_id)
-        task_list_key = get_embedding_task_list_key(embedding_uuid)
-        task_detail_key = get_embedding_task_detail_key(embedding_uuid, task_id)
-        redis.delete(info_key, task_detail_key)
-        redis.lrem(task_list_key,2, task_id)
-        if 'site_task_id' in task_info:
-            lanying_url_loader.clean_task(task_info['site_task_id'])
+def delete_task(embedding_uuid, task_id, protect_active=False):
+    redis = lanying_redis.get_redis_stack_connection()
+    info_key = get_embedding_task_info_key(embedding_uuid, task_id)
+    detail_key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    list_key = get_embedding_task_list_key(embedding_uuid)
+    try:
+        with redis.pipeline() as pipe:
+            pipe.watch(info_key)
+            task = redis_hgetall(pipe, info_key)
+            status = task.get('status')
+            if protect_active:
+                if task.get('submission') == '1' and status != 'error':
+                    return 'upload_is_processing'
+                if task.get('type') == 'site' and status == 'adding':
+                    return 'task_is_processing'
+            if not task:
+                return None
+            pipe.multi()
+            pipe.delete(info_key, detail_key)
+            pipe.lrem(list_key, 2, task_id)
+            pipe.execute()
+    except WatchError:
+        return 'task_state_changed'
+    if 'site_task_id' in task:
+        lanying_url_loader.clean_task(task['site_task_id'])
+    return None
+
+def claim_site_index(embedding_uuid, task_id, trace_id):
+    redis = lanying_redis.get_redis_stack_connection()
+    info_key = get_embedding_task_info_key(embedding_uuid, task_id)
+    detail_key = get_embedding_task_detail_key(embedding_uuid, task_id)
+    for attempt in range(3):
+        try:
+            with redis.pipeline() as pipe:
+                pipe.watch(info_key)
+                task = redis_hgetall(pipe, info_key)
+                if task.get('status') == 'adding' and task.get('site_batch_id') == trace_id:
+                    return None
+                if task.get('type') != 'site' or task.get('status') != 'finish':
+                    return 'task_state_changed'
+                total = pipe.hlen(detail_key)
+                if not total or task.get('block_num') == '0':
+                    return 'empty_crawl'
+                pipe.multi()
+                pipe.hset(info_key, mapping={
+                    'status': 'adding', 'processing_total_num': total,
+                    'site_batch_id': trace_id, 'site_batch_owner': '',
+                })
+                pipe.execute()
+                return None
+        except WatchError:
+            if attempt == 2:
+                raise
+
+def _update_site_batch(embedding_uuid, task_id, changes):
+    redis = lanying_redis.get_redis_stack_connection()
+    info_key = get_embedding_task_info_key(embedding_uuid, task_id)
+    for attempt in range(3):
+        try:
+            with redis.pipeline() as pipe:
+                pipe.watch(info_key)
+                fields = changes(redis_hgetall(pipe, info_key))
+                if fields is None:
+                    return False
+                if not fields:
+                    return True
+                pipe.multi()
+                pipe.hset(info_key, mapping=fields)
+                pipe.execute()
+                return True
+        except WatchError:
+            if attempt == 2:
+                raise
+
+def take_site_batch(embedding_uuid, task_id, batch_id, owner, statuses):
+    def changes(task):
+        status = task.get('status')
+        if status not in statuses or (task.get('site_batch_id') or batch_id) != batch_id:
+            return None
+        current_owner = task.get('site_batch_owner')
+        if current_owner:
+            # A reconnect after EXEC can see the write from this worker.
+            return {} if current_owner == owner else None
+        return {'site_batch_id': batch_id, 'site_batch_owner': owner,
+                'status': 'processing' if status == 'wait' else status}
+
+    return _update_site_batch(embedding_uuid, task_id, changes)
+
+def update_site_batch(embedding_uuid, task_id, batch_id, fields, only_unclaimed=False):
+    def changes(task):
+        if only_unclaimed and task.get('site_batch_owner'):
+            return None
+        if task.get('site_batch_id') in (batch_id, fields.get('site_batch_id', batch_id)) and all(
+                task.get(key) == str(value) for key, value in fields.items()):
+            return {}
+        if task.get('site_batch_id') != batch_id or task.get('status') not in ('wait', 'processing', 'adding'):
+            return None
+        return fields
+
+    return _update_site_batch(embedding_uuid, task_id, changes)
 
 def get_task(embedding_uuid, task_id):
     redis = lanying_redis.get_redis_stack_connection()
@@ -1677,6 +1772,38 @@ def update_doc_field(embedding_uuid, doc_id, field, value):
     if (field == 'status' and value in {'finish', 'error'}) or field in {'filename', 'object_name', 'file_size'}:
         notify_workspace_material_change(embedding_uuid)
 
+def take_pending_site_doc(embedding_uuid, doc_id, failed_task_id=None):
+    redis = lanying_redis.get_redis_stack_connection()
+    info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
+    task_key = get_embedding_task_info_key(embedding_uuid, failed_task_id) if failed_task_id else None
+    owner = 'abandoned' if failed_task_id else str(uuid.uuid4())
+    fields = {'status': 'error', 'reason': 'site_queue_failed'} if failed_task_id else {'status': 'processing'}
+    fields['site_page_owner'] = owner
+    for attempt in range(3):
+        try:
+            with redis.pipeline() as pipe:
+                pipe.watch(info_key)
+                doc_status, reason, current_owner = pipe.hmget(info_key, ['status', 'reason', 'site_page_owner'])
+                if not failed_task_id and doc_status == b'processing' and current_owner == owner.encode():
+                    return True
+                if doc_status != b'wait' or current_owner or reason == b'site_queue_failed':
+                    return False
+                if task_key:
+                    pipe.watch(task_key)
+                count_failure = task_key and redis_hget(pipe, task_key, 'status') == 'adding'
+                pipe.multi()
+                pipe.hset(info_key, mapping=fields)
+                if count_failure:
+                    pipe.hincrby(task_key, 'processing_fail_num', 1)
+                pipe.execute()
+                break
+        except WatchError:
+            if attempt == 2:
+                raise
+    if failed_task_id:
+        notify_workspace_material_change(embedding_uuid)
+    return True
+
 
 def notify_workspace_material_change(embedding_uuid):
     # Internal session/candidate indexes have their own post-commit events.
@@ -1785,6 +1912,7 @@ def get_doc(embedding_uuid, doc_id):
     info_key = get_embedding_doc_info_key(embedding_uuid, doc_id)
     info = redis_hgetall(redis, info_key)
     if "filename" in info:
+        info.pop('site_page_owner', None)
         if 'tags' not in info:
             info['tags'] = {}
         else:

@@ -4670,7 +4670,15 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
             lanying_embedding.update_task_field(embedding_uuid, task_id, "site_task_id", site_task_id)
             lanying_embedding.update_task_field(embedding_uuid, task_id, "generate_lanying_links", str(generate_lanying_links == True))
             lanying_embedding.update_task_field(embedding_uuid, task_id, "tags", json.dumps(tags, ensure_ascii=False))
-            prepare_site.apply_async(args = [trace_id, app_id, embedding_uuid, '.html', type, site_task_id, urls, 0, limit, task_id, max_depth, filters, opts])
+            lanying_embedding.update_task_field(embedding_uuid, task_id, 'site_batch_id', trace_id)
+            try:
+                prepare_site.apply_async(args=[trace_id, app_id, embedding_uuid, '.html', type, site_task_id,
+                                               urls, 0, limit, task_id, max_depth, filters, opts], task_id=trace_id)
+            except Exception:
+                failed = lanying_embedding.update_site_batch(embedding_uuid, task_id, trace_id, {
+                    'status': 'error', 'reason': 'queue_failed'}, only_unclaimed=True)
+                if failed:
+                    raise
         else:
             # Persist the receipt before publishing: queueing/downloading may take
             # time, but a successful submission must already be visible.
@@ -4689,31 +4697,36 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
             logging.info(f"add_doc_to_embedding | result={result}")
 
 def continue_embedding_task(app_id, embedding_name, task_id):
-    config = lanying_config.get_lanying_connector(app_id)
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
-    if embedding_info:
-        embedding_uuid = embedding_info['embedding_uuid']
-        task_info = lanying_embedding.get_task(embedding_uuid, task_id)
-        if task_info:
-            if task_info["status"] != "finish":
-                return {'result':'error', 'message': 'task_status_must_be_finish'}
-            else:
-                lanying_embedding.update_task_field(embedding_uuid,task_id, "status", "adding")
-                trace_id = lanying_embedding.create_trace_id()
-                lanying_embedding.update_embedding_uuid_info(embedding_uuid, "openai_secret_key", config['access_token'])
-                total_num = lanying_embedding.get_task_details_count(embedding_uuid, task_id)
-                lanying_embedding.update_task_field(embedding_uuid, task_id, "processing_total_num", total_num)
-                continue_site_task.apply_async(args = [trace_id, app_id, embedding_uuid, task_id])
-    return {'result':'ok'}
+    if not embedding_info:
+        return {'result': 'error', 'message': 'task_state_changed'}
+    embedding_uuid = embedding_info['embedding_uuid']
+    config = lanying_config.get_lanying_connector(app_id)
+    trace_id = str(uuid.uuid4())
+    error = lanying_embedding.claim_site_index(embedding_uuid, task_id, trace_id)
+    if error:
+        return {'result': 'error', 'message': error}
+    try:
+        lanying_embedding.update_trace_field(trace_id, 'status', 'wait')
+        lanying_embedding.update_embedding_uuid_info(embedding_uuid, 'openai_secret_key', config['access_token'])
+        continue_site_task.apply_async(args=[trace_id, app_id, embedding_uuid, task_id], task_id=trace_id)
+    except Exception:
+        logging.exception('Could not queue site indexing: app_id=%s task_id=%s', app_id, task_id)
+        released = lanying_embedding.update_site_batch(embedding_uuid, task_id, trace_id, {
+            'status': 'finish', 'processing_total_num': 0}, only_unclaimed=True)
+        if released:
+            return {'result': 'error', 'message': 'index_queue_failed'}
+    return {'result': 'ok'}
 
 def delete_embedding_task(app_id, embedding_name, task_id):
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
     if embedding_info:
-        embedding_uuid = embedding_info['embedding_uuid']
-        task = lanying_embedding.get_task(embedding_uuid, task_id)
-        if task and str(task.get('submission')) == '1' and task.get('status') != 'error':
+        error = lanying_embedding.delete_task(embedding_info['embedding_uuid'], task_id, protect_active=True)
+        if error == 'upload_is_processing':
             raise ValueError('upload is still processing')
-        lanying_embedding.delete_task(embedding_uuid, task_id)
+        if error:
+            return {'result': 'error', 'message': error}
+    return {'result': 'ok'}
 
 def re_run_doc_to_embedding(app_id, embedding_name, doc_id):
     embedding_name_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)
