@@ -16,18 +16,26 @@ class LoggingRedactionTests(unittest.TestCase):
         @app.post('/service/agent_tools/seenical/conversations/history/inherit')
         @app.post('/service/agent_tools/seenical/conversations/configuration')
         @app.post('/service/agent_tools/seenical/conversations/configurations')
+        @app.post('/service/agent_tools/seenical/conversations/writing_preferences')
         def api():
             from flask import jsonify, request
             return jsonify({'code': 200, 'data': request.get_json()})
 
-        for path in ['history/inherit', 'configuration', 'configurations']:
+        for path in ['history/inherit', 'configuration', 'configurations', 'writing_preferences']:
             with self.assertLogs(level='INFO') as captured:
                 response = app.test_client().post(
                     '/service/agent_tools/seenical/conversations/' + path,
                     json={'messages': [{'text': 'private-history-text'}]})
             self.assertEqual(200, response.status_code)
             self.assertNotIn('private-history-text', '\n'.join(captured.output))
-            self.assertIn('inherited conversation history', '\n'.join(captured.output))
+            self.assertIn('conversation content', '\n'.join(captured.output))
+
+    def test_model_log_redaction_is_scoped(self):
+        formatter = lanying_logging.RedactingFormatter('%(message)s')
+        record = logging.makeLogRecord({'msg': 'private-chat-message', 'levelname': 'INFO'})
+        with lanying_logging.omit_model_log_content():
+            self.assertNotIn('private-chat-message', formatter.format(record))
+        self.assertEqual('private-chat-message', formatter.format(record))
 
     def test_url_for_log_drops_query_and_fragment(self):
         sanitized = lanying_utils.url_for_log(

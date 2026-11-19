@@ -516,6 +516,19 @@ TASK_PATCH_FIELDS = (
     TASK_PATCH_JSON_FIELDS | set(TASK_PATCH_ENUM_FIELDS.keys())
 )
 
+LEGACY_WRITING_PROMPT = re.compile(
+    r'(?:^|\n\n)自定义提示词（(?:由完整历史会话整理，优先遵循|兼容旧数据)）：\n')
+WRITING_PREFERENCES_CONFLICT = 'Writing preferences changed. Reload and try again.'
+
+
+def split_legacy_writing_prompt(prompt):
+    match = LEGACY_WRITING_PROMPT.search(prompt)
+    if not match:
+        return prompt, None
+    topic = prompt[:match.start()].removeprefix('内容主题：\n').strip()
+    rules = prompt[match.end():].split('\n\nSeenical 会话上下文：', 1)[0].strip()
+    return topic, rules
+
 
 def _task_setting_from_info(app_id, task_info):
     return TaskSetting(
@@ -647,7 +660,7 @@ def _save_task_revision(app_id, task_id, revision, snapshot, request_id):
 
 @conversation_deletion.guarded('task')
 def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
-               operational_changes=None):
+               operational_changes=None, expected_article_prompt=None):
     """Patch a task without changing omitted fields or enabling its schedule.
 
     The existing configure_task API intentionally keeps its historical full
@@ -661,6 +674,19 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
     if normalized_result['result'] == 'error':
         return normalized_result
     normalized = normalized_result['data']
+    if expected_article_prompt is not None:
+        if (not isinstance(expected_article_prompt, str) or len(expected_article_prompt) > 5000
+                or set(normalized) != {'article_prompt'} or not isinstance(changes['article_prompt'], str)):
+            return {'result': 'error', 'message': 'Invalid writing preference update'}
+        _, legacy_rules = split_legacy_writing_prompt(task_info.get('prompt', ''))
+        saved_prompt = task_info.get('article_prompt', '')
+        current_prompt = saved_prompt if saved_prompt.strip() else (legacy_rules or '')
+        if current_prompt != expected_article_prompt:
+            return {'result': 'error', 'message': WRITING_PREFERENCES_CONFLICT}
+    if 'article_prompt' in normalized:
+        topic, legacy_rules = split_legacy_writing_prompt(normalized.get('prompt', task_info.get('prompt', '')))
+        if legacy_rules is not None:
+            normalized['prompt'] = topic
     current_revision = int(task_info.get('revision', 0))
     merged = dict(task_info)
     merged.update(normalized)
@@ -714,6 +740,21 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
                                      persist_owner=lambda: redis.hmset(task_key, redis_fields))
         except materials.MaterialError as exc:
             return {'result': 'error', 'message': str(exc)}
+    elif expected_article_prompt is not None:
+        from redis.exceptions import WatchError
+        try:
+            with redis.pipeline() as pipe:
+                pipe.watch(task_key)
+                stored = lanying_redis.redis_hgetall(pipe, task_key)
+                if ('create_time' not in stored or int(stored.get('revision', 0)) != current_revision
+                        or stored.get('prompt', '') != task_info.get('prompt', '')
+                        or stored.get('article_prompt', '') != task_info.get('article_prompt', '')):
+                    return {'result': 'error', 'message': WRITING_PREFERENCES_CONFLICT}
+                pipe.multi()
+                pipe.hmset(task_key, redis_fields)
+                pipe.execute()
+        except WatchError:
+            return {'result': 'error', 'message': WRITING_PREFERENCES_CONFLICT}
     else:
         redis.hmset(task_key, redis_fields)
 
@@ -1034,6 +1075,9 @@ def get_task(app_id, task_id):
             dto['target_summary_dir'] = ''
         if 'embedding_condition' not in dto:
             dto['embedding_condition'] = {}
+        # Distinguish an explicitly cleared prompt from older rows that only
+        # have a browser-side fallback. Keep returning the legacy empty value.
+        dto['article_prompt_saved'] = 'article_prompt' in info
         if 'article_prompt' not in dto:
             dto['article_prompt'] = ''
         if 'article_language_scoped' not in dto:
@@ -3578,8 +3622,8 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id,
         article_language = resolve_article_language(task, site_list)
     logging.info(f"use article language:{article_language}, configured language:{configured_article_language}, site language:{site_language}")
     action_language = '英文' if article_language == 'en' else '简体中文'
-    task_prompt = task['prompt']
-    article_prompt = task.get('article_prompt', '').strip()
+    task_prompt, legacy_rules = split_legacy_writing_prompt(task['prompt'])
+    article_prompt = task.get('article_prompt', '').strip() or legacy_rules or ''
     action_prompt = f"请生成一篇markdown格式的{action_language}文章，不要生成图片，第一行需要是文章标题：\n"
     word_prompt = f'字数范围 {word_count_min} - {word_count_max} 字\n'
     image_placeholder_text = '[插图]'

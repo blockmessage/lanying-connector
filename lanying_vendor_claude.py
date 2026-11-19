@@ -135,7 +135,8 @@ def should_use_proxy_for_custom_endpoint(prepare_info):
 
 def chat(prepare_info, preset, model_config):
     client = anthropic.Anthropic(
-        api_key=prepare_info['api_key']
+        api_key=prepare_info['api_key'],
+        **lanying_openai_compat.chat_sdk_options(prepare_info)
     )
     final_preset = format_preset(preset, model_config)
     headers = maybe_add_proxy_headers(prepare_info, client)

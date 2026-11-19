@@ -1,4 +1,6 @@
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from concurrent_log_handler import ConcurrentTimedRotatingFileHandler
 import json
 import os
@@ -108,8 +110,9 @@ def format_log_value(value, max_chars=HTTP_LOG_MAX_CHARS):
 
 def _request_body_for_log(request):
     if request.path.startswith(('/service/agent_tools/seenical/conversations/history',
-                                '/service/agent_tools/seenical/conversations/configuration')):
-        return {'_omitted': 'inherited conversation history'}
+                                '/service/agent_tools/seenical/conversations/configuration',
+                                '/service/agent_tools/seenical/conversations/writing_preferences')):
+        return {'_omitted': 'conversation content'}
     content_length = request.content_length
     if content_length is not None and content_length > HTTP_LOG_MAX_BODY_BYTES:
         return {
@@ -234,9 +237,10 @@ def register_http_logging(app):
                 response.status_code,
                 duration_ms,
                 response.content_type or '',
-                format_log_value({'_omitted': 'inherited conversation history'}
+                format_log_value({'_omitted': 'conversation content'}
                                  if request.path.startswith(('/service/agent_tools/seenical/conversations/history',
-                                                             '/service/agent_tools/seenical/conversations/configuration'))
+                                                             '/service/agent_tools/seenical/conversations/configuration',
+                                                             '/service/agent_tools/seenical/conversations/writing_preferences'))
                                  else _response_body_for_log(response)))
         except Exception:
             logging.warning(
@@ -245,8 +249,22 @@ def register_http_logging(app):
         return response
 
 
+_omit_model_log_content = ContextVar('omit_model_log_content', default=False)
+
+
+@contextmanager
+def omit_model_log_content():
+    token = _omit_model_log_content.set(True)
+    try:
+        yield
+    finally:
+        _omit_model_log_content.reset(token)
+
+
 class RedactingFormatter(logging.Formatter):
     def format(self, record):
+        if _omit_model_log_content.get():
+            return f'{record.levelname} {record.pathname}:{record.lineno} (model request content omitted)'
         return redact_sensitive_log_value(super().format(record))
 
 def init_logging():

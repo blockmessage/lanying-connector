@@ -51,6 +51,7 @@ import lanying_openai_compat
 import lanying_agent_tools
 import lanying_operational_storage
 import lanying_gift_quota
+import lanying_paige
 from lanying_ai_chat_pipeline import (
     ChatHandlerResult, ModelResponse, PresetResolution, Prompt, ReplyResult,
     ToolRunResult,
@@ -1841,7 +1842,8 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
     add_reference = presetExt.get('add_reference', 'none')
     reference = presetExt.get('reference')
     reference_list = []
-    messages = preset.get('messages',[])
+    messages = preset.get('messages', [])
+    is_paige = lanying_paige.is_writer(config.get('chatbot') or {})
     user_functions = []
     function_names = {}
     system_functions = get_system_functions(config, presetExt)
@@ -1877,9 +1879,11 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
         config['embedding_condition'] = presetExt['embedding_condition']
     if 'embedding_condition' in lcExt and isinstance(lcExt['embedding_condition'], dict):
         config['embedding_condition'] = lcExt['embedding_condition']
-    if 'max_tokens' in lcExt:
-        expect_max_tokens = int(lcExt['max_tokens'])
+    if 'max_tokens' in lcExt or is_paige:
         token_limit = model_token_limit(model_config)
+        requested_max_tokens = int(lcExt.get('max_tokens', 0))
+        writer_budget = min(4096, token_limit // 2) if is_paige else 0
+        expect_max_tokens = max(requested_max_tokens, writer_budget)
         old_max_tokens = get_completion_budget_tokens(preset)
         expect_max_tokens = max(old_max_tokens, min(token_limit, max(0, expect_max_tokens)))
         logging.info(f"Using max_tokens in AI Ext | old:{old_max_tokens} new:{expect_max_tokens}")
@@ -1935,7 +1939,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             capsule_chatbot_id = capsule_info['chatbot_id']
             capsule_chatbot = lanying_chatbot.get_chatbot(capsule_app_id, capsule_chatbot_id)
             if capsule_chatbot:
-                messages[:0] = capsule_chatbot['preset'].get('messages',[])
+                messages[:0] = capsule_chatbot['preset'].get('messages', [])
     if 'linked_capsule_id' in config:
         linked_capsule_id = config['linked_capsule_id']
         for now_embedding_info in lanying_embedding.get_preset_embedding_infos_by_capsule_id(linked_capsule_id):
@@ -1948,7 +1952,7 @@ def handle_chat_message_with_config(config, model_config, vendor, msg, preset, l
             capsule_chatbot_id = capsule_info['chatbot_id']
             capsule_chatbot = lanying_chatbot.get_chatbot(capsule_app_id, capsule_chatbot_id)
             if capsule_chatbot:
-                messages[:0] = capsule_chatbot['preset'].get('messages',[])
+                messages[:0] = capsule_chatbot['preset'].get('messages', [])
     # Internal libraries may only enter retrieval through verified server scope.
     import lanying_seenical_materials
     preset_embedding_infos = [info for info in preset_embedding_infos
@@ -5865,6 +5869,8 @@ def list_chatbots():
                 linked_plugin_names.extend(capsule_info['plugin_names'])
         chatbot['linked_embedding_names'] = linked_embedding_names
         chatbot['linked_plugin_names'] = linked_plugin_names
+        if lanying_paige.is_writer(chatbot):
+            chatbot['seenical_template'] = 'paige'
         # Keep this field for older Console clients, which use it as a UI gate.
         chatbot['force_content_security'] = False
         dtos.append(chatbot)

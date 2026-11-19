@@ -285,6 +285,50 @@ class GrowAIPatchTest(unittest.TestCase):
             self.module.do_run_task_internal('app', 'run', False)
         self.assertEqual(find.call_args.args[4], 'on')
 
+    def test_writing_preference_patch_rejects_races_and_clears_legacy_rules(self):
+        from redis.exceptions import WatchError
+
+        module = self.module
+        legacy = ('内容主题：\n产品介绍\n\n自定义提示词（兼容旧数据）：\n先写 FAQ'
+                  '\n\nSeenical 会话上下文：Agent A')
+        original = dict(task(), prompt=legacy, article_prompt='', article_language_scoped='off')
+        updated = dict(original, prompt='产品介绍')
+        self.assertEqual(('产品介绍', '先写 FAQ'), module.split_legacy_writing_prompt(legacy))
+        self.assertEqual(('Unrelated prompt', None), module.split_legacy_writing_prompt('Unrelated prompt'))
+        redis = mock.MagicMock()
+        pipeline = redis.pipeline.return_value.__enter__.return_value
+        stored = {'create_time': '1', 'revision': str(original['revision']), 'prompt': legacy}
+        with mock.patch.object(module, 'get_task', return_value=original) as read_task, \
+                mock.patch.object(module.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(module.lanying_redis, 'redis_hgetall', create=True, return_value=stored), \
+                mock.patch.object(module, 'validate_task_chatbot', return_value={'result': 'ok'}):
+            stale = module.patch_task('app', 'task', {'article_prompt': ''}, expected_article_prompt='old draft')
+            self.assertEqual(module.WRITING_PREFERENCES_CONFLICT, stale['message'])
+            redis.pipeline.assert_not_called()
+            pipeline.execute.side_effect = WatchError()
+            raced = module.patch_task('app', 'task', {'article_prompt': ''}, expected_article_prompt='先写 FAQ')
+            self.assertEqual(module.WRITING_PREFERENCES_CONFLICT, raced['message'])
+            pipeline.execute.side_effect = None
+            read_task.side_effect = [original, updated, updated]
+            result = module.patch_task('app', 'task', {'article_prompt': ''}, expected_article_prompt='先写 FAQ')
+        self.assertEqual('ok', result['result'])
+        submitted = pipeline.hmset.call_args.args[1]
+        self.assertEqual('', submitted['article_prompt'])
+        self.assertEqual('产品介绍', submitted['prompt'])
+        self.assertNotIn('schedule', submitted)
+        redis.hmset.assert_not_called()
+
+    def test_task_read_preserves_the_difference_between_cleared_and_unsaved_prompt(self):
+        with mock.patch.object(self.module.lanying_redis, 'redis_hgetall', create=True) as read, \
+                mock.patch.dict(sys.modules, {
+                    'lanying_seenical_materials': types.SimpleNamespace(reference_ids=lambda *args: [])
+                }):
+            read.side_effect = [{'create_time': '1'}, {'create_time': '1', 'article_prompt': ''}]
+            for saved in (False, True):
+                result = self.module.get_task('app', 'task')
+                self.assertEqual('', result['article_prompt'])
+                self.assertIs(saved, result['article_prompt_saved'])
+
     def test_patch_only_writes_requested_fields_and_keeps_paused_schedule(self):
         current = task()
         updated = dict(current, article_prompt="New article prompt", revision=5)

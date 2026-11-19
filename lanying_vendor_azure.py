@@ -11,6 +11,9 @@ PROXY_API_ENDPOINT_HEADER = 'X-Lanying-Proxy-Api-Endpoint'
 
 
 def get_request_timeout(prepare_info):
+    configured = lanying_openai_compat.chat_timeout_options(prepare_info)
+    if configured:
+        return configured['timeout']
     auth_info = prepare_info.get('auth_info', {}) or {}
     try:
         timeout_seconds = int(auth_info.get('validation_timeout_seconds', 0))

@@ -218,7 +218,7 @@ def prepare_chat(auth_info, preset):
         'secret_key': auth_info['secret_key']
     }
 
-def get_access_token(api_key, secret_key):
+def get_access_token(api_key, secret_key, **request_options):
     key = access_token_key(api_key, secret_key)
     redis = lanying_redis.get_redis_connection()
     access_token = lanying_redis.redis_get(redis, key)
@@ -231,7 +231,7 @@ def get_access_token(api_key, secret_key):
         'Accept': 'application/json'
     }
     try:
-        response = requests.request("POST", url, headers=headers, data=payload)
+        response = requests.request("POST", url, headers=headers, data=payload, **request_options)
         access_token = response.json().get("access_token")
         if access_token:
             redis.setex(key, ACCESS_TOKEN_REFRESH_TIME, access_token)
@@ -247,7 +247,7 @@ def get_access_token(api_key, secret_key):
 def chat(prepare_info, preset, model_config):
     api_key = prepare_info['api_key']
     secret_key = prepare_info['secret_key']
-    access_token = get_access_token(api_key, secret_key)
+    access_token = get_access_token(api_key, secret_key, **lanying_openai_compat.chat_timeout_options(prepare_info))
     if access_token is None:
         logging.info("baidu chat_completion | failed to get access_token")
         return {
@@ -263,7 +263,8 @@ def chat(prepare_info, preset, model_config):
         logging.info(f"baidu chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
         stream = final_preset.get("stream", False)
         if stream:
-            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True,
+                                        **lanying_openai_compat.chat_timeout_options(prepare_info))
             logging.info(f"baidu chat_completion finish | code={response.status_code}, stream={stream}")
             if response.status_code == 200:
                 def generator():
@@ -318,7 +319,8 @@ def chat(prepare_info, preset, model_config):
                     'response': response_json
                 }
         else:
-            response = requests.request("POST", url, headers=headers, json=final_preset)
+            response = requests.request("POST", url, headers=headers, json=final_preset,
+                                        **lanying_openai_compat.chat_timeout_options(prepare_info))
             logging.info(f"baidu chat_completion finish | code={response.status_code}, response={response.text}")
             res = response.json()
             error_code = res.get('error_code')

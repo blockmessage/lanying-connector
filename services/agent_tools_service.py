@@ -188,6 +188,18 @@ def seenical_conversation_configuration(save):
         str(data.get('app_id', '')), _actor(data), payload, save=save))
 
 
+@bp.route('/service/agent_tools/seenical/conversations/writing_preferences', methods=['POST'])
+def extract_seenical_writing_preferences():
+    denied = _require_auth()
+    if denied:
+        return denied
+    import lanying_seenical_writing_preferences as preferences
+    if len(request.get_data(cache=True)) > preferences.MAX_BODY_BYTES:
+        return _response({'result': 'error', 'message': 'Writing preference input is too large'})
+    data = _body()
+    return _response(preferences.handle(str(data.get('app_id', '')), _actor(data), data))
+
+
 def _require_auth():
     if _authorized():
         return None

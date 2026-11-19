@@ -2,6 +2,18 @@ import copy
 import json
 
 
+def chat_timeout_options(prepare_info):
+    timeout = (prepare_info.get('auth_info') or {}).get('request_timeout_seconds')
+    return {'timeout': timeout} if timeout else {}
+
+
+def chat_sdk_options(prepare_info):
+    options = chat_timeout_options(prepare_info)
+    if (prepare_info.get('auth_info') or {}).get('single_attempt'):
+        options['max_retries'] = 0
+    return options
+
+
 def limit_completion_tokens(preset, model_config):
     """Limit output and reserve input space without changing the saved preset.
 

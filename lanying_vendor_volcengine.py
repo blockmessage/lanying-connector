@@ -139,7 +139,8 @@ def chat(prepare_info, preset, model_config):
         logging.info(f"volcengine chat_completion final_preset: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")
         stream = final_preset.get("stream", False)
         if stream:
-            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True)
+            response = requests.request("POST", url, headers=headers, json=final_preset, stream=True,
+                                        **lanying_openai_compat.chat_timeout_options(prepare_info))
             # logging.info(f"volcengine chat_completion finish | code={response.status_code}, stream:{stream}")
             if response.status_code == 200:
                 def generator():
@@ -187,7 +188,8 @@ def chat(prepare_info, preset, model_config):
                     'response': response_json
                 }
         else:
-            response = requests.request("POST", url, headers=headers, json=final_preset)
+            response = requests.request("POST", url, headers=headers, json=final_preset,
+                                        **lanying_openai_compat.chat_timeout_options(prepare_info))
             logging.info(f"volcengine chat_completion finish | code={response.status_code}, response={response.text}")
             res = response.json()
             usage = res.get('usage',{})

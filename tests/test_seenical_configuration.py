@@ -104,6 +104,20 @@ class ConfigurationTest(unittest.TestCase):
         self.assertEqual({'prompt': 'edited on server', 'sessionPrompt': '', 'keywords': ''}, latest)
         self.assertEqual(latest, configuration.handle('app', self.actor, {})['data']['list'][0]['configuration'])
 
+    def test_confirmed_writing_preferences_check_the_saved_prompt(self):
+        request = {'seenical_session_id': 'primary:a', 'configuration': {'sessionPrompt': 'new writing rule'},
+                   'expected_session_prompt': '', 'initial_configuration': {'prompt': 'original topic'}}
+        self.assertEqual('ok', configuration.handle('app', self.actor, request, True)['result'])
+        self.save(value={'sessionPrompt': 'a newer manual rule', 'prompt': 'latest topic'})
+        stale = configuration.handle('app', self.actor, request, True)
+        self.assertEqual(configuration.WRITING_PREFERENCES_CONFLICT, stale['message'])
+        latest = configuration.handle('app', self.actor, {})['data']['list'][0]['configuration']
+        self.assertEqual('a newer manual rule', latest['sessionPrompt'])
+        request['expected_session_prompt'] = latest['sessionPrompt']
+        request['configuration']['sessionPrompt'] = ''
+        result = configuration.handle('app', self.actor, request, True)
+        self.assertEqual({'prompt': 'latest topic', 'sessionPrompt': ''}, result['data']['configuration'])
+
     def test_migration_rejects_invalid_flags_and_untrusted_ownership(self):
         request = {'seenical_session_id': 'primary:a', 'create_only': True, 'configuration': {'prompt': 'legacy'}}
         for app, actor, session in [('other', self.actor, 'primary:a'), ('app', {'im_user_id': '999'}, 'primary:a'),

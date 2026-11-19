@@ -144,7 +144,8 @@ def chat(prepare_info, preset, model_config):
     client = AnthropicBedrock(
         aws_access_key=prepare_info['aws_access_key'],
         aws_secret_key=prepare_info['aws_secret_key'],
-        aws_region=prepare_info['region'])
+        aws_region=prepare_info['region'],
+        **lanying_openai_compat.chat_sdk_options(prepare_info))
     final_preset = format_preset(preset, model_config)
     headers = maybe_add_proxy_headers(prepare_info, client)
     logging.info(f"vendor aws chat request: \n{json.dumps(final_preset, ensure_ascii=False, indent = 2)}")

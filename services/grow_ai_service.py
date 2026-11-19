@@ -212,12 +212,17 @@ def configure_task():
         'auto_deploy', 'site_id_list', 'target_dir', 'target_summary_dir',
         'commit_type', 'embedding_condition'
     }
-    if not legacy_required.issubset(data) or 'reference_document_ids' in data:
+    if (not legacy_required.issubset(data) or 'reference_document_ids' in data
+            or 'expected_article_prompt' in data):
         changes = {
             key: value for key, value in data.items()
-            if key not in ['app_id', 'task_id']
+            if key not in ['app_id', 'task_id', 'expected_article_prompt']
         }
-        result = lanying_grow_ai.patch_task(app_id, task_id, changes)
+        if 'expected_article_prompt' in data:
+            result = lanying_grow_ai.patch_task(
+                app_id, task_id, changes, expected_article_prompt=data['expected_article_prompt'])
+        else:
+            result = lanying_grow_ai.patch_task(app_id, task_id, changes)
         if result['result'] == 'error':
             return make_response({
                 'code': 400,

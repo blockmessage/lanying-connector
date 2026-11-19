@@ -3,8 +3,11 @@ import json
 import logging
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 import lanying_agent_tools_storage as storage
+
+WRITING_PREFERENCES_CONFLICT = 'Writing preferences changed. Reload and try again.'
 
 
 def validate_configuration(value):
@@ -37,7 +40,8 @@ def handle(app_id, actor, data, save=False):
         if engine is None:
             raise RuntimeError('Configuration storage is disabled')
         if save:
-            if set(data) - {'seenical_session_id', 'configuration', 'initial_configuration', 'create_only'}:
+            if set(data) - {'seenical_session_id', 'configuration', 'initial_configuration',
+                            'create_only', 'expected_session_prompt'}:
                 raise ValueError('Invalid conversation configuration fields')
             create_only = data.get('create_only', False)
             if type(create_only) is not bool or (create_only and 'initial_configuration' in data):
@@ -50,6 +54,11 @@ def handle(app_id, actor, data, save=False):
             initial = data.get('initial_configuration', {})
             if not isinstance(changes, dict) or not changes or not isinstance(initial, dict):
                 raise ValueError('Invalid conversation configuration fields')
+            expected_prompt = data.get('expected_session_prompt')
+            if 'expected_session_prompt' in data and (
+                    not isinstance(expected_prompt, str) or len(expected_prompt) > 5000
+                    or create_only or set(changes) != {'sessionPrompt'}):
+                raise ValueError('Invalid writing preference update')
             params['seenical_session_id'] = session_id
             if create_only:
                 try:
@@ -82,12 +91,21 @@ def handle(app_id, actor, data, save=False):
                 # Summary replies update only sessionPrompt. Initial values are used
                 # solely for a first save, never to overwrite newer saved settings.
                 current = json.loads(row['configuration']) if row else initial
+                if expected_prompt is not None and current.get('sessionPrompt', '') != expected_prompt:
+                    raise ValueError(WRITING_PREFERENCES_CONFLICT)
                 configuration = validate_configuration(dict(current, **changes))
                 params['configuration'] = json.dumps(configuration, ensure_ascii=False)
-                conn.execute(text('''INSERT INTO seenical_conversation_configuration
+                insert = '''INSERT INTO seenical_conversation_configuration
                     (app_id, seenical_session_id, bound_im_user_id, configuration)
-                    VALUES (:app_id, :seenical_session_id, :bound_im_user_id, :configuration)
-                    ON DUPLICATE KEY UPDATE configuration=VALUES(configuration)'''), params)
+                    VALUES (:app_id, :seenical_session_id, :bound_im_user_id, :configuration)'''
+                try:
+                    if expected_prompt is None or row is not None:
+                        insert += ' ON DUPLICATE KEY UPDATE configuration=VALUES(configuration)'
+                    conn.execute(text(insert), params)
+                except IntegrityError:
+                    if expected_prompt is not None:
+                        raise ValueError(WRITING_PREFERENCES_CONFLICT)
+                    raise
             return {'result': 'ok', 'data': {'seenical_session_id': session_id, 'configuration': configuration}}
         session_id = data.get('seenical_session_id')
         if set(data) - {'seenical_session_id'} or (session_id is not None and not isinstance(session_id, str)):

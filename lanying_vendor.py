@@ -1286,10 +1286,12 @@ def chat(app_id, vendor, prepare_info, preset):
         vendor_preset = preset
     else:
         vendor_preset = lanying_openai_compat.to_legacy_vendor_preset(preset)
+    auth_info = (prepare_info.get('auth_info') or {}) if isinstance(prepare_info, dict) else {}
+    single_attempt = auth_info.get('single_attempt') is True
     try:
         resp = chat_with_same_model_retry(module, vendor, prepare_info, vendor_preset, model_config)
         resp = normalize_chat_response(resp)
-        if 'result' in resp and resp['result'] == 'ok':
+        if single_attempt or ('result' in resp and resp['result'] == 'ok'):
             return resp
         return chat_retry(vendor, prepare_info, vendor_preset, resp)
     except Exception as e:
@@ -1303,6 +1305,8 @@ def chat(app_id, vendor, prepare_info, preset):
             'result': 'error',
             'reason': error_message
         }
+        if single_attempt:
+            return resp
         return chat_retry(vendor, prepare_info, vendor_preset, resp)
 
 def normalize_chat_response(resp):
@@ -1321,7 +1325,8 @@ def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_confi
     # limit may be smaller than the original model's.
     preset = lanying_openai_compat.limit_completion_tokens(preset, model_config)
     auth_info = prepare_info.get('auth_info', {}) if isinstance(prepare_info, dict) else {}
-    try_times = 1 if auth_info.get('validation_mode') is True else 3
+    single_attempt = auth_info.get('single_attempt') is True
+    try_times = 1 if auth_info.get('validation_mode') is True or single_attempt else 3
     for i in range(try_times):
         try:
             resp = module.chat(prepare_info, preset, model_config)
@@ -1338,6 +1343,8 @@ def chat_with_same_model_retry(module, vendor, prepare_info, preset, model_confi
                 'result': 'error',
                 'reason': error_message
             }
+        if single_attempt:
+            return resp
         rules = chat_same_model_retry_rules()
         need_retry = False
         sleep_time = 3
