@@ -57,7 +57,7 @@ def handle(app_id, actor, data, save=False):
             expected_prompt = data.get('expected_session_prompt')
             if 'expected_session_prompt' in data and (
                     not isinstance(expected_prompt, str) or len(expected_prompt) > 5000
-                    or create_only or set(changes) != {'sessionPrompt'}):
+                    or create_only or 'sessionPrompt' not in changes):
                 raise ValueError('Invalid writing preference update')
             params['seenical_session_id'] = session_id
             if create_only:
@@ -88,8 +88,8 @@ def handle(app_id, actor, data, save=False):
                 row = conn.execute(text('''SELECT configuration FROM seenical_conversation_configuration
                     WHERE app_id=:app_id AND bound_im_user_id=:bound_im_user_id
                     AND seenical_session_id=:seenical_session_id FOR UPDATE'''), params).mappings().first()
-                # Summary replies update only sessionPrompt. Initial values are used
-                # solely for a first save, never to overwrite newer saved settings.
+                # Initial values are only used for the first save. Compare the
+                # previous preference before applying any fields in this update.
                 current = json.loads(row['configuration']) if row else initial
                 if expected_prompt is not None and current.get('sessionPrompt', '') != expected_prompt:
                     raise ValueError(WRITING_PREFERENCES_CONFLICT)

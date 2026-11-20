@@ -343,6 +343,21 @@ class OpenAIServiceBudgetTests(unittest.TestCase):
         if service_dir not in sys.path:
             sys.path.insert(0, service_dir)
 
+    def test_sync_messages_suppress_content_even_for_legacy_runs_without_a_run_id(self):
+        from lanying_logging import RedactingFormatter
+        import logging
+
+        m = importlib.import_module('openai_service')
+        formatter = RedactingFormatter('%(message)s')
+        record = logging.makeLogRecord({'msg': 'private-writing-preference', 'levelname': 'INFO'})
+        captured = []
+        with mock.patch.object(m, 'set_sync_mode'), \
+                mock.patch.object(m, 'handle_chat_message', side_effect=lambda *args: captured.append(formatter.format(record))), \
+                mock.patch.object(m, 'get_sync_mode_messages', return_value=['reply']):
+            self.assertEqual(['reply'], m.handle_sync_messages({}, {'ext': '{}'}))
+        self.assertNotIn('private-writing-preference', captured[0])
+        self.assertEqual('private-writing-preference', formatter.format(record))
+
     def test_ai_generate_disabled_msg_is_detected_from_ai_ext(self):
         try:
             m = importlib.import_module('openai_service')

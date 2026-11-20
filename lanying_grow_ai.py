@@ -36,6 +36,7 @@ import lanying_oss
 import lanying_agent_tools_storage
 import lanying_seenical_deletion as conversation_deletion
 from github import Github
+from redis.exceptions import WatchError
 
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
 MAX_FILE_TITLE_LENGTH = 999
@@ -366,7 +367,7 @@ def create_task(task_setting: TaskSetting, run_immediately=True):
     # Additive revision metadata used by the conversational patch API.  Old
     # readers ignore this field and old tasks lazily default to revision 0.
     fields['revision'] = 0
-    logging.info(f"create task start | app_id:{app_id}, task_info:{fields}")
+    logging.info('create task start | app_id:%s task_id:%s', app_id, task_id)
     if task_setting.reference_document_ids is not None:
         import lanying_seenical_materials as materials
         def persist_plan():
@@ -385,7 +386,7 @@ def create_task(task_setting: TaskSetting, run_immediately=True):
         redis.hmset(get_task_key(app_id, task_id), fields)
         redis.rpush(get_task_list_key(app_id), task_id)
     task_info = get_task(app_id, task_id)
-    logging.info(f"create task finish | app_id:{app_id}, task_info:{task_info}")
+    logging.info('create task finish | app_id:%s task_id:%s', app_id, task_id)
     cycle_type = task_info['cycle_type']
     cycle_interval = task_info['cycle_interval']
     if cycle_type == 'cycle':
@@ -429,7 +430,7 @@ def _configure_task_guarded(app_id, task_id, task_setting):
         fields[article_cursor_field(legacy_language, 'on')] = task_info.get(
             'article_cursor', 0
         )
-    logging.info(f"configure task start | app_id:{app_id}, task_info:{fields}")
+    logging.info('configure task start | app_id:%s task_id:%s', app_id, task_id)
     current_revision = int(task_info.get('revision', 0) or 0)
     snapshot = _task_revision_snapshot(task_info)
     if lanying_agent_tools_storage.should_save_config_revision(app_id):
@@ -676,7 +677,7 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
     normalized = normalized_result['data']
     if expected_article_prompt is not None:
         if (not isinstance(expected_article_prompt, str) or len(expected_article_prompt) > 5000
-                or set(normalized) != {'article_prompt'} or not isinstance(changes['article_prompt'], str)):
+                or 'article_prompt' not in normalized or not isinstance(changes['article_prompt'], str)):
             return {'result': 'error', 'message': 'Invalid writing preference update'}
         _, legacy_rules = split_legacy_writing_prompt(task_info.get('prompt', ''))
         saved_prompt = task_info.get('article_prompt', '')
@@ -733,30 +734,34 @@ def patch_task(app_id, task_id, changes, expected_revision=None, request_id='',
     # an otherwise valid partial POST into a distributed-lock dependency.
     # Concurrent requests intentionally use last-write-wins per supplied field.
     _save_task_revision(app_id, task_id, current_revision, snapshot, request_id)
-    if 'reference_document_ids' in normalized:
-        import lanying_seenical_materials as materials
-        try:
-            materials.set_references(app_id, 'plan', task_id, normalized['reference_document_ids'],
-                                     persist_owner=lambda: redis.hmset(task_key, redis_fields))
-        except materials.MaterialError as exc:
-            return {'result': 'error', 'message': str(exc)}
-    elif expected_article_prompt is not None:
-        from redis.exceptions import WatchError
-        try:
-            with redis.pipeline() as pipe:
-                pipe.watch(task_key)
-                stored = lanying_redis.redis_hgetall(pipe, task_key)
-                if ('create_time' not in stored or int(stored.get('revision', 0)) != current_revision
-                        or stored.get('prompt', '') != task_info.get('prompt', '')
-                        or stored.get('article_prompt', '') != task_info.get('article_prompt', '')):
-                    return {'result': 'error', 'message': WRITING_PREFERENCES_CONFLICT}
-                pipe.multi()
-                pipe.hmset(task_key, redis_fields)
-                pipe.execute()
-        except WatchError:
-            return {'result': 'error', 'message': WRITING_PREFERENCES_CONFLICT}
-    else:
-        redis.hmset(task_key, redis_fields)
+
+    def persist_task():
+        if expected_article_prompt is None:
+            redis.hmset(task_key, redis_fields)
+            return
+        with redis.pipeline() as pipe:
+            pipe.watch(task_key)
+            stored = lanying_redis.redis_hgetall(pipe, task_key)
+            if ('create_time' not in stored or int(stored.get('revision', 0)) != current_revision
+                    or stored.get('prompt', '') != task_info.get('prompt', '')
+                    or stored.get('article_prompt', '') != task_info.get('article_prompt', '')):
+                raise WatchError(WRITING_PREFERENCES_CONFLICT)
+            pipe.multi()
+            pipe.hmset(task_key, redis_fields)
+            pipe.execute()
+
+    try:
+        if 'reference_document_ids' in normalized:
+            import lanying_seenical_materials as materials
+            try:
+                materials.set_references(app_id, 'plan', task_id, normalized['reference_document_ids'],
+                                         persist_owner=persist_task)
+            except materials.MaterialError as exc:
+                return {'result': 'error', 'message': str(exc)}
+        else:
+            persist_task()
+    except WatchError:
+        return {'result': 'error', 'message': WRITING_PREFERENCES_CONFLICT}
 
     new_task_info = get_task(app_id, task_id)
     title_inputs = {'prompt', 'article_prompt', 'article_language', 'keywords', 'file_list'}
@@ -3759,12 +3764,11 @@ def do_run_task_article(app_id, task_run, task, article_id, chatbot_user_id,
 def request_to_ai(app_id, from_user_id, to_user_id, content, ext = {}):
     type = 1
     content_type = 0
-    logging.info(f"Send message received, app_id:{app_id}, from={from_user_id} to={to_user_id} type={type}, content_type={content_type} content={content}")
     adminToken = get_admin_token(app_id)
     apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
     if adminToken:
         try:
-            logging.info(f"request_ai start | from={from_user_id} to={to_user_id} type={type}, content_type={content_type} content={content}")
+            logging.info('request_ai start | app_id:%s from:%s to:%s', app_id, from_user_id, to_user_id)
             sendResponse = requests.post(apiEndpoint + '/ai/message/send',
                                         headers={'app_id': app_id, 'access-token': adminToken},
                                         json={'type':type,
@@ -3776,7 +3780,7 @@ def request_to_ai(app_id, from_user_id, to_user_id, content, ext = {}):
                                             'config': '',
                                             'ext': json.dumps(ext, ensure_ascii=False)},
                                         timeout=(10, 900))
-            logging.info(f"request_ai finish | response_text: {sendResponse.text}")
+            logging.info('request_ai finish | app_id:%s status:%s', app_id, sendResponse.status_code)
             result = sendResponse.json()
             if result['code'] == 200:
                 return format_ai_message_result(result)

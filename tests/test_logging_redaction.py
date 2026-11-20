@@ -1,3 +1,4 @@
+import json
 import logging
 import unittest
 from unittest import mock
@@ -147,6 +148,38 @@ class LoggingRedactionTests(unittest.TestCase):
         self.assertIn('connector http response', logs)
         self.assertIn('"name":"example"', logs)
         self.assertNotIn('secret-value', logs)
+
+    def test_grow_ai_management_logs_omit_legacy_and_current_writing_preferences(self):
+        app = Flask(__name__)
+        lanying_logging.register_http_logging(app)
+
+        @app.post('/service/grow_ai/<operation>')
+        @app.post('/service/openai/sync_messages')
+        def echo(operation=None):
+            from flask import jsonify, request
+            legacy = 'Topic\n\n自定义提示词（兼容旧数据）：\nlegacy-preference'
+            return jsonify({'data': {'list': [{
+                **request.get_json(), 'prompt': legacy,
+                'material_input_snapshot': json.dumps({'prompt': legacy}),
+            }]}})
+
+        paths = ['/service/grow_ai/' + operation for operation in (
+            'create_task', 'configure_task', 'get_task_list', 'get_task_run_list')]
+        paths.append('/service/openai/sync_messages')
+        for path in paths:
+            with self.subTest(path=path):
+                with self.assertLogs(level='INFO') as captured:
+                    response = app.test_client().post(path, query_string={'prompt': 'query-preference'}, json={
+                        'article_prompt': 'proposed-preference',
+                        'expected_article_prompt': 'previous-preference',
+                    })
+                self.assertEqual(200, response.status_code)
+                self.assertIn('legacy-preference', response.json['data']['list'][0]['prompt'])
+                logs = '\n'.join(captured.output)
+                self.assertIn(path, logs)
+                self.assertIn('status:200', logs)
+                for value in ('legacy-preference', 'proposed-preference', 'previous-preference', 'query-preference'):
+                    self.assertNotIn(value, logs)
 
     def test_http_logging_ignores_successful_root_health_checks(self):
         app = Flask(__name__)

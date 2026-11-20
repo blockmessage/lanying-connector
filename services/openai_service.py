@@ -52,6 +52,7 @@ import lanying_agent_tools
 import lanying_operational_storage
 import lanying_gift_quota
 import lanying_paige
+from lanying_logging import omit_model_log_content
 from lanying_ai_chat_pipeline import (
     ChatHandlerResult, ModelResponse, PresetResolution, Prompt, ReplyResult,
     ToolRunResult,
@@ -1036,12 +1037,13 @@ def is_openclaw_self_group_message_for_target(msg, target):
         return False
 
 def handle_sync_messages(config, msg):
-    set_sync_mode(config)
-    try:
-        handle_chat_message(config, msg)
-    except Exception as e:
-        logging.exception(e)
-    return get_sync_mode_messages(config)
+    with omit_model_log_content():
+        set_sync_mode(config)
+        try:
+            handle_chat_message(config, msg)
+        except Exception as e:
+            logging.exception(e)
+        return get_sync_mode_messages(config)
 
 def is_system_msg(msg):
     try:
@@ -6244,8 +6246,8 @@ def sync_messages():
         return resp
     text = request.get_data(as_text=True)
     msg = json.loads(text)
-    logging.info(f"receive sync messages start | msg:{msg}")
     app_id = str(msg['appId'])
+    logging.info('receive sync messages start | app_id:%s msg_id:%s', app_id, msg.get('msgId', ''))
     try:
         config = lanying_config.get_lanying_connector(app_id)
         newConfig = copy.deepcopy(config)
@@ -6384,7 +6386,8 @@ def wait_sync_messages(future: Future, msg, message_quota_trace_id):
         time.sleep(1)
     messages = future.result()
     message_quota_usage = lanying_message_quota_usage.get_usage(message_quota_trace_id)
-    logging.info(f"receive sync messages finish | msg:{msg}, messages:{messages}")
+    logging.info('receive sync messages finish | app_id:%s msg_id:%s messages:%s',
+                 msg.get('appId', ''), msg.get('msgId', ''), len(messages))
     result = {'code':200, 'data':{'messages': messages, 'message_quota_usage': message_quota_usage}}
     json_str = json.dumps(result)
     yield json_str[heartbeat_cnt:]

@@ -14,6 +14,8 @@ _SENSITIVE_KEYS = {
     'authorization',
     'access_token',
     'access-token',
+    'article_prompt',
+    'expected_article_prompt',
     'api_key',
     'api-key',
     'client_secret',
@@ -46,6 +48,12 @@ _SENSITIVE_KEY_PATTERN = re.compile(
 HTTP_LOG_MAX_CHARS = 20000
 HTTP_LOG_MAX_BODY_BYTES = 128 * 1024
 HTTP_LOG_FILE_BACKUP_COUNT = 365
+_GROW_AI_TASK_PATHS = {
+    '/service/grow_ai/create_task',
+    '/service/grow_ai/configure_task',
+    '/service/grow_ai/get_task_list',
+    '/service/grow_ai/get_task_run_list',
+}
 
 
 def _is_sensitive_key(key):
@@ -108,11 +116,18 @@ def format_log_value(value, max_chars=HTTP_LOG_MAX_CHARS):
     return f'{text[:limit]}... [truncated {omitted} chars]'
 
 
-def _request_body_for_log(request):
-    if request.path.startswith(('/service/agent_tools/seenical/conversations/history',
-                                '/service/agent_tools/seenical/conversations/configuration',
-                                '/service/agent_tools/seenical/conversations/writing_preferences')):
+def _omitted_body_for_log(path):
+    if path in _GROW_AI_TASK_PATHS:
+        return {'_omitted': 'Grow AI task content'}
+    if path == '/service/openai/sync_messages' or path.startswith((
+            '/service/agent_tools/seenical/conversations/history',
+            '/service/agent_tools/seenical/conversations/configuration',
+            '/service/agent_tools/seenical/conversations/writing_preferences')):
         return {'_omitted': 'conversation content'}
+    return None
+
+
+def _request_body_for_log(request):
     content_length = request.content_length
     if content_length is not None and content_length > HTTP_LOG_MAX_BODY_BYTES:
         return {
@@ -178,6 +193,7 @@ def _is_root_health_check(request):
 
 
 def _write_http_request_log(request, request_id):
+    omitted = _omitted_body_for_log(request.path)
     logging.info(
         'connector http request | request_id:%s | method:%s | path:%s '
         '| remote:%s | content_type:%s | query:%s | body:%s',
@@ -186,8 +202,8 @@ def _write_http_request_log(request, request_id):
         _request_path_for_log(request),
         request.remote_addr or '',
         request.content_type or '',
-        format_log_value(request.args.to_dict(flat=False)),
-        format_log_value(_request_body_for_log(request)))
+        format_log_value({} if omitted else request.args.to_dict(flat=False)),
+        format_log_value(omitted or _request_body_for_log(request)))
 
 
 def register_http_logging(app):
@@ -237,11 +253,7 @@ def register_http_logging(app):
                 response.status_code,
                 duration_ms,
                 response.content_type or '',
-                format_log_value({'_omitted': 'conversation content'}
-                                 if request.path.startswith(('/service/agent_tools/seenical/conversations/history',
-                                                             '/service/agent_tools/seenical/conversations/configuration',
-                                                             '/service/agent_tools/seenical/conversations/writing_preferences'))
-                                 else _response_body_for_log(response)))
+                format_log_value(_omitted_body_for_log(request.path) or _response_body_for_log(response)))
         except Exception:
             logging.warning(
                 'failed to log connector http response | request_id:%s',

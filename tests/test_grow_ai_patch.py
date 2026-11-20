@@ -318,6 +318,44 @@ class GrowAIPatchTest(unittest.TestCase):
         self.assertNotIn('schedule', submitted)
         redis.hmset.assert_not_called()
 
+    def test_full_editor_patch_guards_both_settings_and_material_references(self):
+        from redis.exceptions import WatchError
+
+        module = self.module
+        original = task()
+        changes = {'prompt': 'Edited topic', 'article_prompt': 'Proposed preference', 'reference_document_ids': ['1-1']}
+        redis = mock.MagicMock()
+        pipeline = redis.pipeline.return_value.__enter__.return_value
+        stored = dict(original, create_time='1')
+        references = []
+
+        def set_references(app_id, owner_type, owner_id, values, persist_owner):
+            persist_owner()
+            references[:] = values
+
+        materials = types.SimpleNamespace(MaterialError=ValueError, set_references=mock.Mock(side_effect=set_references))
+        with mock.patch.dict(sys.modules, {'lanying_seenical_materials': materials}), \
+                mock.patch.object(module, 'get_task', return_value=original), \
+                mock.patch.object(module.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(module.lanying_redis, 'redis_hgetall', create=True, return_value=stored), \
+                mock.patch.object(module, 'validate_task_chatbot', return_value={'result': 'ok'}):
+            stale = module.patch_task('app', 'task', changes, expected_article_prompt='stale')
+            self.assertEqual(module.WRITING_PREFERENCES_CONFLICT, stale['message'])
+            materials.set_references.assert_not_called()
+            pipeline.execute.side_effect = WatchError()
+            raced = module.patch_task('app', 'task', changes, expected_article_prompt=original['article_prompt'])
+            self.assertEqual(module.WRITING_PREFERENCES_CONFLICT, raced['message'])
+            self.assertEqual([], references)
+            pipeline.execute.side_effect = None
+            result = module.patch_task('app', 'task', changes, expected_article_prompt=original['article_prompt'])
+            self.assertEqual('ok', result['result'])
+        submitted = pipeline.hmset.call_args.args[1]
+        self.assertEqual(changes['prompt'], submitted['prompt'])
+        self.assertEqual(changes['article_prompt'], submitted['article_prompt'])
+        self.assertEqual(changes['reference_document_ids'], references)
+        self.assertNotIn('schedule', submitted)
+        redis.hmset.assert_not_called()
+
     def test_task_read_preserves_the_difference_between_cleared_and_unsaved_prompt(self):
         with mock.patch.object(self.module.lanying_redis, 'redis_hgetall', create=True) as read, \
                 mock.patch.dict(sys.modules, {

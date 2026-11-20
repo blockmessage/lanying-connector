@@ -21,10 +21,18 @@ INSTRUCTION = """Extract only reusable writing preferences the user explicitly r
 Return only JSON {"edits":[{"source":0,"quote":"exact excerpt showing the preference","line":null,"instruction":"one short reusable rule"}]}. `source` is the zero-based index of the user message. The quote must be a contiguous exact substring from the user text at that index. Use null `line` to add a new rule, or a zero-based line index in `current` to replace an existing line. To revoke an existing rule use its index and an empty instruction. Omit duplicates, including equivalent requirements in the current preferences. If there are no edits, return {"edits":[]}."""
 
 
+_RULE_PREFIX = re.compile(r'^(?:#{1,6}\s+|[-*]\s+|\d+[.)]\s+|[\d一二三四五六七八九十]+、\s*)')
+_RULE_SENTENCE_BREAK = re.compile(r'(?<=[。！？!?；;])\s*|(?<=\.)\s+')
+
+
 def _rule_text(text):
     text = unicodedata.normalize('NFKC', text).strip()
-    text = re.sub(r'^(?:#{1,6}\s+|[-*]\s+|\d+[.)]\s+|[\d一二三四五六七八九十]+、\s*)', '', text)
-    return ' '.join(text.strip(' *。.;；!！').casefold().split())
+    text = _RULE_PREFIX.sub('', text)
+    return ' '.join(text.strip(' *。.;；!！?？').casefold().split())
+
+
+def _rule_sentences(text):
+    return [part for part in _RULE_SENTENCE_BREAK.split(_RULE_PREFIX.sub('', text.strip())) if part]
 
 
 def _inherited_writer_rules(chatbot):
@@ -42,7 +50,8 @@ def _inherited_writer_rules(chatbot):
     rules = set()
     for message in preset.get('messages', []):
         if message.get('role') == 'system' and isinstance(message.get('content'), str):
-            rules.update(filter(None, map(_rule_text, message['content'].splitlines())))
+            for line in message['content'].splitlines():
+                rules.update(filter(None, map(_rule_text, [line, *_rule_sentences(line)])))
     return rules
 
 
@@ -94,6 +103,11 @@ def _merge_reply(reply, current, messages, inherited_rules=()):
         if _rule_text(instruction) in inherited_rules:
             # Returning to an inherited rule removes the custom override.
             instruction = ''
+        elif inherited_rules:
+            sentences = _rule_sentences(instruction)
+            new_sentences = [part for part in sentences if _rule_text(part) not in inherited_rules]
+            if len(new_sentences) < len(sentences):
+                instruction = ' '.join(new_sentences)
         if index is None:
             if instruction and instruction not in lines and instruction not in additions:
                 additions.append(instruction)

@@ -118,6 +118,18 @@ class ConfigurationTest(unittest.TestCase):
         result = configuration.handle('app', self.actor, request, True)
         self.assertEqual({'prompt': 'latest topic', 'sessionPrompt': ''}, result['data']['configuration'])
 
+    def test_full_editor_save_checks_the_prompt_before_updating_other_fields(self):
+        self.save(value={'prompt': 'latest topic', 'sessionPrompt': 'latest preference', 'keywords': 'saved title'})
+        request = {'seenical_session_id': 'primary:a', 'expected_session_prompt': 'old preference',
+                   'configuration': {'prompt': 'edited topic', 'sessionPrompt': 'proposed preference'}}
+        stale = configuration.handle('app', self.actor, request, True)
+        self.assertEqual(configuration.WRITING_PREFERENCES_CONFLICT, stale['message'])
+        current = configuration.handle('app', self.actor, {})['data']['list'][0]['configuration']
+        self.assertEqual({'prompt': 'latest topic', 'sessionPrompt': 'latest preference', 'keywords': 'saved title'}, current)
+        request['expected_session_prompt'] = current['sessionPrompt']
+        result = configuration.handle('app', self.actor, request, True)
+        self.assertEqual(dict(request['configuration'], keywords='saved title'), result['data']['configuration'])
+
     def test_migration_rejects_invalid_flags_and_untrusted_ownership(self):
         request = {'seenical_session_id': 'primary:a', 'create_only': True, 'configuration': {'prompt': 'legacy'}}
         for app, actor, session in [('other', self.actor, 'primary:a'), ('app', {'im_user_id': '999'}, 'primary:a'),

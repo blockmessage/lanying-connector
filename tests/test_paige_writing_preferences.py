@@ -35,7 +35,7 @@ class WritingPreferencesTests(unittest.TestCase):
     def test_only_verified_writing_delta_returned(self, authorize, get_chatbot, complete, get_capsule):
         authorize.return_value = {'chatbot_id': 'agent'}
         get_capsule.return_value = {'app_id': 'publisher', 'chatbot_id': 'writer'}
-        protected = 'protected preset content\n1. Include a short summary.'
+        protected = 'protected preset content\n1. Include a short summary. Use plain words.'
         get_chatbot.side_effect = [
             {'linked_capsule_id': '949256'},
             {'preset': {'messages': [{'role': 'system', 'content': protected}]}},
@@ -56,6 +56,18 @@ class WritingPreferencesTests(unittest.TestCase):
         self.assertNotIn('protected preset content', str(request))
         self.assertEqual({'current', 'user_messages'}, set(json.loads(request[1]['content'])))
         self.assertEqual(result['data'], {'changed': True, 'prompt': 'Use a neutral voice.\n采用决策对照表。'})
+
+    def test_mixed_instructions_keep_only_the_new_sentences(self):
+        writer = {'capsule_id': '949256', 'preset': {'messages': [
+            {'role': 'system', 'content': '一、控制句子长度。每节列举一个示例；保持口吻平实。'},
+        ]}}
+        rules = preferences._inherited_writer_rules(writer)
+        user = '保持口吻平实，结束时留一个供读者自检的问题。'
+        output = json.dumps({'edits': [{
+            'source': 0, 'quote': user, 'line': None,
+            'instruction': '保持口吻平实。结束时留一个供读者自检的问题。',
+        }]})
+        self.assertEqual('结束时留一个供读者自检的问题。', preferences._merge_reply(output, '', [user], rules))
 
     def test_returning_to_capsule_default_removes_the_custom_override(self):
         writer = {'capsule_id': '949256', 'preset': {'messages': [
