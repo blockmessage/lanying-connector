@@ -3,12 +3,14 @@ import lanying_redis
 import time
 import json
 import lanying_ai_capsule
+import lanying_config
 from datetime import datetime
 import lanying_im_api
 import lanying_utils
 import lanying_oss
 import lanying_agent_tools_storage
 import os
+from redis.exceptions import WatchError
 
 
 def _agent_revision_snapshot(app_id, chatbot_info):
@@ -150,25 +152,96 @@ def init_chatbot_im_user_setting(app_id, old_chatbot_info, chatbot_info):
                 logging.exception("roster_delete failed")
     return {'result': 'ok'}
 
+def initial_paige_key(app_id):
+    return f"lanying-connector:seenical-initial-agent:{app_id}"
+
+
+def store_initial_paige(redis, app_id, chatbot_id, fields, capsule_id):
+    receipt = initial_paige_key(app_id)
+    users = user_chatbot_id_key(app_id)
+    names = name_chatbot_id_key(app_id)
+    with redis.pipeline(transaction=True) as pipe:
+        try:
+            pipe.watch(receipt, users, names)
+            imported_id = lanying_redis.redis_get(pipe, receipt)
+            if imported_id:
+                return {'result': 'ok', 'data': {'id': imported_id}}
+            if pipe.hget(users, fields['user_id']) or pipe.hget(names, fields['name']):
+                return {'result': 'error', 'message': 'Agent identity already in use'}
+            pipe.multi()
+            pipe.hmset(get_chatbot_key(app_id, chatbot_id), fields)
+            pipe.hset(users, fields['user_id'], chatbot_id)
+            pipe.hset(names, fields['name'], chatbot_id)
+            pipe.rpush(get_chatbot_ids_key(app_id), chatbot_id)
+            pipe.hset(lanying_ai_capsule.capsule_app_ids_key(capsule_id), chatbot_id, app_id)
+            pipe.set(receipt, chatbot_id)
+            pipe.execute()
+        except WatchError:
+            imported_id = lanying_redis.redis_get(redis, receipt)
+            if imported_id:
+                return {'result': 'ok', 'data': {'id': imported_id}}
+            return {'result': 'error', 'message': 'Initial Agent changed; retry'}
+    return None
+
+
+def prepare_initial_paige_im_profile(app_id, user_id, desc, nickname, welcome_message, link_profile, avatar):
+    try:
+        admin_token = lanying_config.get_lanying_admin_token(app_id, fresh=True)
+        if not admin_token:
+            return False
+        private_info = json.dumps({'welcome_message': welcome_message}, ensure_ascii=False) if welcome_message else ''
+        public_info = (json.dumps({'manufacturer': maybe_restore_bad_business_key(dict(link_profile))}, ensure_ascii=False)
+                       if link_profile else '')
+        profile = lanying_im_api.set_user_profile(app_id, user_id, desc, nickname, private_info, public_info, admin_token=admin_token)
+        if not isinstance(profile, dict) or profile.get('code') != 200:
+            return False
+        if profile.get('data') is not True:
+            # Ratel can report zero changed rows when a previous request already wrote the same profile.
+            current = lanying_im_api.get_user_profile_with_token(app_id, user_id, admin_token)
+            if not isinstance(current, dict) or current.get('code') != 200 or not isinstance(current.get('data'), dict):
+                return False
+            expected = {'description': desc, 'nick_name': nickname, 'private_info': private_info, 'public_info': public_info}
+            if any(value and current['data'].get(key) != value for key, value in expected.items()):
+                return False
+        if avatar:
+            result = lanying_im_api.set_user_avatar(app_id, user_id, avatar, admin_token=admin_token)
+            return isinstance(result, dict) and result.get('code') == 200 and result.get('data') is True
+        return True
+    except Exception as error:
+        logging.warning("Initial Paige IM profile failed | app_id:%s user_id:%s error_type:%s",
+                        app_id, user_id, type(error).__name__)
+        return False
+
+
 def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
                    preset, history_msg_count_max, history_msg_count_min, history_msg_size_max,
                    message_per_month_per_user, chatbot_ids, welcome_message, quota_exceed_reply_type,
                    quota_exceed_reply_msg, group_history_use_mode,
                    audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect = 'off',
-                   access_type='public', access_list='', show_in_support=None):
-    logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}, lanying_link={lanying_link}, preset={preset}")
+                   access_type='public', access_list='', show_in_support=None, initial_capsule_id=None):
+    logging.info(f"start create chatbot: app_id={app_id}, name={name}, user_id={user_id}")
     now = int(time.time())
+    conflict = None
     if get_user_chatbot_id(app_id, user_id):
-        return {'result':'error', 'message': 'user id already bind another chatbot'}
-    if get_name_chatbot_id(app_id, name):
-        return {'result':'error', 'message': 'name already exist'}
-    chatbot_id = generate_chatbot_id()
-    capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
+        conflict = 'user id already bind another chatbot'
+    elif get_name_chatbot_id(app_id, name):
+        conflict = 'name already exist'
+    if conflict:
+        if initial_capsule_id:
+            imported_id = lanying_redis.redis_get(lanying_redis.get_redis_connection(), initial_paige_key(app_id))
+            if imported_id:
+                return {'result': 'ok', 'data': {'id': imported_id}}
+        return {'result': 'error', 'message': conflict}
     if nickname == '':
         nickname = name
+    if initial_capsule_id and not prepare_initial_paige_im_profile(
+            app_id, user_id, desc, nickname, welcome_message, link_profile, avatar):
+        return {'result': 'error', 'message': 'Unable to prepare the initial Agent profile; retry'}
+    chatbot_id = generate_chatbot_id()
+    capsule_id = lanying_ai_capsule.generate_capsule_id(app_id, chatbot_id)
     show_in_support = normalize_show_in_support(access_type, show_in_support)
     redis = lanying_redis.get_redis_connection()
-    redis.hmset(get_chatbot_key(app_id, chatbot_id), {
+    fields = {
         "chatbot_id": chatbot_id,
         "create_time": now,
         "app_id": app_id,
@@ -199,7 +272,12 @@ def create_chatbot(app_id, name, nickname, desc,  avatar, user_id, lanying_link,
         "access_list": access_list,
         "show_in_support": show_in_support,
         "agent_tools_revision": 0
-    })
+    }
+    if initial_capsule_id:
+        fields.update(linked_capsule_id=initial_capsule_id, cycle_type='month', price=0)
+        result = store_initial_paige(redis, app_id, chatbot_id, fields, initial_capsule_id)
+        return result or {'result': 'ok', 'data': {'id': chatbot_id}}
+    redis.hmset(get_chatbot_key(app_id, chatbot_id), fields)
     redis.rpush(get_chatbot_ids_key(app_id), chatbot_id)
     set_user_chatbot_id(app_id, user_id, chatbot_id)
     set_name_chatbot_id(app_id, name, chatbot_id)
@@ -246,7 +324,7 @@ def check_create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, 
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
     return {'result': 'ok', 'data': {'success': True}}
 
-def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price, user_id, lanying_link):
+def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price, user_id, lanying_link, initial_paige=False):
     capsule = lanying_ai_capsule.get_capsule(capsule_id)
     if capsule is None:
         return {'result': 'error', 'message': 'capsule not exist'}
@@ -257,6 +335,11 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
     check_res = check_capsule_price(cycle_type, price, capsule)
     if check_res['result'] == 'error':
         return check_res
+    if initial_paige:
+        redis = lanying_redis.get_redis_connection()
+        imported_id = lanying_redis.redis_get(redis, initial_paige_key(app_id))
+        if imported_id:
+            return {'result': 'ok', 'data': {'id': imported_id}}
     capsule_app_id = capsule['app_id']
     capsule_chatbot_id = capsule['chatbot_id']
     capsule_chatbot = get_chatbot_with_profile(capsule_app_id, capsule_chatbot_id)
@@ -287,8 +370,8 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
                                    capsule_chatbot['message_per_month_per_user'], [],
                                    welcome_message, quota_exceed_reply_type, quota_exceed_reply_msg, group_history_use_mode,
                                    audio_to_text, image_vision, audio_to_text_model, link_profile, content_security, preset_protect,
-                                   show_in_support='off')
-    if create_result['result'] != 'ok':
+                                   show_in_support='off', initial_capsule_id=capsule_id if initial_paige else None)
+    if initial_paige or create_result['result'] != 'ok':
         return create_result
     new_chatbot_id = create_result['data']['id']
     set_chatbot_field(app_id, new_chatbot_id, "linked_capsule_id", capsule_id)

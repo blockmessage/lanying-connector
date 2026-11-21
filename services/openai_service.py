@@ -6040,6 +6040,15 @@ def check_create_chatbot_from_capsule():
 
 @bp.route("/service/openai/create_chatbot_from_capsule", methods=["POST"])
 def create_chatbot_from_capsule():
+    return _create_chatbot_from_capsule()
+
+
+@bp.route("/service/openai/create_initial_paige", methods=["POST"])
+def create_initial_paige():
+    return _create_chatbot_from_capsule(initial_paige=True)
+
+
+def _create_chatbot_from_capsule(initial_paige=False):
     if not check_access_token_valid():
         resp = make_response({'code':401, 'message':'bad authorization'})
         return resp
@@ -6052,7 +6061,10 @@ def create_chatbot_from_capsule():
     price = int(data.get('price', '0'))
     user_id = int(data['user_id'])
     lanying_link = str(data['lanying_link'])
-    result = lanying_chatbot.create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price, user_id, lanying_link)
+    if initial_paige and (not lanying_paige.is_official_capsule(capsule_id) or cycle_type != 'month' or price != 0):
+        return make_response({'code':400, 'message':'invalid initial Agent capsule'})
+    result = lanying_chatbot.create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price, user_id, lanying_link,
+                                                       initial_paige=initial_paige)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

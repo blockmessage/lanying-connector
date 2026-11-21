@@ -93,43 +93,46 @@ def create_group(app_id, owner_user_id, name, group_type=0, user_list=None):
         logging.info(f"create_group, app_id={app_id} owner_user_id={owner_user_id}, body={body}, result:{result}")
         return result
 
-def set_user_profile(app_id, user_id, description, nick_name, private_info, public_info = ''):
-    config = lanying_config.get_lanying_connector(app_id)
-    if config:
-        adminToken = config['lanying_admin_token']
-        apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
-        body = {}
-        if description and len(description) > 0:
-            body['description'] = description
-        if nick_name and len(nick_name) > 0:
-            body['nick_name'] = nick_name
-        if private_info and len(private_info) > 0:
-            body['private_info'] = private_info
-        if public_info and len(public_info) > 0:
-            body['public_info'] = public_info
-        if len(body) == 0:
-            return None
-        response = requests.post(apiEndpoint + '/user/profile',
-                                    headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(user_id)},
-                                    json=body)
-        result = response.json()
-        logging.info(f"set user profile, app_id={app_id} user_id={user_id}, result:{result}")
-        return result
-
-def set_user_avatar(app_id, user_id, avatar_url):
-    if avatar_url and len(avatar_url) > 0:
+def set_user_profile(app_id, user_id, description, nick_name, private_info, public_info='', admin_token=None):
+    if admin_token is None:
         config = lanying_config.get_lanying_connector(app_id)
-        if config:
-            adminToken = config['lanying_admin_token']
-            apiEndpoint = lanying_config.get_lanying_api_endpoint(app_id)
-            response = requests.post(apiEndpoint + '/user/avatar',
-                                        headers={'app_id': app_id, 'access-token': adminToken, 'user_id': str(user_id)},
-                                        json={
-                                            'avatar': avatar_url
-                                        })
-            result = response.json()
-            logging.info(f"set_user_avatar, app_id={app_id} user_id={user_id}, avatar={avatar_url}, result:{result}")
-            return result
+        if not config:
+            return None
+        admin_token = config['lanying_admin_token']
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    body = {}
+    if description and len(description) > 0:
+        body['description'] = description
+    if nick_name and len(nick_name) > 0:
+        body['nick_name'] = nick_name
+    if private_info and len(private_info) > 0:
+        body['private_info'] = private_info
+    if public_info and len(public_info) > 0:
+        body['public_info'] = public_info
+    if len(body) == 0:
+        return None
+    response = requests.post(api_endpoint + '/user/profile',
+                             headers={'app_id': app_id, 'access-token': admin_token, 'user_id': str(user_id)},
+                             json=body)
+    result = response.json()
+    logging.info(f"set user profile, app_id={app_id} user_id={user_id}, result:{result}")
+    return result
+
+def set_user_avatar(app_id, user_id, avatar_url, admin_token=None):
+    if not avatar_url or len(avatar_url) == 0:
+        return None
+    if admin_token is None:
+        config = lanying_config.get_lanying_connector(app_id)
+        if not config:
+            return None
+        admin_token = config['lanying_admin_token']
+    api_endpoint = lanying_config.get_lanying_api_endpoint(app_id)
+    response = requests.post(api_endpoint + '/user/avatar',
+                             headers={'app_id': app_id, 'access-token': admin_token, 'user_id': str(user_id)},
+                             json={'avatar': avatar_url})
+    result = response.json()
+    logging.info(f"set_user_avatar, app_id={app_id} user_id={user_id}, avatar={avatar_url}, result:{result}")
+    return result
 
 def set_user_stranger_chat(app_id, user_id, value):
     config = lanying_config.get_lanying_connector(app_id)

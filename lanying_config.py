@@ -122,9 +122,14 @@ def get_message_antispam(appId):
         return get_config_field(appId, 'lanying_connector', 'lanying_connector_message_antispam', "对不起，因为系统设定的原因，这个问题我无法回答，请您谅解。")
     return os.getenv('LANYING_CONNECTOR_MESSAGE_ANTISPAM')
 
-def get_lanying_admin_token(appId):
+def get_lanying_admin_token(appId, fresh=False):
     if mode == 'etcd':
+        if fresh:
+            value, _ = etcd.get(prefix + appId + '.lanying_connector')
+            return (parse_value(value) or {}).get('lanying_admin_token')
         return get_config_field(appId, 'lanying_connector', 'lanying_admin_token', None)
+    if fresh:
+        return (get_lanying_connector(appId) or {}).get('lanying_admin_token')
     return os.getenv('LANYING_ADMIN_TOKEN')
 
 def get_lanying_callback_signature(appId):
