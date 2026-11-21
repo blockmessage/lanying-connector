@@ -35,6 +35,54 @@ class QuotaSimulationTest(unittest.TestCase):
     def run_simulation(self, quota=50, test_id='test-1', app='app'):
         return simulation.simulate_message_quota(app, quota, test_id)
 
+    def test_reset_restores_only_shared_free_allowance(self):
+        key = 'lanying:connector:statistics:message:pay_start_date:42:2026-11-16'
+        self.service.get_message_statistic_keys.return_value = [key, 'app-period']
+        credits.grant_purchase('seenical-message-credit:' + 'a'*32, 'app', 100, 200, 'manual', 100)
+        self.run_simulation(50.5)
+        self.redis.hset(key, 'message_count_quota_buy', 7)
+        for _ in range(2):
+            self.assertEqual(key, simulation.reset_free_tenant_quota('app', 42)['statistic_key'])
+        self.assertEqual(20, self.redis.hget(key, 'message_count_quota'))
+        self.assertEqual(5000, self.redis.hget(key, 'message_count_quota_float'))
+        self.assertEqual(7, self.redis.hget(key, 'message_count_quota_buy'))
+        self.assertEqual(50, self.redis.hget('app-period', 'message_count_quota'))
+        self.assertEqual(79.5, credits.status('app', now=120, purchased=True)['remaining'])
+        self.assertEqual('already_completed', self.run_simulation(50.5)['status'])
+        self.assertEqual(0, credits.billable_used(key, 20.5, self.redis))
+        self.run_simulation(11, test_id='after-reset')
+        self.assertEqual(11, credits.billable_used(key, 31.5, self.redis))
+
+    def test_reset_refuses_wrong_scope_or_pending_settlement(self):
+        key = 'lanying:connector:statistics:message:pay_start_date:42:2026-11-16'
+        self.service.get_message_statistic_keys.return_value = [key, 'app-period']
+        with self.assertRaises(ValueError):
+            simulation.reset_free_tenant_quota('app', 43)
+        with mock.patch.dict(self.config, product_id=7002), self.assertRaises(ValueError):
+            simulation.reset_free_tenant_quota('app', 42)
+        with mock.patch.object(credits, 'mark_applied', side_effect=RuntimeError('lost ack')):
+            with self.assertRaisesRegex(RuntimeError, 'lost ack'):
+                self.run_simulation(12)
+        with self.assertRaisesRegex(RuntimeError, 'pending'):
+            simulation.reset_free_tenant_quota('app', 42)
+        self.redis.hashes.pop(credits.PENDING_KEY)
+        with self.assertRaisesRegex(RuntimeError, 'pending'):
+            simulation.reset_free_tenant_quota('app', 42)
+        self.assertEqual(12, credits.billable_used(key, 12, self.redis))
+
+    def test_redis_only_reset_preserves_purchased_and_per_app_counters(self):
+        key = 'lanying:connector:statistics:message:pay_start_date:42:2026-11-16'
+        self.service.get_message_statistic_keys.return_value = [key, 'app-period']
+        self.redis.hset(key, mapping={'message_count_quota': 30, 'message_count_quota_float': 812,
+                                      'message_count_quota_buy': 5})
+        self.redis.hset('app-period', 'message_count_quota', 30)
+        with mock.patch.object(credits, 'enabled', return_value=False):
+            simulation.reset_free_tenant_quota('app', 42)
+        credits.engine.assert_not_called()
+        self.assertEqual({'message_count_quota': 0, 'message_count_quota_float': 0,
+                          'message_count_quota_buy': 5}, self.redis.hgetall(key))
+        self.assertEqual(30, self.redis.hget('app-period', 'message_count_quota'))
+
     def test_real_accounting_gift_then_package_then_purchase_and_repeat(self):
         credits.grant('seenical-invitation:1', 'app', 10, now=100)
         credits.grant_purchase('seenical-message-credit:' + 'a'*32, 'app', 100, 200, 'manual', 100)
