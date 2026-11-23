@@ -38,7 +38,7 @@ class InitialPaigeTests(unittest.TestCase):
             return {'code': 200, 'data': True}
 
         source = {
-            'name': 'writer', 'desc': '', 'preset': {'messages': []},
+            'name': 'grow-ai-text-generator', 'nickname': 'Old custom writer', 'desc': '', 'preset': {'messages': []},
             'history_msg_count_max': 10, 'history_msg_count_min': 1, 'history_msg_size_max': 1024,
             'message_per_month_per_user': 300,
         }
@@ -68,14 +68,66 @@ class InitialPaigeTests(unittest.TestCase):
                 fields = published[chatbot.get_chatbot_key(app_id, 'original-agent')]
                 self.assertEqual(fields['linked_capsule_id'], capsule_id)
                 self.assertEqual(fields['user_id'], 123)
+                self.assertEqual(fields['name'], 'paige')
+                self.assertEqual(fields['nickname'], 'Paige')
                 self.assertEqual(import_for(456)['data']['id'], 'original-agent')
             finally:
                 release_profile.set()
             self.assertEqual(first.result(timeout=5)['data']['id'], 'original-agent')
             self.assertEqual([call.args[1] for call in profile.call_args_list], [123, 123])
+            self.assertEqual([call.args[3] for call in profile.call_args_list], ['Paige', 'Paige'])
 
         pipe.rpush.assert_called_once_with(chatbot.get_chatbot_ids_key(app_id), 'original-agent')
         pipe.execute.assert_called_once()
+
+    def test_import_names_and_collision_checks_follow_import_type(self):
+        source = {
+            'name': 'grow-ai-text-generator', 'nickname': 'Custom writer', 'desc': '',
+            'preset': {'messages': []}, 'history_msg_count_max': 10, 'history_msg_count_min': 1,
+            'history_msg_size_max': 1024, 'message_per_month_per_user': 300,
+        }
+        capsule = {'status': 'normal', 'password': '', 'month_price': 0, 'app_id': 'source',
+                   'chatbot_id': 'writer', 'preset_protect': 'off'}
+        for initial in (False, True):
+            for collision in (False, True):
+                with self.subTest(initial=initial, collision=collision), \
+                        patch.object(chatbot.lanying_ai_capsule, 'get_capsule', return_value=capsule), \
+                        patch.object(chatbot, 'get_chatbot_with_profile', return_value=source), \
+                        patch.object(chatbot.lanying_redis, 'get_redis_connection') as redis, \
+                        patch.object(chatbot, 'get_name_chatbot_id', return_value='existing' if collision else None) as lookup, \
+                        patch.object(chatbot, 'datetime') as clock, \
+                        patch.object(chatbot, 'create_chatbot', return_value={'result': 'ok', 'data': {'id': 'new'}}) as create, \
+                        patch.object(chatbot, 'set_chatbot_field'), \
+                        patch.object(chatbot.lanying_ai_capsule, 'add_capsule_app_id'):
+                    redis.return_value.get.return_value = None
+                    clock.now.return_value.strftime.return_value = '20261123120000'
+                    result = chatbot.create_chatbot_from_capsule(
+                        'app', '949256', '', 'month', 0, 123, '', initial_paige=initial)
+                    expected = 'paige' if initial else source['name']
+                    lookup.assert_called_once_with('app', expected)
+                    if collision:
+                        expected += '_20261123120000'
+                    self.assertEqual(result['data']['id'], 'new')
+                    self.assertEqual(create.call_args.args[1], expected)
+                    self.assertEqual(create.call_args.args[2], 'Paige' if initial else 'Custom writer')
+                    self.assertEqual(create.call_args.kwargs['initial_capsule_id'], '949256' if initial else None)
+        self.assertEqual(source['name'], 'grow-ai-text-generator')
+        self.assertEqual(source['nickname'], 'Custom writer')
+
+    def test_completed_initial_import_is_reused_without_renaming(self):
+        capsule = {'status': 'normal', 'password': '', 'month_price': 0}
+        with patch.object(chatbot.lanying_ai_capsule, 'get_capsule', return_value=capsule), \
+                patch.object(chatbot.lanying_redis, 'get_redis_connection') as redis, \
+                patch.object(chatbot, 'get_chatbot_with_profile') as source, \
+                patch.object(chatbot, 'create_chatbot') as create, \
+                patch.object(chatbot.lanying_im_api, 'set_user_profile') as profile:
+            redis.return_value.get.return_value = b'existing-agent'
+            result = chatbot.create_chatbot_from_capsule(
+                'app', '949256', '', 'month', 0, 123, '', initial_paige=True)
+        self.assertEqual(result, {'result': 'ok', 'data': {'id': 'existing-agent'}})
+        source.assert_not_called()
+        create.assert_not_called()
+        profile.assert_not_called()
 
     def test_initial_profile_reads_etcd_even_when_cache_is_empty(self):
         config = chatbot.lanying_config

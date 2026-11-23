@@ -345,8 +345,9 @@ def create_chatbot_from_capsule(app_id, capsule_id, password, cycle_type, price,
     capsule_chatbot = get_chatbot_with_profile(capsule_app_id, capsule_chatbot_id)
     if capsule_chatbot is None:
         return {'result': 'error', 'message': 'capsule chatbot not exist'}
-    name = capsule_chatbot['name']
-    nickname = capsule_chatbot.get('nickname',name)
+    # Only Seenical's initial import owns the Paige identity; other imports keep the source names.
+    name = 'paige' if initial_paige else capsule_chatbot['name']
+    nickname = 'Paige' if initial_paige else capsule_chatbot.get('nickname', name)
     if get_name_chatbot_id(app_id, name):
         timestr = datetime.now().strftime('%Y%m%d%H%M%S')
         name = f"{name}_{timestr}"
