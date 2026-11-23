@@ -20,6 +20,7 @@ from redis.exceptions import ResponseError
 from psycopg2.errors import UndefinedTable
 
 import lanying_agent_tools_storage as storage
+import lanying_utils
 from lanying_workspace_events import materials_changed
 
 MAX_FILE_BYTES = 30 * 1024 * 1024
@@ -434,9 +435,9 @@ def _download_source(app_id, url, filename):
     binding = lanying_agent_tools.get_im_binding_projection(app_id) or {}
     headers = {'app_id': app_id, 'access-token': config['lanying_admin_token'],
                'user_id': str(binding.get('im_user_id', ''))}
-    # Only platform attachment hosts can receive credentials. Off-platform
-    # redirects are rejected rather than forwarding an administrator token.
     validate_source(url, app_id)
+    if not lanying_utils.is_lanying_url(url, lanying_config.get_lanying_api_endpoint(app_id)):
+        headers = {}
     response = None
     for _ in range(4):
         response = requests.get(url, headers=headers, stream=True, timeout=(10, 60), allow_redirects=False)

@@ -83,13 +83,25 @@ def sha256(text):
 def md5hex(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
-def is_lanying_url(url):
-    parsed = urlparse(url)
-    # Link acceleration uses app-<AppID>-<KubeID>-<service>.maximtop.cn.
-    if re.fullmatch(r'app-[a-z]+-[0-9]+-[a-z]+\.maximtop\.cn\.?', parsed.hostname or ''):
+def is_lanying_url(url, configured_endpoint=None):
+    try:
+        parsed = urlparse(url)
+    except ValueError:
         return False
-    host = parsed.netloc.split(':')[0]
-    return host.endswith(".maximtop.cn") or host.endswith("api.maximtop.com")
+    # Only accept a literal DNS name or IPv6 address with an optional port.
+    if parsed.scheme not in {'http', 'https'} or not re.fullmatch(
+            r'(?:[a-zA-Z0-9.-]+|\[[a-fA-F0-9:.]+\])(?::[0-9]+)?', parsed.netloc):
+        return False
+    host = parsed.hostname
+    # Link acceleration uses app-<AppID>-<KubeID>-<service>.maximtop.cn.
+    if re.fullmatch(r'app-[a-z]+-[0-9]+-[a-z]+\.maximtop\.cn\.?', host):
+        return False
+    if host.endswith('.maximtop.cn') or host == 'api.maximtop.com':
+        return parsed.scheme == 'https'
+    if configured_endpoint:
+        configured = urlparse(configured_endpoint)
+        return parsed.scheme == configured.scheme and parsed.netloc.lower() == configured.netloc.lower()
+    return False
 
 def get_temp_filename(app_id, suffix):
     return f"/tmp/{app_id}_{int(time.time())}_{uuid.uuid4()}{suffix}"

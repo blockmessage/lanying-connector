@@ -793,17 +793,46 @@ class MaterialReferencesTest(unittest.TestCase):
         response = mock.MagicMock(status_code=200, headers={'Content-Type': 'application/json;charset=UTF-8'})
         response.iter_content.return_value = [b'{"code":401,"message":"token expired"}']
         request = types.SimpleNamespace(get=mock.Mock(return_value=response))
-        config = types.SimpleNamespace(get_lanying_connector=lambda a: {'lanying_admin_token': 'private'})
+        config = types.SimpleNamespace(get_lanying_connector=lambda a: {'lanying_admin_token': 'private'},
+                                       get_lanying_api_endpoint=lambda a: 'https://private.example')
         tools = types.SimpleNamespace(get_im_binding_projection=lambda a: {'im_user_id': '1'})
         with mock.patch.dict('sys.modules', {'requests': request, 'lanying_config': config, 'lanying_agent_tools': tools}), \
-                mock.patch.object(m, 'validate_source'), tempfile.TemporaryDirectory() as directory:
+                tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'source.txt'
+            route = '/file/download/chat?file_sign=fixture'
             with self.assertRaisesRegex(m.MaterialError, 'material_download_failed'):
-                m._download_source('a', 'https://api.maximtop.com/file/download/chat', str(path))
+                m._download_source('a', 'https://api.maximtop.com' + route, str(path))
             self.assertFalse(path.exists())
             response.headers = {'Content-Type': 'text/plain'}
             response.iter_content.return_value = [b'actual document']
-            self.assertEqual(m._download_source('a', 'url', str(path)), 15)
+            self.assertEqual(m._download_source('a', 'https://private.example' + route, str(path)), 15)
+            self.assertEqual(request.get.call_args.kwargs['headers']['access-token'], 'private')
+
+    def test_material_download_first_request_headers(self):
+        endpoint = mock.Mock()
+        config = types.SimpleNamespace(get_lanying_connector=lambda a: {'lanying_admin_token': 'private'},
+                                       get_lanying_api_endpoint=endpoint)
+        tools = types.SimpleNamespace(get_im_binding_projection=lambda a: {'im_user_id': '1'})
+        response = mock.MagicMock(status_code=200, headers={'Content-Type': 'text/plain'})
+        response.iter_content.return_value = [b'document']
+        with mock.patch.dict('sys.modules', {'lanying_config': config, 'lanying_agent_tools': tools}), \
+                mock.patch('requests.get', return_value=response) as get, tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'source.txt'
+            accelerated = 'https://app-tenant-27-webim.maximtop.cn'
+            cases = [
+                (accelerated, accelerated, False),
+                ('http://api.maximtop.com', 'http://api.maximtop.com', False),
+                ('https://private.example', 'http://private.example', False),
+                ('http://private.example:8080', 'http://private.example:8080', True),
+            ]
+            for configured, origin, send_token in cases:
+                with self.subTest(configured=configured, origin=origin):
+                    endpoint.return_value = configured
+                    url = origin + '/file/download/chat?file_sign=fixture'
+                    self.assertEqual(m._download_source('a', url, str(path)), 8)
+                    self.assertEqual(path.read_bytes(), b'document')
+                    headers = get.call_args.kwargs['headers']
+                    self.assertEqual(headers.get('access-token'), 'private' if send_token else None)
 
     def test_download_metadata_available_before_any_index_was_created(self):
         with self.engine.begin() as conn:
