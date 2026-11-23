@@ -8,6 +8,7 @@ import time
 import uuid
 import os
 import random
+import re
 import string
 from datetime import datetime
 
@@ -84,6 +85,9 @@ def md5hex(text):
 
 def is_lanying_url(url):
     parsed = urlparse(url)
+    # Link acceleration uses app-<AppID>-<KubeID>-<service>.maximtop.cn.
+    if re.fullmatch(r'app-[a-z]+-[0-9]+-[a-z]+\.maximtop\.cn\.?', parsed.hostname or ''):
+        return False
     host = parsed.netloc.split(':')[0]
     return host.endswith(".maximtop.cn") or host.endswith("api.maximtop.com")
 
