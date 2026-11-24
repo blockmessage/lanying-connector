@@ -434,7 +434,8 @@ def create_chatbot_from_publish_capsule(app_id, capsule_id, cycle_type, price, u
     image_vision = capsule_chatbot.get('image_vision','')
     audio_to_text_model = capsule_chatbot.get('audio_to_text_model', '')
     link_profile = capsule_chatbot.get('link_profile', {})
-    preset_protect = capsule['preset_protect']
+    # The shared capsule owns protection. Honor older protected store records too.
+    preset_protect = 'on' if capsule.get('preset_protect') == 'on' else origin_capsule['preset_protect']
     preset = capsule_chatbot['preset']
     if preset_protect == 'on':
         preset['messages'] = []
