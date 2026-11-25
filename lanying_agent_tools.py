@@ -1998,10 +1998,25 @@ def _redact_sensitive_result(value):
     return copy.deepcopy(value)
 
 
-def tool_result_for_model(result):
-    if isinstance(result, dict) and 'execution' in result:
-        return result['execution']
-    return result
+def tool_result_for_model(result, request_info):
+    if not isinstance(result, dict) or 'execution' not in result:
+        return result
+    execution = result['execution']
+    if (request_info.get('tool_id') != 'seenical.plan.create'
+            or result.get('status') != 'completed'
+            or not isinstance(execution, dict) or execution.get('result') != 'ok'):
+        return execution
+    data = execution.get('data')
+    if not isinstance(data, dict) or not str(data.get('task_id') or '').strip():
+        return execution
+
+    message = '用户已在 Console 批准本次操作，写作计划（LOOP）已创建。不要为同一计划再次发卡或要求批准。'
+    config = request_info.get('continuation', {}).get('config', {})
+    if _is_product_onboarding(config):
+        message += ('如果还有已选但未处理的标题，按用户原来的顺序，只为下一个标题发起创建确认卡。'
+                    '如果已全部处理完，告知创建结果，并告诉用户在会话列表打开对应子会话，点击 LOOP 查看文章标题。'
+                    '到这里结束，不运行计划或发布文章。')
+    return {**execution, 'message': message}
 
 
 def _validate_repo_path(path):

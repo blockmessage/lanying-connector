@@ -185,7 +185,7 @@ def resume_agent_tool_request_task(app_id, request_id):
         return {'result': 'error', 'message': 'tool result not found'}
     from services import openai_service
     openai_service.resume_client_tool_request(
-        request_info, lanying_agent_tools.tool_result_for_model(result))
+        request_info, lanying_agent_tools.tool_result_for_model(result, request_info))
     return {'result': 'ok'}
 
 @normal_queue.task

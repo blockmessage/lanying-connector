@@ -616,6 +616,30 @@ class AgentToolsTest(unittest.TestCase):
             del context["workflow"]
             self.assertEqual((0, api_tools), turn("查看计划"))
 
+    def test_resume_after_plan_creation(self):
+        request = {"tool_id": "seenical.plan.create", "continuation": {"config": {
+            "reply_msg_type": "CHAT", "seenical_client_context": {"workflow": "product_onboarding"}}}}
+        execution = {"result": "ok", "data": {"task_id": 201}}
+        saved = {"status": "completed", "execution": execution}
+        reply = self.module.tool_result_for_model(saved, request)
+        self.assertEqual({"task_id": 201}, reply["data"])
+        self.assertIn("已在 Console 批准", reply["message"])
+        self.assertIn("LOOP）已创建", reply["message"])
+        self.assertIn("按用户原来的顺序，只为下一个标题", reply["message"])
+        self.assertIn("会话列表打开对应子会话，点击 LOOP", reply["message"])
+        self.assertNotIn("message", execution)
+
+        ordinary = self.module.tool_result_for_model(saved, {"tool_id": "seenical.plan.create"})
+        self.assertIn("LOOP）已创建", ordinary["message"])
+        self.assertNotIn("下一个标题", ordinary["message"])
+        self.assertEqual(execution, self.module.tool_result_for_model(saved, {"tool_id": "seenical.plan.run"}))
+        for status, payload in (("failed", {"result": "error"}), ("rejected", {"result": "error"}),
+                                ("pending", execution), ("completed", {"result": "ok", "data": {}}),
+                                ("completed", {"result": "ok", "data": {"task_id": ""}})):
+            with self.subTest(status=status, payload=payload):
+                self.assertEqual(payload, self.module.tool_result_for_model(
+                    {"status": status, "execution": payload}, request))
+
     def test_onboarding_create_requires_one_title_and_deferred_generation(self):
         self.activate_catalog()
         self.bind_app(user_id="22")
