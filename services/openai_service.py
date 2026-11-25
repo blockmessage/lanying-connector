@@ -4701,6 +4701,7 @@ def add_doc_to_embedding(app_id, embedding_name, dname, url, type, limit, max_de
                 lanying_embedding.update_task_field(embedding_uuid, task_id, 'status', 'error')
                 raise
             logging.info(f"add_doc_to_embedding | result={result}")
+            return task_id
 
 def continue_embedding_task(app_id, embedding_name, task_id):
     embedding_info = lanying_embedding.get_embedding_name_info(app_id, embedding_name)

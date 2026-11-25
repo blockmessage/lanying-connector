@@ -886,7 +886,11 @@ def add_doc_to_embedding(service):
                 content = data.get('file_url','')
             logging.info(f"add_doc_to_embedding | {data}, tags:{tags}")
             service_module = get_service_module(service)
-            service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit, max_depth, filters, urls, generate_lanying_links, tags)
+            task_id = service_module.add_doc_to_embedding(app_id, embedding_name, name, content, type, limit, max_depth, filters, urls, generate_lanying_links, tags)
+            if type == 'url' and data.get('return_task_id') is True:
+                if not task_id:
+                    return app.make_response({'code': 400, 'message': 'Could not submit the webpage for indexing'})
+                return app.make_response({'code': 200, 'data': {'task_id': task_id}})
         resp = app.make_response({'code':200, 'data':True})
         return resp
     resp = app.make_response({'code':401, 'message':'bad authorization'})

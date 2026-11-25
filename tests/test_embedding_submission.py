@@ -1,6 +1,7 @@
 """Exercise the upload receipt and worker without booting model clients."""
 import ast
 import io
+import json
 import logging
 import os
 from pathlib import Path
@@ -101,6 +102,25 @@ class SubmissionTest(unittest.TestCase):
             self.assertNotIn('https://files', str(self.tasks))
         self.queue.apply_async.side_effect = publish
         self.submit()
+
+    def test_single_page_route_returns_worker_task_id_only_when_requested(self):
+        request = mock.Mock(headers={'access-token': 'token'})
+        route = dict(request=request, app=mock.Mock(make_response=lambda body: body),
+                     logging=logging, json=json, accessToken='token',
+                     get_service_module=lambda _: mock.Mock(add_doc_to_embedding=self.service['add_doc_to_embedding']))
+        load_functions('lanying_connector.py', {'add_doc_to_embedding'}, route)
+        body = {'app_id': 'app', 'embedding_name': 'knowledge', 'type': 'url', 'url': 'https://example.test'}
+        request.get_data.return_value = json.dumps(body)
+        self.assertEqual(route['add_doc_to_embedding']('openai'), {'code': 200, 'data': True})
+        request.get_data.return_value = json.dumps(dict(body, return_task_id=True))
+        result = route['add_doc_to_embedding']('openai')
+        args = self.queue.apply_async.call_args.kwargs['args']
+        self.ns['add_embedding_file'](*args)
+        task_id = result['data']['task_id']
+        self.assertIn(task_id, self.tasks)
+        self.assertEqual(self.docs[self.visible[0]]['task_id'], task_id)
+        self.embedding.get_embedding_name_info.return_value = None
+        self.assertEqual(route['add_doc_to_embedding']('openai')['code'], 400)
 
     def test_queue_failure_retains_failed_receipt(self):
         self.queue.apply_async.side_effect = RuntimeError('queue unavailable')
