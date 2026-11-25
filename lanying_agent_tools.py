@@ -47,6 +47,7 @@ MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
 MAX_TOOL_SCHEMA_BYTES = 256 * 1024
 MAX_NOTIFY_BYTES = 4096
 OFFICIAL_SKILL_ID = 'seenical-api'
+PRODUCT_ONBOARDING_SKILL_ID = 'seenical-product-onboarding'
 LEGACY_OFFICIAL_SKILL_IDS = ('seenical-console',)
 PUBLIC_SKILL_BUILTIN_TOOL_IDS = {'seenical.console.navigate'}
 SUPPORTED_CLIENT_RUNTIMES = {('butler_api', 1)}
@@ -630,8 +631,9 @@ def resolve_tool_id(function_info):
     return str(function_call.get('tool_id') or FUNCTION_TO_TOOL.get(function_info.get('name', ''), ''))
 
 
-def _official_skill():
-    catalog = get_public_catalog() or {}
+def _official_skill(catalog=None):
+    if catalog is None:
+        catalog = get_public_catalog() or {}
     skills = catalog.get('skills', [])
     for expected_id in (OFFICIAL_SKILL_ID,) + LEGACY_OFFICIAL_SKILL_IDS:
         for skill in skills:
@@ -1414,6 +1416,21 @@ def create_client_request(app_id, config, tool_call, function_info, arguments, c
         return {'result': 'error', 'message': 'client tool is not registered'}
     try:
         validate_tool_arguments(tool, arguments)
+        if _is_product_onboarding(config):
+            if tool_id == 'seenical.plan.create':
+                title = arguments.get('keywords', '')
+                if not title.strip() or len(title.splitlines()) != 1:
+                    raise ValueError('Set keywords to exactly one confirmed article title per new plan.')
+                if (arguments.get('run_immediately') is not False
+                        or arguments.get('cycle_type', 'none') != 'none'
+                        or arguments.get('auto_deploy') != 'off'):
+                    raise ValueError('Create an unscheduled plan with run_immediately=false and auto_deploy=off.')
+            elif tool_id == 'seenical.plan.update':
+                if arguments.get('cycle_type', 'none') != 'none' or arguments.get('auto_deploy', 'off') != 'off':
+                    raise ValueError('Product onboarding cannot enable scheduling or automatic publishing.')
+            elif tool_id in ('seenical.plan.run', 'seenical.plan.schedule', 'seenical.plan_run.retry',
+                             'seenical.plan_run.deploy', 'seenical.preview.publish'):
+                raise ValueError('Product onboarding only prepares plans. Finish onboarding before running or publishing.')
     except (TypeError, ValueError) as error:
         return {'result': 'error', 'message': str(error)}
     capability = find_capability(app_id, config, runtime=tool.get('runtime'))
@@ -2906,17 +2923,29 @@ def get_public_skill_revision(skill_id, revision):
     return skill
 
 
-def get_active_skills(app_id, chatbot_id):
+def _is_product_onboarding(config):
+    context = config.get('seenical_client_context')
+    return (isinstance(context, dict) and context.get('workflow') == 'product_onboarding'
+            and str(config.get('reply_msg_type', '')).upper() == 'CHAT')
+
+
+def get_active_skills(app_id, chatbot_id, product_onboarding=False):
     binding = get_im_binding_projection(app_id)
-    skill = _official_skill()
+    catalog = get_public_catalog() or {}
+    skill = _official_skill(catalog)
     if not binding or binding.get('status') != 'BOUND' or not skill:
         return []
+    skills = [skill]
+    if product_onboarding:
+        skills.extend(item for item in catalog.get('skills', [])
+                      if item.get('skill_id') == PRODUCT_ONBOARDING_SKILL_ID
+                      and not item.get('runtime') and not item.get('required_tools'))
     return [{
-        'repository_id': skill.get('skill_id', ''),
-        'revision': skill.get('revision', ''),
-        'source_commit': skill.get('source_commit', ''),
-        'skills': [skill],
-    }]
+        'repository_id': item.get('skill_id', ''),
+        'revision': item.get('revision', ''),
+        'source_commit': item.get('source_commit', ''),
+        'skills': [item],
+    } for item in skills]
 
 
 def _verified_workspace_context(app_id, config):
@@ -3051,7 +3080,7 @@ def apply_active_skills(app_id, config, messages, functions):
     insert_at = 0
     while insert_at < len(messages) and messages[insert_at].get('role') in ['system', 'developer']:
         insert_at += 1
-    for repository in get_active_skills(app_id, chatbot_id):
+    for repository in get_active_skills(app_id, chatbot_id, _is_product_onboarding(config)):
         for skill in repository.get('skills', []):
             active_tool_ids.update(skill.get('required_tools', []))
             instructions = str(skill.get('instructions', '')).strip()

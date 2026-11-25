@@ -587,6 +587,72 @@ class AgentToolsTest(unittest.TestCase):
                       plan_list_description)
         self.assertIn("never substitute prompt or note", plan_list_description)
 
+    def test_product_onboarding_loads_only_for_marked_turns_and_keeps_api_tools(self):
+        catalog = self.activate_catalog()
+        self.bind_app(user_id="22")
+        skill = next(s for s in catalog["skills"] if s["skill_id"] == "seenical-product-onboarding")
+        context = {"schema_version": 1, "client_instance_id": "tab", "seenical_session_id": "primary:bot"}
+        config = {"chatbot_id": "bot", "reply_msg_type": "CHAT", "reply_to": "22", "send_from": "22",
+                  "seenical_client_context": context}
+        capability = dict(context, actor_subject_id="11", actor_tenement_id="2", runtimes={"butler_api": 1})
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "find_capability", return_value=capability):
+            def turn(content):
+                messages, tools = self.module.apply_active_skills(
+                    "app", config, [{"role": "user", "content": content}], [])
+                loaded = [msg["content"] for msg in messages if msg["role"] == "system"
+                          and skill["instructions"] in msg["content"]]
+                return len(loaded), {tool["name"] for tool in tools}
+
+            loaded, api_tools = turn("请使用新产品引导")
+            self.assertEqual(0, loaded)
+            self.assertIn("seenical_plan_create", api_tools)
+            context["workflow"] = "product_onboarding"
+            self.assertEqual((1, api_tools), turn("文档已上传"))
+            self.assertEqual((1, api_tools), turn("就选第一个"))
+            context["client_instance_id"] = "wrong-tab"
+            self.assertEqual((0, set()), turn("选第一个"))
+            context["client_instance_id"] = "tab"
+            del context["workflow"]
+            self.assertEqual((0, api_tools), turn("查看计划"))
+
+    def test_onboarding_create_requires_one_title_and_deferred_generation(self):
+        self.activate_catalog()
+        self.bind_app(user_id="22")
+        context = {"workflow": "product_onboarding", "client_instance_id": "tab",
+                   "seenical_session_id": "primary:bot"}
+        config = {"chatbot_id": "bot", "reply_msg_type": "CHAT", "reply_to": "22",
+                  "send_from": "22", "seenical_client_context": context}
+        capability = dict(context, actor_subject_id="11", actor_tenement_id="2")
+        title = "蓝莺 IM：SDK 快速集成（开发者版）"
+        args = {"chatbot_id": "bot", "name": "Wiki — " + title, "prompt": "产品介绍",
+                "keywords": title, "run_immediately": False, "cycle_type": "none", "auto_deploy": "off"}
+        with mock.patch.object(self.module, "_redis", return_value=self.redis), mock.patch.object(
+                self.module, "find_capability", return_value=capability), mock.patch.object(self.module, "_audit"):
+            def request(tool, arguments):
+                func = self.module.registry_function(tool)
+                func["seenical_builtin_tool"] = True
+                return self.module.create_client_request("app", config, {"id": "call"}, func, arguments, {})
+
+            for change in ({"keywords": ""}, {"keywords": "Wiki 题目\nQA 题目"}, {"run_immediately": True},
+                           {"cycle_type": "cycle"}, {"auto_deploy": "on"}):
+                with self.subTest(change=change):
+                    self.assertEqual("error", request("seenical.plan.create", dict(args, **change))["result"])
+            self.assertEqual("error", request("seenical.plan.run", {"task_id": "task"})["result"])
+            for change in ({"cycle_type": "cycle"}, {"auto_deploy": "on"}):
+                with self.subTest(change=change):
+                    self.assertEqual("error", request("seenical.plan.update", dict(task_id="task", **change))["result"])
+            self.assertEqual("ok", request("seenical.plan.update", {"task_id": "task", "keywords": title})["result"])
+            created = request("seenical.plan.create", args)
+            self.assertEqual("ok", created["result"])
+            self.assertEqual(args, created["data"]["arguments"])
+            self.assertEqual("pending", created["data"]["status"])
+            del context["workflow"]
+            self.assertEqual("ok", request("seenical.plan.update", {"task_id": "task", "auto_deploy": "on"})["result"])
+            ordinary = dict(args)
+            del ordinary["keywords"]
+            self.assertEqual("ok", request("seenical.plan.create", ordinary)["result"])
+
     def test_verified_workspace_context_is_injected_as_reference_data(self):
         self.activate_catalog()
         self.bind_app(user_id="22")
