@@ -1145,6 +1145,8 @@ def _site_update(app_id, arguments, request_info):
         normalized = {field: (int(value) if field == 'max_latest_num' else str(value)) for field, value in changes.items()}
         if any(len(value) > 20000 for value in normalized.values() if isinstance(value, str)):
             return {'result': 'error', 'message': 'site field is too long'}
+        if (old_site.get('site_languages_enabled') or old_site.get('site_languages')) and 'language' in normalized:
+            normalized['language'] = old_site['language']
         if normalized.get('language', old_site.get('language', 'zh-hans')) not in ['zh-hans', 'en']:
             return {'result': 'error', 'message': 'language has an invalid value'}
         if normalized.get('commit_type', old_site.get('commit_type', 'branch')) not in ['branch', 'pull_request']:

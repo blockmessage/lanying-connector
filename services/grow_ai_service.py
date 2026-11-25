@@ -675,6 +675,8 @@ def configure_site():
         'icp_number', 'hook_sentence_slogan', 'hook_sentence_image',
         'github_hosting', 'collaborator'
     }
+    if 'site_languages' in data and not legacy_required.issubset(data):
+        return make_response({'code': 400, 'message': 'Full site settings are required to update languages.'})
     if not legacy_required.issubset(data):
         changes = {
             key: value for key, value in data.items()
@@ -742,7 +744,7 @@ def configure_site():
         github_hosting = github_hosting,
         collaborator = collaborator
     )
-    result = lanying_grow_ai.configure_site(site_id, site_setting)
+    result = lanying_grow_ai.configure_site(site_id, site_setting, data.get('site_languages'))
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
