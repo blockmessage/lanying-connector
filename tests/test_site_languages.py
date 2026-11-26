@@ -6,6 +6,70 @@ import lanying_site_languages as languages
 
 
 class SiteLanguagesTest(unittest.TestCase):
+    def test_saves_use_the_repository_plugin_without_renaming_legacy_keys(self):
+        for key in ('seenical', 'lanying-grow-ai'):
+            with self.subTest(key=key):
+                book = {'plugins': [key + '@^1.0.0'], 'pluginsConfig': {
+                    'edit-link': {'base': 'github'}, key: {'sitemap_hostname': 'https://customer.example'}}}
+                repo = Mock()
+                books = {'book.json': book, 'en/book.json': {'pluginsConfig': {key: {'custom': 'EN'}}}}
+                repo.json.side_effect = lambda path, *_args, **_opts: books.get(path)
+                repo.read.return_value = b'# Home'
+                repo.blob.side_effect = lambda data: data
+                settings = {'default_language': 'en', 'overrides': {'en': {'footer_note': 'English'}}}
+                layout = languages.layout_for('zh-hans', settings)
+                site = {'name': 'Docs', 'language': 'zh-hans', 'site_languages': settings, 'footer_note': '中文'}
+                languages.sync(repo, 'main', '', 'head', layout, site, lambda _, config, changed: config, None)
+                entries = repo.commit.call_args.args[1]
+                for code, footer in [('en', 'English'), ('zh-hans', '中文')]:
+                    plugins = json.loads(entries[code + '/book.json']['sha'])['pluginsConfig']
+                    self.assertEqual(footer, plugins[key]['footer_note'])
+                    if code == 'en':
+                        self.assertEqual('EN', plugins[key]['custom'])
+                    self.assertNotIn('seenical' if key == 'lanying-grow-ai' else 'lanying-grow-ai', plugins)
+
+    def test_title_and_keywords_preserve_per_language_repository_overrides(self):
+        from test_grow_ai_patch import load_grow_ai
+        transform = load_grow_ai().transform_site_to_book_json
+        key = 'lanying-grow-ai'
+        book = {'plugins': [key], 'pluginsConfig': {key: {'footer_note': 'handwritten'}}}
+        local = {'title': 'Old', 'pluginsConfig': {key: {'footer_note': 'local'},
+                 'logo': {'logo': 'custom.png'}, 'meta': {'data': [{'name': 'robots', 'content': 'noindex'}]}}}
+        before = {'name': 'Site', 'language': 'zh-hans', 'site_languages': {
+            'default_language': 'zh-hans', 'overrides': {'en': {'title': 'Old'}}}}
+        site = {**before, 'site_languages': {'default_language': 'en',
+                'overrides': {'en': {'title': 'Updated', 'meta_keywords': 'docs'}}}}
+        repo = Mock()
+        repo.json.side_effect = lambda name, *_a, **_kw: {'book.json': book, 'en/book.json': local}.get(name)
+        repo.read.return_value = b'# Home'
+        repo.blob.side_effect = lambda data: data
+        languages.sync(repo, 'master', '', 'head', languages.layout_for('zh-hans', before['site_languages']), site,
+                       lambda s, b, changes: transform(s, b, 'org', 'site', 'master', changes), None,
+                       previous=languages.book_sync_state(before))
+        entries = repo.commit.call_args.args[1]
+        self.assertEqual({'en/book.json', 'site-layout.json'}, set(entries))
+        updated = json.loads(entries['en/book.json']['sha'])
+        self.assertEqual('Updated', updated['title'])
+        self.assertEqual(local['pluginsConfig']['logo'], updated['pluginsConfig']['logo'])
+        self.assertEqual(local['pluginsConfig'][key], updated['pluginsConfig'][key])
+        self.assertEqual([{'name': 'robots', 'content': 'noindex'}, {'name': 'keywords', 'content': 'docs'}],
+                         updated['pluginsConfig']['meta']['data'])
+
+    def test_admin_site_name_does_not_replace_localized_titles(self):
+        key = 'lanying-grow-ai'
+        settings = {'default_language': 'zh-hans', 'overrides': {'en': {'title': ''}}}
+        old = {'name': 'Old name', 'language': 'zh-hans', 'site_languages': settings, 'title': ''}
+        site = {**old, 'name': 'New name'}
+        repo = Mock()
+        books = {'book.json': {'pluginsConfig': {key: {}}},
+                 'zh-hans/book.json': {'title': '中文标题'}, 'en/book.json': {'title': 'English title'}}
+        repo.json.side_effect = lambda path, *_args, **_kwargs: books.get(path)
+        repo.read.return_value = b'# Home'
+        repo.blob.side_effect = lambda data: data
+        languages.sync(repo, 'master', '', 'head', languages.layout_for('zh-hans', settings), site,
+                       lambda _settings, book, _fields: book, None, previous=languages.book_sync_state(old))
+        self.assertEqual({}, repo.commit.call_args.args[1])
+
     def test_homepage_changes_without_reassigning_either_language(self):
         settings = languages.normalize({'default_language': 'en', 'overrides': {'en': {'title': 'Guide'}}}, 'zh-hans')
         layout = languages.layout_for('zh-hans', settings, 'zh-hans')
@@ -68,7 +132,7 @@ class SiteLanguagesTest(unittest.TestCase):
                 repo.read.side_effect = lambda p, *_args, **_opts: files.get(p)
                 repo.json.side_effect = lambda p, *_args, **_opts: book if p == 'book.json' else None
                 repo.blob.side_effect = lambda data: data
-                languages.sync(repo, 'master', '', 'parent', current, site, lambda _, config: config, None)
+                languages.sync(repo, 'master', '', 'parent', current, site, lambda _, config, changed: config, None)
                 entries = repo.commit.call_args.args[1]
                 if existing_css is None:
                     self.assertEqual(f'@import url("../../../{shared}");\n'.encode(), entries[local]['sha'])
@@ -93,7 +157,7 @@ class SiteLanguagesTest(unittest.TestCase):
 
         current = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}})
         site = {'language': 'en', 'name': 'English docs', 'site_language_seed_pending': 'on'}
-        languages.sync(repo, 'master', '', 'seed', current, site, lambda _cfg, src: src, Mock())
+        languages.sync(repo, 'master', '', 'seed', current, site, lambda _cfg, src, changed: src, Mock())
         entries = repo.commit.call_args.args[1]
         layout = json.loads(blobs[entries['site-layout.json']['sha']])
         self.assertEqual(['en'], list(layout['languages']))
@@ -111,7 +175,7 @@ class SiteLanguagesTest(unittest.TestCase):
         before_publish = Mock(side_effect=ValueError('site revision changed'))
         with self.assertRaisesRegex(ValueError, 'site revision changed'):
             languages.sync(repo, 'master', '', 'base', current, site,
-                           lambda _cfg, src: src, Mock(), before_publish=before_publish)
+                           lambda _cfg, src, changed: src, Mock(), before_publish=before_publish)
         repo.commit.assert_not_called()
 
     def test_closed_or_deleted_upgrade_no_longer_counts_as_open(self):
@@ -144,3 +208,22 @@ class SiteLanguagesTest(unittest.TestCase):
             self.assertEqual(3, request.call_count)
             self.assertEqual(('POST', 'pulls'), request.call_args.args)
             self.assertEqual(head, request.call_args.kwargs['json']['head'])
+
+    def test_upgrade_digest_covers_tracking_and_localized_settings(self):
+        saved = {'language': 'zh-hans', 'site_languages': {'default_language': 'en'},
+                 'baidu_token': 'old', 'google_token': 'old'}
+        digest = languages.upgrade_digest(saved)
+        for field in ('baidu_token', 'google_token', 'site_languages'):
+            with self.subTest(field=field):
+                self.assertNotEqual(digest, languages.upgrade_digest({**saved, field: 'changed'}))
+        self.assertEqual(digest, languages.upgrade_digest({**saved, 'agent_tools_revision': 2}))
+
+    def test_pending_upgrade_can_be_found_before_receipt_is_saved(self):
+        repo = languages.Repository('https://api.github.test/repos/owner/site', {})
+        site = {'language_upgrade_head': 'pending-upgrade'}
+        with patch.object(repo, 'request', return_value=[{'html_url': 'https://github.test/owner/site/pull/1'}]) as request:
+            self.assertTrue(repo.has_open_upgrade(site, 'master'))
+            request.assert_called_once_with('GET', 'pulls', params={
+                'head': 'owner:pending-upgrade', 'base': 'master', 'state': 'open'})
+        with patch.object(repo, 'request', return_value=[]):
+            self.assertFalse(repo.has_open_upgrade(site, 'master'))

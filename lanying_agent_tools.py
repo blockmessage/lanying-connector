@@ -1141,11 +1141,14 @@ def _site_update(app_id, arguments, request_info):
         old_site = lanying_grow_ai.get_site(app_id, site_id)
         if old_site is None:
             return {'result': 'error', 'message': 'site_id not exist'}
+        if int(old_site.get('site_initialization_until', 0)) > time.time():
+            return {'result': 'error', 'message': 'The site is being initialized. Save its settings again shortly.'}
         current_revision = int(old_site.get('agent_tools_revision', 0) or 0)
         normalized = {field: (int(value) if field == 'max_latest_num' else str(value)) for field, value in changes.items()}
         if any(len(value) > 20000 for value in normalized.values() if isinstance(value, str)):
             return {'result': 'error', 'message': 'site field is too long'}
-        if (old_site.get('site_languages_enabled') or old_site.get('site_languages')) and 'language' in normalized:
+        if 'language' in normalized and (old_site.get('site_languages_enabled') or old_site.get('site_languages')
+                                         or old_site.get('site_language_seed_pending') == 'on'):
             normalized['language'] = old_site['language']
         if normalized.get('language', old_site.get('language', 'zh-hans')) not in ['zh-hans', 'en']:
             return {'result': 'error', 'message': 'language has an invalid value'}
@@ -1166,6 +1169,7 @@ def _site_update(app_id, arguments, request_info):
         _save_config_revision(
             app_id, 'site', site_id, current_revision, snapshot,
             request_info.get('request_id', ''))
+        redis.hsetnx(key, 'book_sync_state', json.dumps(lanying_grow_ai.site_languages.book_sync_state(old_site)))
         fields = dict(normalized)
         fields['agent_tools_revision'] = current_revision + 1
         fields['update_time'] = int(time.time())

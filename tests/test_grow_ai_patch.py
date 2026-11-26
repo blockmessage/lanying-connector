@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import json
 import pathlib
@@ -5,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import nullcontext
 from unittest import mock
 
 
@@ -121,6 +123,193 @@ class GrowAIPatchTest(unittest.TestCase):
     def setUp(self):
         self.module = load_grow_ai()
 
+    def test_hosted_template_selection_only_applies_to_new_repositories(self):
+        grow = self.module
+        github = mock.Mock()
+        for brand, template in [(None, 'growai-gitbook'), ('seenical', 'seenical-gitbook')]:
+            with self.subTest(brand=brand):
+                site = {'site_id': 7, 'github_hosting': 'on'}
+                if brand:
+                    site['site_template'] = brand
+                with mock.patch.object(grow, 'get_github', return_value=github), \
+                        mock.patch.object(grow, 'get_github_org', return_value='org'), \
+                        mock.patch.object(grow, 'update_site_field'), \
+                        mock.patch.object(grow, 'get_site', return_value=site), \
+                        mock.patch.object(grow.lanying_slack, 'async_send_grafana_message', create=True):
+                    grow.maybe_init_github_site_repo('app', site, site)
+                    github.get_repo.assert_called_once_with('maxim-top/' + template)
+                    github.reset_mock()
+                    site['github_hosting_url'] = 'https://github.com/org/existing'
+                    self.assertIs(site, grow.maybe_init_github_site_repo('app', site, site))
+                    github.get_repo.assert_not_called()
+
+    def test_failed_template_retries_the_saved_site_before_checking_quota(self):
+        grow = self.module
+        settings = mock.Mock(app_id='app', github_hosting='on')
+        settings.name = 'Docs'
+        settings.to_hmset_fields.return_value = {'name': 'Docs'}
+        site = {'app_id': 'app', 'site_id': 7, 'name': 'Docs', 'github_hosting': 'on',
+                'site_template': 'seenical', 'template_initialization': 'failed'}
+        redis = mock.MagicMock()
+        redis.get.return_value = None
+        redis.transaction.side_effect = lambda reserve, *_args, **_kwargs: reserve(redis)
+        with mock.patch.object(grow, 'get_site', return_value=site), \
+                mock.patch.object(grow, 'get_site_list', return_value={'data': {'list': [site]}}), \
+                mock.patch.object(grow, 'check_site_num_limit') as quota, \
+                mock.patch.object(grow, 'generate_site_id') as allocate, \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'initialize_new_site', side_effect=[site, {**site, 'github_hosting_url': 'url'}]), \
+                mock.patch.object(grow, 'sync_to_github', return_value={'result': 'ok'}):
+            failed = grow.create_site(settings, 'seenical')
+            self.assertEqual('error', failed['result'])
+            self.assertIn('Site 7', failed['message'])
+            self.assertEqual({'site_id': 7, 'status': 'ready'}, grow.create_site(settings, 'seenical')['data'])
+            quota.assert_not_called()
+            allocate.assert_not_called()
+
+    def test_replaying_successful_seenical_create_returns_same_site(self):
+        grow = self.module
+        settings = mock.Mock(app_id='app', github_hosting='on', language='zh-hans')
+        settings.name = 'Docs'
+        settings.to_hmset_fields.return_value = {'name': 'Docs'}
+        redis = mock.MagicMock()
+        values = {}
+        redis.get.side_effect = values.get
+        redis.set.side_effect = lambda key, value, **_kwargs: values.update({key: value})
+        redis.hexists.return_value = True
+        redis.transaction.side_effect = lambda reserve, *_args, **_kwargs: reserve(redis)
+        ready = {'result': 'ok', 'data': {'site_id': 7, 'status': 'ready'}}
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'get_site_list', return_value={'data': {'list': []}}), \
+                mock.patch.object(grow, 'get_site', return_value={
+                    'site_template': 'seenical', 'github_hosting': 'on', 'github_hosting_url': 'https://example.test'}), \
+                mock.patch.object(grow, 'check_site_setting', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'check_site_num_limit', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'generate_site_id', return_value=7) as allocate, \
+                mock.patch.object(grow, 'initialize_seenical_site', return_value=ready) as init:
+            self.assertEqual(ready, grow.create_site(settings, 'seenical'))
+            self.assertEqual(ready, grow.create_site(settings, 'seenical'))
+        allocate.assert_called_once()
+        init.assert_called_once_with('app', 7)
+        redis.rpush.assert_called_once_with(grow.get_site_list_key('app'), 7)
+
+    def test_closed_upgrade_pr_does_not_mark_canonical_as_synced(self):
+        grow = self.module
+        languages = grow.site_languages
+        old = {'app_id': 'app', 'site_id': 7, 'name': 'Docs', 'language': 'zh-hans',
+               'canonical_link': 'https://old.example'}
+        site = {**old, 'canonical_link': 'https://new.example', 'site_languages': {
+            'default_language': 'zh-hans', 'overrides': {'en': {'title': 'Docs'}}}}
+        old_state = json.dumps(languages.book_sync_state(old))
+        state = {'book_sync_state': old_state}
+        redis = mock.Mock()
+        redis.lock.side_effect = lambda *_args, **_kw: nullcontext()
+        redis.hget.side_effect = lambda _key, field: state.get(field)
+        redis.hmset.side_effect = lambda _key, values: state.update(values)
+        repo = mock.Mock()
+        repo.request.return_value = {'object': {'sha': 'base'}}
+        repo.read.return_value = None
+        book = {'pluginsConfig': {'lanying-grow-ai': {'sitemap_hostname': old['canonical_link']},
+                'canonical-link': {'baseURL': old['canonical_link']}, 'edit-link': {'base': 'github'}}}
+        repo.json.side_effect = lambda path, *_args, **_kw: book if path == 'book.json' else None
+        repo.blob.side_effect = lambda data: data
+        repo.commit.side_effect = ['https://example.invalid/pull/1', 'https://example.invalid/pull/2']
+        repo.upgrade_is_open.return_value = False
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'managed_site_repository', return_value=(repo, 'org', 'site')), \
+                mock.patch.object(languages, 'legacy_upgrade_entries', return_value={}):
+            grow.sync_hosted_languages(old, site, allow_upgrade=True, before_publish=mock.Mock())
+            self.assertEqual(old_state, state['book_sync_state'])
+            grow.sync_hosted_languages({**site, **state}, site, allow_upgrade=True, before_publish=mock.Mock())
+        entries = repo.commit.call_args.args[1]
+        plugins = json.loads(entries['book.json']['sha'])['pluginsConfig']
+        self.assertEqual(site['canonical_link'], plugins['canonical-link']['baseURL'])
+        self.assertEqual(site['canonical_link'], plugins['lanying-grow-ai']['sitemap_hostname'])
+
+    def test_merged_upgrade_keeps_repository_titles_on_name_only_save(self):
+        grow = self.module
+        languages = grow.site_languages
+        old = {'app_id': 'app', 'site_id': 7, 'name': 'Docs', 'language': 'zh-hans', 'title': 'Old'}
+        site = {**old, 'title': 'Published', 'site_languages': {
+            'default_language': 'zh-hans', 'overrides': {'en': {'title': 'Published English'}}}}
+        url = 'https://example.invalid/pull/1'
+        site['language_upgrade_url'] = url
+        stored = {'book_sync_state': json.dumps(languages.book_sync_state(old)),
+                  'language_upgrade_sync_state': json.dumps(languages.book_sync_state(site))}
+        redis = mock.Mock()
+        redis.lock.side_effect = lambda *_args, **_kw: nullcontext()
+        redis.hget.side_effect = lambda _key, field: stored.get(field)
+        redis.hmset.side_effect = lambda _key, fields: stored.update(fields)
+        repo = mock.Mock()
+        repo.request.return_value = {'object': {'sha': 'base'}}
+        repo.read.return_value = b'# Home'
+        repo.blob.side_effect = lambda data: data
+        repo.commit.return_value = ''
+        repo.upgrade_is_merged.return_value = True
+        books = {'book.json': {'title': 'Manual root title', 'pluginsConfig': {'lanying-grow-ai': {}}},
+                 'site-layout.json': languages.layout_for('zh-hans', site['site_languages'], 'zh-hans'),
+                 'zh-hans/book.json': {'title': 'Manual Chinese title'},
+                 'en/book.json': {'title': 'Manual English title'}}
+        repo.json.side_effect = lambda file, *_a, **_kw: books.get(file)
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'managed_site_repository', return_value=(repo, 'org', 'site')):
+            grow.sync_hosted_languages(site, {**site, 'name': 'Renamed'})
+        repo.upgrade_is_merged.assert_called_once_with(url)
+        self.assertEqual({}, repo.commit.call_args.args[1])
+        self.assertEqual(languages.book_sync_state(site), json.loads(stored['book_sync_state']))
+
+    def test_old_console_configures_new_gitbook_directory(self):
+        grow = self.module
+        old = {'app_id': 'app', 'site_id': 7, 'name': 'Docs', 'language': 'zh-hans',
+               'title': 'Published title', 'canonical_link': 'https://current.example',
+               'github_hosting': 'off', 'github_url': 'https://github.com/org/site',
+               'github_base_dir': '/old', 'github_base_branch': 'master'}
+        new = {**old, 'github_base_dir': '/new/', 'hook_sentence_image': 'https://cdn.example/banner.png'}
+        previous = grow.site_languages.book_sync_state(old)
+        book = {'title': 'Template title', 'pluginsConfig': {'lanying-grow-ai': {},
+                'canonical-link': {'baseURL': 'https://template.example'}}}
+        read = mock.Mock(status_code=200)
+        read.json.return_value = {'sha': 'base', 'content': base64.b64encode(json.dumps(book).encode())}
+        with mock.patch.object(grow, 'site_book_baseline', return_value=previous), \
+                mock.patch.object(grow.requests, 'get', return_value=read, create=True), \
+                mock.patch.object(grow.requests, 'put', return_value=mock.Mock(status_code=200), create=True) as write, \
+                mock.patch.object(grow, 'upload_file_to_github', side_effect=[
+                    {'result': 'error'}, {'result': 'ok'}]) as upload, \
+                mock.patch.object(grow, 'update_site_field') as update:
+            failed = grow.sync_to_github(old, new)
+            self.assertEqual('error', failed['result'])
+            self.assertIn('Save again', failed['message'])
+            write.assert_not_called()
+            update.assert_not_called()
+            # The saved Console directory is already /new; Git still has the old baseline.
+            self.assertEqual({'result': 'ok'}, grow.sync_to_github(new, new))
+            self.assertEqual(2, upload.call_count)
+            update.assert_called_once()
+        self.assertTrue(write.call_args.args[0].endswith('/contents/new/book.json'))
+        updated = json.loads(base64.b64decode(write.call_args.kwargs['json']['content']))
+        self.assertEqual(new['title'], updated['title'])
+        self.assertEqual(new['canonical_link'], updated['pluginsConfig']['canonical-link']['baseURL'])
+        self.assertEqual('assets/hook-sentence/banner.png', updated['pluginsConfig']['lanying-grow-ai']['hook_sentence_image'])
+
+    def test_hook_image_upload_creates_or_updates_the_target_file(self):
+        grow = self.module
+        site = {'github_url': 'https://github.com/org/site', 'github_hosting': 'off',
+                'github_base_dir': '/new', 'github_base_branch': 'docs'}
+        url = 'https://cdn.example/banner.png'
+        for lookup_status, upload_status in [(404, 201), (200, 200)]:
+            with self.subTest(lookup_status=lookup_status):
+                image = mock.Mock(status_code=200, content=b'image')
+                existing = mock.Mock(status_code=lookup_status)
+                existing.json.return_value = {'sha': 'file-sha'}
+                with mock.patch.object(grow.lanying_oss, 'get_cdn_url', return_value='https://cdn.example/', create=True), \
+                        mock.patch.object(grow.requests, 'get', side_effect=[image, existing], create=True), \
+                        mock.patch.object(grow.requests, 'put', return_value=mock.Mock(status_code=upload_status), create=True) as put:
+                    self.assertEqual({'result': 'ok'}, grow.upload_file_to_github(site, url, 'Upload image'))
+                self.assertTrue(put.call_args.args[0].endswith('/contents/new/assets/hook-sentence/banner.png'))
+                payload = put.call_args.kwargs['json']
+                self.assertEqual('docs', payload['branch'])
+                self.assertEqual('file-sha' if lookup_status == 200 else None, payload.get('sha'))
+
     def test_repository_lock_releases_only_its_own_lease_without_lua(self):
         redis = mock.MagicMock()
         pipe = redis.pipeline.return_value.__enter__.return_value
@@ -139,6 +328,29 @@ class GrowAIPatchTest(unittest.TestCase):
         with self.assertRaises(self.module.LockNotOwnedError):
             lock.release()
         pipe.delete.assert_not_called()
+
+    def test_english_site_creation_returns_before_hosting_starts(self):
+        grow = self.module
+        settings = mock.Mock(app_id='app', language='en', github_hosting='on')
+        settings.to_hmset_fields.return_value = {}
+        redis = mock.Mock()
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'check_site_num_limit', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'check_site_setting', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'generate_site_id', return_value=7), \
+                mock.patch.object(grow.executor, 'submit') as submit, \
+                mock.patch.object(grow, 'initialize_new_site', side_effect=TimeoutError) as initialize:
+            self.assertEqual(grow.create_site(settings), {'result': 'ok', 'data': {'site_id': 7}})
+            initialize.assert_not_called()
+            submit.assert_called_once_with(grow.initialize_english_site, 'app', 7)
+            fields = redis.hmset.call_args.args[1]
+            self.assertEqual('on', fields['site_language_seed_pending'])
+            with mock.patch.object(grow, 'get_site', return_value=fields):
+                self.assertEqual('error', grow.configure_site(7, settings)['result'])
+            with self.assertLogs(level='ERROR'):
+                grow.initialize_english_site('app', 7)
+            redis.hdel.assert_called_once_with(grow.get_site_key('app', 7), 'site_initialization_until')
+            redis.rpush.assert_called_once_with(grow.get_site_list_key('app'), 7)
 
     def test_task_binding_allows_disabled_security_with_any_site_configuration(self):
         for site_ids in [[], ["default-site"], ["custom-domain-site"], ["default-site", "custom-domain-site"]]:

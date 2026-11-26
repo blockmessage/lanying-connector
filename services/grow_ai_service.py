@@ -596,9 +596,12 @@ def create_site():
     github_token = str(data.get('github_token', ''))
     github_base_branch = str(data.get('github_base_branch', 'master'))
     github_base_dir = str(data.get('github_base_dir', '/'))
+    site_template = data.get('site_template', 'growai')
+    if site_template not in ('growai', 'seenical'):
+        return make_response({'code': 400, 'message': 'Unsupported site template.'})
     footer_note = str(data.get(
         'footer_note',
-        '内容由 Seenical AI Agent 基于企业知识库生成，发布前请检查关键信息与引用来源。'))
+        '' if site_template == 'seenical' else '内容由 Seenical AI Agent 基于企业知识库生成，发布前请检查关键信息与引用来源。'))
     lanying_link = maybe_add_https_prefix(str(data.get('lanying_link', '')))
     title = str(data.get('title', name))
     copyright = str(data.get('copyright', ''))
@@ -642,7 +645,7 @@ def create_site():
         github_hosting = github_hosting,
         collaborator = collaborator
     )
-    result = lanying_grow_ai.create_site(site_setting)
+    result = lanying_grow_ai.create_site(site_setting, site_template)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:
@@ -659,6 +662,13 @@ def configure_site():
     app_id = str(data['app_id'])
     tenement_id = str(data.get('tenement_id', ''))
     site_id = str(data['site_id'])
+    if set(data) <= {'site_id', 'app_id', 'tenement_id'}:
+        existing = lanying_grow_ai.get_site(app_id, site_id)
+        if existing and existing.get('site_template') == 'seenical' and existing.get('github_hosting') == 'on':
+            result = lanying_grow_ai.retry_site_initialization(app_id, site_id)
+            if result['result'] == 'error':
+                return make_response({'code': 400, 'message': result['message']})
+            return make_response({'code': 200, 'data': result['data']})
     null_fields = sorted(
         key for key, value in data.items()
         if key not in ['app_id', 'site_id', 'tenement_id'] and value is None)

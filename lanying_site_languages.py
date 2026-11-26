@@ -1,6 +1,7 @@
 """Site language configuration and GitBook repository updates."""
 import base64
 import copy
+import hashlib
 import json
 import posixpath
 from pathlib import PurePosixPath
@@ -12,8 +13,58 @@ LANGUAGES = {'zh-hans': '简体中文', 'en': 'English'}
 COPY_FIELDS = ('title', 'meta_keywords', 'copyright', 'footer_note', 'hook_sentence_slogan',
                'hook_sentence_image', 'official_website_url', 'lanying_link')
 URL_FIELDS = {'hook_sentence_image', 'official_website_url', 'lanying_link'}
-TEMPLATE_API = 'https://api.github.com/repos/maxim-top/growai-gitbook'
+# Only build tooling is copied when the administrator explicitly adds a language.
+TEMPLATE_API = 'https://api.github.com/repos/maxim-top/seenical-gitbook'
 TOOLING = {'.github', '.gitignore', '.bookignore', 'Makefile', 'book.json', 'scripts', 'tests', 'README-GrowAI.md'}
+
+
+def site_plugin_key(book):
+    """Use the repository's active plugin, including legacy config-only books."""
+    names = {name.split('@', 1)[0] for name in book.get('plugins', [])}
+    if 'plugins' not in book:
+        names = book.get('pluginsConfig', {})
+    for name in ('seenical', 'lanying-grow-ai'):
+        if name in names:
+            return name
+    return None
+
+
+def localized_settings(site, code):
+    fields = dict(site, language=code)
+    if code != site.get('language'):
+        fields.update(dict.fromkeys(COPY_FIELDS, ''))
+        fields.update(site.get('site_languages', {}).get('overrides', {}).get(code, {}))
+    return fields
+
+
+def book_sync_state(site):
+    """Remember which Console inputs reached Git, without storing tokens or copy."""
+    if not site:
+        return {}
+    primary = site.get('language', 'zh-hans')
+    keys = (*COPY_FIELDS, 'language', 'canonical_link', 'icp_number',
+            'baidu_token', 'google_token', 'github_url', 'github_base_branch', 'github_base_dir')
+    state = {}
+    for code in [primary, *site.get('site_languages', {}).get('overrides', {})]:
+        fields = localized_settings(site, code)
+        fields['github_base_dir'] = (site.get('github_base_dir') or '').strip('/')
+        state[code] = {k: hashlib.sha256(str(fields.get(k) or '').encode()).hexdigest() for k in keys}
+    return state
+
+
+def changed_fields(state, previous, code):
+    before = previous.get(code, {})
+    return {k for k, digest in state[code].items() if digest != before.get(k)}
+
+
+def update_keywords(plugins, value, inherited=()):
+    data = plugins.setdefault('meta', {}).setdefault('data', copy.deepcopy(list(inherited)))
+    for item in data:
+        if str(item.get('name', '')).lower() == 'keywords':
+            item['content'] = value
+            return
+    if value:
+        data.append({'name': 'keywords', 'content': value})
 
 
 def normalize(value, primary):
@@ -39,6 +90,15 @@ def normalize(value, primary):
                     raise ValueError('Enter a valid website or image URL.')
             clean[code][field] = text
     return {'default_language': value['default_language'], 'overrides': clean}
+
+
+def upgrade_digest(site):
+    # Identify the proposed configuration even if an ordinary settings save intervenes.
+    fields = (*COPY_FIELDS, 'name', 'language', 'site_languages', 'canonical_link', 'icp_number',
+              'google_token', 'baidu_token', 'github_base_dir', 'github_base_branch',
+              'max_latest_num', 'commit_type', 'collaborator')
+    payload = json.dumps({key: site.get(key, '') for key in fields}, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def layout_for(primary, settings, legacy_root=''):
@@ -98,10 +158,23 @@ class Repository:
         pull = self.request('GET', f'pulls/{number}', missing_ok=True)
         return bool(pull and pull['state'] == 'open')
 
+    def upgrade_is_merged(self, url):
+        if not url:
+            return False
+        number = url.rsplit('/', 1)[-1]
+        pull = self.request('GET', f'pulls/{number}', missing_ok=True)
+        return bool(pull and pull.get('merged'))
+
     def open_upgrade(self, head, base):
         owner = self.api.rsplit('/', 2)[-2]
         pulls = self.request('GET', 'pulls', params={'state': 'open', 'head': f'{owner}:{head}', 'base': base})
         return pulls[0]['html_url'] if pulls else ''
+
+    def has_open_upgrade(self, site, base):
+        head = site.get('language_upgrade_head')
+        if head and self.open_upgrade(head, base):
+            return True
+        return self.upgrade_is_open(site.get('language_upgrade_url'))
 
     def commit(self, parent, entries, branch, upgrade_head):
         if upgrade_head and self.request('GET', f'git/ref/heads/{upgrade_head}', missing_ok=True):
@@ -200,7 +273,7 @@ def replace_chinese_seed(repository, parent):
 
 
 def sync(repository, branch, base_dir, parent, current, site, transform, image_bytes,
-         template_ref='master', before_publish=None, upgrade_head=''):
+         template_ref='master', before_publish=None, upgrade_head='', previous=None):
     def path(relative):
         return posixpath.join(base_dir, relative)
 
@@ -229,27 +302,42 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
         put(relative, (json.dumps(value, indent=4, ensure_ascii=False) + '\n').encode())
 
     original = repository.json(path('book.json'), parent)
-    common = transform(dict(site), original)
-    common['pluginsConfig']['lanying-grow-ai']['sitemap_default_language'] = ''
-    put_json('book.json', common)
-    put_json('site-layout.json', layout)
-    put('LANGS.md', ''.join(f'* [{LANGUAGES[code]}]({code}/)\n' for code in layout['languages']).encode())
+    state = book_sync_state(site)
+    previous = previous or {}
+    primary_changes = changed_fields(state, previous, primary)
+    common = transform(dict(site), original, primary_changes)
+    plugin_key = site_plugin_key(original)
+    if not plugin_key:
+        raise ValueError('This repository does not declare a supported site plugin.')
+    if not previous or upgrade:
+        common['pluginsConfig'][plugin_key]['sitemap_default_language'] = ''
+    if common != original:
+        put_json('book.json', common)
+    if current != layout:
+        put_json('site-layout.json', {**(current or {}), **layout})
+    if not current or set(current['languages']) != set(layout['languages']):
+        put('LANGS.md', ''.join(f'* [{LANGUAGES[code]}]({code}/)\n' for code in layout['languages']).encode())
     for code in layout['languages']:
         home = f'{code}/README.md'
         summary = f'{code}/SUMMARY.md'
         if code not in (current or {}).get('languages', {}) and not (upgrade and code == primary):
             if repository.read(path(code), parent, optional=True) is not None:
                 raise ValueError(f'The language directory already exists: {code}')
-            for filename, content in ((home, f'# {LANGUAGES[code]}\n'), (summary, f'# Summary\n\n* [{LANGUAGES[code]}](README.md)\n')):
+            label = LANGUAGES[code]
+            if plugin_key == 'seenical':
+                label = 'Documentation' if code == 'en' else '产品文档'
+            for filename, content in ((home, f'# {label}\n'), (summary, f'# Summary\n\n* [{label}](README.md)\n')):
                 if repository.read(path(filename), parent, optional=True) is not None:
                     raise ValueError(f'The language directory already exists: {code}')
                 put(filename, content.encode())
         elif not upgrade and repository.read(path(home), parent, optional=True) is None:
             raise ValueError(f'The language homepage is missing: {code}')
-        localized = dict(site, language=code)
-        if code != primary:
-            localized.update(settings['overrides'][code])
-        language_book = transform({**localized, 'copyright': localized.get('copyright') or ' '}, common)
+        localized = localized_settings(site, code)
+        new_language = code not in previous or not current or code not in current['languages']
+        changed = changed_fields(state, {} if new_language else previous, code)
+        if not changed:
+            continue
+        language_book = transform({**localized, 'copyright': localized.get('copyright') or ' '}, common, changed)
         overrides = repository.json(path(f'{code}/book.json'), parent, optional=True) or {}
         # GitBook only links a stylesheet that exists inside the language directory.
         stylesheet = 'assets/styles/website.css'
@@ -261,30 +349,46 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
             if repository.read(local_style, parent, optional=True) is None and repository.read(source_style, parent, optional=True) is not None:
                 relative = posixpath.relpath(shared_style, posixpath.dirname(f'{code}/{stylesheet}'))
                 entries[local_style] = entry(local_style, repository.blob(f'@import url("{relative}");\n'.encode()))
-        overrides = copy.deepcopy(overrides)
-        overrides['language'] = code
-        overrides['title'] = localized.get('title') or (common.get('title') if code == primary else '') or site['name']
+        original_overrides = overrides
+        overrides = copy.deepcopy(original_overrides)
+        if new_language:
+            overrides['language'] = code
+        if 'title' in changed:
+            overrides['title'] = localized.get('title') or site['name']
         plugins = overrides.setdefault('pluginsConfig', {})
         rendered = language_book['pluginsConfig']
-        for name in ('tbfed-pagefooter', 'edit-link', 'logo', 'meta', 'intopic-toc', 'lanying-grow-ai'):
-            plugins[name] = copy.deepcopy(rendered.get(name, {}))
-        plugins['edit-link']['base'] = rendered['edit-link']['base'] + f'/{code}'
-        footer = plugins['tbfed-pagefooter']
-        footer['modify_label'] = 'Updated: ' if code == 'en' else '该文件修订时间：'
-        plugins['intopic-toc']['label'] = 'Contents' if code == 'en' else '内容'
-        grow = plugins['lanying-grow-ai']
+        if new_language or changed & {'github_url', 'github_base_branch'}:
+            plugins.setdefault('edit-link', {})['base'] = rendered['edit-link']['base'] + f'/{code}'
+        if new_language:
+            plugins.setdefault('tbfed-pagefooter', {})['modify_label'] = 'Updated: ' if code == 'en' else '该文件修订时间：'
+            plugins.setdefault('intopic-toc', {})['label'] = 'Contents' if code == 'en' else '内容'
+        if changed & {'copyright', 'official_website_url', 'icp_number'}:
+            plugins.setdefault('tbfed-pagefooter', {})['copyright'] = rendered.get('tbfed-pagefooter', {}).get('copyright', '')
+        if 'official_website_url' in changed:
+            plugins.setdefault('logo', {})['url'] = localized.get('official_website_url') or '/'
+        if 'meta_keywords' in changed:
+            update_keywords(plugins, localized.get('meta_keywords', ''), common['pluginsConfig'].get('meta', {}).get('data', []))
+        grow = plugins.get(plugin_key, {}).copy()
         for field in ('footer_note', 'lanying_link', 'hook_sentence_slogan'):
-            grow[field] = localized.get(field, '')
-        if plugins['meta'].get('data'):
-            plugins['meta']['data'][0]['content'] = localized.get('meta_keywords', '')
-        image = localized.get('hook_sentence_image', '')
-        grow['hook_sentence_image'] = ''
-        if image:
-            data, filename = image_bytes(image)
-            relative = f'assets/hook-sentence/{filename}'
-            put(f'{code}/{relative}', data)
-            grow['hook_sentence_image'] = relative
-        put_json(f'{code}/book.json', overrides)
+            if field in changed:
+                grow[field] = localized.get(field, '')
+        if 'canonical_link' in changed and 'sitemap_hostname' in rendered[plugin_key]:
+            grow['sitemap_hostname'] = rendered[plugin_key]['sitemap_hostname']
+        if 'hook_sentence_image' in changed:
+            image = localized.get('hook_sentence_image', '')
+            if image:
+                data, filename = image_bytes(image)
+                relative = f'assets/hook-sentence/{filename}'
+                put(f'{code}/{relative}', data)
+                grow['hook_sentence_image'] = relative
+            else:
+                grow['hook_sentence_image'] = ''
+        if grow:
+            plugins[plugin_key] = grow
+        if not plugins and 'pluginsConfig' not in original_overrides:
+            overrides.pop('pluginsConfig')
+        if overrides != original_overrides:
+            put_json(f'{code}/book.json', overrides)
     if before_publish:
         before_publish()
     return repository.commit(parent, entries, branch, upgrade_head)

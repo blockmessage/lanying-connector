@@ -9,6 +9,7 @@ from datetime import timedelta as datetime_timedelta
 import lanying_config
 import requests
 import json
+import hashlib
 import lanying_utils
 import lanying_file_storage
 import lanying_im_api
@@ -42,6 +43,7 @@ from redis.lock import Lock
 
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
 MAX_FILE_TITLE_LENGTH = 999
+SEENICAL_SITE_CREATE_RETRY_SECONDS = 1200
 
 
 class TaskSetting:
@@ -2296,9 +2298,13 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
                 repository = site_languages.Repository(github_api_url, headers)
                 layout = repository.json('site-layout.json', commit_sha, optional=True)
                 language = site_languages.release_language(layout, task_run, site['language'])
-                if (not layout and (task_run.get('article_language') or site['language']) != site['language']
-                        and repository.upgrade_is_open(site.get('language_upgrade_url'))):
-                    raise ValueError('Merge the site language upgrade before publishing articles in this language.')
+                if not layout and (task_run.get('article_language') or site['language']) != site['language']:
+                    # The upgrade may have started while this publisher was waiting for the repository lock.
+                    current_site = get_site(app_id, site['site_id'])
+                    if not current_site:
+                        raise ValueError('Site not found.')
+                    if repository.has_open_upgrade(current_site, base_branch):
+                        raise ValueError('Merge the site language upgrade before publishing articles in this language.')
             except (ValueError, requests.RequestException) as error:
                 return {'result': 'error', 'message': str(error), 'retry': False}
         abs_base_dir, base_dir = parse_dir(site.get('github_base_dir', '/'), '/')
@@ -4264,46 +4270,151 @@ def parse_github_url(github_url):
     return {'result': 'error', 'message': 'github_url is bad', 'retry': False}
 
 
-def create_site(site_setting: SiteSetting):
-    now = int(time.time())
+def reserve_site(site_setting, fields, writer, retry_key=''):
     app_id = site_setting.app_id
+    if retry_key:
+        reserved = writer.get(retry_key)
+        if reserved:
+            site_id = int(reserved)
+            if writer.hexists(get_site_key(app_id, site_id), 'create_time'):
+                return {'retry_site_id': site_id}
+        for existing in get_site_list(app_id)['data']['list']:
+            if existing['name'] == site_setting.name and needs_seenical_template(existing):
+                writer.multi()
+                writer.set(retry_key, existing['site_id'], ex=SEENICAL_SITE_CREATE_RETRY_SECONDS)
+                return {'retry_site_id': existing['site_id']}
+
     result = check_site_num_limit(app_id)
     if result['result'] == 'error':
         return result
     result = check_site_setting(site_setting)
     if result['result'] == 'error':
         return result
+
+    now = int(time.time())
     site_id = generate_site_id()
-    redis = lanying_redis.get_redis_connection()
-    fields = site_setting.to_hmset_fields()
-    fields['status'] = 'normal'
-    fields['create_time'] = now
-    fields['site_id'] = site_id
-    fields['agent_tools_revision'] = 0
+    record = dict(fields, status='normal', create_time=now, site_id=site_id, agent_tools_revision=0)
+    if retry_key:
+        record['template_initialization'] = 'pending'
+        record['site_initialization_until'] = now + 1200
+        writer.multi()
+        writer.set(retry_key, site_id, ex=SEENICAL_SITE_CREATE_RETRY_SECONDS)
     if site_setting.github_hosting == 'on' and site_setting.language == 'en':
-        fields['site_language_seed_pending'] = 'on'
-    logging.info(f"create site start | app_id:{app_id}, site_info:{fields}")
-    redis.hmset(get_site_key(app_id, site_id), fields)
-    redis.rpush(get_site_list_key(app_id), site_id)
-    add_to_all_site_list(app_id, site_id)
-    site_info = get_site(app_id, site_id)
-    logging.info(f"create site finish | app_id:{app_id}, site_info:{site_info}")
-    site_info = maybe_init_github_site_repo(app_id, site_info, site_info)
-    maybe_invite_github_member(app_id, {}, site_info)
-    maybe_register_github_site(app_id, site_info)
-    maybe_init_analytics(app_id, site_id)
-    site_info = get_site(app_id, site_id)
-    if site_info.get('site_language_seed_pending') == 'on' and is_standard_hosted_site(site_info):
-        # The site already exists. Its pending initialization can be retried from settings.
-        sync_to_github(site_info, site_info)
+        record['site_language_seed_pending'] = 'on'
+        record['site_initialization_until'] = now + 1200
+    writer.hmset(get_site_key(app_id, site_id), record)
+    writer.rpush(get_site_list_key(app_id), site_id)
+    writer.hset(get_all_site_list_key(), site_id, app_id)
+    logging.info("Reserve site %s for app %s", site_id, app_id)
+    return {'result': 'ok', 'site_id': site_id, 'initializing': 'site_initialization_until' in record}
+
+
+def create_site(site_setting: SiteSetting, site_template='growai'):
+    app_id = site_setting.app_id
+    redis = lanying_redis.get_redis_connection()
+    fields = dict(site_setting.to_hmset_fields(), site_template=site_template)
+    seenical_hosted = site_template == 'seenical' and site_setting.github_hosting == 'on'
+    if seenical_hosted:
+        fingerprint = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+        retry_key = f'lanying_connector:grow_ai:site_create:{app_id}:{fingerprint}'
+        reservation = redis.transaction(
+            lambda pipe: reserve_site(site_setting, fields, pipe, retry_key),
+            retry_key, value_from_callable=True)
+        if 'retry_site_id' in reservation:
+            return retry_site_initialization(app_id, reservation['retry_site_id'])
     else:
-        maybe_sync_to_github(site_info, site_info)
-    return {
-        'result': 'ok',
-        'data': {
-            'site_id': site_id
-        }
-    }
+        reservation = reserve_site(site_setting, fields, redis)
+    if reservation['result'] == 'error':
+        return reservation
+    site_id = reservation['site_id']
+    if seenical_hosted:
+        if site_setting.language != 'en':
+            return initialize_seenical_site(app_id, site_id)
+        try:
+            executor.submit(initialize_seenical_site, app_id, site_id)
+        except RuntimeError:
+            return failed_site_initialization(app_id, site_id)
+        return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'initializing'}}
+    if reservation['initializing']:
+        try:
+            executor.submit(initialize_english_site, app_id, site_id)
+        except RuntimeError:
+            logging.exception("Could not start English initialization for site %s", site_id)
+            redis.hdel(get_site_key(app_id, site_id), 'site_initialization_until')
+    else:
+        site = initialize_new_site(app_id, site_id)
+        maybe_sync_to_github({}, site)
+    return {'result': 'ok', 'data': {'site_id': site_id}}
+
+
+def failed_site_initialization(app_id, site_id):
+    lanying_redis.get_redis_connection().hmset(get_site_key(app_id, site_id), {
+        'template_initialization': 'failed', 'site_initialization_until': 0})
+    return {'result': 'error', 'message': f'Site {site_id} was saved but template initialization failed. Retry initialization on this site.'}
+
+
+def initialize_seenical_site(app_id, site_id):
+    try:
+        site = initialize_new_site(app_id, site_id)
+        if site.get('github_hosting_url') and sync_to_github({}, site)['result'] == 'ok':
+            lanying_redis.get_redis_connection().hdel(get_site_key(app_id, site_id), 'template_initialization', 'site_initialization_until')
+            return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'ready'}}
+    except Exception:
+        logging.exception("Template initialization failed for site %s", site_id)
+    return failed_site_initialization(app_id, site_id)
+
+
+def needs_seenical_template(site):
+    return (site.get('site_template') == 'seenical' and site.get('github_hosting') == 'on'
+            and (site.get('template_initialization') or not site.get('github_hosting_url')))
+
+
+def retry_site_initialization(app_id, site_id):
+    site = get_site(app_id, site_id)
+    if not site or site.get('site_template') != 'seenical' or site.get('github_hosting') != 'on':
+        return {'result': 'error', 'message': 'Hosted site not found.'}
+    redis = lanying_redis.get_redis_connection()
+    key = get_site_key(app_id, site_id)
+    with redis.pipeline(transaction=True) as pipe:
+        try:
+            pipe.watch(key)
+            site = get_site(app_id, site_id)
+            if not site:
+                return {'result': 'error', 'message': 'Hosted site not found.'}
+            if not needs_seenical_template(site):
+                return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'ready'}}
+            if int(site.get('site_initialization_until', 0)) > time.time():
+                return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'initializing'}}
+            pipe.multi()
+            pipe.hmset(key, {'template_initialization': 'pending', 'site_initialization_until': int(time.time()) + 1200})
+            pipe.execute()
+        except WatchError:
+            return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'initializing'}}
+    return initialize_seenical_site(app_id, site_id)
+
+
+def initialize_new_site(app_id, site_id):
+    site = get_site(app_id, site_id)
+    site = maybe_init_github_site_repo(app_id, site, site)
+    if site.get('template_initialization') and not site.get('github_hosting_url'):
+        return site
+    maybe_invite_github_member(app_id, {}, site)
+    maybe_register_github_site(app_id, site)
+    maybe_init_analytics(app_id, site_id)
+    return get_site(app_id, site_id)
+
+
+def initialize_english_site(app_id, site_id):
+    try:
+        site = initialize_new_site(app_id, site_id)
+        result = sync_to_github({}, site)
+        if result['result'] != 'ok':
+            logging.warning("English initialization pending for site %s: %s", site_id, result['message'])
+    except Exception:
+        logging.exception("English initialization failed for site %s", site_id)
+    finally:
+        lanying_redis.get_redis_connection().hdel(get_site_key(app_id, site_id), 'site_initialization_until')
+
 
 def check_site_num_limit(app_id):
     count = get_site_count(app_id)
@@ -4337,6 +4448,8 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
     site_info = get_site(app_id, site_id)
     if site_info is None:
         return {'result': 'error', 'message': 'site_id not exist'}
+    if int(site_info.get('site_initialization_until', 0)) > now:
+        return {'result': 'error', 'message': 'The site is being initialized. Save its settings again shortly.'}
     redis = lanying_redis.get_redis_connection()
     fields = site_setting.to_hmset_fields()
     fields['update_time'] = now
@@ -4367,12 +4480,14 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
         nonlocal saved_settings
         if upgrade_head:
             fields['language_upgrade_head'] = upgrade_head
+            fields['language_upgrade_digest'] = site_languages.upgrade_digest(candidate)
         with redis.pipeline(transaction=True) as pipe:
             pipe.watch(site_key)
             if int(pipe.hget(site_key, 'agent_tools_revision') or 0) != current_revision:
                 raise WatchError('Site revision changed.')
             fields['agent_tools_revision'] = current_revision + 1
             pipe.multi()
+            pipe.hsetnx(site_key, 'book_sync_state', json.dumps(site_languages.book_sync_state(site_info)))
             pipe.hmset(site_key, fields)
             pipe.execute()
         saved_settings = True
@@ -4410,10 +4525,21 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
     maybe_init_analytics(app_id, site_id)
     new_site_info = get_site(app_id, site_id)
     if sync_result is None:
-        if new_site_info.get('site_language_seed_pending') == 'on' and is_standard_hosted_site(new_site_info):
+        if new_site_info.get('site_language_seed_pending') == 'on' and new_site_info['github_hosting'] == 'on':
             result = sync_to_github(site_info, new_site_info)
             if result['result'] != 'ok':
                 return {'result': 'error', 'message': 'The site was saved. Save its settings again to retry English initialization.'}
+        elif new_site_info['github_hosting'] == 'off' and new_site_info.get('hook_sentence_image'):
+            try:
+                previous = site_book_baseline(site_info)
+                if site_book_directory_changed(site_info, new_site_info, previous):
+                    result = sync_to_github(site_info, new_site_info)
+                    if result['result'] != 'ok':
+                        return result
+                else:
+                    maybe_sync_to_github(site_info, new_site_info)
+            except (RedisError, requests.RequestException):
+                return {'result': 'error', 'message': 'Could not sync the GitBook directory. Save again to retry.'}
         else:
             maybe_sync_to_github(site_info, new_site_info)
     return {
@@ -4458,6 +4584,25 @@ def read_site_language_image(url):
     return response.content, filename
 
 
+def site_book_baseline(old_site):
+    if not old_site:
+        return {}
+    key = get_site_key(old_site['app_id'], old_site['site_id'])
+    raw = lanying_redis.get_redis_connection().hget(key, 'book_sync_state')
+    return json.loads(raw) if raw else site_languages.book_sync_state(old_site)
+
+
+def site_book_directory_changed(old_site, site, previous):
+    if not old_site:
+        return False
+    old_primary = old_site.get('language', 'zh-hans')
+    previous_dir = previous.get(old_primary, {}).get('github_base_dir')
+    if previous_dir is None:
+        previous_dir = site_languages.book_sync_state(old_site)[old_primary]['github_base_dir']
+    primary = site.get('language', 'zh-hans')
+    return previous_dir != site_languages.book_sync_state(site)[primary]['github_base_dir']
+
+
 def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False, before_publish=None):
     repository, owner, name = managed_site_repository(site)
     branch = site.get('github_base_branch', 'master')
@@ -4479,7 +4624,7 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
                           if old_site.get('site_languages_sync_pending') == 'on' else '')
             if saved_head:
                 upgrade_url = repository.open_upgrade(saved_head, branch)
-                same_settings = _site_revision_snapshot(site) == _site_revision_snapshot(old_site)
+                same_settings = site_languages.upgrade_digest(site) == old_site.get('language_upgrade_digest')
                 if upgrade_url and not same_settings:
                     update_site_field(site['app_id'], site['site_id'], 'language_upgrade_url', upgrade_url)
                     raise ValueError('Close the existing language upgrade before changing its settings.')
@@ -4493,19 +4638,30 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
             if allow_upgrade:
                 raise ValueError('This site already has a custom language layout.')
             return None
+        site_key = get_site_key(site['app_id'], site['site_id'])
         if upgrade_url:
             before_publish(upgrade_head)
         else:
+            previous = site_book_baseline(old_site)
+            if layout and old_site.get('language_upgrade_url'):
+                proposed = redis.hget(site_key, 'language_upgrade_sync_state')
+                if proposed and repository.upgrade_is_merged(old_site['language_upgrade_url']):
+                    previous = json.loads(proposed)
             upgrade_url = site_languages.sync(
                 repository, branch, '', parent, layout, site,
-                lambda setting, book: transform_site_to_book_json(setting, book, owner, name, branch),
-                read_site_language_image, upgrade_head=upgrade_head,
+                lambda setting, book, changed=None: transform_site_to_book_json(setting, book, owner, name, branch, changed),
+                read_site_language_image, upgrade_head=upgrade_head, previous=previous,
                 before_publish=(lambda: before_publish(upgrade_head)) if before_publish else None)
         updates = {'site_languages_sync_pending': 'off', 'site_language_seed_pending': 'off',
-                   'language_upgrade_url': upgrade_url, 'language_upgrade_head': ''}
-        if not upgrade_url:
+                   'language_upgrade_url': upgrade_url, 'language_upgrade_head': '', 'language_upgrade_digest': ''}
+        snapshot = json.dumps(site_languages.book_sync_state(site))
+        if upgrade_url:
+            updates['language_upgrade_sync_state'] = snapshot
+        else:
             updates['site_languages_enabled'] = 'on'
-        redis.hmset(get_site_key(site['app_id'], site['site_id']), updates)
+            updates['book_sync_state'] = snapshot
+            updates['language_upgrade_sync_state'] = ''
+        redis.hmset(site_key, updates)
     return {'upgrade_url': upgrade_url}
 
 
@@ -4527,13 +4683,20 @@ def sync_to_github(old_site, site):
     result = parse_github_url(github_url)
     if result['result'] == 'error':
         return result
-    if old_site.get('hook_sentence_image', '') != site.get('hook_sentence_image', '') and site.get('hook_sentence_image', '') != '':
-        download_url = site.get('hook_sentence_image', '')
+    state = site_languages.book_sync_state(site)
+    primary = site.get('language', 'zh-hans')
+    previous = site_book_baseline(old_site)
+    directory_changed = site_book_directory_changed(old_site, site, previous)
+    changed = site_languages.changed_fields(state, previous, primary)
+    download_url = site.get('hook_sentence_image', '')
+    if download_url and (directory_changed or 'hook_sentence_image' in changed):
         try:
-            upload_file_to_github(site, download_url, "Update hook sentence image from LanyingIM Console")
-        except Exception as e:
-            logging.error(f"fail to upload_file_to_github | download_url:{download_url}")
-            logging.exception(e)
+            upload = upload_file_to_github(site, download_url, "Update hook sentence image from LanyingIM Console")
+        except requests.RequestException:
+            logging.warning("Could not upload hook image for site %s", site['site_id'])
+            upload = {'result': 'error'}
+        if upload['result'] != 'ok':
+            return {'result': 'error', 'message': 'Could not upload the site image to GitBook. Save again to retry.'}
     github_owner = result['github_owner']
     github_repo = result['github_repo']
     github_api_url = f"https://api.github.com/repos/{github_owner}/{github_repo}"
@@ -4546,7 +4709,7 @@ def sync_to_github(old_site, site):
     book_file = os.path.join(base_dir, "book.json")
     book_url = f"{github_api_url}/contents/{book_file}"
     # 发送 GET 请求获取文件内容
-    response = requests.get(book_url, headers=headers)
+    response = requests.get(book_url, headers=headers, params={'ref': base_branch}, timeout=25)
     if response.status_code != 200:
         logging.info(f"github response | {response.content}")
         return {'result': 'error', 'message': 'github book.json not found'}
@@ -4557,20 +4720,23 @@ def sync_to_github(old_site, site):
         book_json = json.loads(book_text)
     except Exception as e:
         return {'result': 'error', 'message': 'book.json is not json'}
-    new_book_json = transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch)
+    new_book_json = transform_site_to_book_json(
+        site, book_json, github_owner, github_repo, base_branch, None if not old_site or directory_changed else changed)
     if new_book_json != book_json:
         new_book_text = json.dumps(new_book_json, ensure_ascii=False, indent=4) + "\n"
         new_book_base64 = base64.b64encode(new_book_text.encode()).decode()
         update_data = {
-            "message": "Update book.json from LanyingIM Console",
+            "branch": base_branch,
+            "message": "Update site settings in book.json",
             "content": new_book_base64,
             "encoding": "base64",
             "sha": sha
         }
-        response = requests.put(book_url, headers=headers, json=update_data)
+        response = requests.put(book_url, headers=headers, json=update_data, timeout=25)
         if response.status_code != 200:
             logging.info(f"github response | {response.content}")
             return {'result': 'error', 'message': 'github fail to commit'}
+    update_site_field(site['app_id'], site['site_id'], 'book_sync_state', json.dumps(state))
     if site.get('site_language_seed_pending') == 'on':
         update_site_field(site['app_id'], site['site_id'], 'site_language_seed_pending', 'off')
     return {'result': 'ok'}
@@ -4590,7 +4756,7 @@ def upload_file_to_github(site, download_url, commit_message):
             'result': 'error',
             'message': 'bad download_url'
         }
-    response = requests.get(download_url)
+    response = requests.get(download_url, timeout=25)
     if response.status_code != 200:
         logging.info(f"upload_file_to_github fail to download | {download_url}")
         return {
@@ -4616,8 +4782,13 @@ def upload_file_to_github(site, download_url, commit_message):
         "branch": base_branch
     }
 
-    response = requests.put(asset_url, headers=headers, json=payload)
-    if response.status_code != 200:
+    existing = requests.get(asset_url, headers=headers, params={'ref': base_branch}, timeout=25)
+    if existing.status_code == 200:
+        payload['sha'] = existing.json()['sha']
+    elif existing.status_code != 404:
+        return {'result': 'error', 'message': 'github image lookup failed'}
+    response = requests.put(asset_url, headers=headers, json=payload, timeout=25)
+    if response.status_code not in (200, 201):
         logging.info(f"upload_file_to_github response | {response.content}")
         return {'result': 'error', 'message': 'github fail to commit'}
     return {'result': 'ok'}
@@ -4627,14 +4798,25 @@ def get_url_filename(url):
     filename = os.path.basename(path)
     return filename
 
-def transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch):
+def transform_site_to_book_json(site, book_json, github_owner, github_repo, base_branch, changed=None):
     new_book_json = copy.deepcopy(book_json)
+    plugin_key = site_languages.site_plugin_key(book_json)
+    if plugin_key and (changed is None or changed & {
+            'canonical_link', 'footer_note', 'lanying_link', 'hook_sentence_slogan', 'hook_sentence_image'}):
+        new_book_json.setdefault('pluginsConfig', {}).setdefault(plugin_key, {})
+    dependencies = {
+        'logo_site_url': {'official_website_url'}, 'sitemap_hostname': {'canonical_link'},
+        'github_buttons': {'github_url'}, 'edit_link': {'github_url', 'github_base_branch'},
+        'copyright': {'copyright', 'official_website_url', 'icp_number', 'language'},
+    }
     for field in ['language','title', 'github_buttons', 'copyright', 'edit_link', 'logo_site_url', 'canonical_link', 'meta_keywords', 'baidu_token', 'footer_note', 'lanying_link', 'sitemap_hostname', 'google_token', 'hook_sentence_slogan', 'hook_sentence_image']:
+        if changed is not None and not (dependencies.get(field, {field}) & changed):
+            continue
         try:
             if field == 'title':
                 title = site.get('title', '')
-                if len(title) > 0:
-                    new_book_json['title'] = title
+                if title or changed is not None:
+                    new_book_json['title'] = title or site.get('name', '')
             elif field == 'language':
                 language = site.get('language', '')
                 if len(language) > 0:
@@ -4643,7 +4825,7 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                 new_book_json['pluginsConfig']['github-buttons']['repo'] = f'{github_owner}/{github_repo}'
             elif field == 'copyright':
                 copyright = site.get('copyright', '')
-                if len(copyright) > 0:
+                if copyright or changed is not None:
                     official_website_url = site.get('official_website_url', '')
                     if len(official_website_url) > 0:
                         site_url = official_website_url
@@ -4687,11 +4869,11 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                     site_name = get_github_site(github_owner, github_repo)
                     site_url = make_site_full_url(site_name)
                     sitemap_hostname = site_url
-                new_book_json['pluginsConfig']['lanying-grow-ai']['sitemap_hostname'] = sitemap_hostname
+                new_book_json['pluginsConfig'][plugin_key]['sitemap_hostname'] = sitemap_hostname
             elif field == 'meta_keywords':
                 meta_keywords = site.get('meta_keywords', '')
-                if len(meta_keywords) > 0:
-                    new_book_json['pluginsConfig']['meta']['data'][0]['content'] = meta_keywords
+                if meta_keywords or changed is not None:
+                    site_languages.update_keywords(new_book_json['pluginsConfig'], meta_keywords)
             elif field == 'baidu_token':
                 baidu_token = site.get('baidu_token', '')
                 if len(baidu_token) > 0:
@@ -4702,25 +4884,25 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                     new_book_json['pluginsConfig']['ga4']['tag'] = google_token
             elif field == 'footer_note':
                 footer_note = site.get('footer_note', '')
-                if len(footer_note) > 0:
-                    new_book_json['pluginsConfig']['lanying-grow-ai']['footer_note'] = footer_note
+                if footer_note or plugin_key == 'seenical':
+                    new_book_json['pluginsConfig'][plugin_key]['footer_note'] = footer_note
             elif field == 'lanying_link':
                 lanying_link = site.get('lanying_link', '')
-                if len(lanying_link) > 0:
-                    new_book_json['pluginsConfig']['lanying-grow-ai']['lanying_link'] = lanying_link
+                if lanying_link or plugin_key == 'seenical':
+                    new_book_json['pluginsConfig'][plugin_key]['lanying_link'] = lanying_link
             elif field == 'hook_sentence_slogan':
                 hook_sentence_slogan = site.get('hook_sentence_slogan', '')
-                old_hook_sentence_slogan = new_book_json['pluginsConfig']['lanying-grow-ai'].get('hook_sentence_slogan', '')
+                old_hook_sentence_slogan = new_book_json['pluginsConfig'][plugin_key].get('hook_sentence_slogan', '')
                 if hook_sentence_slogan != old_hook_sentence_slogan:
-                    new_book_json['pluginsConfig']['lanying-grow-ai']['hook_sentence_slogan'] = hook_sentence_slogan
+                    new_book_json['pluginsConfig'][plugin_key]['hook_sentence_slogan'] = hook_sentence_slogan
             elif field == 'hook_sentence_image':
                 hook_sentence_image = site.get('hook_sentence_image', '')
-                old_hook_sentence_image = new_book_json['pluginsConfig']['lanying-grow-ai'].get('hook_sentence_image', '')
+                old_hook_sentence_image = new_book_json['pluginsConfig'][plugin_key].get('hook_sentence_image', '')
                 if hook_sentence_image != '':
                     asset_file = make_hook_sentence_image_relative(site, hook_sentence_image)
-                    new_book_json['pluginsConfig']['lanying-grow-ai']['hook_sentence_image'] = asset_file
+                    new_book_json['pluginsConfig'][plugin_key]['hook_sentence_image'] = asset_file
                 elif hook_sentence_image != old_hook_sentence_image:
-                    new_book_json['pluginsConfig']['lanying-grow-ai']['hook_sentence_image'] = ''
+                    new_book_json['pluginsConfig'][plugin_key]['hook_sentence_image'] = ''
         except Exception as e:
             pass
     return new_book_json
@@ -4781,6 +4963,8 @@ def get_site(app_id, site_id):
         for key,value in info.items():
             if key in ['create_time', 'update_time', 'website_storage', 'max_latest_num', 'baidu_index_pages', 'google_index_pages']:
                 dto[key] = int(value)
+            elif key in ('book_sync_state', 'language_upgrade_sync_state'):
+                continue
             elif key == 'site_languages':
                 dto[key] = json.loads(value)
             else:
@@ -5196,20 +5380,30 @@ def maybe_init_github_site_repo(app_id, old_site_info, site_info):
                 site_info = get_site(app_id, site_id)
             return site_info
         repo_org = get_github_org()
-        repo_name = f'growai-gitbook-{site_id}-{int(time.time())}'
+        template_name = 'seenical-gitbook' if site_info.get('site_template') == 'seenical' else 'growai-gitbook'
+        timestamp = site_info.get('create_time') if site_info.get('template_initialization') else None
+        repo_name = f'{template_name}-{site_id}-{timestamp or int(time.time())}'
         repo_full_name = f'{repo_org}/{repo_name}'
         try:
             logging.info(f"create github repo start | repo_name:{repo_name}")
             github = get_github()
             my_org = github.get_organization(get_github_org())
-            template = github.get_repo("maxim-top/growai-gitbook")
-            result = my_org.create_repo_from_template(
-                repo=template,
-                name=repo_name,
-                description="Create from maxim-top/growai-gitbook",
-                private=False,
-                include_all_branches=False
-            )
+            template = github.get_repo(f"maxim-top/{template_name}")
+            try:
+                result = my_org.create_repo_from_template(
+                    repo=template,
+                    name=repo_name,
+                    description=f"Created from maxim-top/{template_name}",
+                    private=False,
+                    include_all_branches=False
+                )
+            except Exception:
+                # GitHub may have created the repository before the response was lost.
+                if not site_info.get('template_initialization'):
+                    raise
+                result = github.get_repo(repo_full_name)
+                if result.description != f"Created from maxim-top/{template_name}":
+                    raise ValueError('Repository exists with a different template.')
             logging.info(f"create github repo finish | app_id:{app_id}, repo_full_name:{repo_full_name}, result:{result}")
             ## enable_workflow_action(f'{repo_org}/{repo_name}')
             github_url = f'https://github.com/{repo_full_name}'
@@ -5920,10 +6114,11 @@ def do_cdn_config_task_run_internal(app_id, site_id, domain_id, domain_info, ten
         lanying_cdn.set_cdn_domain_cert(domain_name, domain_info['cert_pem'], domain_info['cert_key'])
         update_custom_domain_info(app_id, site_id, domain_id, "state", 'ready')
         update_custom_domain_info(app_id, site_id, domain_id, "cert_ready", "ready")
+        old_site = get_site(app_id, site_id)
         maybe_init_analytics(app_id, site_id)
         site = get_site(app_id, site_id)
         if site:
-            maybe_sync_to_github(site,site)
+            maybe_sync_to_github(old_site, site)
         return {
             'result': 'ok'
         }
