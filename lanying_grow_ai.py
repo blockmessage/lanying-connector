@@ -4328,13 +4328,7 @@ def create_site(site_setting: SiteSetting, site_template='growai'):
         return reservation
     site_id = reservation['site_id']
     if seenical_hosted:
-        if site_setting.language != 'en':
-            return initialize_seenical_site(app_id, site_id)
-        try:
-            executor.submit(initialize_seenical_site, app_id, site_id)
-        except RuntimeError:
-            return failed_site_initialization(app_id, site_id)
-        return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'initializing'}}
+        return start_seenical_site_initialization(app_id, site_id)
     if reservation['initializing']:
         try:
             executor.submit(initialize_english_site, app_id, site_id)
@@ -4351,6 +4345,14 @@ def failed_site_initialization(app_id, site_id):
     lanying_redis.get_redis_connection().hmset(get_site_key(app_id, site_id), {
         'template_initialization': 'failed', 'site_initialization_until': 0})
     return {'result': 'error', 'message': f'Site {site_id} was saved but template initialization failed. Retry initialization on this site.'}
+
+
+def start_seenical_site_initialization(app_id, site_id):
+    try:
+        executor.submit(initialize_seenical_site, app_id, site_id)
+    except RuntimeError:
+        return failed_site_initialization(app_id, site_id)
+    return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'initializing'}}
 
 
 def initialize_seenical_site(app_id, site_id):
@@ -4390,7 +4392,7 @@ def retry_site_initialization(app_id, site_id):
             pipe.execute()
         except WatchError:
             return {'result': 'ok', 'data': {'site_id': site_id, 'status': 'initializing'}}
-    return initialize_seenical_site(app_id, site_id)
+    return start_seenical_site_initialization(app_id, site_id)
 
 
 def initialize_new_site(app_id, site_id):
@@ -4613,7 +4615,9 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
             if (not latest or latest.get('agent_tools_revision') != site.get('agent_tools_revision')
                     or latest.get('site_languages_sync_pending') == 'on'):
                 return {'stale': True}
-        parent = repository.request('GET', f'git/ref/heads/{branch}')['object']['sha']
+        # GitHub can acknowledge template creation before its initial branch is readable.
+        wait_for_ref = background and site.get('template_initialization') == 'pending'
+        parent = repository.request('GET', f'git/ref/heads/{branch}', wait_for_ref=wait_for_ref)['object']['sha']
         layout = repository.json('site-layout.json', parent, optional=True)
         upgrade_head = ''
         upgrade_url = ''

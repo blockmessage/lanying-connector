@@ -178,6 +178,23 @@ class SiteLanguagesTest(unittest.TestCase):
                            lambda _cfg, src, changed: src, Mock(), before_publish=before_publish)
         repo.commit.assert_not_called()
 
+    def test_repository_ref_wait_is_bounded_and_only_retries_ref_reads(self):
+        repo = languages.Repository('https://api.github.test/repos/org/site', {})
+        cases = [
+            ('GET', 'git/ref/heads/master', 409, True, 4),
+            ('GET', 'git/ref/heads/master', 409, False, 1),
+            ('GET', 'git/ref/heads/master', 403, True, 1),
+            ('PATCH', 'git/refs/heads/master', 409, True, 1),
+        ]
+        for method, path, status, wait_for_ref, attempts in cases:
+            with self.subTest(method=method, status=status, wait_for_ref=wait_for_ref), \
+                    patch.object(languages.requests, 'request', return_value=Mock(status_code=status, ok=False)) as request, \
+                    patch.object(languages.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(ValueError, f'HTTP {status}'):
+                    repo.request(method, path, wait_for_ref=wait_for_ref)
+                self.assertEqual(attempts, request.call_count)
+                self.assertEqual(attempts - 1, sleep.call_count)
+
     def test_closed_or_deleted_upgrade_no_longer_counts_as_open(self):
         repo = languages.Repository('https://example.invalid', {})
         with patch.object(repo, 'request', side_effect=[{'state': 'open'}, {'state': 'closed'}, None]) as request:

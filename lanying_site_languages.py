@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import posixpath
+import time
 from pathlib import PurePosixPath
 from urllib.parse import quote, urlsplit
 
@@ -132,8 +133,13 @@ class Repository:
         self.api = api
         self.headers = headers
 
-    def request(self, method, path, *, missing_ok=False, **kwargs):
-        response = requests.request(method, f'{self.api}/{path}', headers=self.headers, timeout=25, **kwargs)
+    def request(self, method, path, *, missing_ok=False, wait_for_ref=False, **kwargs):
+        attempts = 4 if wait_for_ref and method == 'GET' and path.startswith('git/ref/heads/') else 1
+        for attempt in range(attempts):
+            response = requests.request(method, f'{self.api}/{path}', headers=self.headers, timeout=25, **kwargs)
+            if response.status_code not in (404, 409) or attempt + 1 == attempts:
+                break
+            time.sleep(attempt + 1)
         if missing_ok and response.status_code == 404:
             return None
         if not response.ok:

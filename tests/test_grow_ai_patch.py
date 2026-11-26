@@ -143,7 +143,7 @@ class GrowAIPatchTest(unittest.TestCase):
                     self.assertIs(site, grow.maybe_init_github_site_repo('app', site, site))
                     github.get_repo.assert_not_called()
 
-    def test_failed_template_retries_the_saved_site_before_checking_quota(self):
+    def test_failed_template_retries_the_saved_site_in_background(self):
         grow = self.module
         settings = mock.Mock(app_id='app', github_hosting='on')
         settings.name = 'Docs'
@@ -153,45 +153,106 @@ class GrowAIPatchTest(unittest.TestCase):
         redis = mock.MagicMock()
         redis.get.return_value = None
         redis.transaction.side_effect = lambda reserve, *_args, **_kwargs: reserve(redis)
+        pipe = redis.pipeline.return_value.__enter__.return_value
+        pipe.hmset.side_effect = lambda _key, values: site.update(values)
+        redis.hmset.side_effect = lambda _key, values: site.update(values)
+        pending = {'result': 'ok', 'data': {'site_id': 7, 'status': 'initializing'}}
         with mock.patch.object(grow, 'get_site', return_value=site), \
                 mock.patch.object(grow, 'get_site_list', return_value={'data': {'list': [site]}}), \
                 mock.patch.object(grow, 'check_site_num_limit') as quota, \
                 mock.patch.object(grow, 'generate_site_id') as allocate, \
                 mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
-                mock.patch.object(grow, 'initialize_new_site', side_effect=[site, {**site, 'github_hosting_url': 'url'}]), \
-                mock.patch.object(grow, 'sync_to_github', return_value={'result': 'ok'}):
-            failed = grow.create_site(settings, 'seenical')
+                mock.patch.object(grow, 'initialize_new_site', side_effect=[site, {**site, 'github_hosting_url': 'url'}]) as init, \
+                mock.patch.object(grow, 'sync_to_github', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'executor') as executor:
+            self.assertEqual(pending, grow.create_site(settings, 'seenical'))
+            self.assertEqual(pending, grow.retry_site_initialization('app', 7))
+            executor.submit.assert_called_once_with(grow.initialize_seenical_site, 'app', 7)
+            init.assert_not_called()
+
+            initialize, *args = executor.submit.call_args.args
+            failed = initialize(*args)
             self.assertEqual('error', failed['result'])
             self.assertIn('Site 7', failed['message'])
-            self.assertEqual({'site_id': 7, 'status': 'ready'}, grow.create_site(settings, 'seenical')['data'])
+            self.assertEqual('failed', site['template_initialization'])
+
+            self.assertEqual(pending, grow.retry_site_initialization('app', 7))
+            self.assertEqual(2, executor.submit.call_count)
+            ready = initialize(*args)
+            self.assertEqual({'site_id': 7, 'status': 'ready'}, ready['data'])
+            redis.hdel.assert_called_once_with(grow.get_site_key('app', 7), 'template_initialization', 'site_initialization_until')
             quota.assert_not_called()
             allocate.assert_not_called()
 
-    def test_replaying_successful_seenical_create_returns_same_site(self):
+    def test_seenical_create_returns_before_initialization_and_reuses_site(self):
         grow = self.module
-        settings = mock.Mock(app_id='app', github_hosting='on', language='zh-hans')
-        settings.name = 'Docs'
-        settings.to_hmset_fields.return_value = {'name': 'Docs'}
-        redis = mock.MagicMock()
-        values = {}
-        redis.get.side_effect = values.get
-        redis.set.side_effect = lambda key, value, **_kwargs: values.update({key: value})
-        redis.hexists.return_value = True
-        redis.transaction.side_effect = lambda reserve, *_args, **_kwargs: reserve(redis)
-        ready = {'result': 'ok', 'data': {'site_id': 7, 'status': 'ready'}}
+        for language in ('zh-hans', 'en'):
+            with self.subTest(language=language):
+                settings = mock.Mock(app_id='app', github_hosting='on', language=language)
+                settings.name = 'Docs'
+                settings.to_hmset_fields.return_value = {'name': 'Docs', 'language': language}
+                redis = mock.MagicMock()
+                values = {}
+                redis.get.side_effect = values.get
+                redis.set.side_effect = lambda key, value, **_kwargs: values.update({key: value})
+                redis.hexists.return_value = True
+                redis.transaction.side_effect = lambda reserve, *_args, **_kwargs: reserve(redis)
+                site = {
+                    'site_template': 'seenical', 'github_hosting': 'on',
+                    'template_initialization': 'pending',
+                    'site_initialization_until': int(grow.time.time()) + 1200,
+                }
+                pending = {'result': 'ok', 'data': {'site_id': 7, 'status': 'initializing'}}
+                ready = {'result': 'ok', 'data': {'site_id': 7, 'status': 'ready'}}
+                with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                        mock.patch.object(grow, 'get_site_list', return_value={'data': {'list': []}}), \
+                        mock.patch.object(grow, 'get_site', return_value=site), \
+                        mock.patch.object(grow, 'check_site_setting', return_value={'result': 'ok'}), \
+                        mock.patch.object(grow, 'check_site_num_limit', return_value={'result': 'ok'}), \
+                        mock.patch.object(grow, 'generate_site_id', return_value=7) as allocate, \
+                        mock.patch.object(grow, 'initialize_seenical_site') as initialize, \
+                        mock.patch.object(grow, 'executor') as executor:
+                    self.assertEqual(pending, grow.create_site(settings, 'seenical'))
+                    self.assertEqual(pending, grow.create_site(settings, 'seenical'))
+                    site.pop('template_initialization')
+                    site.pop('site_initialization_until')
+                    site['github_hosting_url'] = 'https://example.test'
+                    self.assertEqual(ready, grow.create_site(settings, 'seenical'))
+                allocate.assert_called_once()
+                initialize.assert_not_called()
+                executor.submit.assert_called_once_with(initialize, 'app', 7)
+                redis.rpush.assert_called_once_with(grow.get_site_list_key('app'), 7)
+
+    def test_initializing_site_waits_for_github_ref_before_syncing(self):
+        grow = self.module
+        languages = grow.site_languages
+        site = {'app_id': 'app', 'site_id': 57, 'language': 'zh-hans', 'site_template': 'seenical',
+                'template_initialization': 'pending'}
+        layout = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}})
+        repo = languages.Repository('https://api.github.test/repos/org/site', {})
+        redis = mock.Mock()
+        redis.lock.side_effect = lambda *_args, **_kwargs: nullcontext()
+        waiting = mock.Mock(status_code=409, ok=False)
+        missing = mock.Mock(status_code=404, ok=False)
+        ready = mock.Mock(status_code=200, ok=True)
+        ready.json.return_value = {'object': {'sha': 'base'}}
+
         with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
-                mock.patch.object(grow, 'get_site_list', return_value={'data': {'list': []}}), \
-                mock.patch.object(grow, 'get_site', return_value={
-                    'site_template': 'seenical', 'github_hosting': 'on', 'github_hosting_url': 'https://example.test'}), \
-                mock.patch.object(grow, 'check_site_setting', return_value={'result': 'ok'}), \
-                mock.patch.object(grow, 'check_site_num_limit', return_value={'result': 'ok'}), \
-                mock.patch.object(grow, 'generate_site_id', return_value=7) as allocate, \
-                mock.patch.object(grow, 'initialize_seenical_site', return_value=ready) as init:
-            self.assertEqual(ready, grow.create_site(settings, 'seenical'))
-            self.assertEqual(ready, grow.create_site(settings, 'seenical'))
-        allocate.assert_called_once()
-        init.assert_called_once_with('app', 7)
-        redis.rpush.assert_called_once_with(grow.get_site_list_key('app'), 7)
+                mock.patch.object(grow, 'get_site', return_value=site), \
+                mock.patch.object(grow, 'managed_site_repository', return_value=(repo, 'org', 'site')), \
+                mock.patch.object(languages.requests, 'request', side_effect=[waiting, missing, ready], create=True) as request, \
+                mock.patch.object(languages.time, 'sleep') as sleep, \
+                mock.patch.object(repo, 'json', return_value=layout), \
+                mock.patch.object(languages, 'sync', return_value='') as sync:
+            result = grow.sync_hosted_languages({}, site, background=True)
+
+        ref_request = mock.call('GET', 'https://api.github.test/repos/org/site/git/ref/heads/master',
+                                headers={}, timeout=25)
+        self.assertEqual([ref_request] * 3, request.call_args_list)
+        self.assertEqual([mock.call(1), mock.call(2)], sleep.call_args_list)
+        sync.assert_called_once()
+        self.assertEqual('base', sync.call_args.args[3])
+        self.assertEqual({'upgrade_url': ''}, result)
 
     def test_closed_upgrade_pr_does_not_mark_canonical_as_synced(self):
         grow = self.module
