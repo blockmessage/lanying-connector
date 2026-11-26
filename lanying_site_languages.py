@@ -333,10 +333,14 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
             label = LANGUAGES[code]
             if plugin_key == 'seenical':
                 label = 'Documentation' if code == 'en' else '产品文档'
-            for filename, content in ((home, f'# {label}\n'), (summary, f'# Summary\n\n* [{label}](README.md)\n')):
+                seed = 'scripts/home/en.md' if code == 'en' else 'zh-hans/README.md'
+                homepage = Repository(TEMPLATE_API, repository.headers).read(seed, template_ref)
+            else:
+                homepage = f'# {label}\n'.encode()
+            for filename, content in ((home, homepage), (summary, f'# Summary\n\n* [{label}](README.md)\n'.encode())):
                 if repository.read(path(filename), parent, optional=True) is not None:
                     raise ValueError(f'The language directory already exists: {code}')
-                put(filename, content.encode())
+                put(filename, content)
         elif not upgrade and repository.read(path(home), parent, optional=True) is None:
             raise ValueError(f'The language homepage is missing: {code}')
         localized = localized_settings(site, code)

@@ -4831,17 +4831,20 @@ def transform_site_to_book_json(site, book_json, github_owner, github_repo, base
                 copyright = site.get('copyright', '')
                 if copyright or changed is not None:
                     official_website_url = site.get('official_website_url', '')
-                    if len(official_website_url) > 0:
-                        site_url = official_website_url
-                    else:
-                        site_url = '/'
-                    language = site.get('language', 'zh-hans')
-                    if language == 'en':
-                        official_site_link = f" | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>Official Website</a>"
-                        site_map_link = f" | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>Sitemap</a>"
-                    else:
-                        official_site_link = f" | <a href='{site_url}' target='_blank' style='text-decoration:none!important;'>官网</a>"
-                        site_map_link = f" | <a href='/sitemap.xml' style='text-decoration:none!important;' target='_blank'>网站地图</a>"
+                    site_url = official_website_url or '/'
+                    english = site.get('language', 'zh-hans') == 'en'
+                    official_label = 'Official Website' if english else '官网'
+                    sitemap_label = 'Sitemap' if english else '网站地图'
+                    home_path = sitemap_path = ''
+                    if plugin_key == 'seenical':
+                        sitemap_path = ' data-seenical-site-path="/sitemap.xml"'
+                        if not official_website_url:
+                            official_label = 'Home' if english else '首页'
+                            home_path = ' data-seenical-site-path="/"'
+                    official_site_link = (f" | <a href='{site_url}'{home_path} target='_blank' "
+                                          f"style='text-decoration:none!important;'>{official_label}</a>")
+                    site_map_link = (f" | <a href='/sitemap.xml'{sitemap_path} "
+                                     f"style='text-decoration:none!important;' target='_blank'>{sitemap_label}</a>")
                     icp_number = site.get('icp_number', '')
                     if icp_number != '':
                         icp_number_link = f" | <a href='https://beian.miit.gov.cn' target='_blank' style='text-decoration:none!important;'>{icp_number}</a>"

@@ -188,6 +188,46 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual('logo', entries['en/assets/logo.png']['sha'])
         self.assertIsNone(entries['zh-hans/README.md']['sha'])
 
+    @patch.object(languages, 'Repository')
+    def test_seenical_adds_localized_template_homepages(self, template):
+        for primary, added, seed in (
+                ('zh-hans', 'en', 'scripts/home/en.md'), ('en', 'zh-hans', 'zh-hans/README.md')):
+            with self.subTest(added=added):
+                template.reset_mock()
+                homepage = '# Localized heading\n\n## Quick start\n'.encode()
+                template.return_value.read.return_value = homepage
+                repo = Mock()
+                repo.read.side_effect = lambda path, *_args, **_opts: b'# Custom home' if path == f'{primary}/README.md' else None
+                book = {'pluginsConfig': {'edit-link': {'base': 'github'}, 'seenical': {}}}
+                repo.json.side_effect = lambda path, *_args, **_opts: book if path == 'book.json' else None
+                repo.blob.side_effect = lambda data: data
+                current = languages.layout_for(primary, {'default_language': primary, 'overrides': {}})
+                site = {'language': primary, 'name': 'Docs',
+                        'site_languages': {'default_language': primary, 'overrides': {added: {}}}}
+                languages.sync(repo, 'master', '', 'parent', current, site,
+                               lambda _site, config, _changed: config, None)
+                template.return_value.read.assert_called_once_with(seed, 'master')
+                entries = repo.commit.call_args.args[1]
+                self.assertEqual(homepage, entries[f'{added}/README.md']['sha'])
+                self.assertNotIn(f'{primary}/README.md', entries)
+
+    def test_seenical_footer_marks_only_site_owned_links(self):
+        from test_grow_ai_patch import load_grow_ai
+        transform = load_grow_ai().transform_site_to_book_json
+        for key in ('seenical', 'lanying-grow-ai'):
+            for official in ('', 'https://company.example/en?ref=docs#position'):
+                with self.subTest(plugin=key, official=official):
+                    book = {'pluginsConfig': {key: {}, 'tbfed-pagefooter': {}}}
+                    site = {'language': 'en', 'copyright': 'Example', 'official_website_url': official}
+                    plugins = transform(site, book, 'org', 'site', 'master',
+                                        {'copyright'})['pluginsConfig']
+                    footer = plugins['tbfed-pagefooter']['copyright']
+                    self.assertIn(f"href='{official or '/'}'", footer)
+                    self.assertIn("href='/sitemap.xml'", footer)
+                    self.assertIn('>Home<' if key == 'seenical' and not official else '>Official Website<', footer)
+                    self.assertEqual(key == 'seenical', 'data-seenical-site-path="/sitemap.xml"' in footer)
+                    self.assertEqual(key == 'seenical' and not official, 'data-seenical-site-path="/"' in footer)
+
     def test_concurrent_save_rejection_does_not_change_git_refs(self):
         repo = Mock()
         repo.read.return_value = b'old file'
