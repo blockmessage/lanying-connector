@@ -675,6 +675,9 @@ def configure_site():
         'icp_number', 'hook_sentence_slogan', 'hook_sentence_image',
         'github_hosting', 'collaborator'
     }
+    if data.get('github_hosting') == 'on':
+        # Hosted forms can omit credentials that were not returned to the browser.
+        legacy_required -= {'github_token', 'baidu_token'}
     if 'site_languages' in data and not legacy_required.issubset(data):
         return make_response({'code': 400, 'message': 'Full site settings are required to update languages.'})
     if not legacy_required.issubset(data):
@@ -706,7 +709,7 @@ def configure_site():
     copyright = str(data.get('copyright', ''))
     canonical_link = maybe_add_https_prefix(str(data.get('canonical_link', '')))
     meta_keywords = str(data.get('meta_keywords', ''))
-    baidu_token = str(data.get('baidu_token', ''))
+    baidu_token = str(data['baidu_token']) if 'baidu_token' in data else None
     official_website_url = maybe_add_https_prefix(str(data.get('official_website_url', '')))
     google_token = str(data.get('google_token', ''))
     max_latest_num = int(data.get('max_latest_num', '10'))

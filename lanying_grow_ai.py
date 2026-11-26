@@ -37,7 +37,8 @@ import lanying_oss
 import lanying_agent_tools_storage
 import lanying_seenical_deletion as conversation_deletion
 from github import Github
-from redis.exceptions import RedisError, WatchError
+from redis.exceptions import LockNotOwnedError, RedisError, WatchError
+from redis.lock import Lock
 
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
 MAX_FILE_TITLE_LENGTH = 999
@@ -97,6 +98,22 @@ class TaskSetting:
             'embedding_condition': json.dumps(self.embedding_condition, ensure_ascii=False),
             'auto_deploy': self.auto_deploy
         }
+
+class SiteRepositoryLock(Lock):
+    """Keep the existing repository lease, but release it without a Redis script."""
+
+    def do_release(self, expected_token):
+        with self.redis.pipeline() as pipe:
+            pipe.watch(self.name)
+            if pipe.get(self.name) != expected_token:
+                raise LockNotOwnedError("Repository lock is no longer owned")
+            pipe.multi()
+            pipe.delete(self.name)
+            try:
+                pipe.execute()
+            except WatchError as error:
+                raise LockNotOwnedError("Repository lock changed before release") from error
+
 
 class SiteSetting:
     def __init__(self, app_id, tenement_id, name, type, github_url, github_token, github_base_branch, github_base_dir, footer_note, lanying_link, title, copyright, canonical_link, meta_keywords, baidu_token, official_website_url, google_token, max_latest_num, language, commit_type, icp_number, hook_sentence_slogan, hook_sentence_image, github_hosting, collaborator):
@@ -2245,7 +2262,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
     lock_key = f'lanying-connector-deploy-task-lock:{github_owner}/{github_repo}'
     lock_start_time = time.perf_counter()
     logging.info(f"start wait for lock: {lock_key}")
-    with redis.lock(lock_key, timeout=1200):
+    with redis.lock(lock_key, timeout=1200, lock_class=SiteRepositoryLock):
         elapsed = time.perf_counter() - lock_start_time
         logging.info(f"get lock {lock_key} after {elapsed:.3f} seconds")
         commit_type = site.get('commit_type', 'branch')
@@ -2997,7 +3014,7 @@ def preview_publish(app_id, preview_id):
     base_branch = site.get('github_base_branch', 'master')
     redis = lanying_redis.get_redis_connection()
     lock_key = f"lanying-connector-deploy-task-lock:{context['repository']}"
-    with redis.lock(lock_key, timeout=1200):
+    with redis.lock(lock_key, timeout=1200, lock_class=SiteRepositoryLock):
         base_response = requests.get(f"{context['api_url']}/git/refs/heads/{base_branch}", headers=context['headers'])
         branch_response = requests.get(f"{context['api_url']}/git/refs/heads/{preview['branch_name']}", headers=context['headers'])
         if base_response.status_code != 200 or branch_response.status_code != 200:
@@ -3366,7 +3383,7 @@ def rollback_site_deployment(app_id, site_id):
     base_branch = site.get('github_base_branch', 'master')
     lock_key = f"lanying-connector-deploy-task-lock:{context['repository']}"
     redis = lanying_redis.get_redis_connection()
-    with redis.lock(lock_key, timeout=1200):
+    with redis.lock(lock_key, timeout=1200, lock_class=SiteRepositoryLock):
         branch_response = requests.get(
             f"{context['api_url']}/git/refs/heads/{base_branch}",
             headers=context['headers'])
@@ -4323,6 +4340,8 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
     redis = lanying_redis.get_redis_connection()
     fields = site_setting.to_hmset_fields()
     fields['update_time'] = now
+    if site_setting.baidu_token is None:
+        del fields['baidu_token']
     if fields['github_hosting'] == 'on':
         for field in ['github_url', 'github_token', 'github_base_branch']:
             del fields[field]
@@ -4443,7 +4462,7 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
     repository, owner, name = managed_site_repository(site)
     branch = site.get('github_base_branch', 'master')
     redis = lanying_redis.get_redis_connection()
-    with redis.lock(f'lanying-connector-deploy-task-lock:{owner}/{name}', timeout=1200):
+    with redis.lock(f'lanying-connector-deploy-task-lock:{owner}/{name}', timeout=1200, lock_class=SiteRepositoryLock):
         if background:
             latest = get_site(site['app_id'], site['site_id'])
             if (not latest or latest.get('agent_tools_revision') != site.get('agent_tools_revision')

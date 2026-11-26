@@ -121,6 +121,25 @@ class GrowAIPatchTest(unittest.TestCase):
     def setUp(self):
         self.module = load_grow_ai()
 
+    def test_repository_lock_releases_only_its_own_lease_without_lua(self):
+        redis = mock.MagicMock()
+        pipe = redis.pipeline.return_value.__enter__.return_value
+        lock = self.module.SiteRepositoryLock(redis, 'repo-lock', timeout=1200)
+        self.assertTrue(lock.acquire())
+        pipe.get.return_value = lock.local.token
+        lock.release()
+        pipe.watch.assert_called_once_with('repo-lock')
+        pipe.delete.assert_called_once_with('repo-lock')
+        pipe.execute.assert_called_once()
+        redis.register_script.return_value.assert_not_called()
+
+        pipe.reset_mock()
+        self.assertTrue(lock.acquire())
+        pipe.get.return_value = b'new-owner'
+        with self.assertRaises(self.module.LockNotOwnedError):
+            lock.release()
+        pipe.delete.assert_not_called()
+
     def test_task_binding_allows_disabled_security_with_any_site_configuration(self):
         for site_ids in [[], ["default-site"], ["custom-domain-site"], ["default-site", "custom-domain-site"]]:
             with self.subTest(site_ids=site_ids), mock.patch.object(

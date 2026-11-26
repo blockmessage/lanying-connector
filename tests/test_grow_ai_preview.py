@@ -161,6 +161,49 @@ class GrowAIPreviewTest(unittest.TestCase):
             call('app', 'run', 'failed')
         ], notify.call_args_list)
 
+    def test_hosted_language_save_preserves_omitted_credentials(self):
+        app = self.create_grow_ai_app()
+        settings = {'app_id': 'app', 'site_id': '7', 'language': 'zh-hans', 'type': 'gitbook',
+                    'name': 'Site', 'github_hosting': 'on', 'github_base_dir': '/',
+                    'github_base_branch': 'master', 'commit_type': 'branch', 'max_latest_num': 10,
+                    'site_languages': {'default_language': 'en', 'overrides': {'en': {'title': 'English'}}}}
+        for field in ('github_url', 'footer_note', 'lanying_link', 'title', 'copyright',
+                      'canonical_link', 'meta_keywords', 'google_token', 'official_website_url',
+                      'icp_number', 'hook_sentence_slogan', 'hook_sentence_image', 'collaborator'):
+            settings[field] = ''
+        old_site = dict(settings, github_token='stored-github', baidu_token='stored-baidu')
+        redis = MagicMock()
+        pipe = redis.pipeline.return_value.__enter__.return_value
+        pipe.hget.return_value = b'0'
+
+        def sync(old, candidate, allow_upgrade, before_publish):
+            self.assertEqual('stored-github', candidate['github_token'])
+            self.assertEqual(settings.get('baidu_token', 'stored-baidu'), candidate['baidu_token'])
+            before_publish()
+            return {'upgrade_url': ''}
+
+        with patch.object(grow_ai_service, 'check_access_token_valid', return_value=True), \
+                patch.object(lanying_grow_ai, 'get_site', return_value=old_site), \
+                patch.object(lanying_grow_ai.lanying_redis, 'get_redis_connection', return_value=redis), \
+                patch.object(lanying_grow_ai.lanying_agent_tools_storage, 'should_save_config_revision', return_value=False), \
+                patch.object(lanying_grow_ai, 'is_standard_hosted_site', return_value=True), \
+                patch.object(lanying_grow_ai, 'sync_hosted_languages', side_effect=sync), \
+                patch.object(lanying_grow_ai, 'maybe_init_github_site_repo', return_value=old_site), \
+                patch.object(lanying_grow_ai, 'maybe_invite_github_member'), \
+                patch.object(lanying_grow_ai, 'maybe_register_github_site'), \
+                patch.object(lanying_grow_ai, 'maybe_init_analytics'):
+            for override in ({}, {'baidu_token': ''}, {'baidu_token': 'updated'}):
+                with self.subTest(override=override):
+                    settings.update(override)
+                    response = app.test_client().post('/service/grow_ai/configure_site', json=settings)
+                    self.assertEqual(200, response.get_json()['code'])
+                    fields = pipe.hmset.call_args.args[1]
+                    self.assertNotIn('github_token', fields)
+                    if override:
+                        self.assertEqual(override['baidu_token'], fields['baidu_token'])
+                    else:
+                        self.assertNotIn('baidu_token', fields)
+
     def test_partial_configure_only_forwards_present_fields(self):
         app = Flask(__name__)
         payload = {
