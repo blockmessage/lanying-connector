@@ -251,6 +251,16 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
             localized.update(settings['overrides'][code])
         language_book = transform({**localized, 'copyright': localized.get('copyright') or ' '}, common)
         overrides = repository.json(path(f'{code}/book.json'), parent, optional=True) or {}
+        # GitBook only links a stylesheet that exists inside the language directory.
+        stylesheet = 'assets/styles/website.css'
+        configured_style = overrides.get('styles', {}).get('website', common.get('styles', {}).get('website'))
+        if code != primary and configured_style == stylesheet:
+            local_style = path(f'{code}/{stylesheet}')
+            shared_style = posixpath.join(root_language, stylesheet)
+            source_style = path(stylesheet if upgrade else shared_style)
+            if repository.read(local_style, parent, optional=True) is None and repository.read(source_style, parent, optional=True) is not None:
+                relative = posixpath.relpath(shared_style, posixpath.dirname(f'{code}/{stylesheet}'))
+                entries[local_style] = entry(local_style, repository.blob(f'@import url("{relative}");\n'.encode()))
         overrides = copy.deepcopy(overrides)
         overrides['language'] = code
         overrides['title'] = localized.get('title') or (common.get('title') if code == primary else '') or site['name']

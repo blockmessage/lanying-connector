@@ -49,6 +49,32 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual('sha-assets/logo.png', changes['zh-hans/assets/logo.png']['sha'])
         self.assertNotIn('scripts/helper.py', changes)
 
+    def test_secondary_stylesheet_imports_shared_css_without_replacing_local_css(self):
+        stylesheet = 'assets/styles/website.css'
+        for primary, added, legacy, existing_css in [
+                ('zh-hans', 'en', '', None), ('en', 'zh-hans', 'en', None),
+                ('zh-hans', 'en', '', b'custom')]:
+            with self.subTest(primary=primary, legacy=legacy, existing_css=existing_css):
+                settings = {'default_language': added, 'overrides': {added: {}}}
+                site = {'language': primary, 'site_languages': settings, 'name': 'Docs'}
+                current = languages.layout_for(primary, settings, legacy)
+                shared = f'{legacy}/{stylesheet}' if legacy else stylesheet
+                local = f'{added}/{stylesheet}'
+                book = {'styles': {'website': stylesheet}, 'pluginsConfig': {
+                    'edit-link': {'base': 'github'}, 'lanying-grow-ai': {}}}
+                repo = Mock()
+                files = {shared: b'body {}', local: existing_css,
+                         f'{added}/README.md': b'# Home', f'{primary}/README.md': b'# Home'}
+                repo.read.side_effect = lambda p, *_args, **_opts: files.get(p)
+                repo.json.side_effect = lambda p, *_args, **_opts: book if p == 'book.json' else None
+                repo.blob.side_effect = lambda data: data
+                languages.sync(repo, 'master', '', 'parent', current, site, lambda _, config: config, None)
+                entries = repo.commit.call_args.args[1]
+                if existing_css is None:
+                    self.assertEqual(f'@import url("../../../{shared}");\n'.encode(), entries[local]['sha'])
+                else:
+                    self.assertNotIn(local, entries)
+
     def test_new_english_site_replaces_only_template_seed(self):
         repo = Mock()
         repo.read.return_value = None
