@@ -319,6 +319,7 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
         common['pluginsConfig'][plugin_key]['sitemap_default_language'] = ''
     if common != original:
         put_json('book.json', common)
+    edit_link_base = common.get('pluginsConfig', {}).get('edit-link', {}).get('base', '')
     if current != layout:
         put_json('site-layout.json', {**(current or {}), **layout})
     if not current or set(current['languages']) != set(layout['languages']):
@@ -341,10 +342,12 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
         localized = localized_settings(site, code)
         new_language = code not in previous or not current or code not in current['languages']
         changed = changed_fields(state, {} if new_language else previous, code)
-        if not changed:
+        overrides = repository.json(path(f'{code}/book.json'), parent, optional=True) or {}
+        current_edit_link = overrides.get('pluginsConfig', {}).get('edit-link', {}).get('base')
+        repair_edit_link = bool(edit_link_base and current_edit_link == f'{edit_link_base}/{code}')
+        if not changed and not repair_edit_link:
             continue
         language_book = transform({**localized, 'copyright': localized.get('copyright') or ' '}, common, changed)
-        overrides = repository.json(path(f'{code}/book.json'), parent, optional=True) or {}
         # GitBook only links a stylesheet that exists inside the language directory.
         stylesheet = 'assets/styles/website.css'
         configured_style = overrides.get('styles', {}).get('website', common.get('styles', {}).get('website'))
@@ -363,8 +366,9 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
             overrides['title'] = localized.get('title') or site['name']
         plugins = overrides.setdefault('pluginsConfig', {})
         rendered = language_book['pluginsConfig']
-        if new_language or changed & {'github_url', 'github_base_branch'}:
-            plugins.setdefault('edit-link', {})['base'] = rendered['edit-link']['base'] + f'/{code}'
+        # The GitBook edit-link plugin appends the source language and filename.
+        if edit_link_base and (repair_edit_link or new_language or changed & {'github_url', 'github_base_branch'}):
+            plugins.setdefault('edit-link', {})['base'] = edit_link_base
         if new_language:
             plugins.setdefault('tbfed-pagefooter', {})['modify_label'] = 'Updated: ' if code == 'en' else '该文件修订时间：'
             plugins.setdefault('intopic-toc', {})['label'] = 'Contents' if code == 'en' else '内容'

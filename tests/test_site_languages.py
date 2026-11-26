@@ -24,9 +24,32 @@ class SiteLanguagesTest(unittest.TestCase):
                 for code, footer in [('en', 'English'), ('zh-hans', '中文')]:
                     plugins = json.loads(entries[code + '/book.json']['sha'])['pluginsConfig']
                     self.assertEqual(footer, plugins[key]['footer_note'])
+                    self.assertEqual('github', plugins['edit-link']['base'])
                     if code == 'en':
                         self.assertEqual('EN', plugins[key]['custom'])
                     self.assertNotIn('seenical' if key == 'lanying-grow-ai' else 'lanying-grow-ai', plugins)
+
+    def test_save_repairs_generated_edit_link_without_overwriting_custom_link(self):
+        base = 'https://github.com/org/site/blob/master'
+        root = {'pluginsConfig': {'seenical': {}, 'edit-link': {'base': base}}}
+        books = {
+            'book.json': root,
+            'zh-hans/book.json': {'pluginsConfig': {'edit-link': {'base': base + '/zh-hans', 'label': '编辑'}}},
+            'en/book.json': {'pluginsConfig': {'edit-link': {'base': 'https://github.com/org/other/blob/main'}}},
+        }
+        repo = Mock()
+        repo.json.side_effect = lambda path, *_args, **_kwargs: books.get(path)
+        repo.read.return_value = b'# Home'
+        repo.blob.side_effect = lambda content: content
+        settings = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
+        site = {'name': 'Docs', 'language': 'zh-hans', 'site_languages': settings}
+        languages.sync(repo, 'master', '', 'head', languages.layout_for('zh-hans', settings), site,
+                       lambda _site, book, _fields: book, None, previous=languages.book_sync_state(site))
+
+        entries = repo.commit.call_args.args[1]
+        self.assertEqual({'zh-hans/book.json'}, set(entries))
+        update = json.loads(entries['zh-hans/book.json']['sha'])
+        self.assertEqual({'base': base, 'label': '编辑'}, update['pluginsConfig']['edit-link'])
 
     def test_title_and_keywords_preserve_per_language_repository_overrides(self):
         from test_grow_ai_patch import load_grow_ai
