@@ -50,22 +50,25 @@ class SiteLanguagesTest(unittest.TestCase):
         with patch.object(languages, 'LEGACY_WORKFLOW_SHA256', hashlib.sha256(old).hexdigest()), \
                 patch.object(languages, 'Repository') as official:
             official.return_value.read.return_value = new
-            repo.read.return_value = old.replace(b'master', b'main')
-            languages.patch_deployment_workflow(repo, 'head', 'main', put)
+            languages.patch_deployment_workflow(repo, old.replace(b'master', b'main'), 'main', put)
             official.return_value.read.assert_called_once_with(path, languages.WAIT_WORKFLOW_REF)
             put.assert_called_once_with(path, new.replace(b'master', b'main'))
             put.reset_mock()
             for content in (new, old + b'custom step', None):
-                repo.read.return_value = content
-                languages.patch_deployment_workflow(repo, 'head', 'main', put)
+                languages.patch_deployment_workflow(repo, content, 'main', put)
             put.assert_not_called()
 
+    @patch.object(languages, 'LEGACY_LAYOUT_BUILDERS', {hashlib.sha256(b'old renderer\ndef main():\nold reader').hexdigest()})
+    @patch.object(languages, 'TEMPLATE_MAKEFILE_SHA256', hashlib.sha256(b'make').hexdigest())
     def test_repository_patch_can_be_reverted_independently_of_settings(self):
         from test_grow_ai_patch import load_grow_ai
         transform = load_grow_ai().transform_site_to_book_json
         site = {'name': 'Docs', 'language': 'zh-hans', 'footer_note': 'New note'}
         old_site = {**site, 'footer_note': 'Old note'}
-        layout = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}}, 'zh-hans')
+        layout = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}})
+        del layout['legacy_root_language']  # First-generation sites keep articles below /zh-hans/.
+        layout['extra'] = {'keep': True}
+        script_path = 'scripts/language_layout.py'
         files = {
             'book.json': json.dumps({'plugins': ['other@2', 'seenical@1.0.0'],
                                      'pluginsConfig': {'seenical': {'keep': 'yes'}, 'other': {'key': 2}}}).encode(),
@@ -73,6 +76,8 @@ class SiteLanguagesTest(unittest.TestCase):
             'zh-hans/README.md': b'# My home',
             'site-layout.json': json.dumps(layout).encode(),
             '.bookignore': b'/private',
+            'Makefile': b'make',
+            script_path: b'old renderer\ndef main():\nold reader',
         }
         repo = Mock()
         set_repository_files(repo, files)
@@ -80,9 +85,12 @@ class SiteLanguagesTest(unittest.TestCase):
         repo.blob.side_effect = lambda data: data
         def sync(previous):
             manifest = languages.read_repository_manifest(repo, 'head')
-            languages.sync(repo, 'master', '', 'head', layout, site,
-                           lambda settings, book, changed: transform(settings, book, 'org', 'docs', 'master', changed),
-                           None, manifest=manifest, previous=languages.book_sync_state(previous))
+            current, path = languages.read_site_layout(repo, 'head', manifest)
+            with patch.object(languages, 'Repository') as template:
+                template.return_value.read.return_value = b'new renderer\ndef main():\ncombined reader'
+                languages.sync(repo, 'master', '', 'head', current, site,
+                               lambda settings, book, changed: transform(settings, book, 'org', 'docs', 'master', changed),
+                               None, manifest=manifest, layout_path=path, previous=languages.book_sync_state(previous))
             call = repo.commit.call_args
             settings = {k: entry['sha'] for k, entry in call.args[1].items()}
             upgrade = {k: entry['sha'] for k, entry in call.kwargs['patch_entries'].items()}
@@ -100,7 +108,7 @@ class SiteLanguagesTest(unittest.TestCase):
         repo.commit.side_effect = None
         settings, upgrade = sync(old_site)
         self.assertEqual({'book.json', 'zh-hans/book.json'}, set(settings))
-        self.assertEqual({'.bookignore', 'seenical.json', 'book.json'}, set(upgrade))
+        self.assertEqual({'.bookignore', 'seenical.json', 'book.json', 'site-layout.json', script_path}, set(upgrade))
         configured = json.loads(settings['book.json'])
         self.assertIn('seenical@1.0.0', configured['plugins'])
         root = json.loads(upgrade['book.json'])
@@ -111,10 +119,15 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual(configured, {**root, 'plugins': configured['plugins']})
         self.assertEqual('Original title', json.loads(settings['zh-hans/book.json'])['title'])
         self.assertEqual(b'/private\n/seenical.json\n', upgrade['.bookignore'])
-        self.assertEqual({'template': 'seenical', 'repository_version': 1}, json.loads(upgrade['seenical.json']))
+        expected_layout = {key: value for key, value in layout.items() if key != 'version'}
+        self.assertEqual({'template': 'seenical', 'repository_version': 1, **expected_layout},
+                         json.loads(upgrade['seenical.json']))
+        self.assertIsNone(upgrade['site-layout.json'])
+        self.assertEqual(b'old renderer\ndef main():\ncombined reader', upgrade[script_path])
         files.update(settings)
         before_patch = dict(files)
         files.update(upgrade)
+        del files['site-layout.json']
         repo.blob.reset_mock()
         self.assertEqual(({}, {}), sync(site))
         repo.blob.assert_not_called()
@@ -124,23 +137,47 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual({}, settings)
         self.assertEqual(upgrade, reapplied)
         files.update(reapplied)
+        del files['site-layout.json']
         self.assertEqual(({}, {}), sync(site))
 
+        # A language change and the migration in the same push must also survive a patch revert.
+        files.clear()
+        files.update(before_patch)
+        files['en/README.md'] = b'# Home'
+        files['en/book.json'] = b'{}'
+        files['seenical.json'] = b'{"template":"seenical","repository_version":1}'
+        layout['languages']['en'] = {'source_dir': 'en', 'public_path': '/en/'}
+        files['site-layout.json'] = json.dumps(layout).encode()
+        site['site_languages'] = {'default_language': 'en', 'overrides': {'en': {}}}
+        settings, upgrade = sync({**site, 'site_languages': {'default_language': 'zh-hans', 'overrides': {'en': {}}}})
+        configured_layout = json.loads(settings['site-layout.json'])
+        migrated = json.loads(upgrade['seenical.json'])
+        self.assertEqual('en', migrated['default_language'])
+        self.assertEqual('/', migrated['languages']['en']['public_path'])
+        self.assertEqual({k: v for k, v in configured_layout.items() if k != 'version'},
+                         {k: v for k, v in migrated.items() if k not in ('repository_version', 'template')})
+
+    @patch.object(languages, 'COMBINED_LAYOUT_BUILDER', hashlib.sha256(b'combined reader').hexdigest())
+    @patch.object(languages, 'TEMPLATE_MAKEFILE_SHA256', hashlib.sha256(b'make').hexdigest())
     def test_repository_patch_preserves_custom_and_already_updated_plugin_pins(self):
         repo = Mock()
-        repo.read.return_value = b'/seenical.json\n'
+        files = {'.bookignore': b'/seenical.json\n', 'scripts/language_layout.py': b'combined reader', 'Makefile': b'make'}
+        set_repository_files(repo, files)
+        layout = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}})
         repo.blob.side_effect = lambda content: content
         for plugins in (['seenical@^1.0.0'], ['-seenical'], ['seenical@1.0.2'], ['seenical@file:custom'],
                         ['seenical@1.0.0', '-seenical'], ['lanying-grow-ai@1.0.0']):
             book = {'plugins': plugins}
-            self.assertEqual({}, languages.repository_patch_v1(repo, 'head', book, {}, 'main'))
+            self.assertEqual({}, languages.repository_patch_v1(repo, 'head', book, {}, 'main', layout))
         repo.read.assert_not_called()
         repo.blob.assert_not_called()
         book = {'plugins': ['seenical@1.0.1']}
-        changes = languages.repository_patch_v1(repo, 'head', book, {'extra': True}, 'main')
-        self.assertEqual({'seenical.json'}, set(changes))
-        self.assertEqual({'extra': True, 'template': 'seenical', 'repository_version': 1},
-                         json.loads(changes['seenical.json']['sha']))
+        changes = languages.repository_patch_v1(repo, 'head', book, {'extra': True}, 'main', layout)
+        self.assertEqual({'seenical.json', 'site-layout.json'}, set(changes))
+        self.assertTrue(json.loads(changes['seenical.json']['sha'])['extra'])
+        for path in ('scripts/language_layout.py', 'Makefile', '.github/workflows/build.yml'):
+            with self.subTest(path=path), patch.dict(files, {path: b'custom build using site-layout.json'}):
+                self.assertEqual({}, languages.repository_patch_v1(repo, 'head', book, {}, 'main', layout))
 
     def test_repository_manifest_rejects_unknown_or_invalid_versions(self):
         repo = Mock()

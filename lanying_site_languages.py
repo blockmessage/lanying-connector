@@ -22,6 +22,15 @@ TEMPLATE_API = 'https://api.github.com/repos/maxim-top/seenical-gitbook'
 # Official build.yml before and after the deployment-wait change.
 LEGACY_WORKFLOW_SHA256 = '64e2d51eb76f81357df9cd3d8a812cce493a0c849187d93eb30c4928cca2cc3b'
 WAIT_WORKFLOW_REF = 'c1aa9a803a5e2986ee3e35df5109edf1612a2a05'
+COMBINED_LAYOUT_REF = '6b9463cc777603edf4577b4406d2d594f81fb307'
+# The three official pre-manifest builders share main(), but render different public URLs.
+LEGACY_LAYOUT_BUILDERS = {
+    'ff642382573b7e7715b39ed3adc5b4a0248bd882763f23f044867cfdda57b762',
+    '7d89d35eba756ff29e7ae8b263fcd91f9844adf1fe45c6b1f6df55b7ca636119',
+    'ecfc1e6dc62f2ad6f54ec7fe2f4ea21ca6edd8ba8d347a9cd8aeb02487e3ffac',
+}
+COMBINED_LAYOUT_BUILDER = '496b254c1f6296760bde64ac56d8c61cc7b19be975d634ac27f614ca80c46760'
+TEMPLATE_MAKEFILE_SHA256 = '9c29425a7cea3dfe52ffc1791748d8f20e94976ced0a92c7713c82bb41d97a4a'
 TOOLING = {'.github', '.gitignore', '.bookignore', 'Makefile', 'book.json', 'scripts', 'tests', 'README-GrowAI.md'}
 CSS_RELATIVE_MEDIA = re.compile(
     r'''/\*.*?\*/|url\(\s*(['"]?)(\.\./\.\./[^'")]+?)\1\s*\)''', re.IGNORECASE | re.DOTALL)
@@ -62,9 +71,8 @@ def read_site_layout(repository, parent, manifest):
     return layout, 'seenical.json'
 
 
-def patch_deployment_workflow(repository, parent, branch, put):
+def patch_deployment_workflow(repository, workflow, branch, put):
     path = '.github/workflows/build.yml'
-    workflow = repository.read(path, parent, optional=True)
     if not workflow:
         return
     master_trigger = b'      - master\n'
@@ -82,7 +90,7 @@ def json_bytes(value):
     return (json.dumps(value, indent=4, ensure_ascii=False) + '\n').encode()
 
 
-def repository_patch_v1(repository, parent, book, manifest, branch):
+def repository_patch_v1(repository, parent, book, manifest, branch, layout):
     """Build the patch on top of the book with the user's settings already applied."""
     plugins = book.get('plugins', [])
     footer = [item for item in plugins if item.split('@', 1)[0].lstrip('-') in ('seenical', 'lanying-grow-ai')]
@@ -94,16 +102,37 @@ def repository_patch_v1(repository, parent, book, manifest, branch):
         # Creating a new ignore file could change the build rules of a customized repository.
         logging.info('Skipping repository patch 1: the template .bookignore is missing.')
         return {}
+    script_path = 'scripts/language_layout.py'
+    script = repository.read(script_path, parent, optional=True) or b''
+    digest = hashlib.sha256(script).hexdigest()
+    makefile = repository.read('Makefile', parent, optional=True) or b''
+    workflow = repository.read('.github/workflows/build.yml', parent, optional=True) or b''
+    if ((digest not in LEGACY_LAYOUT_BUILDERS and digest != COMBINED_LAYOUT_BUILDER)
+            or hashlib.sha256(makefile).hexdigest() != TEMPLATE_MAKEFILE_SHA256
+            or b'site-layout.json' in workflow):
+        logging.info('Skipping repository patch 1: nonstandard layout build.')
+        return {}
+    fields = {key: value for key, value in layout.items() if key != 'version'}
+    if {'template', 'repository_version'} & fields.keys() or any(
+            fields[key] != manifest[key] for key in fields.keys() & manifest.keys()):
+        logging.info('Skipping repository patch 1: conflicting layout and manifest fields.')
+        return {}
     entries = {}
 
     def put(path, content):
         entries[path] = entry(path, repository.blob(content))
 
+    if digest in LEGACY_LAYOUT_BUILDERS:
+        official = Repository(TEMPLATE_API, repository.headers).read(script_path, COMBINED_LAYOUT_REF)
+        main = b'\ndef main():\n'
+        # Keep the site's renderer; replace just its configuration-reading entry point.
+        put(script_path, script[:script.index(main)] + official[official.index(main):])
     if b'/seenical.json' not in ignore.splitlines():
         separator = b'\n' if ignore and not ignore.endswith(b'\n') else b''
         put('.bookignore', ignore + separator + b'/seenical.json\n')
-    patch_deployment_workflow(repository, parent, branch, put)
-    put('seenical.json', json_bytes({**manifest, 'template': 'seenical', 'repository_version': 1}))
+    patch_deployment_workflow(repository, workflow, branch, put)
+    put('seenical.json', json_bytes({**manifest, 'template': 'seenical', 'repository_version': 1, **fields}))
+    entries['site-layout.json'] = entry('site-layout.json', None)
     if footer == ['seenical@1.0.0']:
         plugins = ['seenical@1.0.1' if item == 'seenical@1.0.0' else item for item in plugins]
         put('book.json', json_bytes({**book, 'plugins': plugins}))
@@ -543,6 +572,9 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
             if repository.read(path(conflict), parent, optional=True) is not None:
                 raise ValueError(f'The language path already exists: {conflict}')
     layout = layout_for(primary, settings, root_language)
+    if (current and current_root == root_language and current_languages.keys() == layout['languages'].keys()
+            and current['default_language'] == settings['default_language']):
+        layout = current
 
     if upgrade or root_language != current_root or current_languages.keys() != layout['languages'].keys():
         localize_assets(repository, parent, base_dir, entries, layout['languages'],
@@ -575,11 +607,12 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
     if language_selector:
         common['pluginsConfig']['versions'] = {**versions, 'type': 'languages', 'options': language_options(layout, primary)}
     edit_link_base = common.get('pluginsConfig', {}).get('edit-link', {}).get('base', '')
-    if current != layout:
+    effective_layout = {**(current or {}), **layout}
+    if current != effective_layout:
         if layout_path == 'seenical.json':
             put_json(layout_path, {**manifest, **{key: value for key, value in layout.items() if key != 'version'}})
         else:
-            put_json(layout_path, {**(current or {}), **layout})
+            put_json(layout_path, effective_layout)
     if not current or current_languages.keys() != layout['languages'].keys():
         put('LANGS.md', ''.join(f'* [{LANGUAGES[code]}]({code}/)\n' for code in layout['languages']).encode())
     has_local_plugins = False
@@ -661,10 +694,10 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
     if common != original:
         put_json('book.json', common)
     patch_entries = {}
-    if (manifest is not None and manifest.get('repository_version', 0) == 0 and not upgrade
+    if (manifest is not None and layout_path == 'site-layout.json' and not upgrade
             and plugin_key == 'seenical' and not has_local_plugins
             and original.get('root', '.') == '.' and original.get('structure', {}).get('readme', 'README.md') == 'README.md'):
-        patch_entries = repository_patch_v1(repository, parent, common, manifest, branch)
+        patch_entries = repository_patch_v1(repository, parent, common, manifest, branch, effective_layout)
     if before_publish:
         before_publish()
     return repository.commit(parent, entries, branch, upgrade_head, patch_entries=patch_entries)
