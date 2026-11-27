@@ -2311,7 +2311,10 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
         repository = site_languages.Repository(github_api_url, headers)
         if is_standard_hosted_site(site):
             try:
-                layout = repository.json('site-layout.json', commit_sha, optional=True)
+                manifest = None
+                if site.get('site_template') == 'seenical':
+                    manifest = site_languages.read_repository_manifest(repository, commit_sha)
+                layout, _ = site_languages.read_site_layout(repository, commit_sha, manifest)
                 language = site_languages.release_language(layout, task_run, site['language'])
                 if language and language == layout.get('legacy_root_language'):
                     reserved_directories = layout['languages']
@@ -4703,9 +4706,7 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
         manifest = None
         if site.get('site_template') == 'seenical' and is_standard_hosted_site(site):
             manifest = site_languages.read_repository_manifest(repository, parent)
-        layout = repository.json('site-layout.json', parent, optional=True)
-        if manifest and (not isinstance(layout, dict) or layout.get('version') != 2):
-            raise ValueError('This versioned Seenical site is missing its supported language layout.')
+        layout, layout_path = site_languages.read_site_layout(repository, parent, manifest)
         upgrade_head = ''
         upgrade_url = ''
         if layout is None:
@@ -4742,6 +4743,7 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
                 repository, branch, '', parent, layout, site,
                 lambda setting, book, changed=None: transform_site_to_book_json(setting, book, owner, name, branch, changed),
                 read_site_language_image, upgrade_head=upgrade_head, previous=previous, manifest=manifest,
+                layout_path=layout_path,
                 before_publish=(lambda: before_publish(upgrade_head)) if before_publish else None)
         updates = {'site_languages_sync_pending': 'off', 'site_language_seed_pending': 'off',
                    'language_upgrade_url': upgrade_url, 'language_upgrade_head': '', 'language_upgrade_digest': ''}
