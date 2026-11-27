@@ -13,6 +13,79 @@ def set_repository_files(repo, files):
 
 
 class SiteLanguagesTest(unittest.TestCase):
+    def test_repository_patch_shares_settings_commit_and_is_idempotent(self):
+        from test_grow_ai_patch import load_grow_ai
+        transform = load_grow_ai().transform_site_to_book_json
+        site = {'name': 'Docs', 'language': 'zh-hans', 'footer_note': 'New note'}
+        old_site = {**site, 'footer_note': 'Old note'}
+        layout = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}}, 'zh-hans')
+        files = {
+            'book.json': json.dumps({'plugins': ['other@2', 'seenical@1.0.0'],
+                                     'pluginsConfig': {'seenical': {'keep': 'yes'}, 'other': {'key': 2}}}).encode(),
+            'zh-hans/book.json': b'{"title": "Original title"}',
+            'zh-hans/README.md': b'# My home',
+            'site-layout.json': json.dumps(layout).encode(),
+            '.bookignore': b'/private',
+        }
+        repo = Mock()
+        set_repository_files(repo, files)
+        repo.json.side_effect = lambda path, *args, **kwargs: json.loads(files[path]) if path in files else None
+        repo.blob.side_effect = lambda data: data
+        def sync(previous):
+            manifest = languages.read_repository_manifest(repo, 'head')
+            languages.sync(repo, 'master', '', 'head', layout, site,
+                           lambda settings, book, changed: transform(settings, book, 'org', 'docs', 'master', changed),
+                           None, manifest=manifest, previous=languages.book_sync_state(previous))
+            return {k: entry['sha'] for k, entry in repo.commit.call_args.args[1].items()}
+
+        original_local = files['zh-hans/book.json']
+        files['zh-hans/book.json'] = b'{"plugins": ["-seenical"]}'
+        self.assertEqual({}, sync(site), 'Language-specific plugin selections opt out of enrollment')
+        files['zh-hans/book.json'] = original_local
+
+        repo.commit.side_effect = ValueError('branch advanced')
+        with self.assertRaisesRegex(ValueError, 'branch advanced'):
+            sync(old_site)
+        self.assertNotIn('seenical.json', files)
+        repo.commit.side_effect = None
+        changes = sync(old_site)
+        self.assertEqual({'.bookignore', 'seenical.json', 'book.json', 'zh-hans/book.json'}, set(changes))
+        root = json.loads(changes['book.json'])
+        self.assertEqual(['other@2', 'seenical@1.0.1'], root['plugins'])
+        self.assertEqual({'key': 2}, root['pluginsConfig']['other'])
+        self.assertEqual('yes', root['pluginsConfig']['seenical']['keep'])
+        self.assertEqual('New note', root['pluginsConfig']['seenical']['footer_note'])
+        self.assertEqual('Original title', json.loads(changes['zh-hans/book.json'])['title'])
+        self.assertEqual(b'/private\n/seenical.json\n', changes['.bookignore'])
+        self.assertEqual({'repository_version': 1}, json.loads(changes['seenical.json']))
+        files.update(changes)
+        repo.blob.reset_mock()
+        self.assertEqual({}, sync(site))
+        repo.blob.assert_not_called()
+
+    def test_repository_patch_preserves_custom_and_already_updated_plugin_pins(self):
+        repo = Mock()
+        repo.read.return_value = b'/seenical.json\n'
+        write, write_json = Mock(), Mock()
+        for plugins in (['seenical@^1.0.0'], ['-seenical'], ['seenical@1.0.2'], ['seenical@file:custom'],
+                        ['seenical@1.0.0', '-seenical'], ['lanying-grow-ai@1.0.0']):
+            book = {'plugins': plugins}
+            self.assertEqual(book, languages.patch_repository_v1(repo, 'head', book, {}, write, write_json))
+        repo.read.assert_not_called()
+        write_json.assert_not_called()
+        book = {'plugins': ['seenical@1.0.1']}
+        self.assertEqual(book, languages.patch_repository_v1(repo, 'head', book, {'extra': True}, write, write_json))
+        write_json.assert_called_once_with('seenical.json', {'extra': True, 'repository_version': 1})
+        write.assert_not_called()
+
+    def test_repository_manifest_rejects_unknown_or_invalid_versions(self):
+        repo = Mock()
+        for raw in (b'not json', b'null', b'{}', b'{"repository_version": true}', b'{"repository_version": -1}',
+                    b'{"repository_version": 2}'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                repo.read.return_value = raw
+                languages.read_repository_manifest(repo, 'head')
+
     def test_saves_use_the_repository_plugin_without_renaming_legacy_keys(self):
         for key in ('seenical', 'lanying-grow-ai'):
             with self.subTest(key=key):

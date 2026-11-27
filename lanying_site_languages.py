@@ -3,6 +3,7 @@ import base64
 import copy
 import hashlib
 import json
+import logging
 import posixpath
 import re
 import time
@@ -11,6 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 import requests
 
+REPOSITORY_VERSION = 1
 LANGUAGES = {'zh-hans': '简体中文', 'en': 'English'}
 COPY_FIELDS = ('title', 'meta_keywords', 'copyright', 'footer_note', 'hook_sentence_slogan',
                'hook_sentence_image', 'official_website_url', 'lanying_link')
@@ -22,6 +24,38 @@ CSS_RELATIVE_MEDIA = re.compile(
     r'''/\*.*?\*/|url\(\s*(['"]?)(\.\./\.\./[^'")]+?)\1\s*\)''', re.IGNORECASE | re.DOTALL)
 CSS_MEDIA_SUFFIXES = {'.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.avif', '.bmp',
                       '.woff', '.woff2', '.ttf', '.otf', '.eot'}
+
+
+def read_repository_manifest(repository, parent):
+    raw = repository.read('seenical.json', parent, optional=True)
+    if raw is None:
+        return {}
+    manifest = json.loads(raw)
+    version = manifest.get('repository_version') if isinstance(manifest, dict) else None
+    if type(version) is not int or version < 0:
+        raise ValueError('Invalid repository_version in seenical.json.')
+    if version > REPOSITORY_VERSION:
+        raise ValueError(f'This site needs a newer Connector (repository version {version}).')
+    return manifest
+
+
+def patch_repository_v1(repository, parent, book, manifest, put, put_json):
+    """Upgrade the official footer pin and record the patch in the same Git tree."""
+    plugins = book.get('plugins', [])
+    footer = [item for item in plugins if item.split('@', 1)[0].lstrip('-') in ('seenical', 'lanying-grow-ai')]
+    if footer not in (['seenical@1.0.0'], ['seenical@1.0.1']):
+        logging.info('Skipping repository patch 1: custom footer plugin.')
+        return book
+    ignore = repository.read('.bookignore', parent, optional=True)
+    if ignore is None:
+        # Creating a new ignore file could change the build rules of a customized repository.
+        logging.info('Skipping repository patch 1: the template .bookignore is missing.')
+        return book
+    if b'/seenical.json' not in ignore.splitlines():
+        separator = b'\n' if ignore and not ignore.endswith(b'\n') else b''
+        put('.bookignore', ignore + separator + b'/seenical.json\n')
+    put_json('seenical.json', {**manifest, 'repository_version': 1})
+    return {**book, 'plugins': ['seenical@1.0.1' if item == 'seenical@1.0.0' else item for item in plugins]}
 
 
 def site_plugin_key(book):
@@ -418,7 +452,7 @@ def localize_assets(repository, parent, base_dir, entries, locales, existing, pr
 
 
 def sync(repository, branch, base_dir, parent, current, site, transform, image_bytes,
-         template_ref='master', before_publish=None, upgrade_head='', previous=None):
+         template_ref='master', before_publish=None, upgrade_head='', previous=None, manifest=None):
     def path(relative):
         return posixpath.join(base_dir, relative)
 
@@ -483,13 +517,12 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
     language_selector = has_selector and (upgrade or versions.get('type') == 'languages')
     if language_selector:
         common['pluginsConfig']['versions'] = {**versions, 'type': 'languages', 'options': language_options(layout, primary)}
-    if common != original:
-        put_json('book.json', common)
     edit_link_base = common.get('pluginsConfig', {}).get('edit-link', {}).get('base', '')
     if current != layout:
         put_json('site-layout.json', {**(current or {}), **layout})
     if not current or current_languages.keys() != layout['languages'].keys():
         put('LANGS.md', ''.join(f'* [{LANGUAGES[code]}]({code}/)\n' for code in layout['languages']).encode())
+    has_local_plugins = False
     for code in layout['languages']:
         home = f'{code}/README.md'
         summary = f'{code}/SUMMARY.md'
@@ -513,6 +546,8 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
         new_language = code not in previous or not current or code not in current['languages']
         changed = changed_fields(state, {} if new_language else previous, code)
         overrides = repository.json(path(f'{code}/book.json'), parent, optional=True) or {}
+        if 'plugins' in overrides:
+            has_local_plugins = True
         current_edit_link = overrides.get('pluginsConfig', {}).get('edit-link', {}).get('base')
         repair_edit_link = bool(edit_link_base and current_edit_link == f'{edit_link_base}/{code}')
         selector_options = language_options(layout, code) if language_selector else None
@@ -563,6 +598,13 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
             overrides.pop('pluginsConfig')
         if overrides != original_overrides:
             put_json(f'{code}/book.json', overrides)
+    # Only enroll an existing standard Seenical layout. Keep custom pins and disabled plugins as configured.
+    if (manifest is not None and manifest.get('repository_version', 0) == 0 and not upgrade
+            and plugin_key == 'seenical' and not has_local_plugins
+            and original.get('root', '.') == '.' and original.get('structure', {}).get('readme', 'README.md') == 'README.md'):
+        common = patch_repository_v1(repository, parent, common, manifest, put, put_json)
+    if common != original:
+        put_json('book.json', common)
     if before_publish:
         before_publish()
     return repository.commit(parent, entries, branch, upgrade_head)

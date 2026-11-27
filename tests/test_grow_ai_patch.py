@@ -305,6 +305,46 @@ class GrowAIPatchTest(unittest.TestCase):
         github.patch.assert_not_called()
         repo.commit.assert_not_called()
 
+    def test_repository_manifest_is_checked_only_for_owned_seenical_sites(self):
+        grow = self.module
+        url = 'https://github.com/org/site'
+        site = {'app_id': 'app', 'site_id': 7, 'language': 'zh-hans', 'site_template': 'seenical',
+                'github_hosting': 'on', 'github_url': url, 'github_hosting_url': url}
+        repo = mock.Mock()
+        repo.request.return_value = {'object': {'sha': 'base'}}
+        repo.json.return_value = {'version': 2}
+        repo.read.return_value = None
+        redis = mock.Mock()
+        redis.lock.side_effect = lambda *_args, **_kwargs: nullcontext()
+        with mock.patch.object(grow, 'get_github_org', return_value='org'), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'managed_site_repository', return_value=(repo, 'org', 'site')), \
+                mock.patch.object(grow.site_languages, 'sync', return_value='') as sync:
+            for changes, eligible in (({}, True), ({'site_template': 'growai'}, False),
+                                      ({'github_hosting': 'off'}, False), ({'github_base_dir': '/docs'}, False),
+                                      ({'github_url': 'https://github.com/org/other'}, False)):
+                with self.subTest(changes=changes):
+                    repo.read.reset_mock()
+                    grow.sync_hosted_languages({}, {**site, **changes})
+                    if eligible:
+                        repo.read.assert_called_once_with('seenical.json', 'base', optional=True)
+                        self.assertEqual({}, sync.call_args.kwargs['manifest'])
+                    else:
+                        repo.read.assert_not_called()
+                        self.assertIsNone(sync.call_args.kwargs['manifest'])
+
+            sync.reset_mock()
+            repo.read.return_value = b'{"repository_version": 99}'
+            with self.assertRaisesRegex(ValueError, 'newer Connector'):
+                grow.sync_hosted_languages({}, site)
+            repo.read.return_value = b'{"repository_version": 1}'
+            repo.json.return_value = None
+            with self.assertRaisesRegex(ValueError, 'language layout'):
+                grow.sync_hosted_languages({}, site, allow_upgrade=True)
+            sync.assert_not_called()
+            repo.blob.assert_not_called()
+            repo.commit.assert_not_called()
+
     def test_initializing_site_waits_for_github_ref_before_syncing(self):
         grow = self.module
         languages = grow.site_languages

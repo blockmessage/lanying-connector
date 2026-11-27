@@ -4700,7 +4700,12 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
         # GitHub can acknowledge template creation before its initial branch is readable.
         wait_for_ref = background and site.get('template_initialization') == 'pending'
         parent = repository.request('GET', f'git/ref/heads/{branch}', wait_for_ref=wait_for_ref)['object']['sha']
+        manifest = None
+        if site.get('site_template') == 'seenical' and is_standard_hosted_site(site):
+            manifest = site_languages.read_repository_manifest(repository, parent)
         layout = repository.json('site-layout.json', parent, optional=True)
+        if manifest and (not isinstance(layout, dict) or layout.get('version') != 2):
+            raise ValueError('This versioned Seenical site is missing its supported language layout.')
         upgrade_head = ''
         upgrade_url = ''
         if layout is None:
@@ -4736,7 +4741,7 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
             upgrade_url = site_languages.sync(
                 repository, branch, '', parent, layout, site,
                 lambda setting, book, changed=None: transform_site_to_book_json(setting, book, owner, name, branch, changed),
-                read_site_language_image, upgrade_head=upgrade_head, previous=previous,
+                read_site_language_image, upgrade_head=upgrade_head, previous=previous, manifest=manifest,
                 before_publish=(lambda: before_publish(upgrade_head)) if before_publish else None)
         updates = {'site_languages_sync_pending': 'off', 'site_language_seed_pending': 'off',
                    'language_upgrade_url': upgrade_url, 'language_upgrade_head': '', 'language_upgrade_digest': ''}
