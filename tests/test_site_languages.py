@@ -57,7 +57,7 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual('New note', root['pluginsConfig']['seenical']['footer_note'])
         self.assertEqual('Original title', json.loads(changes['zh-hans/book.json'])['title'])
         self.assertEqual(b'/private\n/seenical.json\n', changes['.bookignore'])
-        self.assertEqual({'repository_version': 1}, json.loads(changes['seenical.json']))
+        self.assertEqual({'template': 'seenical', 'repository_version': 1}, json.loads(changes['seenical.json']))
         files.update(changes)
         repo.blob.reset_mock()
         self.assertEqual({}, sync(site))
@@ -75,13 +75,14 @@ class SiteLanguagesTest(unittest.TestCase):
         write_json.assert_not_called()
         book = {'plugins': ['seenical@1.0.1']}
         self.assertEqual(book, languages.patch_repository_v1(repo, 'head', book, {'extra': True}, write, write_json))
-        write_json.assert_called_once_with('seenical.json', {'extra': True, 'repository_version': 1})
+        write_json.assert_called_once_with('seenical.json', {'extra': True, 'template': 'seenical', 'repository_version': 1})
         write.assert_not_called()
 
     def test_repository_manifest_rejects_unknown_or_invalid_versions(self):
         repo = Mock()
         for raw in (b'not json', b'null', b'{}', b'{"repository_version": true}', b'{"repository_version": -1}',
-                    b'{"repository_version": 2}'):
+                    b'{"template": "seenical", "repository_version": 2}', b'{"repository_version": 1}',
+                    b'{"template": "other", "repository_version": 0}'):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 repo.read.return_value = raw
                 languages.read_repository_manifest(repo, 'head')

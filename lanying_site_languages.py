@@ -34,6 +34,8 @@ def read_repository_manifest(repository, parent):
     version = manifest.get('repository_version') if isinstance(manifest, dict) else None
     if type(version) is not int or version < 0:
         raise ValueError('Invalid repository_version in seenical.json.')
+    if manifest.get('template') != 'seenical':
+        raise ValueError('Expected template "seenical" in seenical.json.')
     if version > REPOSITORY_VERSION:
         raise ValueError(f'This site needs a newer Connector (repository version {version}).')
     return manifest
@@ -54,7 +56,7 @@ def patch_repository_v1(repository, parent, book, manifest, put, put_json):
     if b'/seenical.json' not in ignore.splitlines():
         separator = b'\n' if ignore and not ignore.endswith(b'\n') else b''
         put('.bookignore', ignore + separator + b'/seenical.json\n')
-    put_json('seenical.json', {**manifest, 'repository_version': 1})
+    put_json('seenical.json', {**manifest, 'template': 'seenical', 'repository_version': 1})
     return {**book, 'plugins': ['seenical@1.0.1' if item == 'seenical@1.0.0' else item for item in plugins]}
 
 

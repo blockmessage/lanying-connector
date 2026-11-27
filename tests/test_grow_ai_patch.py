@@ -334,10 +334,10 @@ class GrowAIPatchTest(unittest.TestCase):
                         self.assertIsNone(sync.call_args.kwargs['manifest'])
 
             sync.reset_mock()
-            repo.read.return_value = b'{"repository_version": 99}'
+            repo.read.return_value = b'{"template": "seenical", "repository_version": 99}'
             with self.assertRaisesRegex(ValueError, 'newer Connector'):
                 grow.sync_hosted_languages({}, site)
-            repo.read.return_value = b'{"repository_version": 1}'
+            repo.read.return_value = b'{"template": "seenical", "repository_version": 1}'
             repo.json.return_value = None
             with self.assertRaisesRegex(ValueError, 'language layout'):
                 grow.sync_hosted_languages({}, site, allow_upgrade=True)
