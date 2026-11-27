@@ -123,6 +123,31 @@ class GrowAIPatchTest(unittest.TestCase):
     def setUp(self):
         self.module = load_grow_ai()
 
+    def test_deployment_receipt_is_optional_and_dispatches_only_once(self):
+        grow = self.module
+        response = mock.Mock()
+        response.json.return_value = {'workflow_run_id': 731}
+        with mock.patch.object(grow, 'get_github_site', return_value='fixture'), \
+                mock.patch.object(grow, 'get_site', return_value={}), \
+                mock.patch.object(grow, 'set_deploy_code'), \
+                mock.patch.object(grow.lanying_utils, 'get_internet_connector_server', return_value='https://example.test', create=True), \
+                mock.patch.object(grow.requests, 'post', return_value=response, create=True) as dispatch:
+            for requested, http_status, expected in (
+                (False, 204, {'success': True}), (True, 200, {'success': True, 'workflow_run_id': 731}),
+                (True, 204, {'success': True}), (True, 500, None),
+            ):
+                with self.subTest(requested=requested, http_status=http_status):
+                    dispatch.reset_mock()
+                    response.status_code = http_status
+                    result = grow.start_deploy_github_action('app', '', 'site', 'owner', 'docs', 'tag',
+                                                             return_run_details=requested)
+                    dispatch.assert_called_once()
+                    body = dispatch.call_args.kwargs['json']
+                    self.assertEqual(body.get('return_run_details', False), requested)
+                    self.assertEqual(set(body['inputs']), {'book_url', 'oss_path', 'cdn_url', 'check_url', 'callback_url'})
+                    self.assertEqual(result['result'], 'error' if expected is None else 'ok')
+                    self.assertEqual(result.get('data'), expected)
+
     def test_hosted_template_selection_only_applies_to_new_repositories(self):
         grow = self.module
         github = mock.Mock()

@@ -529,7 +529,7 @@ def release_finish():
     data = json.loads(text)
     repository = str(data['repository'])
     release = str(data['release'])
-    result = lanying_grow_ai.release_finish(repository, release)
+    result = lanying_grow_ai.release_finish(repository, release, return_run_details=data.get('return_run_details') is True)
     if result['result'] == 'error':
         resp = make_response({'code':400, 'message':result['message']})
     else:

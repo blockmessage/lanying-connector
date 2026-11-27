@@ -3986,7 +3986,7 @@ def get_dummy_lanying_connector(app_id):
 def admin_token_key(app_id):
     return f"lanying_connector:grow_ai:admin_token:{app_id}"
 
-def release_finish(repository, release):
+def release_finish(repository, release, *, return_run_details=False):
     logging.info(f"release_finish | repository={repository}, release:{release}")
     fields = repository.split('/')
     if len(fields) < 2:
@@ -4034,7 +4034,8 @@ def release_finish(repository, release):
                 mapped_app_id, preview_id = mapping.split(':', 1)
                 if mapped_app_id != owner_app_id:
                     preview_id = ''
-        return start_deploy_github_action(owner_app_id, task_id, owner_site_id, github_owner, github_repo, release, preview_id)
+        return start_deploy_github_action(owner_app_id, task_id, owner_site_id, github_owner, github_repo, release,
+                                         preview_id, return_run_details=return_run_details)
     return {'result': 'error', 'message': 'deploy not found'}
 
 def resolve_release_commit(repository, release):
@@ -4058,7 +4059,8 @@ def resolve_release_commit(repository, release):
     return response.json().get('sha', '') if response.status_code == 200 else ''
 
 
-def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release, preview_id=''):
+def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_repo, release, preview_id='',
+                               *, return_run_details=False):
     logging.info(f"start_deploy_github_action start | app_id:{app_id}, task_id:{task_id}, site_id:{site_id}, github_owner:{github_owner}, github_repo:{github_repo}, release:{release}")
     try:
         if task_id:
@@ -4105,18 +4107,18 @@ def start_deploy_github_action(app_id, task_id, site_id, github_owner, github_re
             'callback_url': f'{connector_server}/grow_ai/deploy_finish?code={deploy_code}'
         }
     }
-    logging.info(f"start_deploy_github_action | url={url}, data={data}")
+    if return_run_details:
+        headers['X-GitHub-Api-Version'] = '2022-11-28'
+        data['return_run_details'] = True
+    response = requests.post(url, headers=headers, json=data, timeout=(10, 45))
+    if response.status_code in (200, 204):
+        result = {'success': True}
+        if return_run_details and response.status_code == 200:
+            result['workflow_run_id'] = response.json().get('workflow_run_id')
+        return {'result': 'ok', 'data': result}
+    logging.warning('Failed to dispatch deployment workflow: HTTP %s', response.status_code)
+    return {'result': 'error', 'message': 'failed to dispatch workflow'}
 
-    # 发送POST请求
-    response = requests.post(url, headers=headers, data=json.dumps(data))
-
-    if response.status_code == 204:
-        logging.info('Workflow dispatched successfully')
-        return {'result': 'ok', 'data':{'success': True}}
-    else:
-        logging.info(f'Failed to dispatch workflow: {response.status_code}')
-        logging.info(response.json())
-        return {'result': 'error', 'message': 'failed to dispatch workflow'}
 
 def make_site_full_url(site_name):
     return f'https://{site_name}.site.chatai101.com/'
