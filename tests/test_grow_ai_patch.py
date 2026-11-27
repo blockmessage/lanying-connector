@@ -223,6 +223,43 @@ class GrowAIPatchTest(unittest.TestCase):
                 executor.submit.assert_called_once_with(initialize, 'app', 7)
                 redis.rpush.assert_called_once_with(grow.get_site_list_key('app'), 7)
 
+    def test_publish_rejects_reserved_language_directories_before_github_writes(self):
+        grow = self.module
+        base_repo = 'https://github.com/org/site'
+        site = {'site_id': 57, 'language': 'zh-hans', 'max_latest_num': 5,
+                'github_hosting': 'on', 'github_url': base_repo, 'github_hosting_url': base_repo}
+        layout = grow.site_languages.layout_for(
+            'zh-hans', {'default_language': 'en', 'overrides': {'en': {}}}, 'zh-hans')
+        run = {'status': 'success', 'task_id': 'task', 'zip_file': 'result.zip',
+               'article_language': 'zh-hans'}
+        redis = mock.Mock()
+        redis.lock.side_effect = lambda *_args, **_kwargs: nullcontext()
+        repo = mock.Mock()
+        repo.json.return_value = layout
+        github = mock.Mock()
+        github.get.return_value = mock.Mock(status_code=200)
+        github.get.return_value.json.return_value = {'object': {'sha': 'base'}}
+
+        for field, folder, preview in (
+                ('target_dir', 'en', None), ('target_summary_dir', 'zh-hans', 'preview')):
+            with self.subTest(field=field), \
+                    mock.patch.object(grow, 'get_task', return_value={**task(), field: f'/{folder}/articles'}), \
+                    mock.patch.object(grow, 'get_task_run', return_value=run), \
+                    mock.patch.object(grow, 'get_task_site_list', return_value=[site]), \
+                    mock.patch.object(grow, 'get_github_org', return_value='org'), \
+                    mock.patch.object(grow, 'get_github_token', return_value='fixture-token'), \
+                    mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                    mock.patch.object(grow.site_languages, 'Repository', return_value=repo), \
+                    mock.patch.object(grow, 'requests', github):
+                result = grow.do_deploy_task_run_internal('app', 'run', False, preview)
+                self.assertEqual('error', result['result'])
+                self.assertFalse(result['retry'])
+                self.assertIn(f'/{folder}/ is reserved', result['message'])
+
+        github.post.assert_not_called()
+        github.patch.assert_not_called()
+        repo.commit.assert_not_called()
+
     def test_initializing_site_waits_for_github_ref_before_syncing(self):
         grow = self.module
         languages = grow.site_languages

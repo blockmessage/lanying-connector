@@ -5,6 +5,13 @@ from unittest.mock import Mock, patch
 import lanying_site_languages as languages
 
 
+def set_repository_files(repo, files):
+    repo.read.side_effect = lambda path, *args, **kwargs: files.get(path)
+    repo.request.return_value = {'tree': [
+        languages.entry(path, content) for path, content in files.items() if content is not None
+    ]}
+
+
 class SiteLanguagesTest(unittest.TestCase):
     def test_saves_use_the_repository_plugin_without_renaming_legacy_keys(self):
         for key in ('seenical', 'lanying-grow-ai'):
@@ -64,7 +71,7 @@ class SiteLanguagesTest(unittest.TestCase):
                 'overrides': {'en': {'title': 'Updated', 'meta_keywords': 'docs'}}}}
         repo = Mock()
         repo.json.side_effect = lambda name, *_a, **_kw: {'book.json': book, 'en/book.json': local}.get(name)
-        repo.read.return_value = b'# Home'
+        set_repository_files(repo, {'zh-hans/README.md': b'# Home', 'en/README.md': b'# Home'})
         repo.blob.side_effect = lambda data: data
         languages.sync(repo, 'master', '', 'head', languages.layout_for('zh-hans', before['site_languages']), site,
                        lambda s, b, changes: transform(s, b, 'org', 'site', 'master', changes), None,
@@ -102,6 +109,173 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual('zh-hans', languages.release_language(layout, {'article_language': 'zh-hans'}, 'zh-hans'))
         self.assertEqual('zh-hans', languages.release_language(layout, {}, 'zh-hans'))
 
+    def test_switch_default_language_reassigns_both_paths_and_preserves_source(self):
+        settings = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
+        current = languages.layout_for('zh-hans', settings, 'zh-hans')
+        config = {'plugins': ['versions-select@^0.1.1', 'seenical'], 'pluginsConfig': {
+            'seenical': {}, 'versions': {'type': 'languages', 'options': []}}}
+        repo = Mock()
+        repo.json.side_effect = lambda path, *_args, **_kwargs: config if path == 'book.json' else None
+        files = {'zh-hans/README.md': b'# Chinese', 'en/README.md': b'# English',
+                 'zh-hans/assets/logo.png': b'shared logo', 'zh-hans/assets/favicon.ico': b'shared icon',
+                 'en/assets/favicon.ico': b'custom English icon'}
+        set_repository_files(repo, files)
+        repo.blob.side_effect = lambda data: data
+
+        for default, other in (('en', 'zh-hans'), ('zh-hans', 'en')):
+            with self.subTest(default=default):
+                site = {'language': 'zh-hans', 'name': 'Docs',
+                        'site_languages': {**settings, 'default_language': default}}
+                languages.sync(repo, 'master', '', 'head', current, site,
+                               lambda _site, book, _fields: book, None)
+                changes = repo.commit.call_args.args[1]
+                current = json.loads(changes['site-layout.json']['sha'])
+                self.assertEqual(default, current['default_language'])
+                self.assertEqual(default, current['legacy_root_language'])
+                self.assertEqual({'source_dir': default, 'public_path': '/'}, current['languages'][default])
+                self.assertEqual({'source_dir': other, 'public_path': f'/{other}/'}, current['languages'][other])
+                self.assertEqual('zh-hans', languages.release_language(current, {'article_language': 'zh-hans'}, 'en'))
+                self.assertEqual('en', languages.release_language(current, {'article_language': 'en'}, 'zh-hans'))
+                for code in ('zh-hans', 'en'):
+                    self.assertNotIn(f'{code}/README.md', changes)
+                    options = json.loads(changes[f'{code}/book.json']['sha'])['pluginsConfig']['versions']['options']
+                    self.assertEqual(['/', f'/{other}/'], [option['value'] for option in options])
+                if default == 'en':
+                    self.assertEqual(b'shared logo', changes['en/assets/logo.png']['sha'])
+                    self.assertNotIn('en/assets/favicon.ico', changes)
+
+    def test_old_site_receives_local_assets_when_primary_language_is_promoted_first(self):
+        before = {'default_language': 'en', 'overrides': {'en': {}}}
+        current = languages.layout_for('zh-hans', before)
+        site = {'language': 'zh-hans', 'name': 'Docs',
+                'site_languages': {**before, 'default_language': 'zh-hans'}}
+        stylesheet = 'assets/styles/website.css'
+        repo = Mock()
+        config = {'pluginsConfig': {'seenical': {}, 'logo': {'logo': '/assets/logo.png'}}}
+        repo.json.side_effect = lambda path, *_args, **_kwargs: config if path == 'book.json' else None
+        files = {'zh-hans/README.md': b'# Chinese', 'en/README.md': b'# English',
+                 'assets/logo.png': b'logo', 'zh-hans/assets/logo.png': b'logo',
+                 'assets/favicon.ico': b'old icon', 'zh-hans/assets/favicon.ico': b'old icon',
+                 'en/assets/favicon.ico': b'English icon',
+                 'assets/apple-touch-icon.png': b'shared custom icon',
+                 stylesheet: b'body {}', f'zh-hans/{stylesheet}': b'body {}',
+                 f'en/{stylesheet}': b'@import url("../../../assets/styles/website.css");\n',
+                 'assets/fonts/custom.woff2': b'custom font'}
+        set_repository_files(repo, files)
+        repo.blob.side_effect = lambda data: data
+
+        languages.sync(repo, 'master', '', 'head', current, site, lambda _site, book, _fields: book, None)
+        changes = repo.commit.call_args.args[1]
+        for asset in ('assets/logo.png', 'assets/favicon.ico', stylesheet):
+            self.assertIsNone(changes[asset]['sha'])
+            self.assertNotIn(f'zh-hans/{asset}', changes)
+        self.assertEqual(b'logo', changes['en/assets/logo.png']['sha'])
+        self.assertNotIn('en/assets/favicon.ico', changes)
+        self.assertIsNone(changes['assets/apple-touch-icon.png']['sha'])
+        self.assertEqual(b'shared custom icon', changes['en/assets/apple-touch-icon.png']['sha'])
+        self.assertEqual(b'shared custom icon', changes['zh-hans/assets/apple-touch-icon.png']['sha'])
+        self.assertEqual(b'body {}', changes[f'en/{stylesheet}']['sha'])
+        self.assertIsNone(changes['assets/fonts/custom.woff2']['sha'])
+        self.assertEqual(b'custom font', changes['en/assets/fonts/custom.woff2']['sha'])
+
+    def test_materializes_existing_primary_css_import_without_replacing_custom_assets(self):
+        before = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
+        layout = languages.layout_for('zh-hans', before, 'zh-hans')
+        site = {'language': 'zh-hans', 'name': 'Docs', 'site_languages': {**before, 'default_language': 'en'}}
+        repo = Mock()
+        stylesheet = 'assets/styles/website.css'
+        files = {'zh-hans/README.md': b'# Chinese', 'en/README.md': b'# English',
+                 f'zh-hans/{stylesheet}': b'p {color:red}',
+                 f'en/{stylesheet}': b'@import url("../../../zh-hans/assets/styles/website.css");\n',
+                 'zh-hans/assets/fonts/body.woff2': b'source font',
+                 'en/assets/logo.png': b'local logo'}
+        set_repository_files(repo, files)
+        repo.json.side_effect = lambda path, *_args, **_kwargs: {'pluginsConfig': {'seenical': {}}} if path == 'book.json' else None
+        repo.blob.side_effect = lambda data: data
+        languages.sync(repo, 'master', '', 'head', layout, site, lambda _site, book, _fields: book, None)
+        changes = repo.commit.call_args.args[1]
+        self.assertEqual(b'p {color:red}', changes[f'en/{stylesheet}']['sha'])
+        self.assertEqual(b'source font', changes['en/assets/fonts/body.woff2']['sha'])
+        self.assertNotIn('en/assets/logo.png', changes)
+
+    def test_materialized_stylesheet_keeps_relative_media_outside_assets(self):
+        settings = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
+        current = languages.layout_for('zh-hans', settings)
+        stylesheet = 'assets/styles/website.css'
+        original_css = (b'body {background: url("../../shared-hero.svg")} '
+                        b'@font-face {src:url(\'../../fonts/body.woff2?v=1\')} '
+                        b'p {background: url("/static/banner.png")} '
+                        b'/* url("../../unused.svg") */')
+        repo = Mock()
+        files = {
+            'zh-hans/README.md': b'# Chinese',
+            'en/README.md': b'# English',
+            'zh-hans/' + stylesheet: b'body {color:blue}',
+            'en/' + stylesheet: b'@import url("../../../assets/styles/website.css");\n',
+            stylesheet: original_css,
+            'shared-hero.svg': b'hero',
+            'fonts/body.woff2': b'font',
+            'en/fonts/body.woff2': b'custom English font',
+            'static/banner.png': b'public banner',
+            'unused.svg': b'unused image',
+        }
+        set_repository_files(repo, files)
+        repo.json.side_effect = lambda path, *_args, **_kwargs: {'pluginsConfig': {'seenical': {}}} if path == 'book.json' else None
+        repo.blob.side_effect = lambda data: data
+
+        site = {'language': 'zh-hans', 'name': 'Docs', 'site_languages': {**settings, 'default_language': 'en'}}
+        languages.sync(repo, 'master', '', 'head', current, site, lambda _, config, changed: config, None)
+        changes = repo.commit.call_args.args[1]
+        self.assertEqual(original_css, changes[f'en/{stylesheet}']['sha'])
+        self.assertNotIn(f'zh-hans/{stylesheet}', changes)
+        self.assertEqual(b'hero', changes['en/shared-hero.svg']['sha'])
+        self.assertEqual(b'hero', changes['zh-hans/shared-hero.svg']['sha'])
+        self.assertIsNone(changes['shared-hero.svg']['sha'])
+        self.assertEqual(b'font', changes['zh-hans/fonts/body.woff2']['sha'])
+        self.assertIsNone(changes['fonts/body.woff2']['sha'])
+        self.assertNotIn('en/fonts/body.woff2', changes)
+        self.assertNotIn('static/banner.png', changes)
+        self.assertNotIn('unused.svg', changes)
+
+        # A prefixed site can have localized the CSS while retaining its public root assets.
+        files[f'en/{stylesheet}'] = original_css
+        files['en/shared-hero.svg'] = files['zh-hans/shared-hero.svg'] = b'hero'
+        files['zh-hans/fonts/body.woff2'] = b'font'
+        set_repository_files(repo, files)
+        languages.sync(repo, 'master', '', 'head', current, site, lambda _, config, changed: config, None)
+        later_changes = repo.commit.call_args.args[1]
+        self.assertIsNone(later_changes['shared-hero.svg']['sha'])
+        self.assertIsNone(later_changes['fonts/body.woff2']['sha'])
+        self.assertNotIn('en/shared-hero.svg', later_changes)
+        self.assertNotIn(f'en/{stylesheet}', later_changes)
+
+    def test_switch_default_language_rejects_distinct_root_asset_without_writing(self):
+        settings = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
+        current = languages.layout_for('zh-hans', settings)
+        site = {'language': 'zh-hans', 'name': 'Docs',
+                'site_languages': {**settings, 'default_language': 'en'}}
+        repo = Mock()
+        files = {'assets/logo.png': b'custom root', 'zh-hans/assets/logo.png': b'Chinese logo',
+                 'en/assets/logo.png': b'English logo'}
+        set_repository_files(repo, files)
+
+        with self.assertRaisesRegex(ValueError, 'root asset assets/logo.png conflicts with en/assets/logo.png'):
+            languages.sync(repo, 'master', '', 'head', current, site, Mock(), None)
+        repo.blob.assert_not_called()
+        repo.commit.assert_not_called()
+
+    def test_switch_default_language_rejects_occupied_path_before_writing(self):
+        settings = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
+        current = languages.layout_for('zh-hans', settings, 'zh-hans')
+        site = {'language': 'zh-hans', 'name': 'Docs',
+                'site_languages': {**settings, 'default_language': 'en'}}
+        repo = Mock()
+        repo.read.side_effect = lambda path, *_args, **_kwargs: b'occupied' if path == 'en/zh-hans' else None
+        with self.assertRaisesRegex(ValueError, 'en/zh-hans'):
+            languages.sync(repo, 'master', '', 'head', current, site, Mock(), None)
+        repo.blob.assert_not_called()
+        repo.commit.assert_not_called()
+
     def test_publish_uses_batch_language_and_validates_destination(self):
         layout = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}})
         with self.assertRaisesRegex(ValueError, 'not enabled'):
@@ -136,57 +310,55 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual('sha-assets/logo.png', changes['zh-hans/assets/logo.png']['sha'])
         self.assertNotIn('scripts/helper.py', changes)
 
-    def test_secondary_stylesheet_imports_shared_css_without_replacing_local_css(self):
-        stylesheet = 'assets/styles/website.css'
-        for primary, added, legacy, existing_css in [
-                ('zh-hans', 'en', '', None), ('en', 'zh-hans', 'en', None),
-                ('zh-hans', 'en', '', b'custom')]:
-            with self.subTest(primary=primary, legacy=legacy, existing_css=existing_css):
-                settings = {'default_language': added, 'overrides': {added: {}}}
+    def test_second_language_copies_complete_assets(self):
+        for primary, added in (('zh-hans', 'en'), ('en', 'zh-hans')):
+            with self.subTest(primary=primary):
+                settings = {'default_language': primary, 'overrides': {added: {}}}
                 site = {'language': primary, 'site_languages': settings, 'name': 'Docs'}
-                current = languages.layout_for(primary, settings, legacy)
-                shared = f'{legacy}/{stylesheet}' if legacy else stylesheet
-                local = f'{added}/{stylesheet}'
-                book = {'styles': {'website': stylesheet}, 'pluginsConfig': {
-                    'edit-link': {'base': 'github'}, 'lanying-grow-ai': {}}}
+                current = languages.layout_for(primary, {'default_language': primary, 'overrides': {}}, primary)
+                files = {f'{primary}/README.md': b'# Home',
+                         f'{primary}/assets/styles/website.css': b'body {}',
+                         f'{primary}/assets/logo.png': b'logo', f'{primary}/assets/favicon.ico': b'icon',
+                         f'{primary}/assets/apple-touch-icon.png': b'touch icon',
+                         f'{primary}/assets/fonts/body.woff2': b'font'}
                 repo = Mock()
-                files = {shared: b'body {}', local: existing_css,
-                         f'{added}/README.md': b'# Home', f'{primary}/README.md': b'# Home'}
-                repo.read.side_effect = lambda p, *_args, **_opts: files.get(p)
-                repo.json.side_effect = lambda p, *_args, **_opts: book if p == 'book.json' else None
+                set_repository_files(repo, files)
+                repo.json.side_effect = lambda p, *_args, **_opts: {'pluginsConfig': {'lanying-grow-ai': {}}} if p == 'book.json' else None
                 repo.blob.side_effect = lambda data: data
                 languages.sync(repo, 'master', '', 'parent', current, site, lambda _, config, changed: config, None)
-                entries = repo.commit.call_args.args[1]
-                if existing_css is None:
-                    self.assertEqual(f'@import url("../../../{shared}");\n'.encode(), entries[local]['sha'])
-                else:
-                    self.assertNotIn(local, entries)
+                changes = repo.commit.call_args.args[1]
+                for source, content in files.items():
+                    if '/assets/' in source:
+                        self.assertEqual(content, changes[added + source.removeprefix(primary)]['sha'])
+                self.assertFalse(any(path.startswith('assets/') for path in changes))
 
     def test_new_english_site_replaces_only_template_seed(self):
-        repo = Mock()
-        repo.read.return_value = None
-        book = {'pluginsConfig': {'edit-link': {'base': 'github'}, 'lanying-grow-ai': {}}}
-        repo.json.side_effect = lambda path, *_args, **_opts: book if path == 'book.json' else None
-        repo.request.return_value = {'tree': [
-            {'path': 'zh-hans/README.md', 'mode': '100644', 'type': 'blob', 'sha': 'readme'},
-            {'path': 'zh-hans/assets/logo.png', 'mode': '100644', 'type': 'blob', 'sha': 'logo'},
-        ]}
-        blobs = {}
-        def blob(data):
-            key = str(len(blobs))
-            blobs[key] = data
-            return key
-        repo.blob.side_effect = blob
-
-        current = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}})
-        site = {'language': 'en', 'name': 'English docs', 'site_language_seed_pending': 'on'}
-        languages.sync(repo, 'master', '', 'seed', current, site, lambda _cfg, src, changed: src, Mock())
-        entries = repo.commit.call_args.args[1]
-        layout = json.loads(blobs[entries['site-layout.json']['sha']])
-        self.assertEqual(['en'], list(layout['languages']))
-        self.assertEqual('en', languages.release_language(layout, {'article_language': 'en'}, 'en'))
-        self.assertEqual('logo', entries['en/assets/logo.png']['sha'])
-        self.assertIsNone(entries['zh-hans/README.md']['sha'])
+        for root in ("", "zh-hans"):
+            with self.subTest(root=root):
+                repo = Mock()
+                repo.read.return_value = None
+                book = {'pluginsConfig': {'edit-link': {'base': 'github'}, 'lanying-grow-ai': {}}}
+                repo.json.side_effect = lambda path, *_args, **_opts: book if path == 'book.json' else None
+                repo.request.return_value = {'tree': [
+                    {'path': 'zh-hans/README.md', 'mode': '100644', 'type': 'blob', 'sha': 'readme'},
+                    {'path': 'zh-hans/assets/logo.png', 'mode': '100644', 'type': 'blob', 'sha': 'logo'},
+                ]}
+                blobs = {}
+                def blob(data):
+                    key = str(len(blobs))
+                    blobs[key] = data
+                    return key
+                repo.blob.side_effect = blob
+                current = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}}, root)
+                site = {'language': 'en', 'name': 'English docs', 'site_language_seed_pending': 'on'}
+                languages.sync(repo, 'master', '', 'seed', current, site, lambda _cfg, src, changed: src, Mock())
+                entries = repo.commit.call_args.args[1]
+                layout = json.loads(blobs[entries['site-layout.json']['sha']])
+                self.assertEqual(['en'], list(layout['languages']))
+                self.assertEqual('/' if root else '/en/', layout['languages']['en']['public_path'])
+                self.assertEqual('en', languages.release_language(layout, {'article_language': 'en'}, 'en'))
+                self.assertEqual('logo', entries['en/assets/logo.png']['sha'])
+                self.assertIsNone(entries['zh-hans/README.md']['sha'])
 
     @patch.object(languages, 'Repository')
     def test_seenical_adds_localized_template_homepages(self, template):
@@ -197,7 +369,7 @@ class SiteLanguagesTest(unittest.TestCase):
                 homepage = '# Localized heading\n\n## Quick start\n'.encode()
                 template.return_value.read.return_value = homepage
                 repo = Mock()
-                repo.read.side_effect = lambda path, *_args, **_opts: b'# Custom home' if path == f'{primary}/README.md' else None
+                set_repository_files(repo, {f'{primary}/README.md': b'# Custom home'})
                 book = {'pluginsConfig': {'edit-link': {'base': 'github'}, 'seenical': {}}}
                 repo.json.side_effect = lambda path, *_args, **_opts: book if path == 'book.json' else None
                 repo.blob.side_effect = lambda data: data

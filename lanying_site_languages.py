@@ -4,9 +4,10 @@ import copy
 import hashlib
 import json
 import posixpath
+import re
 import time
 from pathlib import PurePosixPath
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import requests
 
@@ -17,6 +18,10 @@ URL_FIELDS = {'hook_sentence_image', 'official_website_url', 'lanying_link'}
 # Only build tooling is copied when the administrator explicitly adds a language.
 TEMPLATE_API = 'https://api.github.com/repos/maxim-top/seenical-gitbook'
 TOOLING = {'.github', '.gitignore', '.bookignore', 'Makefile', 'book.json', 'scripts', 'tests', 'README-GrowAI.md'}
+CSS_RELATIVE_MEDIA = re.compile(
+    r'''/\*.*?\*/|url\(\s*(['"]?)(\.\./\.\./[^'")]+?)\1\s*\)''', re.IGNORECASE | re.DOTALL)
+CSS_MEDIA_SUFFIXES = {'.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.avif', '.bmp',
+                      '.woff', '.woff2', '.ttf', '.otf', '.eot'}
 
 
 def site_plugin_key(book):
@@ -112,6 +117,19 @@ def layout_for(primary, settings, legacy_root=''):
     }
 
 
+def language_options(layout, language):
+    if len(layout['languages']) < 2:
+        return []
+    root = layout.get('legacy_root_language')
+    # The old selector matches the URL. Keep its root option first so a
+    # more specific language directory wins. On a mirrored homepage it
+    # falls back to the first option for that language.
+    root = root if root == layout['default_language'] else ''
+    first = root or language
+    order = [first, *(code for code in layout['languages'] if code != first)]
+    return [{'value': '/' if code == root else f'/{code}/', 'text': LANGUAGES[code]} for code in order]
+
+
 def release_language(layout, run, primary):
     if not layout or layout.get('version') != 2:
         return ''
@@ -121,10 +139,12 @@ def release_language(layout, run, primary):
     return code
 
 
-def scoped_directory(base, directory):
+def scoped_directory(base, directory, *, reserved=()):
     parts = PurePosixPath(directory.lstrip('/')).parts
     if '..' in parts or '\\' in directory:
         raise ValueError('The publication folder must be inside its language directory.')
+    if parts and parts[0] in reserved:
+        raise ValueError(f'The publication folder /{parts[0]}/ is reserved for a site language. Choose a different folder.')
     return posixpath.join(base, *parts).rstrip('/') or '/'
 
 
@@ -278,6 +298,125 @@ def replace_chinese_seed(repository, parent):
     return entries
 
 
+def localize_assets(repository, parent, base_dir, entries, locales, existing, primary, root_language, *, upgrade):
+    """Give each locale its own assets and remove only verified root duplicates."""
+    scopes = {code: {} for code in ('', *locales)}
+    files = {}
+    prefix = base_dir.rstrip('/') + '/' if base_dir else ''
+
+    def add_asset(item):
+        if not item['path'].startswith(prefix):
+            return
+        name = item['path'].removeprefix(prefix)
+        if item['sha'] is None:
+            files.pop(item['path'], None)
+        else:
+            files[item['path']] = item
+        code, _, relative = name.partition('/')
+        if code == 'assets':
+            code, relative = '', name
+        if code in scopes and relative.startswith('assets/'):
+            if item['sha'] is None:
+                scopes[code].pop(relative, None)
+            elif item['type'] == 'blob' and item['mode'] in ('100644', '100755'):
+                scopes[code][relative] = item
+            elif item['type'] != 'tree':
+                raise ValueError(f'Unsupported site asset: {name}')
+
+    if not upgrade:
+        tree = repository.request('GET', f'git/trees/{parent}', params={'recursive': '1'})
+        if tree.get('truncated'):
+            raise ValueError('The site is too large to check its language assets.')
+        for item in tree['tree']:
+            add_asset(item)
+    for item in entries.values():
+        add_asset(item)
+
+    shared = scopes['']
+    stylesheet = 'assets/styles/website.css'
+    standard = (stylesheet, 'assets/logo.png', 'assets/favicon.ico', 'assets/apple-touch-icon.png')
+    style_sources = {}
+    for code in locales:
+        if stylesheet not in scopes[code]:
+            inherited = '' if stylesheet in shared else primary
+            if stylesheet in scopes[inherited]:
+                style_sources[code] = inherited
+        elif code != primary:
+            target = f'{code}/{stylesheet}'
+            content = repository.read(prefix + target, parent, optional=True)
+            for source in ('', primary):
+                relative = posixpath.relpath(posixpath.join(source, stylesheet), posixpath.dirname(target))
+                if content == f'@import url("{relative}");\n'.encode():
+                    inherited = source if stylesheet in scopes[source] else primary
+                    if stylesheet not in scopes[inherited]:
+                        raise ValueError(f'Could not find the stylesheet used by {target}.')
+                    style_sources[code] = inherited
+                    break
+
+    # A copied stylesheet keeps its bytes and its direct, relative image and font references.
+    media_sources = set(style_sources.values())
+    if root_language and stylesheet in shared:
+        media_sources.add('')
+    for source in media_sources:
+        source_dir = prefix + (source + '/' if source else '')
+        css = repository.read(prefix + stylesheet if upgrade else source_dir + stylesheet, parent, optional=True) or b''
+        for _, url in CSS_RELATIVE_MEDIA.findall(css.decode('utf-8-sig')):
+            if not url:
+                continue
+            name = posixpath.normpath(posixpath.join(posixpath.dirname(stylesheet), unquote(urlsplit(url).path)))
+            parts = PurePosixPath(name).parts
+            if (not parts or parts[0] in ('assets', *LANGUAGES) or any(part.startswith('.') for part in parts)
+                    or PurePosixPath(name).suffix.lower() not in CSS_MEDIA_SUFFIXES):
+                continue
+            if files.get(source_dir + name, {}).get('type') != 'blob':
+                continue
+            for code, assets in scopes.items():
+                directory = prefix + (code + '/' if code else '')
+                asset = files.get(directory + name)
+                if asset and asset['type'] == 'blob' and asset['mode'] in ('100644', '100755'):
+                    assets[name] = asset
+
+    for code in locales:
+        assets = scopes[code]
+        fallback = scopes[primary]
+        copies = fallback if code not in existing else {name: fallback[name] for name in standard if name in fallback}
+        copies = {**copies, **shared}
+        kept = {**copies, **assets}
+        if code in style_sources:
+            inherited = scopes[style_sources[code]]
+            kept = {**copies, **inherited, **assets, stylesheet: inherited[stylesheet]}
+
+        for name, asset in kept.items():
+            for directory in PurePosixPath(name).parents:
+                if directory.as_posix() in kept:
+                    raise ValueError(f'The language asset {code}/{name} conflicts with a file.')
+            if assets.get(name) != asset:
+                target = f'{prefix}{code}/{name}'
+                if target in files and name not in assets:
+                    raise ValueError(f'The language asset {target} is already occupied.')
+                for directory in PurePosixPath(target).parents:
+                    existing_item = files.get(directory.as_posix())
+                    if existing_item and existing_item['type'] != 'tree':
+                        raise ValueError(f'The language asset {target} conflicts with {directory}.')
+                entries[target] = entry(target, asset['sha'], asset['mode'])
+        scopes[code] = kept
+
+    # Older sites that still publish all locales under prefixes can reference root assets.
+    if not root_language:
+        return
+    for name, asset in shared.items():
+        copies = [scopes[code].get(name) for code in locales]
+        if any(copy and (copy['sha'], copy['mode']) == (asset['sha'], asset['mode']) for copy in copies):
+            target = prefix + name
+            entries[target] = entry(target, None, asset['mode'])
+        elif name in scopes[root_language]:
+            raise ValueError(f'The root asset {name} conflicts with {root_language}/{name}.')
+    public_assets = scopes[root_language].keys() | {name for name in shared if prefix + name not in entries}
+    for name in public_assets:
+        if any(directory.as_posix() in public_assets for directory in PurePosixPath(name).parents):
+            raise ValueError(f'The public asset {name} conflicts with a file.')
+
+
 def sync(repository, branch, base_dir, parent, current, site, transform, image_bytes,
          template_ref='master', before_publish=None, upgrade_head='', previous=None):
     def path(relative):
@@ -290,14 +429,33 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
     upgrade = current is None
     if upgrade and (not settings['overrides'] or base_dir or not upgrade_head):
         raise ValueError('Only standard hosted sites can add languages.')
-    root_language = primary if upgrade else current.get('legacy_root_language', '')
-    layout = layout_for(primary, settings, root_language)
+    current_root = (current or {}).get('legacy_root_language', '')
+    current_languages = (current or {}).get('languages', {})
+    enabled_languages = {primary, *settings['overrides']}
+    root_language = current_root
     entries = legacy_upgrade_entries(repository, parent, primary, branch, template_ref) if upgrade else {}
-    if current and set(current['languages']) - layout['languages'].keys():
+    if current_languages.keys() - enabled_languages:
         if (site.get('site_language_seed_pending') != 'on' or primary != 'en'
-                or root_language or set(current['languages']) != {'zh-hans'}):
+                or current_root not in ('', 'zh-hans') or current_languages.keys() != {'zh-hans'}):
             raise ValueError('Existing site languages cannot be removed.')
         entries = replace_chinese_seed(repository, parent)
+        if current_root:
+            root_language = primary
+    elif upgrade or current['default_language'] != settings['default_language']:
+        # A settings save that leaves the default alone preserves old public paths.
+        root_language = settings['default_language']
+
+    if current and root_language:
+        reserved = enabled_languages if root_language != current_root else enabled_languages - current_languages.keys()
+        for code in sorted(reserved):
+            conflict = f'{root_language}/{code}'
+            if repository.read(path(conflict), parent, optional=True) is not None:
+                raise ValueError(f'The language path already exists: {conflict}')
+    layout = layout_for(primary, settings, root_language)
+
+    if upgrade or root_language != current_root or current_languages.keys() != layout['languages'].keys():
+        localize_assets(repository, parent, base_dir, entries, layout['languages'],
+                        current_languages, primary, root_language, upgrade=upgrade)
 
     def put(relative, content):
         name = path(relative)
@@ -317,12 +475,20 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
         raise ValueError('This repository does not declare a supported site plugin.')
     if not previous or upgrade:
         common['pluginsConfig'][plugin_key]['sitemap_default_language'] = ''
+    has_selector = any(name.split('@', 1)[0] == 'versions-select' for name in common.get('plugins', []))
+    if upgrade and 'plugins' in common and not has_selector:
+        common['plugins'].append('versions-select@^0.1.1')
+        has_selector = True
+    versions = common['pluginsConfig'].get('versions', {})
+    language_selector = has_selector and (upgrade or versions.get('type') == 'languages')
+    if language_selector:
+        common['pluginsConfig']['versions'] = {**versions, 'type': 'languages', 'options': language_options(layout, primary)}
     if common != original:
         put_json('book.json', common)
     edit_link_base = common.get('pluginsConfig', {}).get('edit-link', {}).get('base', '')
     if current != layout:
         put_json('site-layout.json', {**(current or {}), **layout})
-    if not current or set(current['languages']) != set(layout['languages']):
+    if not current or current_languages.keys() != layout['languages'].keys():
         put('LANGS.md', ''.join(f'* [{LANGUAGES[code]}]({code}/)\n' for code in layout['languages']).encode())
     for code in layout['languages']:
         home = f'{code}/README.md'
@@ -349,19 +515,11 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
         overrides = repository.json(path(f'{code}/book.json'), parent, optional=True) or {}
         current_edit_link = overrides.get('pluginsConfig', {}).get('edit-link', {}).get('base')
         repair_edit_link = bool(edit_link_base and current_edit_link == f'{edit_link_base}/{code}')
-        if not changed and not repair_edit_link:
+        selector_options = language_options(layout, code) if language_selector else None
+        selector_changed = language_selector and overrides.get('pluginsConfig', {}).get('versions', {}).get('options') != selector_options
+        if not changed and not repair_edit_link and not selector_changed:
             continue
         language_book = transform({**localized, 'copyright': localized.get('copyright') or ' '}, common, changed)
-        # GitBook only links a stylesheet that exists inside the language directory.
-        stylesheet = 'assets/styles/website.css'
-        configured_style = overrides.get('styles', {}).get('website', common.get('styles', {}).get('website'))
-        if code != primary and configured_style == stylesheet:
-            local_style = path(f'{code}/{stylesheet}')
-            shared_style = posixpath.join(root_language, stylesheet)
-            source_style = path(stylesheet if upgrade else shared_style)
-            if repository.read(local_style, parent, optional=True) is None and repository.read(source_style, parent, optional=True) is not None:
-                relative = posixpath.relpath(shared_style, posixpath.dirname(f'{code}/{stylesheet}'))
-                entries[local_style] = entry(local_style, repository.blob(f'@import url("{relative}");\n'.encode()))
         original_overrides = overrides
         overrides = copy.deepcopy(original_overrides)
         if new_language:
@@ -370,6 +528,8 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
             overrides['title'] = localized.get('title') or site['name']
         plugins = overrides.setdefault('pluginsConfig', {})
         rendered = language_book['pluginsConfig']
+        if selector_changed:
+            plugins.setdefault('versions', {})['options'] = selector_options
         # The GitBook edit-link plugin appends the source language and filename.
         if edit_link_base and (repair_edit_link or new_language or changed & {'github_url', 'github_base_branch'}):
             plugins.setdefault('edit-link', {})['base'] = edit_link_base

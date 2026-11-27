@@ -2294,11 +2294,14 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
             return {'result': 'error', 'message': 'github get branch info failed'}
         commit_sha = response.json()["object"]["sha"]
         language = ''
+        reserved_directories = ()
         if is_standard_hosted_site(site):
             try:
                 repository = site_languages.Repository(github_api_url, headers)
                 layout = repository.json('site-layout.json', commit_sha, optional=True)
                 language = site_languages.release_language(layout, task_run, site['language'])
+                if language and language == layout.get('legacy_root_language'):
+                    reserved_directories = layout['languages']
                 if not layout and (task_run.get('article_language') or site['language']) != site['language']:
                     # The upgrade may have started while this publisher was waiting for the repository lock.
                     current_site = get_site(app_id, site['site_id'])
@@ -2312,7 +2315,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
         def publication_directory(directory):
             if not language:
                 return parse_dir(directory, abs_base_dir)
-            resolved = site_languages.scoped_directory(abs_base_dir, directory)
+            resolved = site_languages.scoped_directory(abs_base_dir, directory, reserved=reserved_directories)
             return resolved, resolved.lstrip('/')
 
         if language:
