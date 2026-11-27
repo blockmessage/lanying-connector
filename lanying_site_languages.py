@@ -13,6 +13,7 @@ from urllib.parse import quote, unquote, urlsplit
 import requests
 
 REPOSITORY_VERSION = 1
+SEENICAL_PLUGIN = 'seenical@^1.0.2'
 LANGUAGES = {'zh-hans': '简体中文', 'en': 'English'}
 SEENICAL_HOME_LABELS = {'zh-hans': '首页', 'en': 'Home'}
 COPY_FIELDS = ('title', 'meta_keywords', 'copyright', 'footer_note', 'hook_sentence_slogan',
@@ -138,24 +139,25 @@ def layout_patch_v1(repository, parent, manifest, layout, workflow, *, upgrade_b
     return entries
 
 
-def repository_patch_v1(repository, parent, book, manifest, branch, layout):
+def repository_patch_v1(repository, parent, book, manifest, branch, legacy_layout):
     """Build the patch on top of the book with the user's settings already applied."""
     plugins = book.get('plugins', [])
     footer = [item for item in plugins if item.split('@', 1)[0].lstrip('-') in ('seenical', 'lanying-grow-ai')]
-    if footer not in (['seenical@1.0.0'], ['seenical@1.0.1']):
+    if footer not in (['seenical@1.0.0'], ['seenical@1.0.1'], [SEENICAL_PLUGIN]):
         logging.info('Skipping repository patch 1: custom footer plugin.')
         return {}
-    workflow = repository.read('.github/workflows/build.yml', parent, optional=True) or b''
-    entries = layout_patch_v1(repository, parent, manifest, layout, workflow, upgrade_builder=True)
-    if not entries:
-        return {}
+    entries = {}
 
     def put(path, content):
         entries[path] = entry(path, repository.blob(content))
 
-    patch_deployment_workflow(repository, workflow, branch, put)
-    if footer == ['seenical@1.0.0']:
-        plugins = ['seenical@1.0.1' if item == 'seenical@1.0.0' else item for item in plugins]
+    if legacy_layout is not None:
+        workflow = repository.read('.github/workflows/build.yml', parent, optional=True) or b''
+        entries.update(layout_patch_v1(repository, parent, manifest, legacy_layout, workflow, upgrade_builder=True))
+        if entries:
+            patch_deployment_workflow(repository, workflow, branch, put)
+    if footer != [SEENICAL_PLUGIN]:
+        plugins = [SEENICAL_PLUGIN if item == footer[0] else item for item in plugins]
         put('book.json', json_bytes({**book, 'plugins': plugins}))
     return entries
 
@@ -730,11 +732,12 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
     if common != original:
         put_json('book.json', common)
     patch_entries = {}
-    if (manifest is not None and layout_path == 'site-layout.json' and not upgrade
+    if (manifest is not None and not upgrade
             and original.get('root', '.') == '.' and original.get('structure', {}).get('readme', 'README.md') == 'README.md'):
         if site.get('site_template') == 'seenical' and plugin_key == 'seenical' and not has_local_plugins:
-            patch_entries = repository_patch_v1(repository, parent, common, manifest, branch, effective_layout)
-        elif plugin_key == 'lanying-grow-ai' and len(current_languages) > 1:
+            legacy_layout = effective_layout if layout_path == 'site-layout.json' else None
+            patch_entries = repository_patch_v1(repository, parent, common, manifest, branch, legacy_layout)
+        elif layout_path == 'site-layout.json' and plugin_key == 'lanying-grow-ai' and len(current_languages) > 1:
             workflow = repository.read('.github/workflows/build.yml', parent, optional=True)
             if workflow:
                 patch_entries = layout_patch_v1(repository, parent, manifest, effective_layout, workflow)

@@ -30,6 +30,10 @@ class SiteLanguagesTest(unittest.TestCase):
         new_site = {**site, 'site_languages': {**settings, 'default_language': 'en'}}
         languages.sync(repo, 'main', '', 'head', current, new_site, lambda s, b, c: b, None,
                        previous=languages.book_sync_state(site), manifest=manifest, layout_path=path)
+        plugin_patch = repo.commit.call_args.kwargs['patch_entries']
+        self.assertEqual({'book.json'}, set(plugin_patch))
+        books['book.json'] = json.loads(plugin_patch['book.json']['sha'])
+        self.assertEqual(['seenical@^1.0.2'], books['book.json']['plugins'])
         entries = repo.commit.call_args.args[1]
         self.assertNotIn('site-layout.json', entries)
         updated = json.loads(entries['seenical.json']['sha'])
@@ -39,6 +43,10 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertEqual(1, updated['repository_version'])
         with patch.object(languages, 'read_repository_manifest', return_value=updated):
             current, path, _ = languages.read_site_layout(repo, 'head', site)
+        languages.sync(repo, 'main', '', 'head', current, new_site, lambda s, b, c: b, None,
+                       previous=languages.book_sync_state(new_site), manifest=updated, layout_path=path)
+        self.assertEqual({}, repo.commit.call_args.args[1])
+        self.assertEqual({}, repo.commit.call_args.kwargs['patch_entries'])
         self.assertEqual('/', current['languages']['en']['public_path'])
         self.assertEqual('zh-hans', languages.release_language(current, {'article_language': 'zh-hans'}, 'en'))
         books['site-layout.json'] = layout
@@ -114,7 +122,7 @@ class SiteLanguagesTest(unittest.TestCase):
         configured = json.loads(settings['book.json'])
         self.assertIn('seenical@1.0.0', configured['plugins'])
         root = json.loads(upgrade['book.json'])
-        self.assertEqual(['other@2', 'seenical@1.0.1'], root['plugins'])
+        self.assertEqual(['other@2', 'seenical@^1.0.2'], root['plugins'])
         self.assertEqual({'key': 2}, root['pluginsConfig']['other'])
         self.assertEqual('yes', root['pluginsConfig']['seenical']['keep'])
         self.assertEqual('New note', root['pluginsConfig']['seenical']['footer_note'])
@@ -173,10 +181,18 @@ class SiteLanguagesTest(unittest.TestCase):
             self.assertEqual({}, languages.repository_patch_v1(repo, 'head', book, {}, 'main', layout))
         repo.read.assert_not_called()
         repo.blob.assert_not_called()
-        book = {'plugins': ['seenical@1.0.1']}
+        book = {'plugins': ['seenical@^1.0.2']}
         changes = languages.repository_patch_v1(repo, 'head', book, {'extra': True}, 'main', layout)
         self.assertEqual({'seenical.json', 'site-layout.json'}, set(changes))
         self.assertTrue(json.loads(changes['seenical.json']['sha'])['extra'])
+        workflow_path = '.github/workflows/build.yml'
+        with patch.dict(files, {workflow_path: b'old build'}), \
+                patch.object(languages, 'LEGACY_WORKFLOW_SHA256', hashlib.sha256(b'old build').hexdigest()), \
+                patch.object(languages, 'Repository') as official:
+            official.return_value.read.return_value = b'wait for deployment'
+            changes = languages.repository_patch_v1(repo, 'head', book, {}, 'main', layout)
+            self.assertEqual(b'wait for deployment', changes[workflow_path]['sha'])
+            self.assertEqual({'seenical.json', 'site-layout.json', workflow_path}, set(changes))
         for path in ('scripts/language_layout.py', 'Makefile', '.github/workflows/build.yml'):
             with self.subTest(path=path), patch.dict(files, {path: b'custom build using site-layout.json'}):
                 self.assertEqual({}, languages.repository_patch_v1(repo, 'head', book, {}, 'main', layout))
