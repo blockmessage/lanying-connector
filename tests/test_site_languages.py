@@ -16,7 +16,7 @@ def set_repository_files(repo, files):
 class SiteLanguagesTest(unittest.TestCase):
     def test_combined_layout_save_keeps_manifest_fields_and_batch_language(self):
         settings = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
-        site = {'language': 'zh-hans', 'site_languages': settings}
+        site = {'language': 'zh-hans', 'site_languages': settings, 'site_template': 'seenical'}
         layout = languages.layout_for('zh-hans', settings, 'zh-hans')
         manifest = {k: v for k, v in layout.items() if k != 'version'}
         manifest.update(template='seenical', repository_version=1, extra='keep')
@@ -25,7 +25,8 @@ class SiteLanguagesTest(unittest.TestCase):
         repo.json.side_effect = lambda path, *_args, **_kwargs: books.get(path)
         set_repository_files(repo, {'en/README.md': b'# Home', 'zh-hans/README.md': b'# Home'})
         repo.blob.side_effect = lambda data: data
-        current, path = languages.read_site_layout(repo, 'head', manifest)
+        with patch.object(languages, 'read_repository_manifest', return_value=manifest):
+            current, path, _ = languages.read_site_layout(repo, 'head', site)
         new_site = {**site, 'site_languages': {**settings, 'default_language': 'en'}}
         languages.sync(repo, 'main', '', 'head', current, new_site, lambda s, b, c: b, None,
                        previous=languages.book_sync_state(site), manifest=manifest, layout_path=path)
@@ -36,11 +37,13 @@ class SiteLanguagesTest(unittest.TestCase):
         self.assertNotIn('version', updated)
         self.assertEqual('seenical', updated['template'])
         self.assertEqual(1, updated['repository_version'])
-        current, path = languages.read_site_layout(repo, 'head', updated)
+        with patch.object(languages, 'read_repository_manifest', return_value=updated):
+            current, path, _ = languages.read_site_layout(repo, 'head', site)
         self.assertEqual('/', current['languages']['en']['public_path'])
         self.assertEqual('zh-hans', languages.release_language(current, {'article_language': 'zh-hans'}, 'en'))
         books['site-layout.json'] = layout
-        self.assertEqual((layout, 'site-layout.json'), languages.read_site_layout(repo, 'head', updated))
+        with patch.object(languages, 'read_repository_manifest', return_value=updated):
+            self.assertEqual((layout, 'site-layout.json', updated), languages.read_site_layout(repo, 'head', site))
 
     def test_patch_only_replaces_the_known_deployment_workflow(self):
         path = '.github/workflows/build.yml'
@@ -63,7 +66,7 @@ class SiteLanguagesTest(unittest.TestCase):
     def test_repository_patch_can_be_reverted_independently_of_settings(self):
         from test_grow_ai_patch import load_grow_ai
         transform = load_grow_ai().transform_site_to_book_json
-        site = {'name': 'Docs', 'language': 'zh-hans', 'footer_note': 'New note'}
+        site = {'name': 'Docs', 'language': 'zh-hans', 'footer_note': 'New note', 'site_template': 'seenical'}
         old_site = {**site, 'footer_note': 'Old note'}
         layout = languages.layout_for('zh-hans', {'default_language': 'zh-hans', 'overrides': {}})
         del layout['legacy_root_language']  # First-generation sites keep articles below /zh-hans/.
@@ -84,8 +87,7 @@ class SiteLanguagesTest(unittest.TestCase):
         repo.json.side_effect = lambda path, *args, **kwargs: json.loads(files[path]) if path in files else None
         repo.blob.side_effect = lambda data: data
         def sync(previous):
-            manifest = languages.read_repository_manifest(repo, 'head')
-            current, path = languages.read_site_layout(repo, 'head', manifest)
+            current, path, manifest = languages.read_site_layout(repo, 'head', site)
             with patch.object(languages, 'Repository') as template:
                 template.return_value.read.return_value = b'new renderer\ndef main():\ncombined reader'
                 languages.sync(repo, 'master', '', 'head', current, site,
@@ -178,6 +180,57 @@ class SiteLanguagesTest(unittest.TestCase):
         for path in ('scripts/language_layout.py', 'Makefile', '.github/workflows/build.yml'):
             with self.subTest(path=path), patch.dict(files, {path: b'custom build using site-layout.json'}):
                 self.assertEqual({}, languages.repository_patch_v1(repo, 'head', book, {}, 'main', layout))
+
+    @patch.object(languages, 'COMBINED_LAYOUT_BUILDER', hashlib.sha256(b'combined reader').hexdigest())
+    @patch.object(languages, 'TEMPLATE_MAKEFILE_SHA256', hashlib.sha256(b'make').hexdigest())
+    def test_multilingual_growai_migrates_layout_once_and_keeps_all_content(self):
+        site = {'language': 'zh-hans', 'name': 'Docs',
+                'site_languages': {'default_language': 'zh-hans', 'overrides': {'en': {}}}}
+        layout = languages.layout_for('zh-hans', site['site_languages'], 'zh-hans')
+        layout['extra'] = {'keep': True}
+        files = {
+            'site-layout.json': languages.json_bytes(layout),
+            'book.json': b'{"plugins":["lanying-grow-ai@^1.0.13"],"pluginsConfig":{"lanying-grow-ai":{}}}',
+            'en/book.json': b'{"title":"Custom EN"}', 'zh-hans/book.json': b'{"title":"Custom ZH"}',
+            'en/README.md': b'# Home', 'zh-hans/README.md': b'# Docs',
+            'en/wiki/article.md': b'EN', 'zh-hans/wiki/article.md': b'ZH',
+            '.bookignore': b'/site-layout.json\n/seenical.json\n',
+            'scripts/language_layout.py': b'combined reader', 'Makefile': b'make',
+            '.github/workflows/build.yml': b'standard build',
+        }
+        repo = Mock()
+        set_repository_files(repo, files)
+        repo.json.side_effect = lambda path, *a, **kw: json.loads(files[path]) if path in files else None
+        repo.blob.side_effect = lambda data: data
+
+        def save():
+            current, path, manifest = languages.read_site_layout(repo, 'head', site)
+            languages.sync(repo, 'master', '', 'head', current, site, lambda _s, book, _c: book, None,
+                           manifest=manifest, layout_path=path, previous=languages.book_sync_state(site))
+            self.assertEqual({}, repo.commit.call_args.args[1])
+            return repo.commit.call_args.kwargs['patch_entries']
+
+        for path, content in (('scripts/language_layout.py', b'legacy reader'),
+                              ('seenical.json', b'customer file'),
+                              ('.github/workflows/build.yml', b'--config site-layout.json')):
+            with self.subTest(path=path), patch.dict(files, {path: content}):
+                self.assertEqual({}, save())
+
+        entries = save()
+        self.assertEqual({'site-layout.json', 'seenical.json'}, set(entries))
+        self.assertIsNone(entries['site-layout.json']['sha'])
+        manifest = json.loads(entries['seenical.json']['sha'])
+        self.assertEqual({**{k: v for k, v in layout.items() if k != 'version'},
+                          'template': 'seenical', 'repository_version': 1}, manifest)
+        del files['site-layout.json']
+        files['seenical.json'] = entries['seenical.json']['sha']
+        repo.blob.reset_mock()
+        self.assertEqual({}, save())
+        repo.blob.assert_not_called()
+        migrated, path, _ = languages.read_site_layout(repo, 'head', site)
+        self.assertEqual('seenical.json', path)
+        self.assertEqual(layout['languages'], migrated['languages'])
+        self.assertEqual('en', languages.release_language(migrated, {'article_language': 'en'}, 'zh-hans'))
 
     def test_repository_manifest_rejects_unknown_or_invalid_versions(self):
         repo = Mock()

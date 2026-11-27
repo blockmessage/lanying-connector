@@ -2311,10 +2311,7 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
         repository = site_languages.Repository(github_api_url, headers)
         if is_standard_hosted_site(site):
             try:
-                manifest = None
-                if site.get('site_template') == 'seenical':
-                    manifest = site_languages.read_repository_manifest(repository, commit_sha)
-                layout, _ = site_languages.read_site_layout(repository, commit_sha, manifest)
+                layout, _, _ = site_languages.read_site_layout(repository, commit_sha, site)
                 language = site_languages.release_language(layout, task_run, site['language'])
                 if language and language == layout.get('legacy_root_language'):
                     reserved_directories = layout['languages']
@@ -4703,10 +4700,9 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
         # GitHub can acknowledge template creation before its initial branch is readable.
         wait_for_ref = background and site.get('template_initialization') == 'pending'
         parent = repository.request('GET', f'git/ref/heads/{branch}', wait_for_ref=wait_for_ref)['object']['sha']
-        manifest = None
-        if site.get('site_template') == 'seenical' and is_standard_hosted_site(site):
-            manifest = site_languages.read_repository_manifest(repository, parent)
-        layout, layout_path = site_languages.read_site_layout(repository, parent, manifest)
+        layout_site = (old_site or site) if is_standard_hosted_site(site) else {}
+        layout, layout_path, manifest = site_languages.read_site_layout(repository, parent, layout_site)
+        site_key = get_site_key(site['app_id'], site['site_id'])
         upgrade_head = ''
         upgrade_url = ''
         if layout is None:
@@ -4714,25 +4710,36 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
                 return None
             saved_head = (old_site.get('language_upgrade_head', '')
                           if old_site.get('site_languages_sync_pending') == 'on' else '')
+            use_pr = site.get('commit_type') == 'pull_request'
+            digest = site_languages.upgrade_digest(site)
+            saved_digest = old_site.get('language_upgrade_digest')
             if saved_head:
                 upgrade_url = repository.open_upgrade(saved_head, branch)
-                same_settings = site_languages.upgrade_digest(site) == old_site.get('language_upgrade_digest')
-                if upgrade_url and not same_settings:
-                    update_site_field(site['app_id'], site['site_id'], 'language_upgrade_url', upgrade_url)
-                    raise ValueError('Close the existing language upgrade before changing its settings.')
-                if same_settings:
+                if upgrade_url or (use_pr and digest == saved_digest):
                     upgrade_head = saved_head
-            if not upgrade_url and repository.upgrade_is_open(old_site.get('language_upgrade_url')):
-                raise ValueError('Preview and merge or close the existing language upgrade before editing languages.')
-            if not upgrade_head:
+            saved_url = old_site.get('language_upgrade_url')
+            if not upgrade_url and saved_url and repository.upgrade_is_open(saved_url):
+                upgrade_url = saved_url
+            if upgrade_url:
+                matches = digest == saved_digest
+                if not saved_digest:
+                    # Older completed requests kept the proposed book state and PR URL.
+                    proposed = redis.hget(site_key, 'language_upgrade_sync_state')
+                    matches = (digest == site_languages.upgrade_digest(old_site)
+                               and (not proposed or json.loads(proposed) == site_languages.book_sync_state(site)))
+                if not matches:
+                    if upgrade_url != saved_url:
+                        update_site_field(site['app_id'], site['site_id'], 'language_upgrade_url', upgrade_url)
+                    raise ValueError('Close the existing language upgrade before changing its settings.')
+            elif use_pr and not upgrade_head:
                 upgrade_head = 'seenical-language-upgrade-' + uuid.uuid4().hex[:12]
         elif layout.get('version') != 2:
             if allow_upgrade:
                 raise ValueError('This site already has a custom language layout.')
             return None
-        site_key = get_site_key(site['app_id'], site['site_id'])
         if upgrade_url:
-            before_publish(upgrade_head)
+            if before_publish:
+                before_publish(upgrade_head)
         else:
             previous = site_book_baseline(old_site)
             if layout and old_site.get('language_upgrade_url'):
@@ -4749,6 +4756,7 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
                    'language_upgrade_url': upgrade_url, 'language_upgrade_head': '', 'language_upgrade_digest': ''}
         snapshot = json.dumps(site_languages.book_sync_state(site))
         if upgrade_url:
+            updates['language_upgrade_digest'] = site_languages.upgrade_digest(site)
             updates['language_upgrade_sync_state'] = snapshot
         else:
             updates['site_languages_enabled'] = 'on'

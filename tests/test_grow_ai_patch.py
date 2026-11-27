@@ -287,6 +287,13 @@ class GrowAIPatchTest(unittest.TestCase):
 
         for field, folder, preview in (
                 ('target_dir', 'en', None), ('target_summary_dir', 'zh-hans', 'preview')):
+            if preview:
+                # Same GrowAI site after its legacy layout has been migrated.
+                site['site_languages'] = {'default_language': 'en', 'overrides': {'en': {}}}
+                repo.json.return_value = None
+                repo.read.return_value = json.dumps({
+                    **{k: v for k, v in layout.items() if k != 'version'}, 'template': 'seenical',
+                    'repository_version': 1}).encode()
             with self.subTest(field=field), \
                     mock.patch.object(grow, 'get_task', return_value={**task(), field: f'/{folder}/articles'}), \
                     mock.patch.object(grow, 'get_task_run', return_value=run), \
@@ -321,6 +328,7 @@ class GrowAIPatchTest(unittest.TestCase):
                 mock.patch.object(grow, 'managed_site_repository', return_value=(repo, 'org', 'site')), \
                 mock.patch.object(grow.site_languages, 'sync', return_value='') as sync:
             for changes, eligible in (({}, True), ({'site_template': 'growai'}, False),
+                                      ({'site_template': 'growai', 'site_languages': {'overrides': {'en': {}}}}, True),
                                       ({'github_hosting': 'off'}, False), ({'github_base_dir': '/docs'}, False),
                                       ({'github_url': 'https://github.com/org/other'}, False)):
                 with self.subTest(changes=changes):
@@ -376,11 +384,67 @@ class GrowAIPatchTest(unittest.TestCase):
         self.assertEqual('base', sync.call_args.args[3])
         self.assertEqual({'upgrade_url': ''}, result)
 
+    def test_branch_upgrade_commits_to_the_configured_branch(self):
+        grow = self.module
+        languages = grow.site_languages
+        old = {'app_id': 'app', 'site_id': 55, 'language': 'zh-hans', 'github_base_branch': 'release',
+               'name': 'Docs', 'commit_type': 'branch'}
+        site = {**old, 'site_languages': {'default_language': 'zh-hans', 'overrides': {'en': {}}}}
+        repo = mock.Mock()
+        repo.request.return_value = {'object': {'sha': 'base'}}
+        repo.read.return_value = None
+        book = {'pluginsConfig': {'lanying-grow-ai': {}, 'edit-link': {'base': 'github'}}}
+        repo.json.side_effect = lambda path, *_a, **_kw: book if path == 'book.json' else None
+        repo.commit.return_value = ''
+        redis = mock.Mock()
+        redis.lock.return_value = nullcontext()
+        redis.hget.return_value = None
+        persist = mock.Mock()
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'managed_site_repository', return_value=(repo, 'org', 'site')), \
+                mock.patch.object(languages, 'legacy_upgrade_entries', return_value={}) as prepare:
+            result = grow.sync_hosted_languages(old, site, allow_upgrade=True, before_publish=persist)
+        prepare.assert_called_once_with(repo, 'base', 'zh-hans', 'release', 'master')
+        persist.assert_called_once_with('')
+        self.assertEqual({'upgrade_url': ''}, result)
+        self.assertEqual(('release', ''), repo.commit.call_args.args[2:])
+        self.assertEqual('on', redis.hmset.call_args.args[1]['site_languages_enabled'])
+
+    def test_branch_site_reuses_its_existing_open_upgrade_without_git_writes(self):
+        grow = self.module
+        languages = grow.site_languages
+        url = 'https://github.test/org/site/pull/1'
+        site = {'app_id': 'app', 'site_id': 55, 'language': 'zh-hans', 'commit_type': 'branch',
+                'site_languages': {'default_language': 'zh-hans', 'overrides': {'en': {}}},
+                'language_upgrade_url': url}
+        repo = mock.Mock()
+        repo.request.return_value = {'object': {'sha': 'base'}}
+        repo.json.return_value = None
+        repo.upgrade_is_open.return_value = True
+        redis = mock.Mock()
+        redis.lock.side_effect = lambda *_a, **_kw: nullcontext()
+        redis.hget.return_value = json.dumps(languages.book_sync_state(site))
+        persist = mock.Mock()
+        with mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'managed_site_repository', return_value=(repo, 'org', 'site')), \
+                mock.patch.object(languages, 'sync') as sync:
+            for _ in range(2):
+                self.assertEqual({'upgrade_url': url}, grow.sync_hosted_languages(
+                    site, site, allow_upgrade=True, before_publish=persist))
+                site.update(redis.hmset.call_args.args[1])
+            changed = {**site, 'site_languages': {**site['site_languages'], 'default_language': 'en'}}
+            with self.assertRaisesRegex(ValueError, 'existing language upgrade'):
+                grow.sync_hosted_languages(site, changed, allow_upgrade=True, before_publish=persist)
+        self.assertEqual([mock.call('')] * 2, persist.call_args_list)
+        repo.upgrade_is_open.assert_called_with(url)
+        sync.assert_not_called()
+        repo.commit.assert_not_called()
+
     def test_closed_upgrade_pr_does_not_mark_canonical_as_synced(self):
         grow = self.module
         languages = grow.site_languages
         old = {'app_id': 'app', 'site_id': 7, 'name': 'Docs', 'language': 'zh-hans',
-               'canonical_link': 'https://old.example'}
+               'canonical_link': 'https://old.example', 'commit_type': 'pull_request'}
         site = {**old, 'canonical_link': 'https://new.example', 'site_languages': {
             'default_language': 'zh-hans', 'overrides': {'en': {'title': 'Docs'}}}}
         old_state = json.dumps(languages.book_sync_state(old))
@@ -404,6 +468,9 @@ class GrowAIPatchTest(unittest.TestCase):
             grow.sync_hosted_languages(old, site, allow_upgrade=True, before_publish=mock.Mock())
             self.assertEqual(old_state, state['book_sync_state'])
             grow.sync_hosted_languages({**site, **state}, site, allow_upgrade=True, before_publish=mock.Mock())
+        heads = [call.args[3] for call in repo.commit.call_args_list]
+        self.assertEqual(2, len(set(heads)))
+        self.assertTrue(all(head.startswith('seenical-language-upgrade-') for head in heads))
         entries = repo.commit.call_args.args[1]
         plugins = json.loads(entries['book.json']['sha'])['pluginsConfig']
         self.assertEqual(site['canonical_link'], plugins['canonical-link']['baseURL'])
