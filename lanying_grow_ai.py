@@ -2230,6 +2230,19 @@ def del_content_meta_key(content, key):
     pattern = r'^{}: (.*)\n?'.format(key)
     return re.sub(pattern, '', content, 1, re.MULTILINE)
 
+def missing_navigation_readmes(repository, commit_sha, pages):
+    entries = []
+    for path, title in pages:
+        existing = repository.request('GET', 'contents/' + quote(path, safe='/'),
+                                      params={'ref': commit_sha}, missing_ok=True)
+        if existing is None:
+            sha = repository.blob(f'# {title}'.encode('utf-8'))
+            entries.append(site_languages.entry(path, sha))
+        elif not isinstance(existing, dict) or existing.get('type') != 'file':
+            raise ValueError(f'Navigation page is not a file: {path}')
+    return entries
+
+
 def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_branch=None):
     logging.info(f"deploy task_run start | app_id:{app_id}, task_run_id:{task_run_id}, has_retry_times:{has_retry_times}")
     timestr = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -2295,9 +2308,9 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
         commit_sha = response.json()["object"]["sha"]
         language = ''
         reserved_directories = ()
+        repository = site_languages.Repository(github_api_url, headers)
         if is_standard_hosted_site(site):
             try:
-                repository = site_languages.Repository(github_api_url, headers)
                 layout = repository.json('site-layout.json', commit_sha, optional=True)
                 language = site_languages.release_language(layout, task_run, site['language'])
                 if language and language == layout.get('legacy_root_language'):
@@ -2408,54 +2421,21 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
                         "type": "blob",
                         "sha": blob_sha
                     })
+        navigation_pages = []
         target_link = os.path.join(target_summary_relative_dir, "README.md")
         summary = GitBookSummary(summary_text = summary_text)
         if not summary.has_link(target_link):
             summary.append_summary(target_summary_relative_dir, target_link)
-            readme_content = f"# {target_summary_dir.capitalize()}"
-            readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
-            blob_data = {
-            "content": readme_content_base64,
-            "encoding": "base64"
-            }
-            response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-            if response.status_code != 201:
-                logging.info(f"github response | {response.content}")
-                return {'result': 'error', 'message': 'github fail to add target_dir blobs'}
-            blob_sha = response.json()["sha"]
-            github_path = os.path.join(target_summary_dir, "README.md")
-            logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
-            tree.append({
-                "path": github_path,
-                "mode": "100644",
-                "type": "blob",
-                "sha": blob_sha
-            })
+            navigation_pages.append((os.path.join(target_summary_dir, "README.md"),
+                                     target_summary_dir.capitalize()))
         target_summary = summary.get_summary_by_link(target_link)
         latest = 'latest'
         latest_title = 'Latest' if language == 'en' else '最新'
         latest_link = os.path.join(target_summary_relative_dir, latest, "README.md")
         if not summary.has_link(latest_link):
             summary.add_summary_link_after_parent(latest_title, latest_link, target_summary)
-            readme_content = f"# {os.path.join(target_summary_relative_dir, latest_title).capitalize()}"
-            readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
-            blob_data = {
-            "content": readme_content_base64,
-            "encoding": "base64"
-            }
-            response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-            if response.status_code != 201:
-                logging.info(f"github response | {response.content}")
-                return {'result': 'error', 'message': 'github fail to add date blobs'}
-            blob_sha = response.json()["sha"]
-            github_path = os.path.join(target_summary_dir, latest, "README.md")
-            logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
-            tree.append({
-                "path": github_path,
-                "mode": "100644",
-                "type": "blob",
-                "sha": blob_sha
-            })
+            navigation_pages.append((os.path.join(target_summary_dir, latest, "README.md"),
+                                     os.path.join(target_summary_relative_dir, latest_title).capitalize()))
         latest_summary = summary.get_summary_by_link(latest_link)
         summary.add_summary_link_list_after_parent(summary_link_list, latest_summary)
         truncate_list = summary.truncate_summary(latest_summary, max_latest_num)
@@ -2473,27 +2453,14 @@ def do_deploy_task_run_internal(app_id, task_run_id, has_retry_times, preview_br
             datestr_link = os.path.join(target_summary_relative_dir, datestr, "README.md")
             if not summary.has_link(datestr_link):
                 summary.add_summary_link_after_brother(datestr, datestr_link, latest_summary)
-                readme_content = f"# {os.path.join(target_summary_relative_dir, datestr).capitalize()}"
-                readme_content_base64 = base64.b64encode(readme_content.encode()).decode()
-                blob_data = {
-                "content": readme_content_base64,
-                "encoding": "base64"
-                }
-                response = requests.post(f"{github_api_url}/git/blobs", headers=headers, json=blob_data)
-                if response.status_code != 201:
-                    logging.info(f"github response | {response.content}")
-                    return {'result': 'error', 'message': 'github fail to add date blobs'}
-                blob_sha = response.json()["sha"]
-                github_path = os.path.join(target_summary_dir, datestr, "README.md")
-                logging.info(f"blob data | github_path:{github_path}, sha:{blob_sha}")
-                tree.append({
-                    "path": github_path,
-                    "mode": "100644",
-                    "type": "blob",
-                    "sha": blob_sha
-                })
+                navigation_pages.append((os.path.join(target_summary_dir, datestr, "README.md"),
+                                         os.path.join(target_summary_relative_dir, datestr).capitalize()))
             datestr_summary = summary.get_summary_by_link(datestr_link)
             summary.add_summary_link_list_after_parent(truncate_list, datestr_summary)
+        try:
+            tree.extend(missing_navigation_readmes(repository, commit_sha, navigation_pages))
+        except (ValueError, requests.RequestException) as error:
+            return {'result': 'error', 'message': str(error)}
         new_summary_content = summary.to_markdown()
         new_summary_content_base64 = base64.b64encode(new_summary_content.encode()).decode()
         blob_data = {

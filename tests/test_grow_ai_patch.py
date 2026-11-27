@@ -248,6 +248,26 @@ class GrowAIPatchTest(unittest.TestCase):
                 executor.submit.assert_called_once_with(initialize, 'app', 7)
                 redis.rpush.assert_called_once_with(grow.get_site_list_key('app'), 7)
 
+    def test_navigation_readmes_preserve_existing_files_at_the_base_commit(self):
+        grow = self.module
+        pages = [('docs/wiki/README.md', 'Wiki'), ('docs/wiki/latest/README.md', 'Latest'),
+                 ('docs/wiki/20261127/README.md', 'Archive')]
+        repo = mock.Mock()
+        repo.request.side_effect = [{'type': 'file'}, None, {'type': 'file'}]
+        repo.blob.return_value = 'new-page'
+        entries = grow.missing_navigation_readmes(repo, 'base', pages)
+        self.assertEqual([grow.site_languages.entry(pages[1][0], 'new-page')], entries)
+        repo.blob.assert_called_once_with(b'# Latest')
+        self.assertEqual([mock.call('GET', 'contents/' + path, params={'ref': 'base'}, missing_ok=True)
+                          for path, _ in pages], repo.request.call_args_list)
+
+    def test_navigation_readme_lookup_failure_never_creates_a_replacement(self):
+        repo = mock.Mock()
+        repo.request.side_effect = ValueError('HTTP 403')
+        with self.assertRaisesRegex(ValueError, '403'):
+            self.module.missing_navigation_readmes(repo, 'base', [('wiki/README.md', 'Wiki')])
+        repo.blob.assert_not_called()
+
     def test_publish_rejects_reserved_language_directories_before_github_writes(self):
         grow = self.module
         base_repo = 'https://github.com/org/site'
