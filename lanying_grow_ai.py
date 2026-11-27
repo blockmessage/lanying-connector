@@ -44,6 +44,7 @@ from redis.lock import Lock
 ARTICLE_LANGUAGE_VALUES = {'auto', 'zh-hans', 'en'}
 MAX_FILE_TITLE_LENGTH = 999
 SEENICAL_SITE_CREATE_RETRY_SECONDS = 1200
+SITE_LANGUAGE_SYNC_REQUEUE_SECONDS = 300
 
 
 class TaskSetting:
@@ -4495,6 +4496,22 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
         saved_settings = True
 
     sync_result = None
+    candidate = {**site_info, **fields}
+    enabled_overrides = (site_info.get('site_languages') or {}).get('overrides', {})
+    queue_sync = (site_info.get('site_languages_enabled') == 'on' and bool(enabled_overrides)
+                  and not site_info.get('language_upgrade_url')
+                  and is_standard_hosted_site(site_info) and is_standard_hosted_site(candidate)
+                  and all(candidate.get(field) == site_info.get(field)
+                          for field in ('type', 'collaborator', 'canonical_link', 'google_token')))
+    sync_status = site_info.get('site_languages_sync_status')
+    keep_pending_sync = (sync_status in ('queued', 'failed') and language_settings is None
+                         and is_standard_hosted_site(candidate))
+    if queue_sync:
+        fields.update(site_languages_sync_status='queued', site_languages_sync_pending='on',
+                      site_languages_sync_queued_at=now)
+    elif sync_status and not keep_pending_sync:
+        fields.update(site_languages_sync_status='', site_languages_sync_pending='off',
+                      site_languages_sync_queued_at=0)
     try:
         if language_settings is None:
             persist_settings()
@@ -4504,14 +4521,17 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
             settings = site_languages.normalize(language_settings, site_info['language'])
             if set(site_info.get('site_languages', {}).get('overrides', {})) - settings['overrides'].keys():
                 raise ValueError('Existing site languages cannot be removed.')
-            candidate = {**site_info, **fields, 'site_languages': settings}
+            candidate['site_languages'] = settings
             fields['site_languages'] = json.dumps(settings, ensure_ascii=False)
             fields['site_languages_sync_pending'] = 'on'
-            sync_result = sync_hosted_languages(
-                site_info, candidate, allow_upgrade=bool(settings['overrides']),
-                before_publish=persist_settings)
-            if sync_result is None:
-                raise ValueError('Add another language to upgrade this site.')
+            if queue_sync:
+                persist_settings()
+            else:
+                sync_result = sync_hosted_languages(
+                    site_info, candidate, allow_upgrade=bool(settings['overrides']),
+                    before_publish=persist_settings)
+                if sync_result is None:
+                    raise ValueError('Add another language to upgrade this site.')
     except WatchError:
         return {'result': 'error', 'message': 'site revision changed'}
     except (RedisError, ValueError, requests.RequestException) as error:
@@ -4520,6 +4540,10 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
             return {'result': 'error', 'message': 'Language settings were saved, but publishing failed. Save again to retry.'}
         message = 'Could not save site settings.' if isinstance(error, RedisError) else str(error)
         return {'result': 'error', 'message': message}
+    if queue_sync:
+        enqueue_site_language_sync({**candidate, 'agent_tools_revision': fields['agent_tools_revision']})
+        return {'result': 'ok', 'data': {'success': True, 'language_upgrade_url': ''}}
+
     new_site_info = get_site(app_id, site_id)
     new_site_info = maybe_init_github_site_repo(app_id, site_info, new_site_info)
     maybe_invite_github_member(app_id, site_info, new_site_info)
@@ -4552,7 +4576,76 @@ def configure_site(site_id, site_setting: SiteSetting, language_settings=None):
         }
     }
 
+def can_retry_site_language_sync(status, queued_at, now):
+    return status == 'failed' or (status == 'queued' and now - int(queued_at or 0) >= SITE_LANGUAGE_SYNC_REQUEUE_SECONDS)
+
+
+def transition_site_language_sync(site, expected, status):
+    redis = lanying_redis.get_redis_connection()
+    key = get_site_key(site['app_id'], site['site_id'])
+    revision = int(site.get('agent_tools_revision', 0) or 0)
+
+    def transition(pipe):
+        current = int(pipe.hget(key, 'agent_tools_revision') or 0)
+        if current != revision or lanying_redis.redis_hget(pipe, key, 'site_languages_sync_status') != expected:
+            return False
+        now = int(time.time())
+        if status == 'queued':
+            queued_at = pipe.hget(key, 'site_languages_sync_queued_at') or pipe.hget(key, 'update_time')
+            if not can_retry_site_language_sync(expected, queued_at, now):
+                return False
+        pipe.multi()
+        pipe.hmset(key, {'site_languages_sync_status': status,
+                         'site_languages_sync_pending': 'off' if status == 'synced' else 'on',
+                         'site_languages_sync_queued_at': now if status == 'queued' else 0})
+        return True
+
+    return redis.transaction(transition, key, value_from_callable=True)
+
+
+def enqueue_site_language_sync(site):
+    try:
+        from lanying_tasks import grow_ai_site_language_sync_task
+        grow_ai_site_language_sync_task.apply_async(args=[site['app_id'], site['site_id']], retry=False)
+    except Exception as error:
+        logging.warning('Could not queue language sync for site %s: %s', site['site_id'], type(error).__name__)
+        transition_site_language_sync(site, 'queued', 'failed')
+
+
+def retry_site_language_sync(app_id, site_id):
+    site = get_site(app_id, site_id)
+    if not site or not is_standard_hosted_site(site):
+        return {'result': 'error', 'message': 'Hosted site not found.'}
+    status = site.get('site_languages_sync_status')
+    if status in ('queued', 'failed') and transition_site_language_sync(site, status, 'queued'):
+        enqueue_site_language_sync(site)
+    current = get_site(app_id, site_id) or {}
+    return {'result': 'ok', 'data': {
+        'site_languages_sync_status': current.get('site_languages_sync_status', ''),
+        'site_languages_sync_can_retry': current.get('site_languages_sync_can_retry', False),
+    }}
+
+
+def sync_queued_site_languages(app_id, site_id):
+    site = get_site(app_id, site_id)
+    if not site or site.get('site_languages_sync_status') != 'queued':
+        return
+    try:
+        result = sync_hosted_languages(site, site, queued=True)
+        if result is None:
+            raise ValueError('Could not find the site language layout.')
+    except RedisError:
+        raise
+    except Exception as error:
+        logging.warning('Could not sync languages for site %s: %s', site_id, type(error).__name__)
+        if not transition_site_language_sync(site, 'queued', 'failed'):
+            raise WatchError('Site revision changed.')
+
+
 def maybe_sync_to_github(old_site, site):
+    if site.get('site_languages_sync_status') == 'queued':
+        enqueue_site_language_sync(site)
+        return
     try:
         executor.submit(sync_to_github, old_site, site)
     except Exception as e:
@@ -4605,15 +4698,32 @@ def site_book_directory_changed(old_site, site, previous):
     return previous_dir != site_languages.book_sync_state(site)[primary]['github_base_dir']
 
 
-def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False, before_publish=None):
+def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False, before_publish=None, queued=False):
     repository, owner, name = managed_site_repository(site)
     branch = site.get('github_base_branch', 'master')
     redis = lanying_redis.get_redis_connection()
     with redis.lock(f'lanying-connector-deploy-task-lock:{owner}/{name}', timeout=1200, lock_class=SiteRepositoryLock):
+        if queued:
+            def check_queued_version():
+                latest = get_site(site['app_id'], site['site_id'])
+                if not latest or latest.get('site_languages_sync_status') != 'queued':
+                    return False
+                if latest.get('agent_tools_revision') != site.get('agent_tools_revision'):
+                    raise WatchError('Site revision changed.')
+                return True
+
+            if not check_queued_version():
+                return {'stale': True}
+
+            def before_publish(_upgrade_head):
+                if not check_queued_version():
+                    raise WatchError('Site sync is no longer pending.')
+
         if background:
             latest = get_site(site['app_id'], site['site_id'])
             if (not latest or latest.get('agent_tools_revision') != site.get('agent_tools_revision')
-                    or latest.get('site_languages_sync_pending') == 'on'):
+                    or latest.get('site_languages_sync_pending') == 'on'
+                    or latest.get('site_languages_sync_status') == 'queued'):
                 return {'stale': True}
         # GitHub can acknowledge template creation before its initial branch is readable.
         wait_for_ref = background and site.get('template_initialization') == 'pending'
@@ -4665,7 +4775,14 @@ def sync_hosted_languages(old_site, site, allow_upgrade=False, background=False,
             updates['site_languages_enabled'] = 'on'
             updates['book_sync_state'] = snapshot
             updates['language_upgrade_sync_state'] = ''
-        redis.hmset(site_key, updates)
+        if queued:
+            # This baseline describes what reached GitHub, even if another save
+            # queued a newer revision before GitHub responded.
+            redis.hset(site_key, 'book_sync_state', snapshot)
+            if not transition_site_language_sync(site, 'queued', 'synced'):
+                raise WatchError('Site revision changed.')
+        else:
+            redis.hmset(site_key, updates)
     return {'upgrade_url': upgrade_url}
 
 
@@ -4970,7 +5087,7 @@ def get_site(app_id, site_id):
         for key,value in info.items():
             if key in ['create_time', 'update_time', 'website_storage', 'max_latest_num', 'baidu_index_pages', 'google_index_pages']:
                 dto[key] = int(value)
-            elif key in ('book_sync_state', 'language_upgrade_sync_state'):
+            elif key in ('book_sync_state', 'language_upgrade_sync_state', 'site_languages_sync_queued_at'):
                 continue
             elif key == 'site_languages':
                 dto[key] = json.loads(value)
@@ -5027,6 +5144,10 @@ def get_site(app_id, site_id):
         if 'collaborator' not in dto:
             dto['collaborator'] = ''
         dto['site_languages_supported'] = is_standard_hosted_site(dto)
+        sync_status = dto.get('site_languages_sync_status')
+        if sync_status in ('queued', 'failed'):
+            queued_at = info.get('site_languages_sync_queued_at') or dto['update_time']
+            dto['site_languages_sync_can_retry'] = can_retry_site_language_sync(sync_status, queued_at, int(time.time()))
         maybe_add_site_url(dto)
         return dto
     return None

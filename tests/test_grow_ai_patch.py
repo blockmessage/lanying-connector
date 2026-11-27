@@ -390,6 +390,183 @@ class GrowAIPatchTest(unittest.TestCase):
             lock.release()
         pipe.delete.assert_not_called()
 
+    def test_established_language_save_persists_before_enqueuing(self):
+        grow = self.module
+        original = {'app_id': 'app', 'site_id': '7', 'language': 'zh-hans', 'agent_tools_revision': '4',
+                    'github_hosting': 'on', 'github_url': 'https://github.com/org/site',
+                    'github_hosting_url': 'https://github.com/org/site',
+                    'site_languages_enabled': 'on',
+                    'site_languages': {'default_language': 'zh-hans', 'overrides': {'en': {'title': 'English'}}}}
+        site_setting = mock.Mock(app_id='app', baidu_token=None, github_hosting='on')
+        site_setting.to_hmset_fields.side_effect = lambda: dict(
+            github_hosting='on', github_url='', github_token='', github_base_branch='master',
+            baidu_token=None, name='Edited name')
+        change = {'default_language': 'en', 'overrides': original['site_languages']['overrides']}
+        for language_payload in (change, None):
+            with self.subTest(language_payload=language_payload):
+                redis = mock.MagicMock()
+                pipe = redis.pipeline.return_value.__enter__.return_value
+                pipe.hget.return_value = b'4'
+                with mock.patch.object(grow, 'check_site_setting', return_value={'result': 'ok'}), \
+                        mock.patch.object(grow, 'get_github_org', return_value='org'), \
+                        mock.patch.object(grow, 'get_site', return_value=original), \
+                        mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                        mock.patch.object(grow, 'sync_hosted_languages') as sync, \
+                        mock.patch.object(grow, 'enqueue_site_language_sync') as enqueue:
+                    def verify_persisted(site):
+                        self.assertEqual(5, site['agent_tools_revision'])
+                        pipe.execute.assert_called_once()
+                    enqueue.side_effect = verify_persisted
+                    self.assertEqual('ok', grow.configure_site('7', site_setting, language_payload)['result'])
+                    sync.assert_not_called()
+                    enqueue.assert_called_once()
+                    fields = pipe.hmset.call_args.args[1]
+                    self.assertEqual('queued', fields['site_languages_sync_status'])
+                    self.assertEqual('on', fields['site_languages_sync_pending'])
+                    if language_payload is None:
+                        self.assertNotIn('site_languages', fields)
+                    else:
+                        self.assertEqual('en', json.loads(fields['site_languages'])['default_language'])
+
+    def test_failed_collaborator_save_keeps_pending_language_sync(self):
+        grow = self.module
+        old = {'app_id': 'app', 'site_id': '7', 'name': 'Docs', 'type': 'gitbook',
+               'language': 'zh-hans', 'agent_tools_revision': '4', 'collaborator': '',
+               'github_hosting': 'on', 'github_url': 'https://github.com/org/site',
+               'github_hosting_url': 'https://github.com/org/site',
+               'site_languages': {'default_language': 'en', 'overrides': {'en': {}}},
+               'site_languages_enabled': 'on', 'site_languages_sync_status': 'queued',
+               'site_languages_sync_pending': 'on'}
+        setting = mock.Mock(app_id='app', baidu_token=None, github_hosting='on')
+        setting.to_hmset_fields.return_value = {
+            'github_hosting': 'on', 'github_url': '', 'github_token': '',
+            'github_base_branch': 'master', 'baidu_token': None, 'collaborator': 'maintainer',
+        }
+        redis = mock.MagicMock()
+        pipe = redis.pipeline.return_value.__enter__.return_value
+        pipe.hget.return_value = b'4'
+        stored = dict(old)
+        pipe.hmset.side_effect = lambda _key, fields: stored.update(fields)
+        github = mock.Mock(get_repo=mock.Mock(side_effect=TimeoutError))
+        with mock.patch.object(grow, 'check_site_setting', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'get_github_org', return_value='org'), \
+                mock.patch.object(grow, 'get_site', side_effect=lambda *_: dict(stored)), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'get_github', return_value=github):
+            with self.assertRaises(TimeoutError):
+                grow.configure_site('7', setting)
+        self.assertEqual('maintainer', stored['collaborator'])
+        self.assertEqual('queued', stored['site_languages_sync_status'])
+        self.assertEqual('on', stored['site_languages_sync_pending'])
+        self.assertEqual('en', stored['site_languages']['default_language'])
+
+    def test_stalled_language_sync_can_be_requeued_once_at_the_threshold(self):
+        grow = self.module
+        delay = grow.SITE_LANGUAGE_SYNC_REQUEUE_SECONDS
+        now = 1000
+        stored = {'agent_tools_revision': 4, 'site_languages_sync_status': 'queued',
+                  'site_languages_sync_queued_at': now - delay + 1}
+        site = {'app_id': 'app', 'site_id': '7', **stored}
+        redis, pipe = mock.Mock(), mock.Mock()
+        redis.transaction.side_effect = lambda fn, _key, **_kwargs: fn(pipe)
+        pipe.hget.side_effect = lambda _key, field: stored.get(field)
+        pipe.hmset.side_effect = lambda _key, fields: stored.update(fields)
+        with mock.patch.object(grow.time, 'time', side_effect=lambda: now), \
+                mock.patch.object(grow, 'is_standard_hosted_site', return_value=True), \
+                mock.patch.object(grow, 'get_site', side_effect=lambda *_: {**site, **stored}), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow.lanying_redis, 'redis_hget', create=True,
+                                  side_effect=lambda _pipe, _key, field: stored.get(field)), \
+                mock.patch.object(grow, 'enqueue_site_language_sync') as enqueue:
+            grow.retry_site_language_sync('app', '7')
+            enqueue.assert_not_called()
+            now += 1
+            grow.retry_site_language_sync('app', '7')
+            grow.retry_site_language_sync('app', '7')
+            enqueue.assert_called_once()
+        self.assertEqual(now, stored['site_languages_sync_queued_at'])
+        self.assertEqual(4, stored['agent_tools_revision'])
+
+    def test_first_language_upgrade_still_returns_its_pr(self):
+        grow = self.module
+        old = {'app_id': 'app', 'site_id': '7', 'language': 'zh-hans', 'agent_tools_revision': '4',
+               'github_hosting': 'on', 'github_url': 'https://github.com/org/site',
+               'github_hosting_url': 'https://github.com/org/site'}
+        setting = mock.Mock(app_id='app', baidu_token=None, github_hosting='on')
+        setting.to_hmset_fields.return_value = {
+            'github_hosting': 'on', 'github_url': '', 'github_token': '',
+            'github_base_branch': 'master', 'baidu_token': None,
+        }
+        redis = mock.MagicMock()
+        pipe = redis.pipeline.return_value.__enter__.return_value
+        pipe.hget.return_value = b'4'
+
+        def sync(_original, _candidate, *, allow_upgrade, before_publish):
+            self.assertTrue(allow_upgrade)
+            before_publish('upgrade-branch')
+            return {'upgrade_url': 'https://github.com/org/site/pull/1'}
+
+        with mock.patch.object(grow, 'check_site_setting', return_value={'result': 'ok'}), \
+                mock.patch.object(grow, 'get_github_org', return_value='org'), \
+                mock.patch.object(grow, 'get_site', return_value=old), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'sync_hosted_languages', side_effect=sync), \
+                mock.patch.object(grow, 'enqueue_site_language_sync') as enqueue, \
+                mock.patch.object(grow, 'maybe_invite_github_member'), \
+                mock.patch.object(grow, 'maybe_register_github_site'), \
+                mock.patch.object(grow, 'maybe_init_analytics'):
+            result = grow.configure_site('7', setting, {'default_language': 'en', 'overrides': {'en': {}}})
+        self.assertEqual('https://github.com/org/site/pull/1', result['data']['language_upgrade_url'])
+        enqueue.assert_not_called()
+
+    def test_failed_queue_job_records_failure_for_its_revision(self):
+        grow = self.module
+        site = {'app_id': 'app', 'site_id': '7', 'agent_tools_revision': '4',
+                'site_languages_sync_status': 'queued'}
+        with mock.patch.object(grow, 'get_site', return_value=site), \
+                mock.patch.object(grow, 'sync_hosted_languages', side_effect=ValueError), \
+                mock.patch.object(grow, 'transition_site_language_sync', return_value=True) as transition, \
+                self.assertLogs(level='WARNING'):
+            grow.sync_queued_site_languages('app', '7')
+        transition.assert_called_once_with(site, 'queued', 'failed')
+
+    def test_queued_sync_keeps_new_revision_pending_after_github_commit(self):
+        grow = self.module
+        site = {'app_id': 'app', 'site_id': '7', 'language': 'zh-hans', 'agent_tools_revision': '4',
+                'site_languages_sync_status': 'queued',
+                'site_languages': {'default_language': 'en', 'overrides': {'en': {}}}}
+        redis = mock.MagicMock()
+        repository = mock.Mock()
+        repository.request.return_value = {'object': {'sha': 'head'}}
+        repository.json.return_value = {'version': 2}
+        key = grow.get_site_key('app', '7')
+        with mock.patch.object(grow, 'managed_site_repository', return_value=(repository, 'org', 'repo')), \
+                mock.patch.object(grow.lanying_redis, 'get_redis_connection', return_value=redis), \
+                mock.patch.object(grow, 'site_book_baseline', return_value={}), \
+                mock.patch.object(grow, 'get_site', return_value=site), \
+                mock.patch.object(grow.site_languages, 'sync', return_value='') as sync, \
+                mock.patch.object(grow, 'transition_site_language_sync', return_value=False) as transition:
+            with self.assertRaises(grow.WatchError):
+                grow.sync_hosted_languages(site, site, queued=True)
+            sync.assert_called_once()
+            redis.hset.assert_called_once_with(key, 'book_sync_state', json.dumps(grow.site_languages.book_sync_state(site)))
+            redis.hmset.assert_not_called()
+            transition.assert_called_once_with(site, 'queued', 'synced')
+
+    def test_retry_queues_only_the_already_saved_revision(self):
+        grow = self.module
+        site = {'app_id': 'app', 'site_id': '7', 'agent_tools_revision': '4',
+                'site_languages_sync_status': 'failed'}
+        queued = {**site, 'site_languages_sync_status': 'queued'}
+        with mock.patch.object(grow, 'is_standard_hosted_site', return_value=True), \
+                mock.patch.object(grow, 'get_site', side_effect=[site, queued]), \
+                mock.patch.object(grow, 'transition_site_language_sync', return_value=True) as transition, \
+                mock.patch.object(grow, 'enqueue_site_language_sync') as enqueue:
+            result = grow.retry_site_language_sync('app', '7')
+            self.assertEqual('queued', result['data']['site_languages_sync_status'])
+            transition.assert_called_once_with(site, 'failed', 'queued')
+            enqueue.assert_called_once_with(site)
+
     def test_english_site_creation_returns_before_hosting_starts(self):
         grow = self.module
         settings = mock.Mock(app_id='app', language='en', github_hosting='on')

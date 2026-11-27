@@ -662,6 +662,11 @@ def configure_site():
     app_id = str(data['app_id'])
     tenement_id = str(data.get('tenement_id', ''))
     site_id = str(data['site_id'])
+    if data.get('retry_language_sync') is True and set(data) <= {'site_id', 'app_id', 'tenement_id', 'retry_language_sync'}:
+        result = lanying_grow_ai.retry_site_language_sync(app_id, site_id)
+        if result['result'] == 'error':
+            return make_response({'code': 400, 'message': result['message']})
+        return make_response({'code': 200, 'data': result['data']})
     if set(data) <= {'site_id', 'app_id', 'tenement_id'}:
         existing = lanying_grow_ai.get_site(app_id, site_id)
         if existing and existing.get('site_template') == 'seenical' and existing.get('github_hosting') == 'on':

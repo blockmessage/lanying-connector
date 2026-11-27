@@ -781,6 +781,14 @@ def grow_ai_deply_task_run(self, app_id, task_run_id):
     except Exception as e:
         raise self.retry(exc=e, countdown=10)
 
+@slow_queue.task(bind=True, max_retries=None, acks_late=True, reject_on_worker_lost=True)
+def grow_ai_site_language_sync_task(self, app_id, site_id):
+    try:
+        lanying_grow_ai.sync_queued_site_languages(app_id, site_id)
+    except lanying_grow_ai.RedisError as error:
+        raise self.retry(exc=error, countdown=5)
+
+
 @slow_queue.task
 def grow_ai_preview_task(app_id, preview_id):
     try:
