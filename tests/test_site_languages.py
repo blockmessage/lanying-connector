@@ -557,6 +557,44 @@ class SiteLanguagesTest(unittest.TestCase):
                 entries = repo.commit.call_args.args[1]
                 self.assertEqual(homepage, entries[f'{added}/README.md']['sha'])
                 self.assertNotIn(f'{primary}/README.md', entries)
+                expected_label = 'Home' if added == 'en' else '首页'
+                self.assertEqual(f'# Summary\n\n* [{expected_label}](README.md)\n'.encode(),
+                                 entries[f'{added}/SUMMARY.md']['sha'])
+
+    def test_seenical_sync_corrects_default_labels_and_preserves_custom_navigation(self):
+        settings = {'default_language': 'zh-hans', 'overrides': {'en': {}}}
+        site = {'language': 'zh-hans', 'name': 'Docs', 'site_languages': settings}
+        layout = languages.layout_for('zh-hans', settings, 'zh-hans')
+        tail = b'\r\n* [Documentation](articles/README.md)\r\n'
+        files = {'en/README.md': b'# Home', 'zh-hans/README.md': b'# Home',
+                 'en/SUMMARY.md': b'# Summary\r\n\r\n* [Documentation](README.md)' + tail,
+                 'zh-hans/SUMMARY.md': '# Summary\n\n* [产品文档](README.md)'.encode()}
+        books = {'book.json': {'pluginsConfig': {'seenical': {}, 'edit-link': {'label': '在GitHub上编辑'}}}}
+        repo = Mock()
+        set_repository_files(repo, files)
+        repo.json.side_effect = lambda path, *_args, **_opts: books.get(path)
+        repo.blob.side_effect = lambda content: content
+
+        def sync():
+            languages.sync(repo, 'master', '', 'parent', layout, site, lambda _s, book, _c: book, None,
+                           previous=languages.book_sync_state(site))
+            return {k: v['sha'] for k, v in repo.commit.call_args.args[1].items()}
+
+        edits = sync()
+        self.assertEqual(b'# Summary\r\n\r\n* [Home](README.md)' + tail, edits['en/SUMMARY.md'])
+        self.assertEqual('# Summary\n\n* [首页](README.md)'.encode(), edits['zh-hans/SUMMARY.md'])
+        files.update(edits)
+        books['en/book.json'] = json.loads(edits['en/book.json'])
+        edit_link = books['en/book.json']['pluginsConfig']['edit-link']
+        self.assertEqual('Edit on GitHub', edit_link['label'])
+        self.assertEqual({}, sync())
+
+        files['en/SUMMARY.md'] = b'# Summary\n\n* [Start here](README.md)' + tail
+        edit_link['label'] = 'Suggest an edit'
+        self.assertEqual({}, sync())
+        del edit_link['label']
+        books['book.json']['pluginsConfig']['edit-link']['label'] = 'Edit with our team'
+        self.assertEqual({}, sync())
 
     def test_seenical_footer_marks_only_site_owned_links(self):
         from test_grow_ai_patch import load_grow_ai

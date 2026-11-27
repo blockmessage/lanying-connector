@@ -14,6 +14,7 @@ import requests
 
 REPOSITORY_VERSION = 1
 LANGUAGES = {'zh-hans': '简体中文', 'en': 'English'}
+SEENICAL_HOME_LABELS = {'zh-hans': '首页', 'en': 'Home'}
 COPY_FIELDS = ('title', 'meta_keywords', 'copyright', 'footer_note', 'hook_sentence_slogan',
                'hook_sentence_image', 'official_website_url', 'lanying_link')
 URL_FIELDS = {'hook_sentence_image', 'official_website_url', 'lanying_link'}
@@ -624,7 +625,7 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
                 raise ValueError(f'The language directory already exists: {code}')
             label = LANGUAGES[code]
             if plugin_key == 'seenical':
-                label = 'Documentation' if code == 'en' else '产品文档'
+                label = SEENICAL_HOME_LABELS[code]
                 seed = 'scripts/home/en.md' if code == 'en' else 'zh-hans/README.md'
                 homepage = Repository(TEMPLATE_API, repository.headers).read(seed, template_ref)
             else:
@@ -635,17 +636,29 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
                 put(filename, content)
         elif not upgrade and repository.read(path(home), parent, optional=True) is None:
             raise ValueError(f'The language homepage is missing: {code}')
+        elif not upgrade and plugin_key == 'seenical':
+            # Correct only the homepage entry in a Connector-generated summary.
+            content = repository.read(path(summary), parent, optional=True) or b''
+            old_label = 'Documentation' if code == 'en' else '产品文档'
+            old_link = f'* [{old_label}](README.md)'.encode()
+            if content.splitlines()[:3] == [b'# Summary', b'', old_link]:
+                new_link = f'* [{SEENICAL_HOME_LABELS[code]}](README.md)'.encode()
+                name = path(summary)
+                entries[name] = entry(name, repository.blob(content.replace(old_link, new_link, 1)))
         localized = localized_settings(site, code)
         new_language = code not in previous or not current or code not in current['languages']
         changed = changed_fields(state, {} if new_language else previous, code)
         overrides = repository.json(path(f'{code}/book.json'), parent, optional=True) or {}
         if 'plugins' in overrides:
             has_local_plugins = True
-        current_edit_link = overrides.get('pluginsConfig', {}).get('edit-link', {}).get('base')
+        local_edit = overrides.get('pluginsConfig', {}).get('edit-link', {})
+        localize_edit_label = (plugin_key == 'seenical' and code == 'en' and 'label' not in local_edit
+                               and common['pluginsConfig'].get('edit-link', {}).get('label') == '在GitHub上编辑')
+        current_edit_link = local_edit.get('base')
         repair_edit_link = bool(edit_link_base and current_edit_link == f'{edit_link_base}/{code}')
         selector_options = language_options(layout, code) if language_selector else None
         selector_changed = language_selector and overrides.get('pluginsConfig', {}).get('versions', {}).get('options') != selector_options
-        if not changed and not repair_edit_link and not selector_changed:
+        if not changed and not repair_edit_link and not localize_edit_label and not selector_changed:
             continue
         language_book = transform({**localized, 'copyright': localized.get('copyright') or ' '}, common, changed)
         original_overrides = overrides
@@ -658,6 +671,8 @@ def sync(repository, branch, base_dir, parent, current, site, transform, image_b
         rendered = language_book['pluginsConfig']
         if selector_changed:
             plugins.setdefault('versions', {})['options'] = selector_options
+        if localize_edit_label:
+            plugins.setdefault('edit-link', {})['label'] = 'Edit on GitHub'
         # The GitBook edit-link plugin appends the source language and filename.
         if edit_link_base and (repair_edit_link or new_language or changed & {'github_url', 'github_base_branch'}):
             plugins.setdefault('edit-link', {})['base'] = edit_link_base
